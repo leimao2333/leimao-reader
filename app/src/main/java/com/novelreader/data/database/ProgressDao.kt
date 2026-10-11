@@ -37,9 +37,12 @@ interface ProgressDao {
         """
         SELECT p.sourceId, p.itemId, p.chapterTitle, p.chapterIndex, p.updatedAt,
                IFNULL(NULLIF(p.itemTitle, ''), b.title) AS title,
-               b.cover, IFNULL(NULLIF(p.itemType, ''), b.type) AS type, b.detailUrl
+               IFNULL(NULLIF(p.itemCover, ''), b.cover) AS cover,
+               IFNULL(NULLIF(p.itemAuthor, ''), b.author) AS author,
+               IFNULL(NULLIF(p.itemType, ''), b.type) AS type, b.detailUrl
         FROM (
-            SELECT sourceId, itemId, chapterTitle, chapterIndex, itemType, itemTitle, MAX(updatedAt) AS updatedAt
+            SELECT sourceId, itemId, chapterTitle, chapterIndex, itemType, itemTitle,
+                   itemCover, itemAuthor, MAX(updatedAt) AS updatedAt
             FROM progress
             GROUP BY sourceId, itemId
         ) p
@@ -54,7 +57,7 @@ interface ProgressDao {
 /**
  * 最近阅读查询投影（progress join books）。
  *
- * book 相关字段（title/cover/type/detailUrl）可能为 null（进度存在但已从书架移除）。
+ * book 相关字段（title/cover/author/type/detailUrl）可能为 null（进度存在但已从书架移除）。
  */
 data class RecentReadingRow(
     val sourceId: String,
@@ -64,6 +67,7 @@ data class RecentReadingRow(
     val updatedAt: Long,
     val title: String?,
     val cover: String?,
+    val author: String?,
     val type: String?,
     val detailUrl: String?,
 )

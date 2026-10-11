@@ -19,6 +19,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -33,6 +34,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.novelreader.core.preferences.PreferencesManager
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -51,6 +53,7 @@ fun SettingsScreen(
     onOpenChangelog: () -> Unit = {},
 ) {
     val darkTheme by viewModel.darkTheme.collectAsState()
+    val darkThemeMode by viewModel.darkThemeMode.collectAsState()
     val novelFontSize by viewModel.novelFontSize.collectAsState()
     val novelBgIndex by viewModel.novelBgIndex.collectAsState()
     val comicPageMode by viewModel.comicPageMode.collectAsState()
@@ -77,14 +80,25 @@ fun SettingsScreen(
         ) {
             // ===== 全局 =====
             SectionTitle("全局")
+            // 深色模式：关闭 / 开启 / 跟随系统（#36，三选一，跟随系统可随日夜自动切换）
             SettingRow(
                 title = "夜间模式",
-                subtitle = "切换应用整体深色主题",
+                subtitle = "关闭 / 开启 / 跟随系统（自动随系统昼夜切换）",
             ) {
-                Switch(
-                    checked = darkTheme,
-                    onCheckedChange = { viewModel.setDarkTheme(it) },
-                )
+                Row {
+                    listOf(
+                        "关闭" to PreferencesManager.THEME_MODE_LIGHT,
+                        "开启" to PreferencesManager.THEME_MODE_DARK,
+                        "跟随系统" to PreferencesManager.THEME_MODE_SYSTEM,
+                    ).forEach { (label, mode) ->
+                        FilterChip(
+                            selected = darkThemeMode == mode,
+                            onClick = { viewModel.setDarkThemeMode(mode) },
+                            label = { Text(label) },
+                            modifier = Modifier.padding(start = 4.dp),
+                        )
+                    }
+                }
             }
 
             Spacer(Modifier.height(24.dp))

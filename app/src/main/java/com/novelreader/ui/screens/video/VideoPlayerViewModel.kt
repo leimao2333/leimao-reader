@@ -175,6 +175,8 @@ class VideoPlayerViewModel(
                 playPositionMs = player?.currentPosition ?: 0L,
                 itemType = com.novelreader.domain.model.SourceType.VIDEO.name,
                 itemTitle = item.title,
+                itemCover = item.cover,
+                itemAuthor = item.author,
             )
         }
     }

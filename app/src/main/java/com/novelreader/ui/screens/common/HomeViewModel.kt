@@ -50,6 +50,14 @@ class HomeViewModel(
         refresh()
     }
 
+    /** 移除某条阅读记录（最近阅读长按管理，#15） */
+    fun removeRecent(item: RecentReading) {
+        viewModelScope.launch {
+            runCatching { progressRepository.removeProgress(item.sourceId, item.itemId) }
+            refresh()
+        }
+    }
+
     /**
      * 继续阅读某个最近阅读条目。
      *

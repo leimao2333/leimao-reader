@@ -1,6 +1,8 @@
 package com.novelreader.ui.screens.common
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,11 +38,14 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -50,11 +55,15 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
+import coil.compose.SubcomposeAsyncImage
+import coil.compose.SubcomposeAsyncImageContent
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.RecentReading
 import com.novelreader.domain.model.SourceType
+import com.novelreader.ui.components.BookMeta
+import com.novelreader.ui.components.CoverPlaceholderLetter
 
 /**
  * 主页。
@@ -151,6 +160,7 @@ fun HomeScreen(
                         recentViewMode = recentViewMode,
                         onToggleRecentView = { recentViewMode = if (recentViewMode == 0) 1 else 0 },
                         onContinueReading = handleContinue,
+                        onRemoveRecent = { item -> viewModel.removeRecent(item) },
                         onOpenSearch = onOpenNovelSearch,
                         onOpenBookshelf = onOpenBookshelf,
                     )
@@ -164,6 +174,7 @@ fun HomeScreen(
                         recentViewMode = recentViewMode,
                         onToggleRecentView = { recentViewMode = if (recentViewMode == 0) 1 else 0 },
                         onContinueReading = handleContinue,
+                        onRemoveRecent = { item -> viewModel.removeRecent(item) },
                         onOpenSearch = onOpenComicSearch,
                         onOpenBookshelf = onOpenBookshelf,
                     )
@@ -177,6 +188,7 @@ fun HomeScreen(
                         recentViewMode = recentViewMode,
                         onToggleRecentView = { recentViewMode = if (recentViewMode == 0) 1 else 0 },
                         onContinueReading = handleContinue,
+                        onRemoveRecent = { item -> viewModel.removeRecent(item) },
                         onOpenSearch = onOpenVideoSearch,
                         onOpenBookshelf = onOpenBookshelf,
                     )
@@ -197,6 +209,7 @@ private fun HomeTab(
     recentViewMode: Int,
     onToggleRecentView: () -> Unit,
     onContinueReading: (RecentReading) -> Unit,
+    onRemoveRecent: (RecentReading) -> Unit,
     onOpenSearch: () -> Unit,
     onOpenBookshelf: () -> Unit,
 ) {
@@ -220,6 +233,7 @@ private fun HomeTab(
             viewMode = recentViewMode,
             onToggleView = onToggleRecentView,
             onContinueReading = onContinueReading,
+            onRemove = onRemoveRecent,
             modifier = Modifier.weight(1f),
         )
     }
@@ -234,6 +248,7 @@ private fun RecentReadingSection(
     viewMode: Int,
     onToggleView: () -> Unit,
     onContinueReading: (RecentReading) -> Unit,
+    onRemove: (RecentReading) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
@@ -291,6 +306,7 @@ private fun RecentReadingSection(
                     RecentReadingCard(
                         item = item,
                         onClick = { onContinueReading(item) },
+                        onLongClick = { onRemove(item) },
                     )
                 }
             }
@@ -314,25 +330,53 @@ private fun RecentReadingSection(
     }
 }
 
-/** 列表形式的最近阅读卡片 */
+/** 列表形式的最近阅读卡片（封面占位 + 类型 + 读到章节 + 相对时间 + 长按移除） */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun RecentReadingCard(
     item: RecentReading,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
 ) {
-    Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+    // 长按弹出「移除记录」确认（#15）
+    var showRemoveDialog by remember { mutableStateOf(false) }
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = if (onLongClick != null) ({ showRemoveDialog = true }) else null,
+            ),
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            AsyncImage(
-                model = item.cover,
-                contentDescription = item.title,
-                modifier = Modifier.size(width = 48.dp, height = 64.dp),
-                contentScale = ContentScale.Crop,
-            )
+            // 封面：无封面时用书名首字占位（#12）
+            val cover = item.cover
+            if (cover.isNullOrBlank()) {
+                CoverPlaceholderLetter(
+                    Modifier.size(width = 48.dp, height = 64.dp),
+                    item.title,
+                )
+            } else {
+                SubcomposeAsyncImage(
+                    model = cover,
+                    contentDescription = item.title,
+                    modifier = Modifier.size(width = 48.dp, height = 64.dp),
+                    contentScale = ContentScale.Crop,
+                ) {
+                    when (painter.state) {
+                        is AsyncImagePainter.State.Error ->
+                            CoverPlaceholderLetter(Modifier.fillMaxSize(), item.title)
+                        is AsyncImagePainter.State.Loading ->
+                            CoverPlaceholderLetter(Modifier.fillMaxSize(), item.title)
+                        else -> SubcomposeAsyncImageContent()
+                    }
+                }
+            }
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -342,19 +386,39 @@ private fun RecentReadingCard(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(2.dp))
-                Text(
-                    text = typeLabel(item.type),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = typeLabel(item.type),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    item.author?.takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            text = " · $it",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    text = "读到：${item.chapterTitle}",
+                    text = "读到 ${item.chapterIndex + 1} 章 · ${item.chapterTitle}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                // 相对时间（#14）
+                if (item.updatedAt > 0) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = BookMeta.recentTime(item.updatedAt),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    )
+                }
             }
             Text(
                 text = "›",
@@ -362,6 +426,23 @@ private fun RecentReadingCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+
+    if (showRemoveDialog && onLongClick != null) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showRemoveDialog = false },
+            title = { Text("移除阅读记录") },
+            text = { Text("确定移除《${item.title}》的阅读记录吗？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRemoveDialog = false
+                    onLongClick()
+                }) { Text("移除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRemoveDialog = false }) { Text("取消") }
+            },
+        )
     }
 }
 

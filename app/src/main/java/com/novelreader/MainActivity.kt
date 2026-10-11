@@ -21,8 +21,15 @@ class MainActivity : ComponentActivity() {
 
         val app = application as NovelReaderApp
         setContent {
-            val darkTheme by app.container.preferencesManager.darkThemeFlow
-                .collectAsState(initial = false)
+            // 深色模式：关闭 / 开启 / 跟随系统（#36）
+            val themeMode by app.container.preferencesManager.darkThemeModeFlow
+                .collectAsState(initial = com.novelreader.core.preferences.PreferencesManager.THEME_MODE_LIGHT)
+            val darkTheme = when (themeMode) {
+                com.novelreader.core.preferences.PreferencesManager.THEME_MODE_DARK -> true
+                com.novelreader.core.preferences.PreferencesManager.THEME_MODE_SYSTEM ->
+                    androidx.compose.foundation.isSystemInDarkTheme()
+                else -> false
+            }
             NovelReaderTheme(darkTheme = darkTheme) {
                 AppNavHost(container = app.container)
             }

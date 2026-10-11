@@ -40,10 +40,16 @@ interface ProgressRepository {
         playPositionMs: Long = 0,
         itemType: String = "",
         itemTitle: String = "",
+        itemCover: String? = null,
+        itemAuthor: String? = null,
+        pageIndex: Int = 0,
     )
 
     /** 读取进度 */
     suspend fun getProgress(sourceId: String, itemId: String): ReadingProgress?
+
+    /** 删除某条阅读记录（最近阅读长按移除） */
+    suspend fun removeProgress(sourceId: String, itemId: String)
 
     /**
      * 最近阅读列表（按更新时间倒序）。
@@ -63,4 +69,8 @@ data class ReadingProgress(
     val chapterIndex: Int = 0,
     val textPosition: Int = 0,
     val playPositionMs: Long = 0,
+    /** 翻页模式：上次退出时的页码（0 起） */
+    val pageIndex: Int = 0,
+    /** 最后更新时间戳（书架按最近阅读排序用） */
+    val updatedAt: Long = 0L,
 )

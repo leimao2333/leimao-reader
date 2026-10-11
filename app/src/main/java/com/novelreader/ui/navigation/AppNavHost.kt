@@ -65,7 +65,7 @@ fun AppNavHost(container: AppContainer) {
                 onOpenBookshelf = { navController.navigate(Routes.BOOKSHELF) },
                 onOpenSources = { navController.navigate(Routes.SOURCE_MANAGE) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
-                onOpenNovelSearch = { navController.navigate(Routes.NOVEL_SEARCH) },
+                onOpenNovelSearch = { navController.navigate(Routes.novelSearch()) },
                 onOpenComicSearch = { navController.navigate(Routes.COMIC_SEARCH) },
                 onOpenVideoSearch = { navController.navigate(Routes.VIDEO_SEARCH) },
                 onContinueReading = { item, chapters, target ->
@@ -193,13 +193,23 @@ fun AppNavHost(container: AppContainer) {
         }
 
         // ===== 小说：搜索 =====
-        composable(Routes.NOVEL_SEARCH) {
+        composable(
+            route = Routes.NOVEL_SEARCH,
+            arguments = listOf(
+                navArgument("keyword") { type = NavType.StringType; defaultValue = "" },
+            ),
+        ) { backStackEntry ->
             val viewModel: NovelSearchViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
-                    NovelSearchViewModel(it.contentRepository, it.preferencesManager)
+                    NovelSearchViewModel(it.contentRepository, it.preferencesManager, it.bookRepository)
                 }
             )
             val scope = androidx.compose.runtime.rememberCoroutineScope()
+            // 作者名等预搜索关键词
+            val initialKeyword = backStackEntry.arguments?.getString("keyword").orEmpty()
+            androidx.compose.runtime.LaunchedEffect(initialKeyword) {
+                if (initialKeyword.isNotBlank()) viewModel.search(initialKeyword)
+            }
             NovelSearchScreen(
                 viewModel = viewModel,
                 onItemClick = { item ->
@@ -270,6 +280,10 @@ fun AppNavHost(container: AppContainer) {
                     navController.navigate(Routes.novelDetail(candidate))
                 },
                 onBack = { navController.popBackStack() },
+                onSearchAuthor = { author ->
+                    // 点击作者：跳到小说搜索页并按作者名预搜索（#31）
+                    navController.navigate(Routes.novelSearch(initialKeyword = author))
+                },
             )
         }
 

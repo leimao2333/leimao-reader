@@ -24,6 +24,9 @@ class ProgressRepositoryImpl(
         playPositionMs: Long,
         itemType: String,
         itemTitle: String,
+        itemCover: String?,
+        itemAuthor: String?,
+        pageIndex: Int,
     ) {
         progressDao.insert(
             ProgressEntity(
@@ -31,10 +34,13 @@ class ProgressRepositoryImpl(
                 itemId = itemId,
                 itemType = itemType,
                 itemTitle = itemTitle,
+                itemCover = itemCover,
+                itemAuthor = itemAuthor,
                 chapterUrl = chapterUrl,
                 chapterTitle = chapterTitle,
                 chapterIndex = chapterIndex,
                 textPosition = textPosition,
+                pageIndex = pageIndex,
                 playPositionMs = playPositionMs,
             )
         )
@@ -48,7 +54,13 @@ class ProgressRepositoryImpl(
             chapterIndex = entity.chapterIndex,
             textPosition = entity.textPosition,
             playPositionMs = entity.playPositionMs,
+            pageIndex = entity.pageIndex,
+            updatedAt = entity.updatedAt,
         )
+    }
+
+    override suspend fun removeProgress(sourceId: String, itemId: String) {
+        progressDao.delete(sourceId, itemId)
     }
 
     override suspend fun recentReadings(type: SourceType?): List<RecentReading> {
@@ -64,6 +76,7 @@ class ProgressRepositoryImpl(
                 itemId = row.itemId,
                 title = row.title ?: row.chapterTitle,
                 cover = row.cover,
+                author = row.author,
                 type = SourceType.fromString(row.type ?: "") ?: SourceType.NOVEL,
                 detailUrl = row.detailUrl ?: row.itemId,
                 chapterTitle = row.chapterTitle,

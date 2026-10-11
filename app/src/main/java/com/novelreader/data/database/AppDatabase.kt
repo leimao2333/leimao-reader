@@ -19,7 +19,7 @@ import com.novelreader.data.model.SourceEntity
         BookEntity::class,
         ProgressEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -73,6 +73,30 @@ abstract class AppDatabase : RoomDatabase() {
                 // books 表里查不到的旧记录（书未收藏）：旧版 UI 对未知类型统一按小说展示，
                 // 这里保持同一行为，避免老记录从最近阅读里"消失"
                 db.execSQL("UPDATE progress SET itemType = 'novel' WHERE itemType = ''")
+            }
+        }
+
+        /**
+         * v4 -> v5：progress 表新增 itemCover / itemAuthor / pageIndex 列。
+         *
+         * - itemCover / itemAuthor：进度冗余存封面与作者，书不在书架时最近阅读也能正确展示（#12）
+         * - pageIndex：翻页模式记住页码，退出重进恢复到对应页（#32）
+         * 存量数据从 books 表回填封面与作者。
+         */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE progress ADD COLUMN itemCover TEXT")
+                db.execSQL("ALTER TABLE progress ADD COLUMN itemAuthor TEXT")
+                db.execSQL("ALTER TABLE progress ADD COLUMN pageIndex INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    """
+                    UPDATE progress SET
+                        itemCover = IFNULL(itemCover, (SELECT b.cover FROM books b
+                            WHERE b.sourceId = progress.sourceId AND b.itemId = progress.itemId)),
+                        itemAuthor = IFNULL(itemAuthor, (SELECT b.author FROM books b
+                            WHERE b.sourceId = progress.sourceId AND b.itemId = progress.itemId))
+                    """.trimIndent()
+                )
             }
         }
     }

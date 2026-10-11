@@ -23,6 +23,7 @@ import kotlinx.coroutines.launch
 class NovelSearchViewModel(
     private val contentRepository: ContentRepository,
     private val preferencesManager: PreferencesManager,
+    private val bookRepository: com.novelreader.domain.repository.BookRepository,
 ) : ViewModel() {
 
     private val _query = MutableStateFlow("")
@@ -31,6 +32,10 @@ class NovelSearchViewModel(
     /** 搜索进度状态（结果 + 进度 + 当前源） */
     private val _state = MutableStateFlow(SearchState())
     val state: StateFlow<SearchState> = _state.asStateFlow()
+
+    /** 已在书架中的条目 key 集合（"sourceId|itemId"），供搜索卡片显示收藏态（#22） */
+    private val _shelfKeys = MutableStateFlow<Set<String>>(emptySet())
+    val shelfKeys: StateFlow<Set<String>> = _shelfKeys.asStateFlow()
 
     /** 模糊搜索开关 */
     private val _fuzzyEnabled = MutableStateFlow(PreferencesManager.DEFAULT_FUZZY_SEARCH)
@@ -49,6 +54,21 @@ class NovelSearchViewModel(
         viewModelScope.launch {
             preferencesManager.searchHistoryFlow(SourceType.NOVEL).collect { _history.value = it }
         }
+        // 书架变化时刷新收藏态（加入/移出后按钮文案实时更新）
+        viewModelScope.launch {
+            bookRepository.observeBookshelf().collect { books ->
+                _shelfKeys.value = books.map { "${it.sourceId}|${it.id}" }.toSet()
+            }
+        }
+    }
+
+    /** 加入 / 移出书架（搜索结果卡片直接操作，#22） */
+    fun toggleShelf(item: com.novelreader.domain.model.MediaItem) {
+        viewModelScope.launch {
+            val key = "${item.sourceId}|${item.id}"
+            if (key in _shelfKeys.value) bookRepository.removeFromBookshelf(item)
+            else bookRepository.addToBookshelf(item)
+        }
     }
 
     fun onQueryChange(value: String) {
@@ -64,8 +84,14 @@ class NovelSearchViewModel(
     }
 
     fun search() {
-        val keyword = _query.value.trim()
+        search(_query.value)
+    }
+
+    /** 以指定关键词搜索（作者跳转等场景直接调用，会同步更新输入框） */
+    fun search(keywordInput: String) {
+        val keyword = keywordInput.trim()
         if (keyword.isEmpty()) return
+        _query.value = keyword
 
         // 记录搜索历史
         viewModelScope.launch { preferencesManager.addSearchHistory(SourceType.NOVEL, keyword) }

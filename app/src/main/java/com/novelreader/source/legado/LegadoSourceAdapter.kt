@@ -89,10 +89,15 @@ class LegadoSourceAdapter(
                 type = info.type,
                 detailUrl = detailUrl,
                 sourceId = info.id,
-                extras = mapOf(
-                    "kind" to (fields["kind"] ?: ""),
-                    "lastChapter" to (fields["lastChapter"] ?: ""),
-                ),
+                extras = buildMap {
+                    fields["kind"]?.let { put("kind", it) }
+                    fields["lastChapter"]?.let { put("lastChapter", it) }
+                    // 搜索元数据（#23/#25）：state/wordCount/lastUpdate 一并带出，供结果卡片展示
+                    fields["status"]?.let { put("status", it) }
+                    fields["wordCount"]?.let { put("wordCount", it) }
+                    fields["lastUpdate"]?.let { put("lastUpdate", it) }
+                    fields["totalChapter"]?.let { put("totalChapter", it) }
+                },
             )
         }.filter { it.title.isNotBlank() }
     }
@@ -289,7 +294,15 @@ class LegadoSourceAdapter(
             ?.replace(Regex("<[^>]+>"), "")
             ?.trim()
 
-        return item.copy(cover = cover, author = author, desc = desc)
+        // 详情页元信息（#27）：状态 / 字数 / 最新章节 / 更新时间
+        // 搜索阶段未带出的字段，在此从详情规则补齐（缺失则保留搜索时的值）
+        val extras = item.extras.toMutableMap()
+        fieldValue("kind")?.takeIf { it.isNotBlank() }?.let { extras["status"] = it }
+        fieldValue("wordCount")?.takeIf { it.isNotBlank() }?.let { extras["wordCount"] = it }
+        fieldValue("lastUpdate")?.takeIf { it.isNotBlank() }?.let { extras["lastUpdate"] = it }
+        fieldValue("lastChapter")?.takeIf { it.isNotBlank() }?.let { extras["lastChapter"] = it }
+
+        return item.copy(cover = cover, author = author, desc = desc, extras = extras)
     }
 
     // ===== 目录 =====

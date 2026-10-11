@@ -17,11 +17,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -79,7 +79,7 @@ fun SearchBar(
             },
         )
 
-        // 模糊搜索开关
+        // 模糊搜索开关（#26：改为紧凑筛选行，说明用途，降低误触）
         if (fuzzyEnabled != null && onFuzzyChange != null) {
             Row(
                 modifier = Modifier
@@ -87,15 +87,16 @@ fun SearchBar(
                     .padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = "模糊搜索",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                FilterChip(
+                    selected = fuzzyEnabled,
+                    onClick = { onFuzzyChange(!fuzzyEnabled) },
+                    label = { Text(if (fuzzyEnabled) "模糊搜索：开" else "模糊搜索：关") },
                 )
                 Spacer(Modifier.width(8.dp))
-                Switch(
-                    checked = fuzzyEnabled,
-                    onCheckedChange = onFuzzyChange,
+                Text(
+                    text = if (fuzzyEnabled) "宽松匹配，结果更多" else "精确匹配书名",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }

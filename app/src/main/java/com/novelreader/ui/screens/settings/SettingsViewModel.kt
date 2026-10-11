@@ -17,7 +17,11 @@ class SettingsViewModel(
     private val preferencesManager: PreferencesManager,
 ) : ViewModel() {
 
-    /** 日夜间模式 */
+    /** 日夜间模式 0=关闭 1=开启 2=跟随系统（#36） */
+    private val _darkThemeMode = MutableStateFlow(PreferencesManager.THEME_MODE_LIGHT)
+    val darkThemeMode: StateFlow<Int> = _darkThemeMode.asStateFlow()
+
+    /** 兼容字段：当前是否处于深色 */
     private val _darkTheme = MutableStateFlow(false)
     val darkTheme: StateFlow<Boolean> = _darkTheme.asStateFlow()
 
@@ -43,7 +47,10 @@ class SettingsViewModel(
 
     private fun observePrefs() {
         viewModelScope.launch {
-            preferencesManager.darkThemeFlow.collect { _darkTheme.value = it }
+            preferencesManager.darkThemeModeFlow.collect {
+                _darkThemeMode.value = it
+                _darkTheme.value = it == PreferencesManager.THEME_MODE_DARK
+            }
         }
         viewModelScope.launch {
             preferencesManager.novelFontSizeFlow.collect { _novelFontSize.value = it }
@@ -60,7 +67,16 @@ class SettingsViewModel(
     }
 
     fun setDarkTheme(value: Boolean) {
-        viewModelScope.launch { preferencesManager.setDarkTheme(value) }
+        viewModelScope.launch {
+            preferencesManager.setDarkThemeMode(
+                if (value) PreferencesManager.THEME_MODE_DARK else PreferencesManager.THEME_MODE_LIGHT
+            )
+        }
+    }
+
+    /** 设置深色模式：0=关闭 1=开启 2=跟随系统 */
+    fun setDarkThemeMode(value: Int) {
+        viewModelScope.launch { preferencesManager.setDarkThemeMode(value) }
     }
 
     fun setNovelFontSize(value: Float) {

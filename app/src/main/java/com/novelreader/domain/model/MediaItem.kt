@@ -86,6 +86,8 @@ data class RecentReading(
     val title: String,
     /** 封面 */
     val cover: String? = null,
+    /** 作者 */
+    val author: String? = null,
     /** 内容类型 */
     val type: SourceType,
     /** 详情地址 */

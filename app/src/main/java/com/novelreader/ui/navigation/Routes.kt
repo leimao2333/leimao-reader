@@ -20,7 +20,7 @@ object Routes {
     const val SOURCE_IMPORT = "source_import"  // 源导入
 
     // ===== 小说 =====
-    const val NOVEL_SEARCH = "novel_search"
+    const val NOVEL_SEARCH = "novel_search?keyword={keyword}"
     const val NOVEL_DETAIL = "novel_detail/{item}"       // item = 编码的 MediaItem
     const val NOVEL_READER = "novel_reader/{item}/{chapterIndex}"  // 章节列表走 NavCache
 
@@ -38,6 +38,12 @@ object Routes {
     const val BOOKSHELF = "bookshelf"          // 书架/收藏
 
     // ===== 路由构建函数 =====
+    /** 小说搜索页；initialKeyword 非空时进入后按该关键词预搜索（作者名跳转用） */
+    fun novelSearch(initialKeyword: String = ""): String {
+        val kw = java.net.URLEncoder.encode(initialKeyword, "UTF-8")
+        return "novel_search?keyword=$kw"
+    }
+
     fun novelDetail(item: com.novelreader.domain.model.MediaItem): String =
         "novel_detail/${NavArgs.encodeItem(item)}"
 

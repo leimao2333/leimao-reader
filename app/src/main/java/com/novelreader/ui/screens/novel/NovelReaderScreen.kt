@@ -71,9 +71,73 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
- * 快速单击检测：按下后抬手即判定为单击，不做双击/长按超时等待，
- * 消除菜单呼出的点击延迟。
+ * 三区单击检测（阅读页手势核心）：
+ *
+ * 按下后抬手立即判定为单击，不做双击/长按超时等待，消除翻页/呼出菜单的点击延迟。
+ * 按落点横向位置划分三个区域：
+ * - 左 1/3：调用 [onLeft]（上一页 / 上一章）
+ * - 右 1/3：调用 [onRight]（下一页 / 下一章）
+ * - 中间 1/3：调用 [onCenter]（呼出 / 收起菜单）
+ *
+ * 通过 extendedTouchPadding 保证边缘区域也能稳定命中（避免系统边缘手势抢占）。
  */
+private fun Modifier.pageTap(
+    onLeft: () -> Unit,
+    onCenter: () -> Unit,
+    onRight: () -> Unit,
+): Modifier = this.pointerInput(Unit) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        val up = waitForUpOrCancellation()
+        if (up == null) return@awaitEachGesture
+        // 滑动距离过大视为翻页/滚动拖拽，不当作单击
+        val dx = kotlin.math.abs(up.position.x - down.position.x)
+        val dy = kotlin.math.abs(up.position.y - down.position.y)
+        if (dx > 24f || dy > 24f) return@awaitEachGesture
+        val w = size.width.toFloat()
+        if (w <= 0f) return@awaitEachGesture
+        val x = up.position.x
+        when {
+            x < w / 3f -> onLeft()
+            x > w * 2f / 3f -> onRight()
+            else -> onCenter()
+        }
+    }
+}
+
+/**
+ * 滚动模式单击判定：整屏分上下两半，上半=向上翻、下半=向下翻（菜单呼出走顶栏返回键）。
+ * 中心竖条区域仍保留「呼出菜单」，兼顾两种习惯。
+ */
+private fun Modifier.scrollTap(
+    onUp: () -> Unit,
+    onCenter: () -> Unit,
+    onDown: () -> Unit,
+): Modifier = this.pointerInput(Unit) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        val up = waitForUpOrCancellation()
+        if (up == null) return@awaitEachGesture
+        val dx = kotlin.math.abs(up.position.x - down.position.x)
+        val dy = kotlin.math.abs(up.position.y - down.position.y)
+        if (dx > 24f || dy > 24f) return@awaitEachGesture
+        val w = size.width.toFloat()
+        val h = size.height.toFloat()
+        if (w <= 0f || h <= 0f) return@awaitEachGesture
+        val x = up.position.x
+        val y = up.position.y
+        // 中间竖条（水平方向中间 1/3）且落在屏幕中部 → 呼出菜单
+        if (x in (w / 3f)..(w * 2f / 3f) && y in (h * 0.28f)..(h * 0.72f)) {
+            onCenter()
+        } else if (y < h / 2f) {
+            onUp()
+        } else {
+            onDown()
+        }
+    }
+}
+
+/** 简单全屏单击（加载中/错误页用：任意点击呼出菜单） */
 private fun Modifier.fastTap(onTap: () -> Unit): Modifier = this.pointerInput(Unit) {
     awaitEachGesture {
         awaitFirstDown(requireUnconsumed = false)
@@ -106,6 +170,11 @@ fun NovelReaderScreen(
     val fontSize by viewModel.fontSize.collectAsState()
     val bgIndex by viewModel.bgIndex.collectAsState()
     val nightMode by viewModel.nightMode.collectAsState()
+    val lineHeight by viewModel.lineHeight.collectAsState()
+    val paragraphSpacing by viewModel.paragraphSpacing.collectAsState()
+    val sidePadding by viewModel.sidePadding.collectAsState()
+    val autoPage by viewModel.autoPage.collectAsState()
+    val autoPageInterval by viewModel.autoPageInterval.collectAsState()
     val showMenu by viewModel.showMenu.collectAsState()
     val menuTab by viewModel.menuTab.collectAsState()
     val chapterTitle by viewModel.chapterTitle.collectAsState()
@@ -116,14 +185,27 @@ fun NovelReaderScreen(
     val hideChapterTitle by viewModel.hideChapterTitle.collectAsState()
     val chapterIndex by viewModel.currentChapterIndex.collectAsState()
     val initialTextPosition by viewModel.initialTextPosition.collectAsState()
+    val initialPageIndex by viewModel.initialPageIndex.collectAsState()
     val changeSourceOpen by viewModel.changeSourceOpen.collectAsState()
     val changeSourceCandidates by viewModel.changeSourceCandidates.collectAsState()
     val changeSourceLoading by viewModel.changeSourceLoading.collectAsState()
     val sameAuthorOnly by viewModel.sameAuthorOnly.collectAsState()
     val changeSourceError by viewModel.changeSourceError.collectAsState()
 
+    // 当前章节的页码展示（如 «1/18»），由翻页/滚动子组件回传，供顶栏统一显示进度（#10）
+    var pageText by remember { androidx.compose.runtime.mutableStateOf("") }
+    val chapterCount = chapters.size
+
     LaunchedEffect(item, chapter) {
         viewModel.init(item, chapters, chapter)
+    }
+
+    // 阅读时保持屏幕常亮，退出阅读页自动还原（#8）
+    val readerView = androidx.compose.ui.platform.LocalView.current
+    androidx.compose.runtime.DisposableEffect(readerView) {
+        val previous = readerView.keepScreenOn
+        readerView.keepScreenOn = true
+        onDispose { readerView.keepScreenOn = previous }
     }
 
     val backgroundColors = if (nightMode) ReaderBackgrounds.nightColors else ReaderBackgrounds.dayColors
@@ -167,12 +249,21 @@ fun NovelReaderScreen(
                     content = content,
                     chapterTitle = chapterTitle,
                     chapterIndex = chapterIndex,
+                    initialPage = initialPageIndex,
                     fontSize = fontSize,
+                    lineHeightMultiplier = lineHeight,
+                    paragraphSpacing = paragraphSpacing,
+                    sidePadding = sidePadding,
                     textColor = textColor,
                     hideChapterTitle = hideChapterTitle,
                     pageAnim = pageAnim,
-                    onTap = { viewModel.toggleMenu() },
+                    autoPage = autoPage,
+                    autoPageInterval = autoPageInterval,
+                    onTapCenter = { viewModel.toggleMenu() },
+                    onReachFirst = { viewModel.prevChapter() },
                     onNextChapter = { viewModel.nextChapter() },
+                    onPageChanged = { page -> viewModel.savePageIndex(chapterIndex, page) },
+                    onPageTextChanged = { pageText = it },
                 )
             }
             else -> {
@@ -182,11 +273,17 @@ fun NovelReaderScreen(
                     chapterIndex = chapterIndex,
                     initialRatio = initialTextPosition,
                     fontSize = fontSize,
+                    lineHeightMultiplier = lineHeight,
+                    paragraphSpacing = paragraphSpacing,
+                    sidePadding = sidePadding,
                     textColor = textColor,
                     hideChapterTitle = hideChapterTitle,
                     onScrollRatio = { ratio -> viewModel.saveScrollRatio(chapterIndex, ratio) },
-                    onTap = { viewModel.toggleMenu() },
+                    autoPage = autoPage,
+                    autoPageInterval = autoPageInterval,
+                    onTapCenter = { viewModel.toggleMenu() },
                     onNextChapter = { viewModel.nextChapter() },
+                    onPageTextChanged = { pageText = it },
                 )
             }
         }
@@ -196,9 +293,13 @@ fun NovelReaderScreen(
             // 顶栏
             if (!hideTopBar) {
                 ReaderTopBar(
+                    bookTitle = item.title,
                     title = chapterTitle,
                     backgroundColor = backgroundColor,
                     textColor = textColor,
+                    chapterIndex = chapterIndex,
+                    chapterCount = chapterCount,
+                    pageText = pageText,
                     onBack = onBack,
                 )
             }
@@ -215,6 +316,11 @@ fun NovelReaderScreen(
                 hideTopBar = hideTopBar,
                 hideBottomBar = hideBottomBar,
                 hideChapterTitle = hideChapterTitle,
+                lineHeight = lineHeight,
+                paragraphSpacing = paragraphSpacing,
+                sidePadding = sidePadding,
+                autoPage = autoPage,
+                autoPageInterval = autoPageInterval,
                 backgroundColor = backgroundColor,
                 textColor = textColor,
                 menuTab = menuTab,
@@ -236,7 +342,7 @@ fun NovelReaderScreen(
     }
 }
 
-/** 上下滚动正文（记住正文位置：进入恢复、滚动停止回写；滚到章末显示「下一章」续读入口） */
+/** 上下滚动正文（记住正文位置：进入恢复、滚动停止回写；单击上下半屏翻页；滚到章末显示「下一章」续读入口） */
 @Composable
 private fun ScrollNovel(
     content: String,
@@ -244,14 +350,32 @@ private fun ScrollNovel(
     chapterIndex: Int,
     initialRatio: Int,
     fontSize: Float,
+    lineHeightMultiplier: Float,
+    paragraphSpacing: Float,
+    sidePadding: Float,
     textColor: Color,
     hideChapterTitle: Boolean,
     onScrollRatio: (Float) -> Unit,
-    onTap: () -> Unit,
+    autoPage: Boolean,
+    autoPageInterval: Int,
+    onTapCenter: () -> Unit,
     onNextChapter: () -> Unit,
+    onPageTextChanged: (String) -> Unit = {},
 ) {
     // 每章一个独立滚动状态：切章回到顶部，不沿用上一章位置
     val scrollState = remember(chapterIndex) { ScrollState(0) }
+    val scope = rememberCoroutineScope()
+
+    // 滚动模式下的本章百分比（#10）：滚动位置 / 可滚范围
+    val scrollRatio by remember {
+        androidx.compose.runtime.derivedStateOf {
+            val max = scrollState.maxValue
+            if (max > 0) (scrollState.value.toFloat() / max).coerceIn(0f, 1f) else 0f
+        }
+    }
+    LaunchedEffect(scrollRatio) {
+        onPageTextChanged("${(scrollRatio * 100).toInt()}%")
+    }
 
     // 恢复：待布局完成后按记录的比例滚动到上次位置（仅在本章有记录时）
     LaunchedEffect(chapterIndex, content, initialRatio) {
@@ -270,12 +394,50 @@ private fun ScrollNovel(
         }
     }
 
-    Column(
+    // 自动翻页：按设定间隔向下滚动一屏，到底进入下一章
+    LaunchedEffect(autoPage, autoPageInterval, chapterIndex, content) {
+        if (!autoPage) return@LaunchedEffect
+        while (true) {
+            delay(autoPageInterval * 1000L)
+            val max = scrollState.maxValue
+            if (max <= 0) continue
+            if (scrollState.value >= max - 8) {
+                onNextChapter()
+            } else {
+                scrollState.animateScrollTo((scrollState.value + max * 0.9f).toInt().coerceAtMost(max))
+            }
+        }
+    }
+
+    // 单击下半屏：向下翻一屏；上半屏：向上翻一屏；中部：呼出菜单
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .fastTap { onTap() }
+            .scrollTap(
+                onUp = {
+                    scope.launch {
+                        val target = (scrollState.value - scrollState.maxValue * 0.9f)
+                            .toInt().coerceAtLeast(0)
+                        scrollState.animateScrollTo(target)
+                    }
+                },
+                onCenter = onTapCenter,
+                onDown = {
+                    scope.launch {
+                        val max = scrollState.maxValue
+                        if (scrollState.value >= max - 8) {
+                            // 已到底：直接进入下一章，保证连续阅读
+                            onNextChapter()
+                        } else {
+                            val target = (scrollState.value + max * 0.9f)
+                                .toInt().coerceAtMost(max)
+                            scrollState.animateScrollTo(target)
+                        }
+                    }
+                },
+            )
             .verticalScroll(scrollState)
-            .padding(horizontal = 20.dp, vertical = 48.dp),
+            .padding(horizontal = sidePadding.dp, vertical = 48.dp),
     ) {
         if (!hideChapterTitle) {
             Text(
@@ -292,8 +454,10 @@ private fun ScrollNovel(
             text = content,
             fontSize = fontSize.sp,
             color = textColor,
-            lineHeight = (fontSize * 1.6).sp,
+            lineHeight = (fontSize * lineHeightMultiplier).sp,
             textAlign = TextAlign.Justify,
+            letterSpacing = 0.sp,
+            modifier = Modifier.padding(bottom = paragraphSpacing.dp),
         )
 
         // 章末续读：滚到底部出现「下一章」入口，保证阅读连续性
@@ -318,32 +482,39 @@ private fun ScrollNovel(
     }
 }
 
-/** 左右翻页正文（按屏幕容量精确分页，每页铺满一屏、到屏幕底端即止，无内部滚动，支持翻页动画；章末可续翻下一章） */
+/** 左右翻页正文（按屏幕容量精确分页，每页铺满一屏、到屏幕底端即止，无内部滚动，支持翻页动画；章末可续翻下一章；三区单击翻页） */
 @Composable
 private fun HorizontalPagerNovel(
     content: String,
     chapterTitle: String,
     chapterIndex: Int,
+    initialPage: Int,
     fontSize: Float,
+    lineHeightMultiplier: Float,
+    paragraphSpacing: Float,
+    sidePadding: Float,
     textColor: Color,
     hideChapterTitle: Boolean,
     pageAnim: Int,
-    onTap: () -> Unit,
+    autoPage: Boolean,
+    autoPageInterval: Int,
+    onTapCenter: () -> Unit,
+    onReachFirst: () -> Unit,
     onNextChapter: () -> Unit,
+    onPageChanged: (Int) -> Unit,
+    onPageTextChanged: (String) -> Unit = {},
 ) {
     BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxSize()
-            .fastTap { onTap() },
+        modifier = Modifier.fillMaxSize(),
     ) {
         // 可用尺寸（dp 转 px）：按字号估算每页可容纳字符数，做到「满一屏即止、无滚动」
         val density = LocalDensity.current.density
         val availWidthPx = maxWidth.value * density
         val availHeightPx = maxHeight.value * density
-        val textWidthPx = availWidthPx - 40f * density        // 左右各 20dp padding
-        val textHeightPx = availHeightPx - 96f * density       // 上下各 48dp padding
-        val lineHeightPx = fontSize * 1.6f * density
-        val charWidthPx = fontSize * density                   // 汉字近似全角宽度
+        val textWidthPx = availWidthPx - (sidePadding * 2f) * density   // 左右各 sidePadding
+        val textHeightPx = availHeightPx - 96f * density                // 上下各 48dp padding
+        val lineHeightPx = fontSize * lineHeightMultiplier * density
+        val charWidthPx = fontSize * density                            // 汉字近似全角宽度
         val charsPerLine = (textWidthPx / charWidthPx).toInt().coerceAtLeast(1)
         val linesPerPage = (textHeightPx / lineHeightPx).toInt().coerceAtLeast(1)
         val charsPerPage = (charsPerLine * linesPerPage).coerceAtLeast(100)
@@ -356,11 +527,25 @@ private fun HorizontalPagerNovel(
         // 否则滑到章末就卡住，无法连续阅读（空正文/无下一章时不加）
         val hasNextGate = content.isNotBlank()
         val pageCount = pages.size + if (hasNextGate) 1 else 0
-        val pagerState = rememberPagerState(initialPage = 0, pageCount = { pageCount })
 
-        // 切换章节时回到第一页，避免沿用上一章的页码
-        LaunchedEffect(content, chapterIndex) {
-            if (pagerState.currentPage != 0) pagerState.scrollToPage(0)
+        // 进入本章时恢复到上次记录的页码（越界自动收敛到有效范围）
+        val startPage = remember(chapterIndex, initialPage) {
+            initialPage.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+        }
+        val pagerState = rememberPagerState(initialPage = startPage, pageCount = { pageCount })
+        val scope = rememberCoroutineScope()
+
+        // 切换章节时回到第一页，避免沿用上一章的页码。
+        // 注意：仅在「章号真正变化」时复位；首次进入本章要保留 initialPage（恢复上次页码），
+        // 因此用 remember 记录上一次章号，首次组合时不触发。
+        var lastChapterIndex by remember { androidx.compose.runtime.mutableIntStateOf(chapterIndex) }
+        LaunchedEffect(chapterIndex) {
+            if (lastChapterIndex != chapterIndex) {
+                lastChapterIndex = chapterIndex
+                if (pagerState.currentPage != 0) pagerState.scrollToPage(0)
+                // 切章后页码归零，同步回写，避免沿用上一章页码
+                onPageChanged(0)
+            }
         }
 
         // 翻到章末引导页时自动进入下一章（每章只触发一次，防切章瞬间页码未复位造成连跳）
@@ -375,9 +560,58 @@ private fun HorizontalPagerNovel(
             }
         }
 
+        // 页码回写：停稳后记录当前页码，供退出重进恢复
+        LaunchedEffect(pagerState, chapterIndex) {
+            snapshotFlow { pagerState.currentPage }.collectLatest { page ->
+                delay(300)
+                if (!pagerState.isScrollInProgress) onPageChanged(page)
+            }
+        }
+
+        // 顶栏页码展示（#10）：当前页/总页数
+        LaunchedEffect(pagerState, pageCount) {
+            snapshotFlow { pagerState.currentPage }.collect { page ->
+                onPageTextChanged("${page + 1}/${pageCount}")
+            }
+        }
+
+        // 自动翻页：按设定间隔翻到下一页，到章末进入下一章
+        LaunchedEffect(autoPage, autoPageInterval, chapterIndex) {
+            if (!autoPage) return@LaunchedEffect
+            while (true) {
+                delay(autoPageInterval * 1000L)
+                val last = pagerState.pageCount - 1
+                if (pagerState.currentPage < last) {
+                    pagerState.animateScrollToPage(pagerState.currentPage + 1)
+                } else {
+                    onNextChapter()
+                }
+            }
+        }
+
         HorizontalPager(
             state = pagerState,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .pageTap(
+                    onLeft = {
+                        if (pagerState.currentPage > 0) {
+                            scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+                        } else {
+                            // 已是本章第一页：翻到上一章
+                            onReachFirst()
+                        }
+                    },
+                    onCenter = onTapCenter,
+                    onRight = {
+                        val last = pagerState.pageCount - 1
+                        if (pagerState.currentPage < last) {
+                            scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
+                        } else {
+                            onNextChapter()
+                        }
+                    },
+                ),
         ) { page ->
             val offset = pagerState.currentPageOffsetFraction
             val transform = when (pageAnim) {
@@ -423,7 +657,7 @@ private fun HorizontalPagerNovel(
                 } else Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(horizontal = 20.dp, vertical = 48.dp),
+                        .padding(horizontal = sidePadding.dp, vertical = 48.dp),
                 ) {
                     if (page == 0 && !hideChapterTitle) {
                         Text(
@@ -440,9 +674,19 @@ private fun HorizontalPagerNovel(
                         text = pages[page],
                         fontSize = fontSize.sp,
                         color = textColor,
-                        lineHeight = (fontSize * 1.6).sp,
+                        lineHeight = (fontSize * lineHeightMultiplier).sp,
                         textAlign = TextAlign.Justify,
+                        modifier = Modifier.padding(bottom = paragraphSpacing.dp),
                         // 每页内容已按屏幕容量切分，禁止内部滚动——到屏幕底端即止
+                    )
+                    Spacer(Modifier.weight(1f))
+                    // 底部页码指示（右对齐，弱化显示）
+                    Text(
+                        text = "${page + 1}/${pages.size}",
+                        fontSize = (fontSize - 6).sp,
+                        color = textColor.copy(alpha = 0.4f),
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.End,
                     )
                 }
             }
@@ -545,12 +789,16 @@ private fun splitContentIntoPages(
     return pages.ifEmpty { listOf("") }
 }
 
-/** 顶部栏 */
+/** 顶部栏（书名 + 章节标题两行，长按可收起菜单） */
 @Composable
 private fun BoxScope.ReaderTopBar(
+    bookTitle: String,
     title: String,
     backgroundColor: Color,
     textColor: Color,
+    chapterIndex: Int,
+    chapterCount: Int,
+    pageText: String,
     onBack: () -> Unit,
 ) {
     Row(
@@ -564,13 +812,38 @@ private fun BoxScope.ReaderTopBar(
         IconButton(onClick = onBack) {
             Icon(Icons.Filled.ArrowBack, contentDescription = "返回", tint = textColor)
         }
-        Text(
-            text = title,
-            color = textColor,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            style = MaterialTheme.typography.titleMedium,
-        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = bookTitle,
+                color = textColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = title,
+                color = textColor.copy(alpha = 0.7f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        // 阅读进度：全书章节进度（第 n/N 章）+ 本章页码，供快速定位
+        if (chapterCount > 0) {
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = "${chapterIndex + 1}/$chapterCount 章",
+                    color = textColor.copy(alpha = 0.85f),
+                    style = MaterialTheme.typography.labelMedium,
+                )
+                Text(
+                    text = "${((chapterIndex + 1) * 100f / chapterCount).toInt()}% · $pageText",
+                    color = textColor.copy(alpha = 0.55f),
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        }
     }
 }
 
@@ -587,6 +860,11 @@ private fun BoxScope.ReaderBottomMenu(
     hideTopBar: Boolean,
     hideBottomBar: Boolean,
     hideChapterTitle: Boolean,
+    lineHeight: Float,
+    paragraphSpacing: Float,
+    sidePadding: Float,
+    autoPage: Boolean,
+    autoPageInterval: Int,
     backgroundColor: Color,
     textColor: Color,
     menuTab: Int,
@@ -766,6 +1044,45 @@ private fun BoxScope.ReaderBottomMenu(
                         }
                         Spacer(Modifier.height(12.dp))
                     }
+                    // 行距
+                    SettingSlider(
+                        label = "行距",
+                        value = lineHeight,
+                        display = String.format("%.1f", lineHeight),
+                        valueRange = 1.2f..2.4f,
+                        textColor = textColor,
+                        onChange = { viewModel.setLineHeight(it) },
+                    )
+                    // 段距
+                    SettingSlider(
+                        label = "段距",
+                        value = paragraphSpacing,
+                        display = "${paragraphSpacing.toInt()}",
+                        valueRange = 0f..24f,
+                        textColor = textColor,
+                        onChange = { viewModel.setParagraphSpacing(it) },
+                    )
+                    // 左右页边距
+                    SettingSlider(
+                        label = "页边距",
+                        value = sidePadding,
+                        display = "${sidePadding.toInt()}",
+                        valueRange = 8f..40f,
+                        textColor = textColor,
+                        onChange = { viewModel.setSidePadding(it) },
+                    )
+                    // 自动翻页
+                    SettingSwitch("自动翻页", autoPage) { viewModel.setAutoPage(it) }
+                    if (autoPage) {
+                        SettingSlider(
+                            label = "翻页间隔(秒)",
+                            value = autoPageInterval.toFloat(),
+                            display = "$autoPageInterval",
+                            valueRange = 5f..120f,
+                            textColor = textColor,
+                            onChange = { viewModel.setAutoPageInterval(it.toInt()) },
+                        )
+                    }
                 }
                 else -> {
                     // ===== 设置面板（含隐藏栏目选项） =====
@@ -931,6 +1248,42 @@ private fun SettingSwitch(
             modifier = Modifier.weight(1f),
         )
         Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+/** 设置滑块行（行距 / 段距 / 页边距 / 自动翻页间隔） */
+@Composable
+private fun SettingSlider(
+    label: String,
+    value: Float,
+    display: String,
+    valueRange: ClosedFloatingPointRange<Float>,
+    textColor: Color,
+    onChange: (Float) -> Unit,
+) {
+    // 本地态保证拖动顺滑，抬手才落库（避免频繁写 DataStore 造成卡顿）
+    var local by remember(value) { androidx.compose.runtime.mutableFloatStateOf(value) }
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = label,
+                color = textColor,
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = display,
+                color = textColor.copy(alpha = 0.7f),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Slider(
+            value = local,
+            onValueChange = { local = it },
+            onValueChangeFinished = { onChange(local) },
+            valueRange = valueRange,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 

@@ -172,6 +172,14 @@ private fun DetailHeader(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                // 来源名
+                if (item.sourceName.isNotBlank()) {
+                    Text(
+                        text = "来源：${item.sourceName}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
                 Spacer(Modifier.height(12.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (collected) {

@@ -77,6 +77,9 @@ fun AppNavHost(container: AppContainer) {
             BookShelfScreen(
                 viewModel = viewModel,
                 onContinueReading = { item, chapters, target ->
+                    // 章节列表走内存缓存，路由只传索引（避免大列表序列化导致 ANR）
+                    NavCache.putChapters(item, chapters)
+                    val index = target?.index?.coerceAtLeast(0) ?: 0
                     if (chapters.isEmpty() || target == null) {
                         // 无章节/无进度，回详情页
                         when (item.type) {
@@ -91,11 +94,11 @@ fun AppNavHost(container: AppContainer) {
                         // 有进度章节，直达阅读/播放
                         when (item.type) {
                             com.novelreader.domain.model.SourceType.NOVEL ->
-                                navController.navigate(Routes.novelReader(item, chapters, target))
+                                navController.navigate(Routes.novelReader(item, index))
                             com.novelreader.domain.model.SourceType.COMIC ->
-                                navController.navigate(Routes.comicReader(item, chapters, target))
+                                navController.navigate(Routes.comicReader(item, index))
                             com.novelreader.domain.model.SourceType.VIDEO ->
-                                navController.navigate(Routes.videoPlayer(item, chapters, target))
+                                navController.navigate(Routes.videoPlayer(item, index))
                         }
                     }
                 },
@@ -189,10 +192,10 @@ fun AppNavHost(container: AppContainer) {
                 viewModel = viewModel,
                 item = item,
                 onChapterClick = { chapter ->
+                    // 章节列表走内存缓存（3461 章编码进路由会 ANR）
                     val chapters = viewModel.chapters.value
-                    navController.navigate(
-                        Routes.novelReader(item, chapters, chapter)
-                    )
+                    NavCache.putChapters(item, chapters)
+                    navController.navigate(Routes.novelReader(item, chapter.index))
                 },
                 onBack = { navController.popBackStack() },
             )
@@ -203,13 +206,14 @@ fun AppNavHost(container: AppContainer) {
             route = Routes.NOVEL_READER,
             arguments = listOf(
                 navArgument("item") { type = NavType.StringType },
-                navArgument("chapters") { type = NavType.StringType },
-                navArgument("chapter") { type = NavType.StringType },
+                navArgument("chapterIndex") { type = NavType.IntType },
             ),
         ) { backStackEntry ->
             val item = NavArgs.decodeItem(backStackEntry.arguments?.getString("item") ?: "")
-            val chapters = NavArgs.decodeChapters(backStackEntry.arguments?.getString("chapters") ?: "")
-            val chapter = NavArgs.decodeChapter(backStackEntry.arguments?.getString("chapter") ?: "")
+            val chapterIndex = backStackEntry.arguments?.getInt("chapterIndex") ?: 0
+            val chapters = NavCache.getChapters(item)
+            val chapter = chapters.getOrNull(chapterIndex) ?: chapters.firstOrNull()
+                ?: return@composable
             val viewModel: NovelReaderViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
                     NovelReaderViewModel(
@@ -260,7 +264,8 @@ fun AppNavHost(container: AppContainer) {
                 item = item,
                 onChapterClick = { chapter ->
                     val chapters = viewModel.chapters.value
-                    navController.navigate(Routes.comicReader(item, chapters, chapter))
+                    NavCache.putChapters(item, chapters)
+                    navController.navigate(Routes.comicReader(item, chapter.index))
                 },
                 onBack = { navController.popBackStack() },
             )
@@ -271,13 +276,14 @@ fun AppNavHost(container: AppContainer) {
             route = Routes.COMIC_READER,
             arguments = listOf(
                 navArgument("item") { type = NavType.StringType },
-                navArgument("chapters") { type = NavType.StringType },
-                navArgument("chapter") { type = NavType.StringType },
+                navArgument("chapterIndex") { type = NavType.IntType },
             ),
         ) { backStackEntry ->
             val item = NavArgs.decodeItem(backStackEntry.arguments?.getString("item") ?: "")
-            val chapters = NavArgs.decodeChapters(backStackEntry.arguments?.getString("chapters") ?: "")
-            val chapter = NavArgs.decodeChapter(backStackEntry.arguments?.getString("chapter") ?: "")
+            val chapterIndex = backStackEntry.arguments?.getInt("chapterIndex") ?: 0
+            val chapters = NavCache.getChapters(item)
+            val chapter = chapters.getOrNull(chapterIndex) ?: chapters.firstOrNull()
+                ?: return@composable
             val viewModel: ComicReaderViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
                     ComicReaderViewModel(
@@ -328,7 +334,8 @@ fun AppNavHost(container: AppContainer) {
                 item = item,
                 onEpisodeClick = { episode ->
                     val episodes = viewModel.episodes.value
-                    navController.navigate(Routes.videoPlayer(item, episodes, episode))
+                    NavCache.putChapters(item, episodes)
+                    navController.navigate(Routes.videoPlayer(item, episode.index))
                 },
                 onBack = { navController.popBackStack() },
             )
@@ -339,13 +346,14 @@ fun AppNavHost(container: AppContainer) {
             route = Routes.VIDEO_PLAYER,
             arguments = listOf(
                 navArgument("item") { type = NavType.StringType },
-                navArgument("chapters") { type = NavType.StringType },
-                navArgument("chapter") { type = NavType.StringType },
+                navArgument("chapterIndex") { type = NavType.IntType },
             ),
         ) { backStackEntry ->
             val item = NavArgs.decodeItem(backStackEntry.arguments?.getString("item") ?: "")
-            val episodes = NavArgs.decodeChapters(backStackEntry.arguments?.getString("chapters") ?: "")
-            val episode = NavArgs.decodeChapter(backStackEntry.arguments?.getString("chapter") ?: "")
+            val chapterIndex = backStackEntry.arguments?.getInt("chapterIndex") ?: 0
+            val episodes = NavCache.getChapters(item)
+            val episode = episodes.getOrNull(chapterIndex) ?: episodes.firstOrNull()
+                ?: return@composable
             val viewModel: VideoPlayerViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
                     VideoPlayerViewModel(it.contentRepository, it.progressRepository)

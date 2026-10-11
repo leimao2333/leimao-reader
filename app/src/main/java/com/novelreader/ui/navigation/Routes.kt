@@ -22,17 +22,17 @@ object Routes {
     // ===== 小说 =====
     const val NOVEL_SEARCH = "novel_search"
     const val NOVEL_DETAIL = "novel_detail/{item}"       // item = 编码的 MediaItem
-    const val NOVEL_READER = "novel_reader/{item}/{chapters}/{chapter}"  // 编码对象
+    const val NOVEL_READER = "novel_reader/{item}/{chapterIndex}"  // 章节列表走 NavCache
 
     // ===== 漫画 =====
     const val COMIC_SEARCH = "comic_search"
     const val COMIC_DETAIL = "comic_detail/{item}"
-    const val COMIC_READER = "comic_reader/{item}/{chapters}/{chapter}"
+    const val COMIC_READER = "comic_reader/{item}/{chapterIndex}"
 
     // ===== 视频 =====
     const val VIDEO_SEARCH = "video_search"
     const val VIDEO_DETAIL = "video_detail/{item}"
-    const val VIDEO_PLAYER = "video_player/{item}/{chapters}/{chapter}"
+    const val VIDEO_PLAYER = "video_player/{item}/{chapterIndex}"
 
     // ===== 通用 =====
     const val BOOKSHELF = "bookshelf"          // 书架/收藏
@@ -43,28 +43,25 @@ object Routes {
 
     fun novelReader(
         item: com.novelreader.domain.model.MediaItem,
-        chapters: List<com.novelreader.domain.model.ChapterItem>,
-        chapter: com.novelreader.domain.model.ChapterItem,
+        chapterIndex: Int,
     ): String =
-        "novel_reader/${NavArgs.encodeItem(item)}/${NavArgs.encodeChapters(chapters)}/${NavArgs.encodeChapter(chapter)}"
+        "novel_reader/${NavArgs.encodeItem(item)}/$chapterIndex"
 
     fun comicDetail(item: com.novelreader.domain.model.MediaItem): String =
         "comic_detail/${NavArgs.encodeItem(item)}"
 
     fun comicReader(
         item: com.novelreader.domain.model.MediaItem,
-        chapters: List<com.novelreader.domain.model.ChapterItem>,
-        chapter: com.novelreader.domain.model.ChapterItem,
+        chapterIndex: Int,
     ): String =
-        "comic_reader/${NavArgs.encodeItem(item)}/${NavArgs.encodeChapters(chapters)}/${NavArgs.encodeChapter(chapter)}"
+        "comic_reader/${NavArgs.encodeItem(item)}/$chapterIndex"
 
     fun videoDetail(item: com.novelreader.domain.model.MediaItem): String =
         "video_detail/${NavArgs.encodeItem(item)}"
 
     fun videoPlayer(
         item: com.novelreader.domain.model.MediaItem,
-        chapters: List<com.novelreader.domain.model.ChapterItem>,
-        chapter: com.novelreader.domain.model.ChapterItem,
+        chapterIndex: Int,
     ): String =
-        "video_player/${NavArgs.encodeItem(item)}/${NavArgs.encodeChapters(chapters)}/${NavArgs.encodeChapter(chapter)}"
+        "video_player/${NavArgs.encodeItem(item)}/$chapterIndex"
 }

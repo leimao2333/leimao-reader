@@ -1,14 +1,10 @@
 package com.novelreader.source.engine
 
 /**
- * 源引擎包说明。
+ * 占位符替换引擎。
  *
- * 本包预留给「规则引擎」相关能力：
- * - HTML 解析规则执行（CSS 选择器 + 属性提取）
- * - 占位符替换引擎（{{keyword}}、{{page}} 等）
- * - 结果字段映射引擎
- *
- * TODO(M2): 实现 HTML 解析与选择器引擎（可基于 jsoup 或自研轻量解析器）。
+ * 负责把源规则模板中的 `{{keyword}}`、`{{page}}` 等占位符替换为运行时取值；
+ * HTML 解析与选择器提取见 [HtmlSelectorEngine]。
  */
 object PlaceholderEngine {
 

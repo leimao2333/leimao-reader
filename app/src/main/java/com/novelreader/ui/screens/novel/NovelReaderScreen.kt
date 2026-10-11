@@ -1,5 +1,6 @@
 package com.novelreader.ui.screens.novel
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -26,7 +27,6 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -49,6 +49,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -64,6 +65,9 @@ import androidx.compose.ui.unit.sp
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.ui.theme.ReaderBackgrounds
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -111,6 +115,7 @@ fun NovelReaderScreen(
     val hideBottomBar by viewModel.hideBottomBar.collectAsState()
     val hideChapterTitle by viewModel.hideChapterTitle.collectAsState()
     val chapterIndex by viewModel.currentChapterIndex.collectAsState()
+    val initialTextPosition by viewModel.initialTextPosition.collectAsState()
     val changeSourceOpen by viewModel.changeSourceOpen.collectAsState()
     val changeSourceCandidates by viewModel.changeSourceCandidates.collectAsState()
     val changeSourceLoading by viewModel.changeSourceLoading.collectAsState()
@@ -161,6 +166,7 @@ fun NovelReaderScreen(
                 HorizontalPagerNovel(
                     content = content,
                     chapterTitle = chapterTitle,
+                    chapterIndex = chapterIndex,
                     fontSize = fontSize,
                     textColor = textColor,
                     hideChapterTitle = hideChapterTitle,
@@ -172,9 +178,12 @@ fun NovelReaderScreen(
                 ScrollNovel(
                     content = content,
                     chapterTitle = chapterTitle,
+                    chapterIndex = chapterIndex,
+                    initialRatio = initialTextPosition,
                     fontSize = fontSize,
                     textColor = textColor,
                     hideChapterTitle = hideChapterTitle,
+                    onScrollRatio = { ratio -> viewModel.saveScrollRatio(chapterIndex, ratio) },
                     onTap = { viewModel.toggleMenu() },
                 )
             }
@@ -225,21 +234,44 @@ fun NovelReaderScreen(
     }
 }
 
-/** 上下滚动正文 */
+/** 上下滚动正文（记住正文位置：进入恢复、滚动停止回写） */
 @Composable
 private fun ScrollNovel(
     content: String,
     chapterTitle: String,
+    chapterIndex: Int,
+    initialRatio: Int,
     fontSize: Float,
     textColor: Color,
     hideChapterTitle: Boolean,
+    onScrollRatio: (Float) -> Unit,
     onTap: () -> Unit,
 ) {
+    // 每章一个独立滚动状态：切章回到顶部，不沿用上一章位置
+    val scrollState = remember(chapterIndex) { ScrollState(0) }
+
+    // 恢复：待布局完成后按记录的比例滚动到上次位置（仅在本章有记录时）
+    LaunchedEffect(chapterIndex, content, initialRatio) {
+        if (initialRatio in 1..10000) {
+            snapshotFlow { scrollState.maxValue }.first { it > 0 }
+            scrollState.scrollTo((initialRatio / 10000f * scrollState.maxValue).toInt())
+        }
+    }
+
+    // 回写：滚动停止约 400ms 后保存当前比例（collectLatest 天然做去抖）
+    LaunchedEffect(chapterIndex, content) {
+        snapshotFlow { scrollState.value }.collectLatest { v ->
+            delay(400)
+            val max = scrollState.maxValue
+            if (max > 0) onScrollRatio(v.toFloat() / max)
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .fastTap { onTap() }
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(horizontal = 20.dp, vertical = 48.dp),
     ) {
         if (!hideChapterTitle) {
@@ -268,6 +300,7 @@ private fun ScrollNovel(
 private fun HorizontalPagerNovel(
     content: String,
     chapterTitle: String,
+    chapterIndex: Int,
     fontSize: Float,
     textColor: Color,
     hideChapterTitle: Boolean,
@@ -296,6 +329,11 @@ private fun HorizontalPagerNovel(
             else splitContentIntoPages(content, pageSize = charsPerPage, firstPageTitle = chapterTitle)
         }
         val pagerState = rememberPagerState(initialPage = 0, pageCount = { pages.size })
+
+        // 切换章节时回到第一页，避免沿用上一章的页码
+        LaunchedEffect(content, chapterIndex) {
+            if (pagerState.currentPage != 0) pagerState.scrollToPage(0)
+        }
 
         HorizontalPager(
             state = pagerState,

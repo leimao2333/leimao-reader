@@ -8,9 +8,10 @@ import org.mozilla.javascript.ScriptableObject
  *
  * 用于执行 JS 源。提供：
  * - 隔离的脚本上下文（每个源一个作用域，互不干扰）
- * - 内置辅助函数注入（fetch / parseHtml / log 等）
+ * - 执行源码、调用作用域内函数、Rhino 返回值解包
  *
- * TODO(M2): 完善 — 沙箱安全限制、超时控制、内置辅助函数实现。
+ * 注：内置辅助函数（fetch / parseHtml / log）由 [SourceJsBridge] 注入，
+ * 通过 [JsSourceLoader] / [JsSourceAdapter] 完成端到端调用。
  */
 object SourceJsEngine {
 
@@ -23,7 +24,6 @@ object SourceJsEngine {
         try {
             context.optimizationLevel = -1 // 解释执行，兼容性最好
             val scope = context.initSafeStandardObjects()
-            // TODO(M2): 注入 fetch、parseHtml、log 等内置函数
             return scope
         } finally {
             Context.exit()
@@ -71,7 +71,6 @@ object SourceJsEngine {
 
     /**
      * 将 Rhino 返回值解包为 Kotlin 对象（Map / List / 基本类型）。
-     * TODO(M2): 递归解包 NativeObject / NativeArray。
      */
     fun unwrap(value: Any?): Any? = Context.jsToJava(value, Any::class.java)
 }

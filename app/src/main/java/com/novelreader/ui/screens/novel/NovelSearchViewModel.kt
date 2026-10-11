@@ -47,7 +47,7 @@ class NovelSearchViewModel(
             preferencesManager.fuzzySearchFlow.collect { _fuzzyEnabled.value = it }
         }
         viewModelScope.launch {
-            preferencesManager.searchHistoryFlow.collect { _history.value = it }
+            preferencesManager.searchHistoryFlow(SourceType.NOVEL).collect { _history.value = it }
         }
     }
 
@@ -60,7 +60,7 @@ class NovelSearchViewModel(
     }
 
     fun clearHistory() {
-        viewModelScope.launch { preferencesManager.clearSearchHistory() }
+        viewModelScope.launch { preferencesManager.clearSearchHistory(SourceType.NOVEL) }
     }
 
     fun search() {
@@ -68,7 +68,7 @@ class NovelSearchViewModel(
         if (keyword.isEmpty()) return
 
         // 记录搜索历史
-        viewModelScope.launch { preferencesManager.addSearchHistory(keyword) }
+        viewModelScope.launch { preferencesManager.addSearchHistory(SourceType.NOVEL, keyword) }
 
         // 取消上一次未完成的搜索
         searchJob?.cancel()

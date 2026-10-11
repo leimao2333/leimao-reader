@@ -4,10 +4,16 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,6 +36,7 @@ import com.novelreader.ui.components.SearchProgressBar
 fun NovelSearchScreen(
     viewModel: NovelSearchViewModel,
     onItemClick: (MediaItem) -> Unit,
+    onBack: () -> Unit,
 ) {
     val query by viewModel.query.collectAsState()
     val state by viewModel.state.collectAsState()
@@ -37,6 +44,22 @@ fun NovelSearchScreen(
     val history by viewModel.history.collectAsState()
 
     Column(modifier = Modifier.fillMaxSize()) {
+        // 返回按钮
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Filled.ArrowBack, contentDescription = "返回")
+            }
+            Text(
+                text = "搜索小说",
+                style = MaterialTheme.typography.titleMedium,
+            )
+        }
+
         SearchBar(
             query = query,
             onQueryChange = viewModel::onQueryChange,

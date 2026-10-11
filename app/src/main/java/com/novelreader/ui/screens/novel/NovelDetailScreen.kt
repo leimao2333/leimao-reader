@@ -26,6 +26,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -58,6 +61,9 @@ fun NovelDetailScreen(
     }
 
     val display = detail ?: item
+
+    // 目录是否展开（默认折叠，点击"目录"按钮展开）
+    var showChapters by rememberSaveable { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // 顶部返回按钮（简化处理）
@@ -97,19 +103,34 @@ fun NovelDetailScreen(
                 )
             }
 
-            // 章节标题
+            // 目录按钮（点击展开/收起目录）
             item {
-                Text(
-                    text = "目录（${chapters.size}章）",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Button(onClick = { showChapters = !showChapters }) {
+                        Text(if (showChapters) "收起目录" else "目录（${chapters.size}章）")
+                    }
+                }
             }
 
-            // 章节列表
-            items(chapters) { chapter ->
-                ChapterRow(chapter = chapter, onClick = { onChapterClick(chapter) })
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            // 章节列表（点击目录按钮后展开）
+            if (showChapters) {
+                item {
+                    Text(
+                        text = "目录（${chapters.size}章）",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                    )
+                }
+
+                items(chapters) { chapter ->
+                    ChapterRow(chapter = chapter, onClick = { onChapterClick(chapter) })
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                }
             }
         }
     }

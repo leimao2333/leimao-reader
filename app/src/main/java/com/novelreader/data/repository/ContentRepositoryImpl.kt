@@ -105,7 +105,9 @@ class ContentRepositoryImpl(
                     semaphore.withPermit {
                         val batch = runCatching { adapter.search(keyword, page) }
                             .getOrDefault(emptyList())
-                        channel.trySend(info.name to batch)
+                        // 给每个结果补上来源名（若适配器未填充）
+                        val tagged = batch.map { it.copy(sourceName = it.sourceName.ifBlank { info.name }) }
+                        channel.trySend(info.name to tagged)
                     }
                 }
             }

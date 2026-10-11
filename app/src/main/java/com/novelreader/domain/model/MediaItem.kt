@@ -22,6 +22,8 @@ data class MediaItem(
     val detailUrl: String = id,
     /** 所属源 ID */
     val sourceId: String = "",
+    /** 所属源名称（用于搜索结果展示来源） */
+    val sourceName: String = "",
     /** 其他扩展字段（预留冗余，各源可自定义） */
     val extras: Map<String, String> = emptyMap(),
 )

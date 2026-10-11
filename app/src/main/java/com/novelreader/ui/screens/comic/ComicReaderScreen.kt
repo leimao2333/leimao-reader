@@ -1,10 +1,8 @@
 package com.novelreader.ui.screens.comic
 
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -19,7 +17,9 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -27,17 +27,24 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
+import coil.imageLoader
+import coil.request.ImageRequest
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 
@@ -47,8 +54,9 @@ import com.novelreader.domain.model.MediaItem
  * 核心功能：
  * - 图片完美适配屏幕（宽度撑满、按比例缩放）
  * - 两种翻页方式：上下滚动 / 左右翻页
- * - 点击屏幕呼出设置面板
- * - 上一话 / 下一话
+ * - 图片预加载：滚动 / 翻页时提前加载邻近图片，减少等待
+ * - 加载中显示占位，加载失败可点击重试
+ * - 点击屏幕呼出设置面板、上一话 / 下一话
  */
 @Composable
 fun ComicReaderScreen(
@@ -69,8 +77,14 @@ fun ComicReaderScreen(
         viewModel.init(item, chapters, chapter)
     }
 
+    // 进入/切换章节后，先预热前几张图片
+    val context = LocalContext.current
+    LaunchedEffect(images) {
+        images.take(PRELOAD_INITIAL).forEach { preloadImage(context, it) }
+    }
+
     // 是否显示设置面板
-    val showSettings = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    val showSettings = remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
@@ -164,13 +178,25 @@ fun ComicReaderScreen(
     }
 }
 
-/** 上下滚动阅读 */
+/** 上下滚动阅读（滚动时预加载后续图片） */
 @Composable
 private fun VerticalScrollReader(
     images: List<String>,
     onTap: () -> Unit,
 ) {
+    val listState = rememberLazyListState()
+    val context = LocalContext.current
+
+    // 预加载：当前可见项之后的 [PRELOAD_AHEAD] 张
+    LaunchedEffect(listState.firstVisibleItemIndex, images) {
+        val start = listState.firstVisibleItemIndex + 1
+        for (i in start until (start + PRELOAD_AHEAD).coerceAtMost(images.size)) {
+            if (i >= 0) preloadImage(context, images[i])
+        }
+    }
+
     LazyColumn(
+        state = listState,
         modifier = Modifier
             .fillMaxSize()
             .clickable(
@@ -180,18 +206,22 @@ private fun VerticalScrollReader(
             ),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        itemsIndexed(images) { index, url ->
+        itemsIndexed(images) { _, url ->
             ComicImage(
                 url = url,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 1.dp),
+                contentScale = ContentScale.FillWidth,
+                placeholderModifier = Modifier
+                    .fillMaxWidth()
+                    .height(240.dp),
             )
         }
     }
 }
 
-/** 左右翻页阅读 */
+/** 左右翻页阅读（预加载相邻页） */
 @Composable
 private fun HorizontalPagerReader(
     images: List<String>,
@@ -203,6 +233,7 @@ private fun HorizontalPagerReader(
         initialPage = currentPage,
         pageCount = { images.size },
     )
+    val context = LocalContext.current
 
     // 同步外部 currentPage 与 pager 状态
     LaunchedEffect(currentPage) {
@@ -214,6 +245,14 @@ private fun HorizontalPagerReader(
     // 用户滑动翻页时，回写 currentPage
     LaunchedEffect(pagerState.currentPage) {
         onPageChange(pagerState.currentPage)
+    }
+
+    // 预加载相邻页
+    LaunchedEffect(pagerState.currentPage, images) {
+        val cur = pagerState.currentPage
+        for (i in (cur - 1)..(cur + 1)) {
+            if (i in images.indices) preloadImage(context, images[i])
+        }
     }
 
     HorizontalPager(
@@ -233,6 +272,8 @@ private fun HorizontalPagerReader(
             ComicImage(
                 url = images.getOrNull(page) ?: "",
                 modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.FillWidth,
+                placeholderModifier = Modifier.fillMaxSize(),
             )
         }
     }
@@ -241,20 +282,75 @@ private fun HorizontalPagerReader(
 /**
  * 漫画图片（完美适配屏幕）。
  *
- * 宽度撑满、高度按图片原始比例缩放，ContentScale.FitWidth。
- * 加载中显示占位。
+ * 宽度撑满、高度按图片原始比例缩放（ContentScale.FillWidth）。
+ * 加载中显示占位，加载失败显示占位 + 点击重试。
  */
 @Composable
 private fun ComicImage(
     url: String,
     modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.FillWidth,
+    placeholderModifier: Modifier = Modifier,
 ) {
-    AsyncImage(
-        model = url,
+    val context = LocalContext.current
+    // 重试计数：并入缓存键，点击重试时产生全新请求
+    var retry by remember(url) { mutableIntStateOf(0) }
+    val request = remember(url, retry) {
+        ImageRequest.Builder(context)
+            .data(url)
+            .memoryCacheKey("$url#$retry")
+            .build()
+    }
+
+    SubcomposeAsyncImage(
+        model = request,
         contentDescription = null,
         modifier = modifier,
-        contentScale = ContentScale.FillWidth,
+        contentScale = contentScale,
+        loading = { ComicLoading(placeholderModifier) },
+        error = { ComicError(placeholderModifier, onRetry = { retry++ }) },
     )
+}
+
+/** 加载中占位 */
+@Composable
+private fun ComicLoading(modifier: Modifier) {
+    Box(modifier, contentAlignment = Alignment.Center) {
+        CircularProgressIndicator(
+            color = Color(0xFF888888),
+            strokeWidth = 2.dp,
+        )
+    }
+}
+
+/** 加载失败占位（可点击重试） */
+@Composable
+private fun ComicError(
+    modifier: Modifier,
+    onRetry: () -> Unit,
+) {
+    Box(modifier, contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                imageVector = Icons.Filled.BrokenImage,
+                contentDescription = null,
+                tint = Color(0xFF888888),
+            )
+            Spacer(Modifier.height(4.dp))
+            TextButton(onClick = onRetry) {
+                Text("图片加载失败，点击重试", color = Color(0xFF6A9BD8))
+            }
+        }
+    }
+}
+
+/** 预加载单张图片（异步入队，失败静默） */
+private fun preloadImage(context: Context, url: String) {
+    if (url.isBlank()) return
+    val request = ImageRequest.Builder(context)
+        .data(url)
+        .build()
+    context.imageLoader.enqueue(request)
 }
 
 /** 翻页方式选择按钮 */
@@ -271,8 +367,12 @@ private fun PageModeButton(
         color = fg,
         style = MaterialTheme.typography.bodyMedium,
         modifier = Modifier
-            .background(bg, androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+            .background(bg, RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
     )
 }
+
+/** 预加载常量 */
+private const val PRELOAD_INITIAL = 4
+private const val PRELOAD_AHEAD = 2

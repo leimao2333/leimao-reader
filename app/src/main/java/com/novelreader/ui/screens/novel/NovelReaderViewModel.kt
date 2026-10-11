@@ -122,6 +122,17 @@ class NovelReaderViewModel(
     private val _currentChapterIndex = MutableStateFlow(0)
     val currentChapterIndex: StateFlow<Int> = _currentChapterIndex.asStateFlow()
 
+    /**
+     * 进入章节时用于恢复滚动的正文位置比例（0~10000）。
+     *
+     * 0 表示从顶部开始；非 0 表示该章上次退出时的位置，滚动页据此还原。
+     */
+    private val _initialTextPosition = MutableStateFlow(0)
+    val initialTextPosition: StateFlow<Int> = _initialTextPosition.asStateFlow()
+
+    /** 当前章节内的正文位置比例（0~10000），随滚动回写并持久化 */
+    private var lastTextPosition: Int = 0
+
     // ===== 换源 =====
     /** 换源面板是否打开 */
     private val _changeSourceOpen = MutableStateFlow(false)
@@ -165,11 +176,31 @@ class NovelReaderViewModel(
         _chapterTitle.value = chapter.title
         _currentTitle.value = item.title
         _currentAuthor.value = item.author
-        loadContent(chapter)
+        viewModelScope.launch {
+            // 读取历史进度：若进度所属章节正是本次进入的章节，则恢复其正文位置比例
+            val saved = runCatching {
+                progressRepository.getProgress(item.sourceId, item.id)
+            }.getOrNull()
+            if (saved != null && saved.chapterUrl == chapter.url && saved.textPosition > 0) {
+                lastTextPosition = saved.textPosition.coerceIn(0, 10000)
+                _initialTextPosition.value = lastTextPosition
+            } else {
+                lastTextPosition = 0
+                _initialTextPosition.value = 0
+            }
+            loadChapter(chapter)
+        }
     }
 
-    /** 加载章节正文 */
+    /** 切换章节（会重置正文位置，回到该章顶部） */
     fun loadContent(chapter: ChapterItem) {
+        lastTextPosition = 0
+        _initialTextPosition.value = 0
+        loadChapter(chapter)
+    }
+
+    /** 加载章节正文（不改变正文位置比例） */
+    private fun loadChapter(chapter: ChapterItem) {
         currentChapter = chapter
         _chapterTitle.value = chapter.title
         _currentChapterIndex.value = chapter.index
@@ -371,6 +402,21 @@ class NovelReaderViewModel(
     }
 
     // ===== 进度保存 =====
+
+    /**
+     * 回写当前章节内的正文位置比例（0~1），由滚动阅读页在滚动停止后调用。
+     * 位置变化时才落库，避免无意义的重复写入。
+     *
+     * @param chapterIndex 触发回写的章节索引；与当前章节不一致（切章瞬间）时忽略，防止串章
+     */
+    fun saveScrollRatio(chapterIndex: Int, ratio: Float) {
+        if (currentChapter?.index != chapterIndex) return
+        val pos = (ratio.coerceIn(0f, 1f) * 10000f).toInt()
+        if (pos == lastTextPosition) return
+        lastTextPosition = pos
+        saveProgress()
+    }
+
     private fun saveProgress() {
         val item = currentItem ?: return
         val chapter = currentChapter ?: return
@@ -381,6 +427,7 @@ class NovelReaderViewModel(
                 chapterUrl = chapter.url,
                 chapterTitle = chapter.title,
                 chapterIndex = chapter.index,
+                textPosition = lastTextPosition,
             )
         }
     }

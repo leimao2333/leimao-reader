@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Sort
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -143,6 +144,11 @@ fun BookShelfScreen(
                                 onContinueReading(item, chapters, target)
                             }
                         },
+                        onRead = {
+                            viewModel.continueReading(item) { chapters, target ->
+                                onContinueReading(item, chapters, target)
+                            }
+                        },
                         onRemove = { viewModel.remove(item) },
                     )
                 }
@@ -156,6 +162,7 @@ private fun BookShelfItem(
     item: MediaItem,
     progressText: String?,
     onClick: () -> Unit,
+    onRead: () -> Unit,
     onRemove: () -> Unit,
 ) {
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
@@ -195,6 +202,10 @@ private fun BookShelfItem(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+            }
+            // 阅读按钮：直接继续阅读
+            Button(onClick = onRead) {
+                Text("阅读")
             }
             TextButton(onClick = onRemove) { Text("移除") }
         }

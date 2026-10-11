@@ -4,10 +4,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -43,11 +45,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -57,6 +62,7 @@ import androidx.compose.ui.unit.sp
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.ui.theme.ReaderBackgrounds
+import kotlinx.coroutines.launch
 
 /**
  * 快速单击检测：按下后抬手即判定为单击，不做双击/长按超时等待，
@@ -237,7 +243,7 @@ private fun ScrollNovel(
     }
 }
 
-/** 左右翻页正文（按段落边界切片分页，支持翻页动画） */
+/** 左右翻页正文（按屏幕容量精确分页，每页铺满一屏、到屏幕底端即止，无内部滚动，支持翻页动画） */
 @Composable
 private fun HorizontalPagerNovel(
     content: String,
@@ -248,63 +254,78 @@ private fun HorizontalPagerNovel(
     pageAnim: Int,
     onTap: () -> Unit,
 ) {
-    val pages = remember(content, hideChapterTitle) {
-        if (hideChapterTitle) splitContentIntoPages(content)
-        else splitContentIntoPages(content, firstPageTitle = chapterTitle)
-    }
-    val pagerState = rememberPagerState(initialPage = 0, pageCount = { pages.size })
-
-    HorizontalPager(
-        state = pagerState,
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .fastTap { onTap() },
-    ) { page ->
-        val offset = pagerState.currentPageOffsetFraction
-        // 根据翻页动画类型，计算该页的 graphicsLayer 变换
-        val transform = when (pageAnim) {
-            0 -> PageTransform.NoAnim
-            2 -> PageTransform.cover(offset, page)
-            3 -> PageTransform.simulate(offset, page)
-            else -> PageTransform.slide
+    ) {
+        // 可用尺寸（dp 转 px）：按字号估算每页可容纳字符数，做到「满一屏即止、无滚动」
+        val density = LocalDensity.current.density
+        val availWidthPx = maxWidth.value * density
+        val availHeightPx = maxHeight.value * density
+        val textWidthPx = availWidthPx - 40f * density        // 左右各 20dp padding
+        val textHeightPx = availHeightPx - 96f * density       // 上下各 48dp padding
+        val lineHeightPx = fontSize * 1.6f * density
+        val charWidthPx = fontSize * density                   // 汉字近似全角宽度
+        val charsPerLine = (textWidthPx / charWidthPx).toInt().coerceAtLeast(1)
+        val linesPerPage = (textHeightPx / lineHeightPx).toInt().coerceAtLeast(1)
+        val charsPerPage = (charsPerLine * linesPerPage).coerceAtLeast(100)
+
+        val pages = remember(content, hideChapterTitle, charsPerPage) {
+            if (hideChapterTitle) splitContentIntoPages(content, pageSize = charsPerPage)
+            else splitContentIntoPages(content, pageSize = charsPerPage, firstPageTitle = chapterTitle)
         }
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    translationX = transform.translationX
-                    scaleX = transform.scaleX
-                    scaleY = transform.scaleY
-                    alpha = transform.alpha
-                    rotationY = transform.rotationY
-                    shadowElevation = transform.shadowElevation
-                    cameraDistance = 12f * density
-                },
-        ) {
-            Column(
+        val pagerState = rememberPagerState(initialPage = 0, pageCount = { pages.size })
+
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize(),
+        ) { page ->
+            val offset = pagerState.currentPageOffsetFraction
+            val transform = when (pageAnim) {
+                0 -> PageTransform.NoAnim
+                2 -> PageTransform.cover(offset, page)
+                3 -> PageTransform.simulate(offset, page)
+                else -> PageTransform.slide
+            }
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 20.dp, vertical = 48.dp),
+                    .graphicsLayer {
+                        translationX = transform.translationX
+                        scaleX = transform.scaleX
+                        scaleY = transform.scaleY
+                        alpha = transform.alpha
+                        rotationY = transform.rotationY
+                        shadowElevation = transform.shadowElevation
+                        cameraDistance = 12f * density
+                    },
             ) {
-                if (page == 0 && !hideChapterTitle) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 20.dp, vertical = 48.dp),
+                ) {
+                    if (page == 0 && !hideChapterTitle) {
+                        Text(
+                            text = chapterTitle,
+                            fontSize = (fontSize + 2).sp,
+                            fontWeight = FontWeight.Bold,
+                            color = textColor,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(16.dp))
+                    }
                     Text(
-                        text = chapterTitle,
-                        fontSize = (fontSize + 2).sp,
-                        fontWeight = FontWeight.Bold,
+                        text = pages[page],
+                        fontSize = fontSize.sp,
                         color = textColor,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth(),
+                        lineHeight = (fontSize * 1.6).sp,
+                        textAlign = TextAlign.Justify,
+                        // 每页内容已按屏幕容量切分，禁止内部滚动——到屏幕底端即止
                     )
-                    Spacer(Modifier.height(16.dp))
                 }
-                Text(
-                    text = pages[page],
-                    fontSize = fontSize.sp,
-                    color = textColor,
-                    lineHeight = (fontSize * 1.6).sp,
-                    textAlign = TextAlign.Justify,
-                )
             }
         }
     }
@@ -471,35 +492,91 @@ private fun BoxScope.ReaderBottomMenu(
                         modifier = Modifier.padding(vertical = 8.dp),
                     )
                     val listState = rememberLazyListState()
+                    val scope = rememberCoroutineScope()
                     // 打开目录时定位到当前章节
                     LaunchedEffect(chapters) {
                         if (chapters.isNotEmpty()) {
                             listState.scrollToItem(chapterIndex.coerceIn(0, chapters.size - 1))
                         }
                     }
-                    LazyColumn(
-                        state = listState,
+                    // 目录列表 + 右侧快速定位滑块
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .fillMaxHeight(0.5f),
                     ) {
-                        itemsIndexed(chapters) { index, ch ->
-                            val isCurrent = index == chapterIndex
-                            Text(
-                                text = ch.title,
-                                color = if (isCurrent) MaterialTheme.colorScheme.primary else textColor,
-                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.bodyMedium,
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            itemsIndexed(chapters) { index, ch ->
+                                val isCurrent = index == chapterIndex
+                                Text(
+                                    text = ch.title,
+                                    color = if (isCurrent) MaterialTheme.colorScheme.primary else textColor,
+                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            viewModel.switchChapter(index)
+                                            viewModel.toggleMenu()
+                                        }
+                                        .padding(vertical = 10.dp),
+                                )
+                            }
+                        }
+                        // 快速定位滑块：竖直拖拽即时跳转到对应章节
+                        if (chapters.size > 1) {
+                            Column(
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        viewModel.switchChapter(index)
-                                        viewModel.toggleMenu()
-                                    }
-                                    .padding(vertical = 10.dp),
-                            )
+                                    .width(40.dp)
+                                    .fillMaxHeight()
+                                    .padding(vertical = 8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxHeight()
+                                        .width(12.dp)
+                                        .background(
+                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                            RoundedCornerShape(6.dp),
+                                        ),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    // 当前位置指示点
+                                    Box(
+                                        modifier = Modifier
+                                            .size(12.dp)
+                                            .background(
+                                                MaterialTheme.colorScheme.primary,
+                                                CircleShape,
+                                            ),
+                                    )
+                                    // 拖拽条：手指按下/滑动即定位
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .pointerInput(chapters.size) {
+                                                detectVerticalDragGestures(
+                                                    onDragStart = { offset ->
+                                                        val ratio = (offset.y / size.height).coerceIn(0f, 1f)
+                                                        val target = (ratio * (chapters.size - 1)).toInt()
+                                                        scope.launch { listState.scrollToItem(target.coerceIn(0, chapters.size - 1)) }
+                                                    },
+                                                    onVerticalDrag = { change, _ ->
+                                                        val ratio = (change.position.y / size.height).coerceIn(0f, 1f)
+                                                        val target = (ratio * (chapters.size - 1)).toInt()
+                                                        scope.launch { listState.scrollToItem(target.coerceIn(0, chapters.size - 1)) }
+                                                    },
+                                                )
+                                            },
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -669,8 +746,10 @@ private fun TabButton(
     textColor: Color,
     onClick: () -> Unit,
 ) {
-    val bg = if (selected) Color(0xFF4A6FA5) else Color(0xFF333333)
-    val fg = if (selected) Color.White else textColor
+    // 选中态：蓝底白字；未选中态：浅灰底深字（夜间自动切深底浅字），避免黑底黑字看不清
+    val isDark = textColor.luminance() > 0.5f
+    val bg = if (selected) Color(0xFF4A6FA5) else if (isDark) Color(0xFF2A2A2A) else Color(0xFFE0E0E0)
+    val fg = if (selected) Color.White else if (isDark) Color(0xFFE0E0E0) else Color(0xFF333333)
     Text(
         text = text,
         color = fg,
@@ -690,8 +769,10 @@ private fun MenuButton(
     textColor: Color,
     onClick: () -> Unit,
 ) {
-    val bg = if (selected) Color(0xFF4A6FA5) else Color(0xFF333333)
-    val fg = if (selected) Color.White else textColor
+    // 选中态：蓝底白字；未选中态：浅灰底深字（夜间自动切深底浅字），避免黑底黑字看不清
+    val isDark = textColor.luminance() > 0.5f
+    val bg = if (selected) Color(0xFF4A6FA5) else if (isDark) Color(0xFF2A2A2A) else Color(0xFFE0E0E0)
+    val fg = if (selected) Color.White else if (isDark) Color(0xFFE0E0E0) else Color(0xFF333333)
     Text(
         text = text,
         color = fg,

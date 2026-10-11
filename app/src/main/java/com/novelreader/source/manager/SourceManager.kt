@@ -101,10 +101,11 @@ class SourceManager {
     }
 
     private fun toSourceInfo(src: LegadoBookSource, fileName: String?, index: Int): SourceInfo {
+        // 类型识别：优先 bookSourceType，其次按 group/名称关键词兜底判断（很多动漫/视频源 bookSourceType 仍为 0）
         val type = when (src.type) {
             2 -> SourceType.COMIC
             3 -> SourceType.VIDEO
-            else -> SourceType.NOVEL
+            else -> inferTypeFromGroup(src)
         }
         val base = fileName?.substringBeforeLast(".")?.ifBlank { null }
         val id = if (index == 0 && base != null) base
@@ -123,6 +124,29 @@ class SourceManager {
         return info.copy(
             category = com.novelreader.source.category.SourceCategory.classify(info),
         )
+    }
+
+    /**
+     * 根据源的 group/名称/描述关键词推断内容类型。
+     * 用于 bookSourceType 无法区分（=0）时的兜底，确保动漫搜索只用动漫源、视频搜索只用视频源。
+     */
+    private fun inferTypeFromGroup(src: LegadoBookSource): SourceType {
+        val text = listOf(src.group, src.name, src.comment)
+            .filter { it.isNotBlank() }
+            .joinToString(" ")
+            .lowercase()
+
+        val comicHints = listOf("漫画", "动漫", "动画", "二次元", "番剧", "manga", "manhua", "comic", "anime", "bili")
+        val videoHints = listOf("视频", "影视", "电影", "电视剧", "综艺", "片库", "video", "movie", "tv", "film", "直播")
+
+        val comicScore = comicHints.count { text.contains(it) }
+        val videoScore = videoHints.count { text.contains(it) }
+
+        return when {
+            comicScore > 0 && comicScore >= videoScore -> SourceType.COMIC
+            videoScore > 0 && videoScore > comicScore -> SourceType.VIDEO
+            else -> SourceType.NOVEL
+        }
     }
 
     /** 注册源 */

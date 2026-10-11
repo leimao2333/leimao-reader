@@ -12,6 +12,7 @@ import com.novelreader.ui.NovelViewModelFactory
 import com.novelreader.ui.screens.bookshelf.BookShelfScreen
 import com.novelreader.ui.screens.bookshelf.BookShelfViewModel
 import com.novelreader.ui.screens.common.HomeScreen
+import com.novelreader.ui.screens.common.HomeViewModel
 import com.novelreader.ui.screens.comic.ComicDetailScreen
 import com.novelreader.ui.screens.comic.ComicDetailViewModel
 import com.novelreader.ui.screens.comic.ComicReaderScreen
@@ -50,7 +51,13 @@ fun AppNavHost(container: AppContainer) {
     NavHost(navController = navController, startDestination = Routes.HOME) {
         // ===== 首页 =====
         composable(Routes.HOME) {
+            val homeViewModel: HomeViewModel = viewModel(
+                factory = NovelViewModelFactory(container) {
+                    HomeViewModel(it.progressRepository, it.contentRepository)
+                }
+            )
             HomeScreen(
+                viewModel = homeViewModel,
                 onOpenNovelItem = { item -> navController.navigate(Routes.novelDetail(item)) },
                 onOpenComicItem = { item -> navController.navigate(Routes.comicDetail(item)) },
                 onOpenVideoItem = { item -> navController.navigate(Routes.videoDetail(item)) },
@@ -60,6 +67,29 @@ fun AppNavHost(container: AppContainer) {
                 onOpenNovelSearch = { navController.navigate(Routes.NOVEL_SEARCH) },
                 onOpenComicSearch = { navController.navigate(Routes.COMIC_SEARCH) },
                 onOpenVideoSearch = { navController.navigate(Routes.VIDEO_SEARCH) },
+                onContinueReading = { item, chapters, target ->
+                    NavCache.putChapters(item, chapters)
+                    val index = target?.index?.coerceAtLeast(0) ?: 0
+                    if (chapters.isEmpty() || target == null) {
+                        when (item.type) {
+                            com.novelreader.domain.model.SourceType.NOVEL ->
+                                navController.navigate(Routes.novelDetail(item))
+                            com.novelreader.domain.model.SourceType.COMIC ->
+                                navController.navigate(Routes.comicDetail(item))
+                            com.novelreader.domain.model.SourceType.VIDEO ->
+                                navController.navigate(Routes.videoDetail(item))
+                        }
+                    } else {
+                        when (item.type) {
+                            com.novelreader.domain.model.SourceType.NOVEL ->
+                                navController.navigate(Routes.novelReader(item, index))
+                            com.novelreader.domain.model.SourceType.COMIC ->
+                                navController.navigate(Routes.comicReader(item, index))
+                            com.novelreader.domain.model.SourceType.VIDEO ->
+                                navController.navigate(Routes.videoPlayer(item, index))
+                        }
+                    }
+                },
             )
         }
 

@@ -1,15 +1,19 @@
 package com.novelreader.data.model
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
  * 阅读 / 播放进度实体（Room）。
  *
  * 记录每个条目最后阅读的章节和位置。
- * 用 sourceId + itemId 唯一标识。
+ * 用 sourceId + itemId 唯一标识（联合唯一索引）。
  */
-@Entity(tableName = "progress")
+@Entity(
+    tableName = "progress",
+    indices = [Index(value = ["sourceId", "itemId"], unique = true)],
+)
 data class ProgressEntity(
     @PrimaryKey(autoGenerate = true)
     val progressId: Long = 0,

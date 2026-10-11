@@ -69,6 +69,14 @@ class NovelReaderViewModel(
             state
         }
 
+    /** 翻页方式：0=上下滚动，1=左右翻页 */
+    val pageMode: StateFlow<Int> = preferences.novelPageModeFlow
+        .let { flow ->
+            val state = MutableStateFlow(0)
+            viewModelScope.launch { flow.collectLatest { state.value = it } }
+            state
+        }
+
     /** 是否显示设置面板 */
     private val _showSettings = MutableStateFlow(false)
     val showSettings: StateFlow<Boolean> = _showSettings.asStateFlow()
@@ -150,6 +158,10 @@ class NovelReaderViewModel(
 
     fun toggleNightMode() {
         viewModelScope.launch { preferences.setNovelNight(!nightMode.value) }
+    }
+
+    fun setPageMode(mode: Int) {
+        viewModelScope.launch { preferences.setNovelPageMode(mode) }
     }
 
     fun toggleSettings() {

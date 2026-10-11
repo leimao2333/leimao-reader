@@ -42,6 +42,9 @@ interface ProgressRepository {
 
     /** 读取进度 */
     suspend fun getProgress(sourceId: String, itemId: String): ReadingProgress?
+
+    /** 最近阅读列表（按更新时间倒序） */
+    suspend fun recentReadings(): List<com.novelreader.domain.model.RecentReading>
 }
 
 /**

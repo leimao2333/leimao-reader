@@ -36,6 +36,7 @@ import com.novelreader.ui.screens.video.VideoPlayerScreen
 import com.novelreader.ui.screens.video.VideoPlayerViewModel
 import com.novelreader.ui.screens.video.VideoSearchScreen
 import com.novelreader.ui.screens.video.VideoSearchViewModel
+import kotlinx.coroutines.launch
 
 /**
  * 应用导航图。
@@ -198,10 +199,31 @@ fun AppNavHost(container: AppContainer) {
                     NovelSearchViewModel(it.contentRepository, it.preferencesManager)
                 }
             )
+            val scope = androidx.compose.runtime.rememberCoroutineScope()
             NovelSearchScreen(
                 viewModel = viewModel,
                 onItemClick = { item ->
                     navController.navigate(Routes.novelDetail(item))
+                },
+                onRead = { item ->
+                    // 阅读：有进度直达历史章节，无进度拉目录进第一章
+                    scope.launch {
+                        val progress = runCatching {
+                            container.progressRepository.getProgress(item.sourceId, item.id)
+                        }.getOrNull()
+                        val chapters = runCatching {
+                            container.contentRepository.chapterList(item)
+                        }.getOrDefault(emptyList())
+                        if (chapters.isEmpty()) {
+                            // 拉不到目录则退回详情页
+                            navController.navigate(Routes.novelDetail(item))
+                        } else {
+                            NavCache.putChapters(item, chapters)
+                            // 有进度且章节索引有效 → 历史章节；否则第一章
+                            val index = progress?.chapterIndex?.coerceIn(0, chapters.size - 1) ?: 0
+                            navController.navigate(Routes.novelReader(item, index))
+                        }
+                    }
                 },
                 onBack = { navController.popBackStack() },
             )

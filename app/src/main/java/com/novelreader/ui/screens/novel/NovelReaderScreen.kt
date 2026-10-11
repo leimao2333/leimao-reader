@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -109,6 +111,11 @@ fun NovelReaderScreen(
     val hideBottomBar by viewModel.hideBottomBar.collectAsState()
     val hideChapterTitle by viewModel.hideChapterTitle.collectAsState()
     val chapterIndex by viewModel.currentChapterIndex.collectAsState()
+    val changeSourceOpen by viewModel.changeSourceOpen.collectAsState()
+    val changeSourceCandidates by viewModel.changeSourceCandidates.collectAsState()
+    val changeSourceLoading by viewModel.changeSourceLoading.collectAsState()
+    val sameAuthorOnly by viewModel.sameAuthorOnly.collectAsState()
+    val changeSourceError by viewModel.changeSourceError.collectAsState()
 
     LaunchedEffect(item, chapter) {
         viewModel.init(item, chapters, chapter)
@@ -200,6 +207,19 @@ fun NovelReaderScreen(
                 backgroundColor = backgroundColor,
                 textColor = textColor,
                 menuTab = menuTab,
+            )
+        }
+
+        // ===== 换源面板（覆盖层） =====
+        if (changeSourceOpen) {
+            ChangeSourcePanel(
+                viewModel = viewModel,
+                candidates = changeSourceCandidates,
+                loading = changeSourceLoading,
+                sameAuthorOnly = sameAuthorOnly,
+                error = changeSourceError,
+                backgroundColor = backgroundColor,
+                textColor = textColor,
             )
         }
     }
@@ -654,6 +674,15 @@ private fun BoxScope.ReaderBottomMenu(
                     SettingSwitch("隐藏顶部栏", hideTopBar) { viewModel.setHideTopBar(it) }
                     SettingSwitch("隐藏进度栏", hideBottomBar) { viewModel.setHideBottomBar(it) }
                     SettingSwitch("隐藏章节标题", hideChapterTitle) { viewModel.setHideChapterTitle(it) }
+                    Spacer(Modifier.height(12.dp))
+                    // 换源
+                    Text("换源", color = textColor, style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(8.dp))
+                    Row {
+                        MenuButton("切换书源", selected = false, textColor = textColor) {
+                            viewModel.openChangeSource()
+                        }
+                    }
                     Spacer(Modifier.height(8.dp))
                 }
             }
@@ -803,5 +832,132 @@ private fun SettingSwitch(
             modifier = Modifier.weight(1f),
         )
         Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+/** 换源面板（覆盖层）：搜索同名书 + 同作者筛选 + 候选列表 */
+@Composable
+private fun BoxScope.ChangeSourcePanel(
+    viewModel: NovelReaderViewModel,
+    candidates: List<MediaItem>,
+    loading: Boolean,
+    sameAuthorOnly: Boolean,
+    error: String?,
+    backgroundColor: Color,
+    textColor: Color,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.4f))
+            .fastTap { viewModel.closeChangeSource() },
+    ) {
+        Surface(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .fillMaxHeight(0.75f),
+            color = backgroundColor,
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                // 标题行
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "换源",
+                        color = textColor,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "关闭",
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier
+                            .clickable { viewModel.closeChangeSource() }
+                            .padding(8.dp),
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                // 同作者开关
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "仅同作者",
+                        color = textColor,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Switch(checked = sameAuthorOnly, onCheckedChange = viewModel::setSameAuthorOnly)
+                }
+                Spacer(Modifier.height(4.dp))
+
+                when {
+                    loading -> {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
+                    }
+                    error != null -> {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(
+                                text = error,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(16.dp),
+                            )
+                        }
+                    }
+                    candidates.isEmpty() -> {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "未找到可切换的同名书源",
+                                color = textColor,
+                            )
+                        }
+                    }
+                    else -> {
+                        LazyColumn(modifier = Modifier.fillMaxSize()) {
+                            items(candidates, key = { "${it.sourceId}_${it.id}" }) { cand ->
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { viewModel.switchSource(cand) }
+                                        .padding(vertical = 10.dp),
+                                ) {
+                                    Text(
+                                        text = cand.title,
+                                        color = textColor,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        cand.author?.let {
+                                            Text(
+                                                text = it,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                        if (cand.sourceName.isNotBlank()) {
+                                            Spacer(Modifier.width(8.dp))
+                                            Text(
+                                                text = "· ${cand.sourceName}",
+                                                color = MaterialTheme.colorScheme.primary,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                    }
+                                }
+                                HorizontalDivider(color = textColor.copy(alpha = 0.15f))
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

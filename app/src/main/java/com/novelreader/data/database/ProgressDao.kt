@@ -20,4 +20,43 @@ interface ProgressDao {
 
     @Query("DELETE FROM progress WHERE sourceId = :sourceId AND itemId = :itemId")
     suspend fun delete(sourceId: String, itemId: String)
+
+    /**
+     * 最近阅读列表：progress 表按更新时间倒序，左连接 books 表补充书名/封面/类型。
+     * 返回 [RecentReadingRow]（POJO 投影，非实体表）。
+     *
+     * 用子查询按 sourceId+itemId 去重（progress 表无该联合唯一约束，可能有多行，
+     * 取每本书最新的一条 updatedAt），避免列表 key 重复。
+     */
+    @Query(
+        """
+        SELECT p.sourceId, p.itemId, p.chapterTitle, p.chapterIndex, p.updatedAt,
+               b.title, b.cover, b.type, b.detailUrl
+        FROM (
+            SELECT sourceId, itemId, chapterTitle, chapterIndex, MAX(updatedAt) AS updatedAt
+            FROM progress
+            GROUP BY sourceId, itemId
+        ) p
+        LEFT JOIN books b ON b.sourceId = p.sourceId AND b.itemId = p.itemId
+        ORDER BY p.updatedAt DESC
+        """
+    )
+    suspend fun recentReadings(): List<RecentReadingRow>
 }
+
+/**
+ * 最近阅读查询投影（progress join books）。
+ *
+ * book 相关字段（title/cover/type/detailUrl）可能为 null（进度存在但已从书架移除）。
+ */
+data class RecentReadingRow(
+    val sourceId: String,
+    val itemId: String,
+    val chapterTitle: String,
+    val chapterIndex: Int,
+    val updatedAt: Long,
+    val title: String?,
+    val cover: String?,
+    val type: String?,
+    val detailUrl: String?,
+)

@@ -2,6 +2,8 @@ package com.novelreader.data.repository
 
 import com.novelreader.data.database.ProgressDao
 import com.novelreader.data.model.ProgressEntity
+import com.novelreader.domain.model.RecentReading
+import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.ProgressRepository
 import com.novelreader.domain.repository.ReadingProgress
 
@@ -44,4 +46,19 @@ class ProgressRepositoryImpl(
             playPositionMs = entity.playPositionMs,
         )
     }
+
+    override suspend fun recentReadings(): List<RecentReading> =
+        progressDao.recentReadings().map { row ->
+            RecentReading(
+                sourceId = row.sourceId,
+                itemId = row.itemId,
+                title = row.title ?: row.chapterTitle,
+                cover = row.cover,
+                type = SourceType.fromString(row.type ?: "") ?: SourceType.NOVEL,
+                detailUrl = row.detailUrl ?: row.itemId,
+                chapterTitle = row.chapterTitle,
+                chapterIndex = row.chapterIndex,
+                updatedAt = row.updatedAt,
+            )
+        }
 }

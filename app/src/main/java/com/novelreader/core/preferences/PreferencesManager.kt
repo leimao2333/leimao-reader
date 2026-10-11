@@ -32,6 +32,8 @@ class PreferencesManager(private val context: Context) {
         val KEY_NOVEL_FONT_SIZE = floatPreferencesKey("novel_font_size")
         val KEY_NOVEL_BG_INDEX = intPreferencesKey("novel_bg_index")
         val KEY_NOVEL_NIGHT = booleanPreferencesKey("novel_night")
+        /** 翻页方式：0=上下滚动，1=左右翻页 */
+        val KEY_NOVEL_PAGE_MODE = intPreferencesKey("novel_page_mode")
 
         // ===== 漫画阅读 =====
         /** 翻页方式：0=上下滚动，1=左右翻页 */
@@ -95,6 +97,13 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setNovelNight(value: Boolean) {
         context.dataStore.edit { it[KEY_NOVEL_NIGHT] = value }
+    }
+
+    val novelPageModeFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_NOVEL_PAGE_MODE] ?: 0 }
+
+    suspend fun setNovelPageMode(value: Int) {
+        context.dataStore.edit { it[KEY_NOVEL_PAGE_MODE] = value }
     }
 
     // ===== 漫画 =====

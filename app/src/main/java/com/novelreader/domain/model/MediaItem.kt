@@ -71,3 +71,29 @@ data class ContentResult(
             ContentResult(videoUrl = url, videoHeaders = headers)
     }
 }
+
+/**
+ * 最近阅读条目（首页「最近阅读」列表用）。
+ *
+ * 由阅读进度 + 书架信息合并而来，用于快速回到上次阅读位置。
+ */
+data class RecentReading(
+    /** 源 ID */
+    val sourceId: String,
+    /** 源内条目 ID */
+    val itemId: String,
+    /** 标题 */
+    val title: String,
+    /** 封面 */
+    val cover: String? = null,
+    /** 内容类型 */
+    val type: SourceType,
+    /** 详情地址 */
+    val detailUrl: String = itemId,
+    /** 最后阅读的章节标题 */
+    val chapterTitle: String,
+    /** 章节索引 */
+    val chapterIndex: Int = 0,
+    /** 更新时间戳 */
+    val updatedAt: Long = 0L,
+)

@@ -17,3 +17,6 @@ captures/
 
 # 系统
 Thumbs.db
+
+# GitHub 认证 token（本地私密，勿提交）
+.github_token

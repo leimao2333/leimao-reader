@@ -57,8 +57,12 @@ class PreferencesManager(private val context: Context) {
         /** 模糊搜索开关 */
         val KEY_FUZZY_SEARCH = booleanPreferencesKey("fuzzy_search")
 
-        /** 搜索历史记录（按时间倒序的字符串列表）——小说/漫画/视频共享同一份历史 */
-        val KEY_SEARCH_HISTORY = stringPreferencesKey("search_history")
+        /** 小说搜索历史记录（按时间倒序的字符串列表） */
+        val KEY_SEARCH_HISTORY_NOVEL = stringPreferencesKey("search_history_novel")
+        /** 漫画搜索历史记录 */
+        val KEY_SEARCH_HISTORY_COMIC = stringPreferencesKey("search_history_comic")
+        /** 视频搜索历史记录 */
+        val KEY_SEARCH_HISTORY_VIDEO = stringPreferencesKey("search_history_video")
 
         // 默认值
         const val DEFAULT_FONT_SIZE = 18f
@@ -172,45 +176,56 @@ class PreferencesManager(private val context: Context) {
         context.dataStore.edit { it[KEY_FUZZY_SEARCH] = value }
     }
 
-    /** 搜索历史（倒序）——小说/漫画/视频共享 */
+    /** 按类型取搜索历史的 key */
+    private fun historyKey(type: SourceType) = when (type) {
+        SourceType.NOVEL -> KEY_SEARCH_HISTORY_NOVEL
+        SourceType.COMIC -> KEY_SEARCH_HISTORY_COMIC
+        SourceType.VIDEO -> KEY_SEARCH_HISTORY_VIDEO
+    }
+
+    /** 搜索历史（倒序）——小说/漫画/视频各自独立 */
     fun searchHistoryFlow(type: SourceType): Flow<List<String>> {
+        val key = historyKey(type)
         return context.dataStore.data
             .map { prefs ->
-                prefs[KEY_SEARCH_HISTORY]
+                prefs[key]
                     ?.split(HISTORY_SEPARATOR)
                     ?.filter { it.isNotBlank() }
                     ?: emptyList()
             }
     }
 
-    /** 记录一次搜索关键词（去重，最新的排前面，超出上限截断）——共享 */
+    /** 记录一次搜索关键词（去重，最新的排前面，超出上限截断）——按类型独立 */
     suspend fun addSearchHistory(type: SourceType, keyword: String) {
         val kw = keyword.trim()
         if (kw.isEmpty()) return
+        val key = historyKey(type)
         context.dataStore.edit { prefs ->
-            val current = prefs[KEY_SEARCH_HISTORY]
+            val current = prefs[key]
                 ?.split(HISTORY_SEPARATOR)
                 ?.filter { it.isNotBlank() }
                 ?: emptyList()
             val updated = (listOf(kw) + current.filter { it != kw })
                 .take(MAX_SEARCH_HISTORY)
-            prefs[KEY_SEARCH_HISTORY] = updated.joinToString(HISTORY_SEPARATOR)
+            prefs[key] = updated.joinToString(HISTORY_SEPARATOR)
         }
     }
 
-    /** 清空搜索历史 */
+    /** 清空指定类型的搜索历史 */
     suspend fun clearSearchHistory(type: SourceType) {
-        context.dataStore.edit { it.remove(KEY_SEARCH_HISTORY) }
+        val key = historyKey(type)
+        context.dataStore.edit { it.remove(key) }
     }
 
     /** 删除单条搜索历史 */
     suspend fun removeSearchHistory(type: SourceType, keyword: String) {
+        val key = historyKey(type)
         context.dataStore.edit { prefs ->
-            val current = prefs[KEY_SEARCH_HISTORY]
+            val current = prefs[key]
                 ?.split(HISTORY_SEPARATOR)
                 ?.filter { it.isNotBlank() }
                 ?: emptyList()
-            prefs[KEY_SEARCH_HISTORY] = current.filter { it != keyword }
+            prefs[key] = current.filter { it != keyword }
                 .joinToString(HISTORY_SEPARATOR)
         }
     }

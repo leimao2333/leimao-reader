@@ -34,6 +34,14 @@ class BookShelfViewModel(
     private val _progressMap = MutableStateFlow<Map<String, ReadingProgress>>(emptyMap())
     val progressMap: StateFlow<Map<String, ReadingProgress>> = _progressMap.asStateFlow()
 
+    /** 最新章节缓存：itemKey -> 最新章节标题（详情规则可能较慢，按需补齐） */
+    private val _lastChapterMap = MutableStateFlow<Map<String, String>>(emptyMap())
+    val lastChapterMap: StateFlow<Map<String, String>> = _lastChapterMap.asStateFlow()
+
+    /** 总章节数缓存：itemKey -> 章节总数（用于进度条百分比） */
+    private val _chapterCountMap = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val chapterCountMap: StateFlow<Map<String, Int>> = _chapterCountMap.asStateFlow()
+
     init {
         observeBooks()
     }
@@ -56,6 +64,14 @@ class BookShelfViewModel(
     fun remove(item: MediaItem) {
         viewModelScope.launch {
             bookRepository.removeFromBookshelf(item)
+        }
+    }
+
+    /** 批量移除收藏（多选管理） */
+    fun removeBatch(items: List<MediaItem>) {
+        if (items.isEmpty()) return
+        viewModelScope.launch {
+            items.forEach { bookRepository.removeFromBookshelf(it) }
         }
     }
 
@@ -97,4 +113,26 @@ class BookShelfViewModel(
 
     fun progressFor(item: MediaItem): ReadingProgress? =
         _progressMap.value[itemKey(item)]
+
+    /**
+     * 补齐书架条目的「最新章节」与章节总数（封面墙展示用）。
+     *
+     * 需要拉取目录，较耗时，因此在书架列表加载后按需（每个条目仅一次）在后台补齐，
+     * 结果缓存避免重复请求。失败静默忽略。
+     */
+    fun enrichChapterInfo(items: List<MediaItem>) {
+        viewModelScope.launch {
+            items.forEach { item ->
+                val key = itemKey(item)
+                if (_lastChapterMap.value.containsKey(key)) return@forEach
+                val chapters = runCatching { contentRepository.chapterList(item) }.getOrDefault(emptyList())
+                if (chapters.isEmpty()) return@forEach
+                _chapterCountMap.value = _chapterCountMap.value + (key to chapters.size)
+                val last = chapters.lastOrNull()?.title
+                if (!last.isNullOrBlank()) {
+                    _lastChapterMap.value = _lastChapterMap.value + (key to last)
+                }
+            }
+        }
+    }
 }

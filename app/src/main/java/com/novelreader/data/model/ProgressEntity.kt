@@ -25,6 +25,10 @@ data class ProgressEntity(
     val itemType: String = "",
     /** 条目标题（书名/漫名/节目名）——书不在书架时最近阅读也能显示正确标题 */
     val itemTitle: String = "",
+    /** 条目封面地址——书不在书架时最近阅读也能显示封面 */
+    val itemCover: String? = null,
+    /** 条目作者——书不在书架时最近阅读/换源仍可用 */
+    val itemAuthor: String? = null,
     /** 最后阅读的章节 URL */
     val chapterUrl: String,
     /** 最后阅读的章节标题 */
@@ -33,6 +37,8 @@ data class ProgressEntity(
     val chapterIndex: Int = 0,
     /** 小说：正文内滚动位置（字符偏移） */
     val textPosition: Int = 0,
+    /** 小说翻页模式：当前页码（0 起）——退出重进恢复到对应页 */
+    val pageIndex: Int = 0,
     /** 视频：播放进度（毫秒） */
     val playPositionMs: Long = 0,
     /** 更新时间戳 */

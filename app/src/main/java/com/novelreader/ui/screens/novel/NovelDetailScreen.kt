@@ -38,9 +38,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
+import coil.compose.SubcomposeAsyncImage
+import coil.compose.SubcomposeAsyncImageContent
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
+import com.novelreader.ui.components.BookMeta
+import com.novelreader.ui.components.CoverPlaceholderLetter
 
 /**
  * 小说详情与目录页。
@@ -56,6 +60,7 @@ fun NovelDetailScreen(
     onRead: (MediaItem) -> Unit,
     onSwitchSource: (MediaItem) -> Unit,
     onBack: () -> Unit,
+    onSearchAuthor: (String) -> Unit = {},
 ) {
     val detail by viewModel.detail.collectAsState()
     val chapters by viewModel.chapters.collectAsState()
@@ -75,6 +80,8 @@ fun NovelDetailScreen(
 
     // 目录是否展开（默认折叠，点击"目录"按钮展开）
     var showChapters by rememberSaveable { mutableStateOf(false) }
+    // 目录排序：false=正序，true=倒序（#28）
+    var reverseChapters by rememberSaveable { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -116,10 +123,11 @@ fun NovelDetailScreen(
                         onOpenChangeSource = viewModel::openChangeSource,
                         download = download,
                         onDownload = viewModel::downloadBook,
+                        onAuthorClick = onSearchAuthor,
                     )
                 }
 
-                // 目录按钮（点击展开/收起目录）
+                // 目录按钮（点击展开/收起目录）+ 正/倒序切换
                 item {
                     Row(
                         modifier = Modifier
@@ -129,6 +137,12 @@ fun NovelDetailScreen(
                     ) {
                         Button(onClick = { showChapters = !showChapters }) {
                             Text(if (showChapters) "收起目录" else "目录（${chapters.size}章）")
+                        }
+                        if (showChapters && chapters.size > 1) {
+                            Spacer(Modifier.width(8.dp))
+                            OutlinedButton(onClick = { reverseChapters = !reverseChapters }) {
+                                Text(if (reverseChapters) "倒序" else "正序")
+                            }
                         }
                     }
                 }
@@ -143,7 +157,8 @@ fun NovelDetailScreen(
                         )
                     }
 
-                    items(chapters) { chapter ->
+                    val ordered = if (reverseChapters) chapters.asReversed() else chapters
+                    items(ordered) { chapter ->
                         ChapterRow(chapter = chapter, onClick = { onChapterClick(chapter) })
                         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                     }
@@ -282,6 +297,7 @@ private fun DetailHeader(
     onOpenChangeSource: () -> Unit = {},
     download: com.novelreader.core.download.DownloadState? = null,
     onDownload: () -> Unit = {},
+    onAuthorClick: ((String) -> Unit)? = null,
 ) {
     Column {
         Row(
@@ -289,12 +305,26 @@ private fun DetailHeader(
                 .fillMaxWidth()
                 .padding(16.dp),
         ) {
-            AsyncImage(
-                model = item.cover,
-                contentDescription = item.title,
-                modifier = Modifier.size(width = 96.dp, height = 128.dp),
-                contentScale = ContentScale.Crop,
-            )
+            val cover = item.cover
+            if (cover.isNullOrBlank()) {
+                CoverPlaceholderLetter(
+                    Modifier.size(width = 96.dp, height = 128.dp),
+                    item.title,
+                )
+            } else {
+                SubcomposeAsyncImage(
+                    model = cover,
+                    contentDescription = item.title,
+                    modifier = Modifier.size(width = 96.dp, height = 128.dp),
+                    contentScale = ContentScale.Crop,
+                ) {
+                    when (painter.state) {
+                        is AsyncImagePainter.State.Error -> CoverPlaceholderLetter(Modifier.fillMaxSize(), item.title)
+                        is AsyncImagePainter.State.Loading -> CoverPlaceholderLetter(Modifier.fillMaxSize(), item.title)
+                        else -> SubcomposeAsyncImageContent()
+                    }
+                }
+            }
             Spacer(Modifier.width(16.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -304,11 +334,31 @@ private fun DetailHeader(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(8.dp))
-                item.author?.let {
+                // 作者 + 状态（连载中/已完结）——点击作者搜索其作品（#31）
+                val authorLine = listOfNotNull(
+                    item.author?.takeIf { it.isNotBlank() },
+                    BookMeta.statusText(item),
+                ).joinToString(" · ")
+                if (authorLine.isNotEmpty()) {
                     Text(
-                        text = it,
+                        text = authorLine,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.clickable(enabled = onAuthorClick != null) {
+                            item.author?.takeIf { it.isNotBlank() }?.let { onAuthorClick?.invoke(it) }
+                        },
+                    )
+                }
+                // 元信息：字数 · 最新章节 · 更新时间（#27）
+                val meta = BookMeta.summaryLine(item, showLastChapter = true, showUpdateTime = true)
+                if (meta.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = meta,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 // 来源名

@@ -39,6 +39,7 @@ fun NovelSearchScreen(
     val state by viewModel.state.collectAsState()
     val fuzzyEnabled by viewModel.fuzzyEnabled.collectAsState()
     val history by viewModel.history.collectAsState()
+    val shelfKeys by viewModel.shelfKeys.collectAsState()
 
     Column(modifier = Modifier.fillMaxSize()) {
         // 返回按钮
@@ -90,6 +91,8 @@ fun NovelSearchScreen(
                     isEmptyHint = "正在搜索中，结果将实时显示…",
                     onItemClick = onItemClick,
                     onRead = onRead,
+                    onToggleShelf = viewModel::toggleShelf,
+                    shelfKeys = shelfKeys,
                 )
             }
             // 搜索完成但有错误
@@ -118,6 +121,8 @@ fun NovelSearchScreen(
                     isEmptyHint = "",
                     onItemClick = onItemClick,
                     onRead = onRead,
+                    onToggleShelf = viewModel::toggleShelf,
+                    shelfKeys = shelfKeys,
                 )
             }
         }

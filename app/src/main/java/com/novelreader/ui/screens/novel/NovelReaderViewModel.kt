@@ -110,6 +110,46 @@ class NovelReaderViewModel(
             state
         }
 
+    /** 行距倍数 */
+    val lineHeight: StateFlow<Float> = preferences.novelLineHeightFlow
+        .let { flow ->
+            val state = MutableStateFlow(PreferencesManager.DEFAULT_LINE_HEIGHT)
+            viewModelScope.launch { flow.collectLatest { state.value = it } }
+            state
+        }
+
+    /** 段距（dp） */
+    val paragraphSpacing: StateFlow<Float> = preferences.novelParagraphSpacingFlow
+        .let { flow ->
+            val state = MutableStateFlow(PreferencesManager.DEFAULT_PARAGRAPH_SPACING)
+            viewModelScope.launch { flow.collectLatest { state.value = it } }
+            state
+        }
+
+    /** 左右页边距（dp） */
+    val sidePadding: StateFlow<Float> = preferences.novelSidePaddingFlow
+        .let { flow ->
+            val state = MutableStateFlow(PreferencesManager.DEFAULT_SIDE_PADDING)
+            viewModelScope.launch { flow.collectLatest { state.value = it } }
+            state
+        }
+
+    /** 自动翻页开关 */
+    val autoPage: StateFlow<Boolean> = preferences.novelAutoPageFlow
+        .let { flow ->
+            val state = MutableStateFlow(false)
+            viewModelScope.launch { flow.collectLatest { state.value = it } }
+            state
+        }
+
+    /** 自动翻页间隔（秒） */
+    val autoPageInterval: StateFlow<Int> = preferences.novelAutoPageIntervalFlow
+        .let { flow ->
+            val state = MutableStateFlow(PreferencesManager.DEFAULT_AUTO_PAGE_INTERVAL)
+            viewModelScope.launch { flow.collectLatest { state.value = it } }
+            state
+        }
+
     /** 是否显示菜单（顶栏 + 底部菜单） */
     private val _showMenu = MutableStateFlow(false)
     val showMenu: StateFlow<Boolean> = _showMenu.asStateFlow()
@@ -132,6 +172,17 @@ class NovelReaderViewModel(
 
     /** 当前章节内的正文位置比例（0~10000），随滚动回写并持久化 */
     private var lastTextPosition: Int = 0
+
+    /**
+     * 进入本章时用于恢复的翻页模式页码（0 起）。
+     *
+     * 仅在翻页方式=左右翻页、且历史进度章节与本次进入章节一致时才有意义。
+     */
+    private val _initialPageIndex = MutableStateFlow(0)
+    val initialPageIndex: StateFlow<Int> = _initialPageIndex.asStateFlow()
+
+    /** 翻页模式当前页码（0 起），随翻页回写并持久化 */
+    private var lastPageIndex: Int = 0
 
     // ===== 换源 =====
     /** 换源面板是否打开 */
@@ -188,14 +239,24 @@ class NovelReaderViewModel(
                 lastTextPosition = 0
                 _initialTextPosition.value = 0
             }
+            // 翻页模式页码恢复：同样要求历史进度属于本章，避免串章
+            if (saved != null && saved.chapterUrl == chapter.url && saved.pageIndex > 0) {
+                lastPageIndex = saved.pageIndex.coerceAtLeast(0)
+                _initialPageIndex.value = lastPageIndex
+            } else {
+                lastPageIndex = 0
+                _initialPageIndex.value = 0
+            }
             loadChapter(chapter)
         }
     }
 
-    /** 切换章节（会重置正文位置，回到该章顶部） */
+    /** 切换章节（会重置正文位置，回到该章顶部 / 第一页） */
     fun loadContent(chapter: ChapterItem) {
         lastTextPosition = 0
         _initialTextPosition.value = 0
+        lastPageIndex = 0
+        _initialPageIndex.value = 0
         loadChapter(chapter)
     }
 
@@ -304,6 +365,26 @@ class NovelReaderViewModel(
 
     fun setHideChapterTitle(value: Boolean) {
         viewModelScope.launch { preferences.setNovelHideChapterTitle(value) }
+    }
+
+    fun setLineHeight(value: Float) {
+        viewModelScope.launch { preferences.setNovelLineHeight(value) }
+    }
+
+    fun setParagraphSpacing(value: Float) {
+        viewModelScope.launch { preferences.setNovelParagraphSpacing(value) }
+    }
+
+    fun setSidePadding(value: Float) {
+        viewModelScope.launch { preferences.setNovelSidePadding(value) }
+    }
+
+    fun setAutoPage(value: Boolean) {
+        viewModelScope.launch { preferences.setNovelAutoPage(value) }
+    }
+
+    fun setAutoPageInterval(value: Int) {
+        viewModelScope.launch { preferences.setNovelAutoPageInterval(value) }
     }
 
     /** 单击屏幕中央：弹出/收起菜单 */
@@ -439,6 +520,21 @@ class NovelReaderViewModel(
         saveProgress()
     }
 
+    /**
+     * 回写翻页模式的当前页码，由左右翻页页在停稳后调用。
+     * 与 [saveScrollRatio] 互不干扰：同一章两种模式各自记录位置。
+     *
+     * @param chapterIndex 触发回写的章节索引；与当前章节不一致（切章瞬间）时忽略，防止串章
+     * @param page 当前页码（0 起）
+     */
+    fun savePageIndex(chapterIndex: Int, page: Int) {
+        if (currentChapter?.index != chapterIndex) return
+        val p = page.coerceAtLeast(0)
+        if (p == lastPageIndex) return
+        lastPageIndex = p
+        saveProgress()
+    }
+
     private fun saveProgress() {
         val item = currentItem ?: return
         val chapter = currentChapter ?: return
@@ -452,6 +548,9 @@ class NovelReaderViewModel(
                 textPosition = lastTextPosition,
                 itemType = com.novelreader.domain.model.SourceType.NOVEL.name,
                 itemTitle = item.title,
+                itemCover = item.cover,
+                itemAuthor = item.author,
+                pageIndex = lastPageIndex,
             )
         }
     }

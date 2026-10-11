@@ -34,6 +34,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImagePainter
+import coil.compose.SubcomposeAsyncImageContent
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.source.search.FuzzyMatch
 
@@ -53,6 +55,8 @@ fun GroupedSearchResults(
     isEmptyHint: String,
     onItemClick: (MediaItem) -> Unit,
     onRead: (MediaItem) -> Unit,
+    onToggleShelf: ((MediaItem) -> Unit)? = null,
+    shelfKeys: Set<String> = emptySet(),
 ) {
     if (results.isEmpty()) {
         if (isEmptyHint.isNotBlank()) {
@@ -97,6 +101,8 @@ fun GroupedSearchResults(
                                 item = member,
                                 onClick = { onItemClick(member) },
                                 onRead = { onRead(member) },
+                                onToggleShelf = onToggleShelf?.let { fn -> { fn(member) } },
+                                inShelf = "${member.sourceId}|${member.id}" in shelfKeys,
                             )
                         }
                         // 收起按钮
@@ -166,18 +172,22 @@ private fun GroupCard(
                 contentAlignment = Alignment.Center,
             ) {
                 if (head.cover.isNullOrBlank()) {
-                    Icon(
-                        Icons.Filled.Image,
-                        contentDescription = "无封面",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    CoverPlaceholderLetter(Modifier.fillMaxSize(), head.title)
                 } else {
                     coil.compose.SubcomposeAsyncImage(
                         model = head.cover,
                         contentDescription = head.title,
                         contentScale = androidx.compose.ui.layout.ContentScale.Crop,
                         modifier = Modifier.fillMaxSize(),
-                    )
+                    ) {
+                        when (painter.state) {
+                            is coil.compose.AsyncImagePainter.State.Error ->
+                                CoverPlaceholderLetter(Modifier.fillMaxSize(), head.title)
+                            is coil.compose.AsyncImagePainter.State.Loading ->
+                                CoverPlaceholderLetter(Modifier.fillMaxSize(), head.title)
+                            else -> SubcomposeAsyncImageContent()
+                        }
+                    }
                 }
             }
             Spacer(Modifier.width(12.dp))
@@ -188,13 +198,30 @@ private fun GroupCard(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                head.author?.takeIf { it.isNotBlank() }?.let {
+                // 作者 + 状态
+                val authorLine = listOfNotNull(
+                    head.author?.takeIf { it.isNotBlank() },
+                    BookMeta.statusText(head),
+                ).joinToString(" · ")
+                if (authorLine.isNotEmpty()) {
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        text = it,
+                        text = authorLine,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                // 元信息：字数 · 最新章节 · 更新时间（#23）
+                val meta = BookMeta.summaryLine(head)
+                if (meta.isNotEmpty()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = meta,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }

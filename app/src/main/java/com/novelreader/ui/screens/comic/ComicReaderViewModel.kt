@@ -152,6 +152,8 @@ class ComicReaderViewModel(
                 chapterIndex = chapter.index,
                 itemType = com.novelreader.domain.model.SourceType.COMIC.name,
                 itemTitle = item.title,
+                itemCover = item.cover,
+                itemAuthor = item.author,
             )
         }
     }

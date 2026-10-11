@@ -109,6 +109,13 @@ fun ComicDetailScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+                        if (display.sourceName.isNotBlank()) {
+                            Text(
+                                text = "来源：${display.sourceName}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
                         Spacer(Modifier.height(12.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (collected) {

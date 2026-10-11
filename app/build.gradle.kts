@@ -13,8 +13,8 @@ android {
         applicationId = "com.novelreader"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1007
-        versionName = "1.0.0.7"
+        versionCode = 1008
+        versionName = "1.0.0.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

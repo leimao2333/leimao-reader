@@ -4,8 +4,10 @@ import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
 import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.ResponseBody
 import java.io.File
@@ -58,12 +60,46 @@ object HttpClient {
         // 注意：不要手动设置 Accept-Encoding，让 OkHttp 透明处理 gzip 解压
         headers.forEach { (k, v) -> builder.header(k, v) }
 
-        val request = builder.build()
+        return execute(builder.build(), charset)
+    }
+
+    /**
+     * POST 请求，返回字符串。
+     *
+     * @param url 目标地址
+     * @param body 请求体（通常为表单或 JSON 文本）
+     * @param headers 额外请求头
+     * @param charset 请求体与响应的字符集（如 GB2312），null 则自动检测响应
+     * @param contentType 请求体 MIME 类型
+     */
+    fun post(
+        url: String,
+        body: String,
+        headers: Map<String, String> = emptyMap(),
+        charset: String? = null,
+        contentType: String = "application/x-www-form-urlencoded",
+    ): String {
+        val reqCharset = charset?.let { runCatching { java.nio.charset.Charset.forName(it) }.getOrNull() }
+            ?: Charsets.UTF_8
+        val requestBody = body.toByteArray(reqCharset).toRequestBody(contentType.toMediaTypeOrNull())
+
+        val builder = Request.Builder()
+            .url(url)
+            .post(requestBody)
+            .header("User-Agent", DEFAULT_USER_AGENT)
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        headers.forEach { (k, v) -> builder.header(k, v) }
+
+        return execute(builder.build(), charset)
+    }
+
+    /** 统一执行请求并按字符集解码响应体 */
+    private fun execute(request: Request, charset: String?): String {
         client.newCall(request).execute().use { response: Response ->
             if (!response.isSuccessful) {
-                throw NetworkException("请求失败: ${response.code} $url")
+                throw NetworkException("请求失败: ${response.code} ${request.url}")
             }
-            val body = response.body ?: throw NetworkException("空响应: $url")
+            val body = response.body ?: throw NetworkException("空响应: ${request.url}")
             val bytes = body.bytes()
 
             // 优先从 Content-Type 获取字符集

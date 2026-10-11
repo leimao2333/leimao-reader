@@ -142,36 +142,45 @@ fun HomeScreen(
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
             when (selectedTab) {
-                0 -> HomeTab(
-                    label = "小说",
-                    searchPlaceholder = "搜索小说",
-                    recent = recent,
-                    recentViewMode = recentViewMode,
-                    onToggleRecentView = { recentViewMode = if (recentViewMode == 0) 1 else 0 },
-                    onContinueReading = handleContinue,
-                    onOpenSearch = onOpenNovelSearch,
-                    onOpenBookshelf = onOpenBookshelf,
-                )
-                1 -> HomeTab(
-                    label = "动漫",
-                    searchPlaceholder = "搜索漫画",
-                    recent = recent,
-                    recentViewMode = recentViewMode,
-                    onToggleRecentView = { recentViewMode = if (recentViewMode == 0) 1 else 0 },
-                    onContinueReading = handleContinue,
-                    onOpenSearch = onOpenComicSearch,
-                    onOpenBookshelf = onOpenBookshelf,
-                )
-                else -> HomeTab(
-                    label = "视频",
-                    searchPlaceholder = "搜索视频",
-                    recent = recent,
-                    recentViewMode = recentViewMode,
-                    onToggleRecentView = { recentViewMode = if (recentViewMode == 0) 1 else 0 },
-                    onContinueReading = handleContinue,
-                    onOpenSearch = onOpenVideoSearch,
-                    onOpenBookshelf = onOpenBookshelf,
-                )
+                0 -> {
+                    viewModel.setType(SourceType.NOVEL)
+                    HomeTab(
+                        label = "小说",
+                        searchPlaceholder = "搜索小说",
+                        recent = recent,
+                        recentViewMode = recentViewMode,
+                        onToggleRecentView = { recentViewMode = if (recentViewMode == 0) 1 else 0 },
+                        onContinueReading = handleContinue,
+                        onOpenSearch = onOpenNovelSearch,
+                        onOpenBookshelf = onOpenBookshelf,
+                    )
+                }
+                1 -> {
+                    viewModel.setType(SourceType.COMIC)
+                    HomeTab(
+                        label = "动漫",
+                        searchPlaceholder = "搜索漫画",
+                        recent = recent,
+                        recentViewMode = recentViewMode,
+                        onToggleRecentView = { recentViewMode = if (recentViewMode == 0) 1 else 0 },
+                        onContinueReading = handleContinue,
+                        onOpenSearch = onOpenComicSearch,
+                        onOpenBookshelf = onOpenBookshelf,
+                    )
+                }
+                else -> {
+                    viewModel.setType(SourceType.VIDEO)
+                    HomeTab(
+                        label = "视频",
+                        searchPlaceholder = "搜索视频",
+                        recent = recent,
+                        recentViewMode = recentViewMode,
+                        onToggleRecentView = { recentViewMode = if (recentViewMode == 0) 1 else 0 },
+                        onContinueReading = handleContinue,
+                        onOpenSearch = onOpenVideoSearch,
+                        onOpenBookshelf = onOpenBookshelf,
+                    )
+                }
             }
         }
     }

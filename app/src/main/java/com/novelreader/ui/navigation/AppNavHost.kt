@@ -240,6 +240,7 @@ fun AppNavHost(container: AppContainer) {
                     NovelDetailViewModel(it.contentRepository, it.bookRepository, it.downloadManager)
                 }
             )
+            val scope = androidx.compose.runtime.rememberCoroutineScope()
             NovelDetailScreen(
                 viewModel = viewModel,
                 item = item,
@@ -248,6 +249,25 @@ fun AppNavHost(container: AppContainer) {
                     val chapters = viewModel.chapters.value
                     NavCache.putChapters(item, chapters)
                     navController.navigate(Routes.novelReader(item, chapter.index))
+                },
+                onRead = { target ->
+                    // 阅读：有进度直达历史章节，无进度进第一章（与搜索页 onRead 一致）
+                    scope.launch {
+                        val progress = runCatching {
+                            container.progressRepository.getProgress(target.sourceId, target.id)
+                        }.getOrNull()
+                        val chapters = runCatching {
+                            container.contentRepository.chapterList(target)
+                        }.getOrDefault(emptyList())
+                        if (chapters.isEmpty()) return@launch
+                        NavCache.putChapters(target, chapters)
+                        val index = progress?.chapterIndex?.coerceIn(0, chapters.size - 1) ?: 0
+                        navController.navigate(Routes.novelReader(target, index))
+                    }
+                },
+                onSwitchSource = { candidate ->
+                    // 换源：跳转到目标源的详情页（新的 item 参数）
+                    navController.navigate(Routes.novelDetail(candidate))
                 },
                 onBack = { navController.popBackStack() },
             )

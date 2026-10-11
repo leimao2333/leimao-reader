@@ -4,69 +4,155 @@ import com.novelreader.domain.model.MediaItem
 import kotlin.math.max
 
 /**
- * 搜索结果模糊匹配与排序工具。
+ * 搜索结果匹配 / 排序 / 分组工具。
  *
- * 搜索源返回的结果往往与关键词不完全一致，本工具对结果做本地相似度评分，
- * 优先展示与关键词最匹配的条目，实现"模糊搜索"体验。
+ * 两种搜索模式：
+ * - **精准搜索**（fuzzy=false）：只保留书名与关键词在归一化后完全一致的结果，
+ *   不相关的噪音一律过滤。
+ * - **模糊搜索**（fuzzy=true）：本地相似度评分排序，但收紧匹配阈值——
+ *   完全不相关（score=0）的结果被过滤，避免"模糊"变成"无关"。
+ *
+ * 另外提供 [groupDuplicates]：把「书名 + 作者一致」的多源结果折叠成组，
+ * 供搜索结果页聚合展示与换源。
  */
 object FuzzyMatch {
 
+    /** 相似度评分档位（供 UI 展示与调试） */
+    const val SCORE_EXACT = 100
+    const val SCORE_NORM_EXACT = 98
+    const val SCORE_PREFIX = 90
+    const val SCORE_CONTAINS_BASE = 80
+    const val SCORE_AUTHOR_BONUS = 5
+    const val MIN_FUZZY_SCORE = 30
+
     /**
-     * 计算字符串与关键词的相似度得分（0~100）。
+     * 归一化：去空白、书名号、常见标点，转小写，全角转半角。
+     * 用于「精准」判定与分组 key，避免《剑来》/剑 来/剑来 判为不同书。
+     */
+    fun normalize(s: String): String {
+        val sb = StringBuilder(s.length)
+        for (c in s) {
+            when {
+                c.isWhitespace() -> {}
+                c == '《' || c == '》' || c == '“' || c == '”' || c == '"' ||
+                    c == '「' || c == '」' || c == '『' || c == '』' -> {}
+                c == '：' || c == ':' || c == '，' || c == ',' || c == '。' ||
+                    c == '·' || c == '!' || c == '！' || c == '?' || c == '？' -> {}
+                else -> {
+                    // 全角字母数字转半角
+                    val code = c.code
+                    if (code in 0xFF01..0xFF5E) sb.append((code - 0xFEE0).toChar())
+                    else sb.append(c.lowercaseChar())
+                }
+            }
+        }
+        return sb.toString()
+    }
+
+    /**
+     * 计算标题与关键词的相似度得分（0~100）。
      *
      * 评分策略（从高到低）：
      * 1. 完全相等 → 100
-     * 2. 标题以关键词开头 → 90
-     * 3. 标题包含关键词 → 80 + 关键词长度权重
-     * 4. 编辑距离相似度（Levenshtein）→ 按相似度映射
-     * 5. 无任何匹配 → 0
+     * 2. 归一化后相等 → 98
+     * 3. 标题以关键词开头 → 90
+     * 4. 标题包含关键词 → 80 + 关键词长度权重（最多 +18）
+     * 5. 编辑距离相似度（收紧：≥0.7 才给分，≤2 字关键词要求 ≥0.8）
+     *
+     * @param authorMatch 作者与关键词一致时追加 [SCORE_AUTHOR_BONUS]（可选加成）
      */
-    fun score(title: String, keyword: String): Int {
+    fun score(title: String, keyword: String, authorMatch: Boolean = false): Int {
         val t = title.trim()
         val k = keyword.trim()
         if (t.isEmpty() || k.isEmpty()) return 0
 
         val tl = t.lowercase()
         val kl = k.lowercase()
+        val tn = normalize(t)
+        val kn = normalize(k)
 
-        if (tl == kl) return 100
-        if (tl.startsWith(kl)) return 90
-        if (tl.contains(kl)) return 80 + minOf(kl.length * 2, 18)
-
-        // 编辑距离相似度
-        val dist = levenshtein(tl, kl)
-        val maxLen = max(tl.length, kl.length)
-        if (maxLen == 0) return 0
-        val similarity = 1.0 - dist.toDouble() / maxLen
-        // 相似度映射到 1~60 分（相似度 0.5 以上才给分）
-        return if (similarity >= 0.5) (similarity * 60).toInt() else 0
+        val base = when {
+            tl == kl -> SCORE_EXACT
+            tn == kn -> SCORE_NORM_EXACT
+            tn.startsWith(kn) -> SCORE_PREFIX
+            tn.contains(kn) -> SCORE_CONTAINS_BASE + minOf(kn.length * 2, 18)
+            else -> {
+                // 编辑距离兜底：阈值收紧，短关键词要求更高，避免不相关书混入
+                val dist = levenshtein(tn, kn)
+                val maxLen = max(tn.length, kn.length)
+                if (maxLen == 0) return 0
+                val similarity = 1.0 - dist.toDouble() / maxLen
+                val threshold = if (kn.length <= 2) 0.8 else 0.7
+                if (similarity >= threshold) (similarity * 50).toInt() else 0
+            }
+        }
+        // 编辑距离兜底的分数（<80）不给作者加成，避免弱匹配被顶到前排
+        return if (authorMatch && base >= SCORE_CONTAINS_BASE) {
+            (base + SCORE_AUTHOR_BONUS).coerceAtMost(99)
+        } else base
     }
 
     /**
-     * 对搜索结果按模糊匹配度降序排序，并过滤掉完全不相关的条目。
+     * 模糊模式：按匹配度降序排序，并过滤不相关条目。
      *
-     * @param items 搜索结果
-     * @param keyword 搜索关键词
-     * @param minScore 最低匹配分（低于此分的条目被过滤）
+     * @param minScore 最低匹配分，默认 [MIN_FUZZY_SCORE]——低于此分视为不相关直接过滤
      */
-    fun rank(items: List<MediaItem>, keyword: String, minScore: Int = 0): List<MediaItem> {
+    fun rank(items: List<MediaItem>, keyword: String, minScore: Int = MIN_FUZZY_SCORE): List<MediaItem> {
         if (keyword.isBlank()) return items
+        val kn = normalize(keyword)
         return items
-            .map { it to score(it.title, keyword) }
+            .map { item ->
+                val s = score(item.title, keyword, authorMatch = item.author?.let { normalize(it) == kn } == true)
+                item to s
+            }
             .filter { (_, s) -> s >= minScore }
-            .sortedByDescending { (_, s) -> s }
+            .sortedWith(compareByDescending<Pair<MediaItem, Int>> { (_, s) -> s }.thenBy { (item, _) -> item.title.length })
             .map { (item, _) -> item }
     }
 
     /**
-     * 关键词是否与标题"模糊相关"（宽松判定，用于兜底不过滤）。
+     * 精准模式：只保留书名归一化后与关键词完全一致的结果（作者一致者优先）。
+     * 一个源都没命中时回退到「标题以关键词开头」的最短结果，避免过度死板。
      */
+    fun exactRank(items: List<MediaItem>, keyword: String): List<MediaItem> {
+        if (keyword.isBlank()) return items
+        val kn = normalize(keyword)
+        val exact = items.filter { normalize(it.title) == kn }
+        if (exact.isNotEmpty()) {
+            return exact.sortedWith(
+                compareBy<MediaItem> { it.author?.let { a -> normalize(a) == kn } != true }
+                    .thenBy { it.title.length }
+            )
+        }
+        // 回退：标题以关键词开头（如「剑来」命中「剑来同人」），取最短标题
+        return items
+            .filter { normalize(it.title).startsWith(kn) }
+            .sortedBy { it.title.length }
+    }
+
+    /**
+     * 把搜索结果按「书名 + 作者」归一化分组（用于结果折叠）。
+     *
+     * 作者为空时仅按书名分组。组内保持原顺序（源返回序），
+     * 组间按组内最高匹配分排序（由调用方先 rank 后传入即已有序）。
+     *
+     * @return 分组列表，每组至少 1 条
+     */
+    fun groupDuplicates(items: List<MediaItem>): List<List<MediaItem>> {
+        val groups = LinkedHashMap<String, MutableList<MediaItem>>()
+        for (item in items) {
+            val author = item.author?.trim()?.let { normalize(it) }.orEmpty()
+            val key = "${normalize(item.title)}|${author}"
+            groups.getOrPut(key) { mutableListOf() }.add(item)
+        }
+        return groups.values.toList()
+    }
+
+    /** 关键词是否与标题"模糊相关"（宽松判定，用于兜底不过滤）。 */
     fun isRelated(title: String, keyword: String): Boolean =
         score(title, keyword) > 0
 
-    /**
-     * 计算两个字符串的编辑距离（Levenshtein）。
-     */
+    /** 计算两个字符串的编辑距离（Levenshtein）。 */
     fun levenshtein(a: String, b: String): Int {
         val la = a.length
         val lb = b.length

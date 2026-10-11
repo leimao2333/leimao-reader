@@ -3,6 +3,7 @@ package com.novelreader.ui.screens.common
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novelreader.domain.model.RecentReading
+import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.BookRepository
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.ProgressRepository
@@ -14,7 +15,7 @@ import kotlinx.coroutines.launch
 /**
  * 首页 ViewModel。
  *
- * 提供「最近阅读」列表（按更新时间倒序），
+ * 提供「最近阅读」列表（按更新时间倒序，**按当前 tab 类型过滤**），
  * 以及「继续阅读」跳转能力（定位到上次进度章节）。
  */
 class HomeViewModel(
@@ -25,16 +26,28 @@ class HomeViewModel(
     private val _recent = MutableStateFlow<List<RecentReading>>(emptyList())
     val recent: StateFlow<List<RecentReading>> = _recent.asStateFlow()
 
+    /** 当前展示的类型（小说/漫画/视频），null = 全部 */
+    private var currentType: SourceType? = null
+
     init {
         refresh()
     }
 
-    /** 刷新最近阅读列表 */
+    /** 刷新最近阅读列表（按当前 tab 类型过滤） */
     fun refresh() {
         viewModelScope.launch {
-            _recent.value = runCatching { progressRepository.recentReadings() }
+            _recent.value = runCatching { progressRepository.recentReadings(currentType) }
                 .getOrDefault(emptyList())
         }
+    }
+
+    /**
+     * 切换内容类型（tab 切换时调用），最近阅读随之切换为该类型。
+     */
+    fun setType(type: SourceType?) {
+        if (currentType == type) return
+        currentType = type
+        refresh()
     }
 
     /**

@@ -115,17 +115,28 @@ class ComicReaderViewModel(
         }
     }
 
+    /** 当前章节在列表中的位置（防御式：同一性 → 双重匹配 → url → index） */
+    private fun currentIndex(): Int {
+        val chapters = _chapters.value
+        val ch = currentChapter ?: return -1
+        chapters.forEachIndexed { i, c -> if (c === ch) return i }
+        chapters.indexOfFirst { it.index == ch.index && it.url == ch.url }.let { if (it >= 0) return it }
+        chapters.indexOfFirst { it.url == ch.url }.let { if (it >= 0) return it }
+        return chapters.indexOfFirst { it.index == ch.index }
+    }
+
     fun nextChapter() {
-        val current = _chapters.value.indexOfFirst { it.url == currentChapter?.url }
-        if (current >= 0 && current + 1 < _chapters.value.size) {
-            loadContent(_chapters.value[current + 1])
+        val idx = currentIndex()
+        val chapters = _chapters.value
+        if (idx >= 0 && idx + 1 < chapters.size) {
+            loadContent(chapters[idx + 1])
         }
     }
 
     fun prevChapter() {
-        val current = _chapters.value.indexOfFirst { it.url == currentChapter?.url }
-        if (current > 0) {
-            loadContent(_chapters.value[current - 1])
+        val idx = currentIndex()
+        if (idx > 0) {
+            loadContent(_chapters.value[idx - 1])
         }
     }
 
@@ -139,6 +150,8 @@ class ComicReaderViewModel(
                 chapterUrl = chapter.url,
                 chapterTitle = chapter.title,
                 chapterIndex = chapter.index,
+                itemType = com.novelreader.domain.model.SourceType.COMIC.name,
+                itemTitle = item.title,
             )
         }
     }

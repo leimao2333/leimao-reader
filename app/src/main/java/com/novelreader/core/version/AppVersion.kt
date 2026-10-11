@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.0.0.8"
+    const val CURRENT_VERSION = "1.0.0.9"
 
     /**
      * 更新日志。
@@ -19,6 +19,22 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.0.0.9",
+            date = "2026-10-11",
+            changes = listOf(
+                "修复左右翻页滑到章末卡住、无法继续翻入下一章的低级错误（章末新增引导页续章）",
+                "滚动阅读模式章末新增「下一章」续读入口，阅读不再中断",
+                "修复正文 HTML 未清洗直接显示（div/br/&nbsp; 等）的问题，正文自动转纯文本并保留段落",
+                "搜索结果「书名+作者」一致的多源结果折叠为一条，展开即可换源（源数量徽标提示）",
+                "详情页新增「阅读」与「换源」按钮：换源面板列出同名同作者的其他源，点击直达",
+                "最近阅读按底部 tab 类型区分：小说 / 动漫 / 视频各自独立列表",
+                "修复最近阅读用章节名当书名的问题（进度记录自带书名与类型）",
+                "搜索双模式重做：精准模式只留归一化后书名一致的结果；模糊模式收紧阈值并过滤不相关条目",
+                "章节定位防御式加固：修复个别源 url 重复时上一章/下一章错位",
+                "修复详情页「返回」未绑定点击事件的问题",
+            ),
+        ),
         VersionEntry(
             version = "1.0.0.8",
             date = "2026-10-11",

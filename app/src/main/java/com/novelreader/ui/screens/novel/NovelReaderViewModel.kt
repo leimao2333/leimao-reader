@@ -234,17 +234,32 @@ class NovelReaderViewModel(
         }
     }
 
+    /**
+     * 当前章节在列表中的位置。
+     * 依次尝试：对象同一性 → (index,url) 双重匹配 → url 匹配 → index 匹配。
+     * 防御个别源 url 重复或 index 字段漂移导致的翻页错位。
+     */
+    private fun currentIndex(): Int {
+        val chapters = _chapters.value
+        val ch = currentChapter ?: return -1
+        chapters.forEachIndexed { i, c -> if (c === ch) return i }
+        chapters.indexOfFirst { it.index == ch.index && it.url == ch.url }.let { if (it >= 0) return it }
+        chapters.indexOfFirst { it.url == ch.url }.let { if (it >= 0) return it }
+        return chapters.indexOfFirst { it.index == ch.index }
+    }
+
     fun nextChapter() {
-        val current = _chapters.value.indexOfFirst { it.url == currentChapter?.url }
-        if (current >= 0 && current + 1 < _chapters.value.size) {
-            loadContent(_chapters.value[current + 1])
+        val idx = currentIndex()
+        val chapters = _chapters.value
+        if (idx >= 0 && idx + 1 < chapters.size) {
+            loadContent(chapters[idx + 1])
         }
     }
 
     fun prevChapter() {
-        val current = _chapters.value.indexOfFirst { it.url == currentChapter?.url }
-        if (current > 0) {
-            loadContent(_chapters.value[current - 1])
+        val idx = currentIndex()
+        if (idx > 0) {
+            loadContent(_chapters.value[idx - 1])
         }
     }
 
@@ -435,6 +450,8 @@ class NovelReaderViewModel(
                 chapterTitle = chapter.title,
                 chapterIndex = chapter.index,
                 textPosition = lastTextPosition,
+                itemType = com.novelreader.domain.model.SourceType.NOVEL.name,
+                itemTitle = item.title,
             )
         }
     }

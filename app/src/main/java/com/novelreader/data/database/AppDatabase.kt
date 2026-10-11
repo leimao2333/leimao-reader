@@ -19,7 +19,7 @@ import com.novelreader.data.model.SourceEntity
         BookEntity::class,
         ProgressEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -52,6 +52,27 @@ abstract class AppDatabase : RoomDatabase() {
                     "CREATE UNIQUE INDEX IF NOT EXISTS index_progress_sourceId_itemId " +
                         "ON progress (sourceId, itemId)"
                 )
+            }
+        }
+
+        /** v3 -> v4：progress 表新增 itemType / itemTitle 列（最近阅读按类型过滤 + 修复标题） */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE progress ADD COLUMN itemType TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE progress ADD COLUMN itemTitle TEXT NOT NULL DEFAULT ''")
+                // 存量数据回填：优先从 books 表补 type/title
+                db.execSQL(
+                    """
+                    UPDATE progress SET
+                        itemType = IFNULL((SELECT b.type FROM books b
+                            WHERE b.sourceId = progress.sourceId AND b.itemId = progress.itemId), ''),
+                        itemTitle = IFNULL((SELECT b.title FROM books b
+                            WHERE b.sourceId = progress.sourceId AND b.itemId = progress.itemId), '')
+                    """.trimIndent()
+                )
+                // books 表里查不到的旧记录（书未收藏）：旧版 UI 对未知类型统一按小说展示，
+                // 这里保持同一行为，避免老记录从最近阅读里"消失"
+                db.execSQL("UPDATE progress SET itemType = 'novel' WHERE itemType = ''")
             }
         }
     }

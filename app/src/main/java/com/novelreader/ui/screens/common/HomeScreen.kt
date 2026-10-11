@@ -83,9 +83,16 @@ fun HomeScreen(
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     val recent by viewModel.recent.collectAsState()
 
-    // 每次回到首页时刷新最近阅读列表
-    androidx.compose.runtime.LaunchedEffect(Unit) {
-        viewModel.refresh()
+    // 每次回到前台（从阅读/搜索页返回）时刷新最近阅读列表
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                viewModel.refresh()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     // 最近阅读展示形式：0=列表，1=表格

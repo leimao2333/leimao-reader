@@ -77,9 +77,41 @@ class NovelReaderViewModel(
             state
         }
 
-    /** 是否显示设置面板 */
-    private val _showSettings = MutableStateFlow(false)
-    val showSettings: StateFlow<Boolean> = _showSettings.asStateFlow()
+    /** 隐藏栏目：顶部栏 */
+    val hideTopBar: StateFlow<Boolean> = preferences.novelHideTopBarFlow
+        .let { flow ->
+            val state = MutableStateFlow(false)
+            viewModelScope.launch { flow.collectLatest { state.value = it } }
+            state
+        }
+
+    /** 隐藏栏目：底部进度栏 */
+    val hideBottomBar: StateFlow<Boolean> = preferences.novelHideBottomBarFlow
+        .let { flow ->
+            val state = MutableStateFlow(false)
+            viewModelScope.launch { flow.collectLatest { state.value = it } }
+            state
+        }
+
+    /** 隐藏栏目：正文章节标题 */
+    val hideChapterTitle: StateFlow<Boolean> = preferences.novelHideChapterTitleFlow
+        .let { flow ->
+            val state = MutableStateFlow(false)
+            viewModelScope.launch { flow.collectLatest { state.value = it } }
+            state
+        }
+
+    /** 是否显示菜单（顶栏 + 底部菜单） */
+    private val _showMenu = MutableStateFlow(false)
+    val showMenu: StateFlow<Boolean> = _showMenu.asStateFlow()
+
+    /** 菜单当前页签：0=目录，1=界面，2=设置 */
+    private val _menuTab = MutableStateFlow(0)
+    val menuTab: StateFlow<Int> = _menuTab.asStateFlow()
+
+    /** 当前章节索引（进度滑块用） */
+    private val _currentChapterIndex = MutableStateFlow(0)
+    val currentChapterIndex: StateFlow<Int> = _currentChapterIndex.asStateFlow()
 
     /**
      * 初始化阅读（进入阅读页时调用）。
@@ -100,6 +132,7 @@ class NovelReaderViewModel(
     fun loadContent(chapter: ChapterItem) {
         currentChapter = chapter
         _chapterTitle.value = chapter.title
+        _currentChapterIndex.value = chapter.index
         viewModelScope.launch {
             _loading.value = true
             _error.value = null
@@ -164,8 +197,26 @@ class NovelReaderViewModel(
         viewModelScope.launch { preferences.setNovelPageMode(mode) }
     }
 
-    fun toggleSettings() {
-        _showSettings.value = !_showSettings.value
+    fun setHideTopBar(value: Boolean) {
+        viewModelScope.launch { preferences.setNovelHideTopBar(value) }
+    }
+
+    fun setHideBottomBar(value: Boolean) {
+        viewModelScope.launch { preferences.setNovelHideBottomBar(value) }
+    }
+
+    fun setHideChapterTitle(value: Boolean) {
+        viewModelScope.launch { preferences.setNovelHideChapterTitle(value) }
+    }
+
+    /** 单击屏幕中央：弹出/收起菜单 */
+    fun toggleMenu() {
+        _showMenu.value = !_showMenu.value
+    }
+
+    /** 切换菜单页签（目录/界面/设置） */
+    fun setMenuTab(tab: Int) {
+        _menuTab.value = tab
     }
 
     // ===== 进度保存 =====

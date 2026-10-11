@@ -34,6 +34,12 @@ class PreferencesManager(private val context: Context) {
         val KEY_NOVEL_NIGHT = booleanPreferencesKey("novel_night")
         /** 翻页方式：0=上下滚动，1=左右翻页 */
         val KEY_NOVEL_PAGE_MODE = intPreferencesKey("novel_page_mode")
+        /** 阅读菜单隐藏栏目：顶部栏 */
+        val KEY_NOVEL_HIDE_TOPBAR = booleanPreferencesKey("novel_hide_topbar")
+        /** 阅读菜单隐藏栏目：底部进度栏 */
+        val KEY_NOVEL_HIDE_BOTTOMBAR = booleanPreferencesKey("novel_hide_bottombar")
+        /** 阅读菜单隐藏栏目：正文章节标题 */
+        val KEY_NOVEL_HIDE_CHAPTER_TITLE = booleanPreferencesKey("novel_hide_chapter_title")
 
         // ===== 漫画阅读 =====
         /** 翻页方式：0=上下滚动，1=左右翻页 */
@@ -104,6 +110,27 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setNovelPageMode(value: Int) {
         context.dataStore.edit { it[KEY_NOVEL_PAGE_MODE] = value }
+    }
+
+    val novelHideTopBarFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_NOVEL_HIDE_TOPBAR] ?: false }
+
+    suspend fun setNovelHideTopBar(value: Boolean) {
+        context.dataStore.edit { it[KEY_NOVEL_HIDE_TOPBAR] = value }
+    }
+
+    val novelHideBottomBarFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_NOVEL_HIDE_BOTTOMBAR] ?: false }
+
+    suspend fun setNovelHideBottomBar(value: Boolean) {
+        context.dataStore.edit { it[KEY_NOVEL_HIDE_BOTTOMBAR] = value }
+    }
+
+    val novelHideChapterTitleFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_NOVEL_HIDE_CHAPTER_TITLE] ?: false }
+
+    suspend fun setNovelHideChapterTitle(value: Boolean) {
+        context.dataStore.edit { it[KEY_NOVEL_HIDE_CHAPTER_TITLE] = value }
     }
 
     // ===== 漫画 =====

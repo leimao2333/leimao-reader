@@ -2,57 +2,68 @@ package com.novelreader.ui.screens.novel
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.ui.theme.ReaderBackgrounds
 
 /**
- * 小说阅读页。
+ * 小说阅读页（legado 风格菜单）。
  *
- * 核心功能：
- * - 正文渲染（上下滚动 / 左右翻页两种模式）
- * - 点击中央区域呼出设置面板
- * - 字体大小调节（A- / A+）
- * - 背景颜色切换（多套配色）
- * - 日/夜间模式切换
- * - 翻页方式切换
- * - 上一章 / 下一章
+ * - 单击屏幕中央：弹出/收起菜单（顶栏 + 底部菜单）
+ * - 底部菜单：上一章 | 进度滑块 | 下一章，以及 目录 / 界面 / 设置 三个按钮
+ * - 目录：章节列表面板，点击跳转
+ * - 界面：字号 / 背景颜色 / 翻页方式
+ * - 设置：夜间模式 + 隐藏栏目开关（顶部栏 / 底部进度栏 / 章节标题）
+ * - 翻页方式：上下滚动 / 左右翻页
  */
 @Composable
 fun NovelReaderScreen(
@@ -68,15 +79,19 @@ fun NovelReaderScreen(
     val fontSize by viewModel.fontSize.collectAsState()
     val bgIndex by viewModel.bgIndex.collectAsState()
     val nightMode by viewModel.nightMode.collectAsState()
-    val showSettings by viewModel.showSettings.collectAsState()
+    val showMenu by viewModel.showMenu.collectAsState()
+    val menuTab by viewModel.menuTab.collectAsState()
     val chapterTitle by viewModel.chapterTitle.collectAsState()
     val pageMode by viewModel.pageMode.collectAsState()
+    val hideTopBar by viewModel.hideTopBar.collectAsState()
+    val hideBottomBar by viewModel.hideBottomBar.collectAsState()
+    val hideChapterTitle by viewModel.hideChapterTitle.collectAsState()
+    val chapterIndex by viewModel.currentChapterIndex.collectAsState()
 
     LaunchedEffect(item, chapter) {
         viewModel.init(item, chapters, chapter)
     }
 
-    // 根据日夜间模式选择配色
     val backgroundColors = if (nightMode) ReaderBackgrounds.nightColors else ReaderBackgrounds.dayColors
     val bgIndexSafe = bgIndex.coerceIn(backgroundColors.indices)
     val backgroundColor = backgroundColors[bgIndexSafe].first
@@ -89,197 +104,135 @@ fun NovelReaderScreen(
     ) {
         when {
             loading -> {
-                CircularProgressIndicator(Modifier.align(Alignment.Center))
+                // 加载中也允许点按呼出菜单
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) { detectTapGestures { viewModel.toggleMenu() } },
+                ) {
+                    CircularProgressIndicator(Modifier.align(Alignment.Center))
+                }
             }
             error != null -> {
-                Text(
-                    text = error ?: "加载失败",
-                    color = textColor,
+                Box(
                     modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(16.dp),
-                )
+                        .fillMaxSize()
+                        .pointerInput(Unit) { detectTapGestures { viewModel.toggleMenu() } },
+                ) {
+                    Text(
+                        text = error ?: "加载失败",
+                        color = textColor,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(16.dp),
+                    )
+                }
             }
             pageMode == 1 -> {
-                // 左右翻页模式
                 HorizontalPagerNovel(
                     content = content,
                     chapterTitle = chapterTitle,
                     fontSize = fontSize,
                     textColor = textColor,
-                    onTap = { viewModel.toggleSettings() },
+                    hideChapterTitle = hideChapterTitle,
+                    onTap = { viewModel.toggleMenu() },
                 )
             }
             else -> {
-                // 上下滚动模式
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clickable(
-                            interactionSource = null,
-                            indication = null,
-                        ) { viewModel.toggleSettings() }
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 20.dp, vertical = 24.dp),
-                ) {
-                    Text(
-                        text = chapterTitle,
-                        fontSize = (fontSize + 2).sp,
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                        color = textColor,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(16.dp))
-                    Text(
-                        text = content,
-                        fontSize = fontSize.sp,
-                        color = textColor,
-                        lineHeight = (fontSize * 1.6).sp,
-                        textAlign = TextAlign.Justify,
-                    )
-                }
-
-        // 顶部栏（滚动模式）：返回 + 标题 + 设置按钮
-        Row(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .fillMaxWidth()
-                        .background(backgroundColor.copy(alpha = 0.9f))
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "‹ 返回",
-                        color = textColor,
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier
-                            .clickable(onClick = onBack)
-                            .padding(8.dp),
-                    )
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        text = chapterTitle,
-                        color = textColor,
-                        maxLines = 1,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Spacer(Modifier.weight(1f))
-                    IconButton(onClick = viewModel::toggleSettings) {
-                        Icon(Icons.Filled.Settings, contentDescription = "设置", tint = textColor)
-                    }
-                }
-
-                // 底部：上一章 / 下一章
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .background(backgroundColor.copy(alpha = 0.9f))
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text(
-                        text = "上一章",
-                        color = textColor,
-                        modifier = Modifier
-                            .clickable(onClick = viewModel::prevChapter)
-                            .padding(8.dp),
-                    )
-                    Text(
-                        text = "下一章",
-                        color = textColor,
-                        modifier = Modifier
-                            .clickable(onClick = viewModel::nextChapter)
-                            .padding(8.dp),
-                    )
-                }
-        }
-        }
-
-        // 翻页模式下的顶部/底部栏
-        if (pageMode == 1 && error == null && !loading) {
-            Row(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .fillMaxWidth()
-                    .background(backgroundColor.copy(alpha = 0.9f))
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "‹ 返回",
-                    color = textColor,
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier
-                        .clickable(onClick = onBack)
-                        .padding(8.dp),
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    text = chapterTitle,
-                    color = textColor,
-                    maxLines = 1,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Spacer(Modifier.weight(1f))
-                IconButton(onClick = viewModel::toggleSettings) {
-                    Icon(Icons.Filled.Settings, contentDescription = "设置", tint = textColor)
-                }
-            }
-
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .background(backgroundColor.copy(alpha = 0.9f))
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text(
-                    text = "上一章",
-                    color = textColor,
-                    modifier = Modifier
-                        .clickable(onClick = viewModel::prevChapter)
-                        .padding(8.dp),
-                )
-                Text(
-                    text = "下一章",
-                    color = textColor,
-                    modifier = Modifier
-                        .clickable(onClick = viewModel::nextChapter)
-                        .padding(8.dp),
+                ScrollNovel(
+                    content = content,
+                    chapterTitle = chapterTitle,
+                    fontSize = fontSize,
+                    textColor = textColor,
+                    hideChapterTitle = hideChapterTitle,
+                    onTap = { viewModel.toggleMenu() },
                 )
             }
         }
 
-        // 设置面板
-        if (showSettings) {
-            ReaderSettingsPanel(
+        // ===== 菜单层 =====
+        if (showMenu) {
+            // 顶栏
+            if (!hideTopBar) {
+                ReaderTopBar(
+                    title = chapterTitle,
+                    backgroundColor = backgroundColor,
+                    textColor = textColor,
+                    onBack = onBack,
+                )
+            }
+
+            // 底部菜单 + 页签面板
+            ReaderBottomMenu(
                 viewModel = viewModel,
+                chapters = chapters,
+                chapterIndex = chapterIndex,
                 fontSize = fontSize,
                 nightMode = nightMode,
                 pageMode = pageMode,
+                hideTopBar = hideTopBar,
+                hideBottomBar = hideBottomBar,
+                hideChapterTitle = hideChapterTitle,
                 backgroundColor = backgroundColor,
                 textColor = textColor,
-                onDismiss = viewModel::toggleSettings,
+                menuTab = menuTab,
             )
         }
     }
 }
 
-/**
- * 左右翻页模式：把正文按固定字符数切片分页，HorizontalPager 逐页展示。
- */
+/** 上下滚动正文 */
+@Composable
+private fun ScrollNovel(
+    content: String,
+    chapterTitle: String,
+    fontSize: Float,
+    textColor: Color,
+    hideChapterTitle: Boolean,
+    onTap: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .pointerInput(Unit) { detectTapGestures { onTap() } }
+            .padding(horizontal = 20.dp, vertical = 48.dp),
+    ) {
+        if (!hideChapterTitle) {
+            Text(
+                text = chapterTitle,
+                fontSize = (fontSize + 2).sp,
+                fontWeight = FontWeight.Bold,
+                color = textColor,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(16.dp))
+        }
+        Text(
+            text = content,
+            fontSize = fontSize.sp,
+            color = textColor,
+            lineHeight = (fontSize * 1.6).sp,
+            textAlign = TextAlign.Justify,
+        )
+    }
+}
+
+/** 左右翻页正文（按段落边界切片分页） */
 @Composable
 private fun HorizontalPagerNovel(
     content: String,
     chapterTitle: String,
     fontSize: Float,
     textColor: Color,
+    hideChapterTitle: Boolean,
     onTap: () -> Unit,
 ) {
-    val pages = remember(content) { splitContentIntoPages(content) }
+    val pages = remember(content, hideChapterTitle) {
+        if (hideChapterTitle) splitContentIntoPages(content)
+        else splitContentIntoPages(content, firstPageTitle = chapterTitle)
+    }
     val pagerState = rememberPagerState(initialPage = 0, pageCount = { pages.size })
 
     HorizontalPager(
@@ -289,23 +242,20 @@ private fun HorizontalPagerNovel(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clickable(
-                    interactionSource = null,
-                    indication = null,
-                    onClick = onTap,
-                ),
+                .pointerInput(Unit) { detectTapGestures { onTap() } },
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
+                    .pointerInput(Unit) { detectTapGestures { onTap() } }
                     .padding(horizontal = 20.dp, vertical = 48.dp),
             ) {
-                if (page == 0) {
+                if (page == 0 && !hideChapterTitle) {
                     Text(
                         text = chapterTitle,
                         fontSize = (fontSize + 2).sp,
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                        fontWeight = FontWeight.Bold,
                         color = textColor,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth(),
@@ -325,34 +275,42 @@ private fun HorizontalPagerNovel(
 }
 
 /**
- * 把正文按固定字符数切成若干页（翻页模式用）。
- * 按自然段落边界优先，避免在词中间生硬断开。
+ * 把正文按固定字符数切成若干页。firstPageTitle 非空时第一页前留出标题空间（少放一点内容）。
  */
-private fun splitContentIntoPages(content: String, pageSize: Int = 900): List<String> {
+private fun splitContentIntoPages(
+    content: String,
+    pageSize: Int = 900,
+    firstPageTitle: String? = null,
+): List<String> {
     if (content.isBlank()) return listOf("")
     val paragraphs = content.split("\n").filter { it.isNotBlank() }
     if (paragraphs.isEmpty()) return listOf(content)
 
     val pages = mutableListOf<String>()
     val buffer = StringBuilder()
+    // 第一页预留标题空间
+    var firstPage = firstPageTitle != null
     for (para in paragraphs) {
-        if (buffer.isNotEmpty() && buffer.length + para.length + 1 > pageSize) {
+        val limit = if (firstPage) pageSize - 120 else pageSize
+        if (buffer.isNotEmpty() && buffer.length + para.length + 1 > limit) {
             pages.add(buffer.toString())
             buffer.clear()
+            firstPage = false
         }
-        // 单个超长段落强制切分
-        if (para.length > pageSize) {
-            if (buffer.isNotEmpty()) {
-                pages.add(buffer.toString())
-                buffer.clear()
-            }
+        if (para.length > limit && buffer.isEmpty()) {
             var start = 0
             while (start < para.length) {
-                val end = (start + pageSize).coerceAtMost(para.length)
+                val end = (start + limit).coerceAtMost(para.length)
                 pages.add(para.substring(start, end))
                 start = end
+                firstPage = false
             }
         } else {
+            if (buffer.isNotEmpty() && buffer.length + para.length + 1 > limit) {
+                pages.add(buffer.toString())
+                buffer.clear()
+                firstPage = false
+            }
             if (buffer.isNotEmpty()) buffer.append('\n')
             buffer.append(para)
         }
@@ -361,97 +319,240 @@ private fun splitContentIntoPages(content: String, pageSize: Int = 900): List<St
     return pages.ifEmpty { listOf("") }
 }
 
-/**
- * 阅读设置面板。
- */
+/** 顶部栏 */
 @Composable
-private fun BoxScope.ReaderSettingsPanel(
+private fun BoxScope.ReaderTopBar(
+    title: String,
+    backgroundColor: Color,
+    textColor: Color,
+    onBack: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .align(Alignment.TopStart)
+            .fillMaxWidth()
+            .background(backgroundColor.copy(alpha = 0.95f))
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onBack) {
+            Icon(Icons.Filled.ArrowBack, contentDescription = "返回", tint = textColor)
+        }
+        Text(
+            text = title,
+            color = textColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.titleMedium,
+        )
+    }
+}
+
+/** 底部菜单（进度滑块 + 页签按钮 + 对应面板） */
+@Composable
+private fun BoxScope.ReaderBottomMenu(
     viewModel: NovelReaderViewModel,
+    chapters: List<ChapterItem>,
+    chapterIndex: Int,
     fontSize: Float,
     nightMode: Boolean,
     pageMode: Int,
+    hideTopBar: Boolean,
+    hideBottomBar: Boolean,
+    hideChapterTitle: Boolean,
     backgroundColor: Color,
     textColor: Color,
-    onDismiss: () -> Unit,
+    menuTab: Int,
 ) {
     val backgroundColors = if (nightMode) ReaderBackgrounds.nightColors else ReaderBackgrounds.dayColors
 
     Surface(
         modifier = Modifier
-            .fillMaxWidth()
-            .align(Alignment.BottomCenter),
+            .align(Alignment.BottomCenter)
+            .fillMaxWidth(),
         color = backgroundColor,
         shadowElevation = 8.dp,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            // 字体大小
-            Text("字体大小", color = textColor, style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = viewModel::decreaseFontSize) {
-                    Text("A-", color = textColor, fontSize = 16.sp)
-                }
-                Text(
-                    text = "${fontSize.toInt()}",
-                    color = textColor,
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                )
-                IconButton(onClick = viewModel::increaseFontSize) {
-                    Text("A+", color = textColor, fontSize = 20.sp)
-                }
-            }
-
-            Spacer(Modifier.height(16.dp))
-
-            // 翻页方式
-            Text("翻页方式", color = textColor, style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.height(8.dp))
-            Row {
-                NovelPageModeButton("上下滚动", pageMode == 0, textColor) { viewModel.setPageMode(0) }
-                Spacer(Modifier.width(12.dp))
-                NovelPageModeButton("左右翻页", pageMode == 1, textColor) { viewModel.setPageMode(1) }
-            }
-
-            Spacer(Modifier.height(16.dp))
-
-            // 背景颜色
-            Text("背景颜色", color = textColor, style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.height(8.dp))
-            Row {
-                backgroundColors.forEachIndexed { index, (color, name) ->
-                    Box(
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            when (menuTab) {
+                0 -> {
+                    // ===== 目录面板 =====
+                    Text(
+                        text = "目录（${chapters.size}章）",
+                        color = textColor,
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.padding(vertical = 8.dp),
+                    )
+                    val listState = rememberLazyListState()
+                    // 打开目录时定位到当前章节
+                    LaunchedEffect(chapters) {
+                        if (chapters.isNotEmpty()) {
+                            listState.scrollToItem(chapterIndex.coerceIn(0, chapters.size - 1))
+                        }
+                    }
+                    LazyColumn(
+                        state = listState,
                         modifier = Modifier
-                            .padding(end = 8.dp)
-                            .size(36.dp)
-                            .background(color, CircleShape)
-                            .clickable { viewModel.setBackground(index) },
+                            .fillMaxWidth()
+                            .fillMaxHeight(0.5f),
+                    ) {
+                        itemsIndexed(chapters) { index, ch ->
+                            val isCurrent = index == chapterIndex
+                            Text(
+                                text = ch.title,
+                                color = if (isCurrent) MaterialTheme.colorScheme.primary else textColor,
+                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        viewModel.switchChapter(index)
+                                        viewModel.toggleMenu()
+                                    }
+                                    .padding(vertical = 10.dp),
+                            )
+                        }
+                    }
+                }
+                1 -> {
+                    // ===== 界面面板 =====
+                    // 字号
+                    Text("字号", color = textColor, style = MaterialTheme.typography.titleSmall)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        MenuButton("A-") { viewModel.decreaseFontSize() }
+                        Text(
+                            text = "${fontSize.toInt()}",
+                            color = textColor,
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                        )
+                        MenuButton("A+") { viewModel.increaseFontSize() }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    // 背景颜色
+                    Text("背景颜色", color = textColor, style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(8.dp))
+                    Row {
+                        backgroundColors.forEachIndexed { index, (color, _) ->
+                            Box(
+                                modifier = Modifier
+                                    .padding(end = 12.dp)
+                                    .size(36.dp)
+                                    .background(color, CircleShape)
+                                    .clickable { viewModel.setBackground(index) },
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    // 翻页方式
+                    Text("翻页方式", color = textColor, style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(8.dp))
+                    Row {
+                        MenuButton("上下滚动", selected = pageMode == 0, textColor = textColor) {
+                            viewModel.setPageMode(0)
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        MenuButton("左右翻页", selected = pageMode == 1, textColor = textColor) {
+                            viewModel.setPageMode(1)
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                }
+                else -> {
+                    // ===== 设置面板（含隐藏栏目选项） =====
+                    SettingSwitch("夜间模式", nightMode) { viewModel.toggleNightMode() }
+                    SettingSwitch("隐藏顶部栏", hideTopBar) { viewModel.setHideTopBar(it) }
+                    SettingSwitch("隐藏进度栏", hideBottomBar) { viewModel.setHideBottomBar(it) }
+                    SettingSwitch("隐藏章节标题", hideChapterTitle) { viewModel.setHideChapterTitle(it) }
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+
+            Spacer(Modifier.height(4.dp))
+
+            // ===== 进度滑块行 =====
+            if (!hideBottomBar) {
+                var sliderValue by remember(chapterIndex) {
+                    androidx.compose.runtime.mutableFloatStateOf(chapterIndex.toFloat())
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = "上一章",
+                        color = textColor,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier
+                            .clickable { viewModel.prevChapter() }
+                            .padding(8.dp),
+                    )
+                    Slider(
+                        value = sliderValue,
+                        onValueChange = { sliderValue = it },
+                        onValueChangeFinished = {
+                            val target = sliderValue.toInt().coerceIn(0, chapters.size - 1)
+                            if (chapters.isNotEmpty() && target != chapterIndex) {
+                                viewModel.switchChapter(target)
+                                viewModel.toggleMenu()
+                            }
+                        },
+                        valueRange = 0f..(if (chapters.isEmpty()) 1f else (chapters.size - 1).toFloat()),
+                        steps = 0,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 8.dp),
+                    )
+                    Text(
+                        text = "下一章",
+                        color = textColor,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier
+                            .clickable { viewModel.nextChapter() }
+                            .padding(8.dp),
                     )
                 }
             }
 
-            Spacer(Modifier.height(16.dp))
-
-            // 日夜间切换
+            // ===== 页签按钮行：目录 / 界面 / 设置 =====
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceEvenly,
             ) {
-                Text("夜间模式", color = textColor, style = MaterialTheme.typography.titleSmall)
-                Spacer(Modifier.weight(1f))
-                androidx.compose.material3.Switch(
-                    checked = nightMode,
-                    onCheckedChange = { viewModel.toggleNightMode() },
-                )
+                TabButton("目录", menuTab == 0, textColor) { viewModel.setMenuTab(0) }
+                TabButton("界面", menuTab == 1, textColor) { viewModel.setMenuTab(1) }
+                TabButton("设置", menuTab == 2, textColor) { viewModel.setMenuTab(2) }
             }
-
             Spacer(Modifier.height(8.dp))
         }
     }
 }
 
-/** 小说翻页方式选择按钮 */
+/** 菜单通用按钮 */
 @Composable
-private fun NovelPageModeButton(
+private fun MenuButton(
+    text: String,
+    onClick: () -> Unit,
+) {
+    Text(
+        text = text,
+        color = MaterialTheme.colorScheme.onSurface,
+        fontSize = 16.sp,
+        modifier = Modifier
+            .background(
+                MaterialTheme.colorScheme.surfaceVariant,
+                RoundedCornerShape(8.dp),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+    )
+}
+
+/** 页签按钮（目录/界面/设置） */
+@Composable
+private fun TabButton(
     text: String,
     selected: Boolean,
     textColor: Color,
@@ -464,8 +565,51 @@ private fun NovelPageModeButton(
         color = fg,
         style = MaterialTheme.typography.bodyMedium,
         modifier = Modifier
-            .background(bg, androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+            .background(bg, RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 24.dp, vertical = 8.dp),
+    )
+}
+
+/** 翻页方式按钮（带选中态） */
+@Composable
+private fun MenuButton(
+    text: String,
+    selected: Boolean,
+    textColor: Color,
+    onClick: () -> Unit,
+) {
+    val bg = if (selected) Color(0xFF4A6FA5) else Color(0xFF333333)
+    val fg = if (selected) Color.White else textColor
+    Text(
+        text = text,
+        color = fg,
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier
+            .background(bg, RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
     )
+}
+
+/** 设置开关行 */
+@Composable
+private fun SettingSwitch(
+    label: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f),
+        )
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
 }

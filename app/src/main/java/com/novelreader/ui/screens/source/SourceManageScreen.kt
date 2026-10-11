@@ -1,0 +1,431 @@
+package com.novelreader.ui.screens.source
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.ViewList
+import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.novelreader.domain.model.SourceInfo
+import com.novelreader.domain.model.SourceType
+
+/**
+ * 源管理页。
+ *
+ * 展示已导入的源列表，支持启用/禁用、删除，并通过浮动按钮进入导入页。
+ * 支持类型/分类筛选、排序、列表/表格两种视图。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SourceManageScreen(
+    viewModel: SourceManageViewModel,
+    onImport: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val sources by viewModel.sources.collectAsState()
+    val message by viewModel.message.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+    // 类型筛选：null = 全部类型
+    var selectedType by remember { mutableStateOf<SourceType?>(null) }
+    // 内容分类筛选：null = 全部分类
+    var selectedCategory by remember { mutableStateOf<String?>(null) }
+    // 排序方式
+    var sortOrder by remember { mutableStateOf(SourceSortOrder.DEFAULT) }
+    // 视图模式：false = 列表，true = 表格
+    var tableView by remember { mutableStateOf(false) }
+    // 排序菜单展开
+    var sortMenuOpen by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) { viewModel.observe() }
+
+    // 显示提示消息
+    LaunchedEffect(message) {
+        message?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.consumeMessage()
+        }
+    }
+
+    // 先按类型过滤，再按内容分类过滤，最后排序
+    val typeFiltered = remember(sources, selectedType) {
+        if (selectedType == null) sources
+        else sources.filter { it.type == selectedType }
+    }
+    val grouped = remember(typeFiltered) { viewModel.groupByCategory(typeFiltered) }
+    val categories = remember(typeFiltered) { viewModel.sortedCategories(typeFiltered) }
+    val categoryFiltered = remember(typeFiltered, selectedCategory) {
+        if (selectedCategory == null) typeFiltered
+        else grouped[selectedCategory] ?: emptyList()
+    }
+    val displayedSources = remember(categoryFiltered, sortOrder) {
+        viewModel.sortSources(categoryFiltered, sortOrder)
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("源管理") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "返回")
+                    }
+                },
+                actions = {
+                    // 排序菜单
+                    Box {
+                        TextButton(onClick = { sortMenuOpen = true }) { Text("排序") }
+                        DropdownMenu(
+                            expanded = sortMenuOpen,
+                            onDismissRequest = { sortMenuOpen = false },
+                        ) {
+                            SourceSortOrder.entries.forEach { order ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = if (sortOrder == order) "✓ ${order.label}" else order.label,
+                                            fontWeight = if (sortOrder == order) FontWeight.Bold else FontWeight.Normal,
+                                        )
+                                    },
+                                    onClick = {
+                                        sortOrder = order
+                                        sortMenuOpen = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    // 视图切换
+                    IconButton(onClick = { tableView = !tableView }) {
+                        Icon(
+                            imageVector = if (tableView) Icons.Default.ViewList else Icons.Default.GridView,
+                            contentDescription = if (tableView) "列表视图" else "表格视图",
+                        )
+                    }
+                },
+            )
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = onImport,
+                icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                text = { Text("导入源") },
+            )
+        },
+    ) { padding ->
+        if (sources.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "还没有导入任何源",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "点击右下角「导入源」按钮\n导入 JSON 或 JS 格式的小说/漫画/视频源",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
+            ) {
+                // 类型筛选栏（小说 / 漫画 / 视频）
+                TypeFilterBar(
+                    selected = selectedType,
+                    onSelect = { selectedType = it },
+                )
+                // 内容分类筛选栏
+                CategoryFilterBar(
+                    categories = categories,
+                    counts = grouped.mapValues { it.value.size },
+                    selected = selectedCategory,
+                    onSelect = { selectedCategory = it },
+                )
+
+                if (tableView) {
+                    SourceTableView(
+                        sources = displayedSources,
+                        onToggle = { viewModel.toggleEnabled(it) },
+                        onDelete = { viewModel.deleteSource(it) },
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(displayedSources, key = { it.id }) { source ->
+                            SourceCard(
+                                source = source,
+                                onToggle = { viewModel.toggleEnabled(source) },
+                                onDelete = { viewModel.deleteSource(source) },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 表格视图：以表格形式展示源列表。
+ */
+@Composable
+private fun SourceTableView(
+    sources: List<SourceInfo>,
+    onToggle: (SourceInfo) -> Unit,
+    onDelete: (SourceInfo) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        // 表头
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+        ) {
+            TableCell("名称", 2.2f)
+            TableCell("类型", 1f)
+            TableCell("分类", 1f)
+            TableCell("启用", 1f)
+            TableCell("操作", 1f)
+        }
+        HorizontalDivider()
+
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            items(sources, key = { it.id }) { source ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TableCell(source.name, 2.2f)
+                    TableCell(source.type.label(), 1f)
+                    TableCell(source.category.ifBlank { "-" }, 1f)
+                    Row(modifier = Modifier.weight(1f)) {
+                        Switch(
+                            checked = source.enabled,
+                            onCheckedChange = { onToggle(source) },
+                        )
+                    }
+                    TextButton(onClick = { onDelete(source) }) { Text("删除") }
+                }
+                HorizontalDivider()
+            }
+        }
+    }
+}
+
+@Composable
+private fun androidx.compose.foundation.layout.RowScope.TableCell(text: String, weight: Float) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodyMedium,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.weight(weight),
+    )
+}
+
+/** SourceType 中文标签 */
+private fun SourceType.label(): String = when (this) {
+    SourceType.NOVEL -> "小说"
+    SourceType.COMIC -> "漫画"
+    SourceType.VIDEO -> "视频"
+}
+
+/**
+ * 类型筛选栏（小说 / 漫画 / 视频）。
+ */
+@Composable
+private fun TypeFilterBar(
+    selected: SourceType?,
+    onSelect: (SourceType?) -> Unit,
+) {
+    data class TypeOption(val type: SourceType?, val label: String)
+
+    val types = listOf(
+        TypeOption(null, "全部"),
+        TypeOption(SourceType.NOVEL, "小说"),
+        TypeOption(SourceType.COMIC, "漫画"),
+        TypeOption(SourceType.VIDEO, "视频"),
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        types.forEach { option ->
+            FilterChip(
+                selected = selected == option.type,
+                onClick = { onSelect(option.type) },
+                label = { Text(option.label) },
+            )
+        }
+    }
+}
+
+/**
+ * 分类筛选栏（横向滚动的 FilterChip）。
+ */
+@Composable
+private fun CategoryFilterBar(
+    categories: List<String>,
+    counts: Map<String, Int>,
+    selected: String?,
+    onSelect: (String?) -> Unit,
+) {
+    LazyRow(
+        modifier = Modifier.fillMaxWidth(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        // "全部" chip
+        item {
+            FilterChip(
+                selected = selected == null,
+                onClick = { onSelect(null) },
+                label = { Text("全部 ${counts.values.sum()}") },
+            )
+        }
+        items(categories) { category ->
+            FilterChip(
+                selected = selected == category,
+                onClick = { onSelect(if (selected == category) null else category) },
+                label = { Text("$category ${counts[category] ?: 0}") },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SourceCard(
+    source: SourceInfo,
+    onToggle: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = source.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    TypeBadge(source.type)
+                    if (source.category.isNotBlank()) {
+                        Spacer(Modifier.width(6.dp))
+                        CategoryBadge(source.category)
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "${source.format.name} · v${source.version}" +
+                        (if (source.author.isNotEmpty()) " · ${source.author}" else ""),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (source.desc.isNotEmpty()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = source.desc,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Switch(checked = source.enabled, onCheckedChange = { onToggle() })
+            TextButton(onClick = onDelete) { Text("删除") }
+        }
+    }
+}
+
+@Composable
+private fun TypeBadge(type: SourceType) {
+    val label = when (type) {
+        SourceType.NOVEL -> "小说"
+        SourceType.COMIC -> "漫画"
+        SourceType.VIDEO -> "视频"
+    }
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.primary,
+    )
+}
+
+@Composable
+private fun CategoryBadge(category: String) {
+    Text(
+        text = category,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.tertiary,
+    )
+}

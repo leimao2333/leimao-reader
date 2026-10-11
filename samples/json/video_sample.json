@@ -1,0 +1,46 @@
+{
+  "name": "示例视频源",
+  "type": "video",
+  "version": "1.0.0",
+  "author": "demo",
+  "desc": "视频源 JSON 规范样例",
+  "baseUrl": "https://example.com",
+
+  "search": {
+    "url": "https://example.com/search?keyword={{keyword}}&page={{page}}",
+    "list": "div.video-item",
+    "fields": {
+      "id": "a@href",
+      "title": ".title@text",
+      "cover": "img@src",
+      "author": ".up@text"
+    }
+  },
+
+  "detail": {
+    "url": "{{itemUrl}}",
+    "fields": {
+      "cover": ".cover img@src",
+      "author": ".up@text",
+      "desc": ".desc@text"
+    }
+  },
+
+  "chapterList": {
+    "url": "{{detailUrl}}",
+    "list": "ul.episode-list a",
+    "fields": {
+      "id": "@href",
+      "title": "@text"
+    }
+  },
+
+  "content": {
+    "url": "{{chapterUrl}}",
+    "videoUrl": "video@src",
+    "headers": {
+      "Referer": "https://example.com",
+      "User-Agent": "Mozilla/5.0"
+    }
+  }
+}

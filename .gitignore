@@ -1,0 +1,19 @@
+# Gradle
+.gradle/
+build/
+*/build/
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# 本地配置
+local.properties
+
+# 日志
+*.log
+captures/
+
+# 系统
+Thumbs.db

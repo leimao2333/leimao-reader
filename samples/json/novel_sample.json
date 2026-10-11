@@ -1,0 +1,45 @@
+{
+  "name": "示例小说源",
+  "type": "novel",
+  "version": "1.0.0",
+  "author": "demo",
+  "desc": "小说源 JSON 规范样例",
+  "baseUrl": "https://example.com",
+
+  "search": {
+    "url": "https://example.com/search?keyword={{keyword}}&page={{page}}",
+    "method": "GET",
+    "list": "div.book-item",
+    "fields": {
+      "id": "a@href",
+      "title": ".title@text",
+      "cover": "img@src",
+      "author": ".author@text",
+      "desc": ".intro@text"
+    }
+  },
+
+  "detail": {
+    "url": "{{itemUrl}}",
+    "fields": {
+      "cover": ".cover img@src",
+      "author": ".info .author@text",
+      "desc": ".desc@text"
+    }
+  },
+
+  "chapterList": {
+    "url": "{{detailUrl}}",
+    "list": "div.chapter-list a",
+    "fields": {
+      "id": "@href",
+      "title": "@text"
+    }
+  },
+
+  "content": {
+    "url": "{{chapterUrl}}",
+    "text": "#content@html",
+    "remove": ["script", "style", ".ad"]
+  }
+}

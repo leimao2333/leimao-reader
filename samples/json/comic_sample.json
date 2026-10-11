@@ -1,0 +1,42 @@
+{
+  "name": "示例漫画源",
+  "type": "comic",
+  "version": "1.0.0",
+  "author": "demo",
+  "desc": "漫画源 JSON 规范样例",
+  "baseUrl": "https://example.com",
+
+  "search": {
+    "url": "https://example.com/search?keyword={{keyword}}&page={{page}}",
+    "list": "div.comic-item",
+    "fields": {
+      "id": "a@href",
+      "title": ".title@text",
+      "cover": "img@src",
+      "author": ".author@text"
+    }
+  },
+
+  "detail": {
+    "url": "{{itemUrl}}",
+    "fields": {
+      "cover": ".cover img@src",
+      "author": ".author@text",
+      "desc": ".desc@text"
+    }
+  },
+
+  "chapterList": {
+    "url": "{{detailUrl}}",
+    "list": "ul.chapter-list li a",
+    "fields": {
+      "id": "@href",
+      "title": "@text"
+    }
+  },
+
+  "content": {
+    "url": "{{chapterUrl}}",
+    "images": "#chapter-images img@src"
+  }
+}

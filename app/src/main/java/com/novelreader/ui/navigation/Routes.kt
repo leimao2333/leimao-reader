@@ -1,0 +1,70 @@
+package com.novelreader.ui.navigation
+
+/**
+ * 导航路由定义。
+ *
+ * 统一管理所有页面的路由，避免硬编码字符串散落各处。
+ * 预留：新增页面在此追加。
+ *
+ * 复杂对象（MediaItem / ChapterItem）通过 JSON 编码后作为单个参数传递，
+ * 见 [NavArgs]。
+ */
+object Routes {
+    // ===== 主框架 =====
+    const val HOME = "home"                    // 首页（书架/发现/源管理入口）
+    const val SETTINGS = "settings"            // 设置中心
+    const val CHANGELOG = "changelog"          // 更新日志
+
+    // ===== 源管理 =====
+    const val SOURCE_MANAGE = "source_manage"  // 源列表管理
+    const val SOURCE_IMPORT = "source_import"  // 源导入
+
+    // ===== 小说 =====
+    const val NOVEL_SEARCH = "novel_search"
+    const val NOVEL_DETAIL = "novel_detail/{item}"       // item = 编码的 MediaItem
+    const val NOVEL_READER = "novel_reader/{item}/{chapters}/{chapter}"  // 编码对象
+
+    // ===== 漫画 =====
+    const val COMIC_SEARCH = "comic_search"
+    const val COMIC_DETAIL = "comic_detail/{item}"
+    const val COMIC_READER = "comic_reader/{item}/{chapters}/{chapter}"
+
+    // ===== 视频 =====
+    const val VIDEO_SEARCH = "video_search"
+    const val VIDEO_DETAIL = "video_detail/{item}"
+    const val VIDEO_PLAYER = "video_player/{item}/{chapters}/{chapter}"
+
+    // ===== 通用 =====
+    const val BOOKSHELF = "bookshelf"          // 书架/收藏
+
+    // ===== 路由构建函数 =====
+    fun novelDetail(item: com.novelreader.domain.model.MediaItem): String =
+        "novel_detail/${NavArgs.encodeItem(item)}"
+
+    fun novelReader(
+        item: com.novelreader.domain.model.MediaItem,
+        chapters: List<com.novelreader.domain.model.ChapterItem>,
+        chapter: com.novelreader.domain.model.ChapterItem,
+    ): String =
+        "novel_reader/${NavArgs.encodeItem(item)}/${NavArgs.encodeChapters(chapters)}/${NavArgs.encodeChapter(chapter)}"
+
+    fun comicDetail(item: com.novelreader.domain.model.MediaItem): String =
+        "comic_detail/${NavArgs.encodeItem(item)}"
+
+    fun comicReader(
+        item: com.novelreader.domain.model.MediaItem,
+        chapters: List<com.novelreader.domain.model.ChapterItem>,
+        chapter: com.novelreader.domain.model.ChapterItem,
+    ): String =
+        "comic_reader/${NavArgs.encodeItem(item)}/${NavArgs.encodeChapters(chapters)}/${NavArgs.encodeChapter(chapter)}"
+
+    fun videoDetail(item: com.novelreader.domain.model.MediaItem): String =
+        "video_detail/${NavArgs.encodeItem(item)}"
+
+    fun videoPlayer(
+        item: com.novelreader.domain.model.MediaItem,
+        chapters: List<com.novelreader.domain.model.ChapterItem>,
+        chapter: com.novelreader.domain.model.ChapterItem,
+    ): String =
+        "video_player/${NavArgs.encodeItem(item)}/${NavArgs.encodeChapters(chapters)}/${NavArgs.encodeChapter(chapter)}"
+}

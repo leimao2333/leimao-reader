@@ -108,10 +108,10 @@ fun SettingsScreen(
             )
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                ReaderBackgrounds.dayColors.forEachIndexed { index, (color, name) ->
+                ReaderBackgrounds.dayColors.forEachIndexed { index, rc ->
                     ColorSwatch(
-                        color = color,
-                        name = name,
+                        color = rc.background,
+                        name = rc.name,
                         selected = novelBgIndex == index,
                         onClick = { viewModel.setNovelBgIndex(index) },
                     )

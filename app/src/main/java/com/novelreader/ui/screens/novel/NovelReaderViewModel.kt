@@ -77,6 +77,14 @@ class NovelReaderViewModel(
             state
         }
 
+    /** 翻页动画：0=无动画，1=滑动，2=覆盖，3=仿真翻页 */
+    val pageAnim: StateFlow<Int> = preferences.novelPageAnimFlow
+        .let { flow ->
+            val state = MutableStateFlow(1)
+            viewModelScope.launch { flow.collectLatest { state.value = it } }
+            state
+        }
+
     /** 隐藏栏目：顶部栏 */
     val hideTopBar: StateFlow<Boolean> = preferences.novelHideTopBarFlow
         .let { flow ->
@@ -195,6 +203,10 @@ class NovelReaderViewModel(
 
     fun setPageMode(mode: Int) {
         viewModelScope.launch { preferences.setNovelPageMode(mode) }
+    }
+
+    fun setPageAnim(anim: Int) {
+        viewModelScope.launch { preferences.setNovelPageAnim(anim) }
     }
 
     fun setHideTopBar(value: Boolean) {

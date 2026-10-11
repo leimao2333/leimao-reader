@@ -2,7 +2,9 @@ package com.novelreader.ui.screens.novel
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -45,6 +47,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -54,6 +57,18 @@ import androidx.compose.ui.unit.sp
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.ui.theme.ReaderBackgrounds
+
+/**
+ * 快速单击检测：按下后抬手即判定为单击，不做双击/长按超时等待，
+ * 消除菜单呼出的点击延迟。
+ */
+private fun Modifier.fastTap(onTap: () -> Unit): Modifier = this.pointerInput(Unit) {
+    awaitEachGesture {
+        awaitFirstDown(requireUnconsumed = false)
+        val up = waitForUpOrCancellation()
+        if (up != null) onTap()
+    }
+}
 
 /**
  * 小说阅读页（legado 风格菜单）。
@@ -83,6 +98,7 @@ fun NovelReaderScreen(
     val menuTab by viewModel.menuTab.collectAsState()
     val chapterTitle by viewModel.chapterTitle.collectAsState()
     val pageMode by viewModel.pageMode.collectAsState()
+    val pageAnim by viewModel.pageAnim.collectAsState()
     val hideTopBar by viewModel.hideTopBar.collectAsState()
     val hideBottomBar by viewModel.hideBottomBar.collectAsState()
     val hideChapterTitle by viewModel.hideChapterTitle.collectAsState()
@@ -94,8 +110,8 @@ fun NovelReaderScreen(
 
     val backgroundColors = if (nightMode) ReaderBackgrounds.nightColors else ReaderBackgrounds.dayColors
     val bgIndexSafe = bgIndex.coerceIn(backgroundColors.indices)
-    val backgroundColor = backgroundColors[bgIndexSafe].first
-    val textColor = if (nightMode) Color(0xFFB0B0B0) else Color(0xFF1A1A1A)
+    val backgroundColor = backgroundColors[bgIndexSafe].background
+    val textColor = backgroundColors[bgIndexSafe].text
 
     Box(
         modifier = Modifier
@@ -108,7 +124,7 @@ fun NovelReaderScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .pointerInput(Unit) { detectTapGestures { viewModel.toggleMenu() } },
+                        .fastTap { viewModel.toggleMenu() },
                 ) {
                     CircularProgressIndicator(Modifier.align(Alignment.Center))
                 }
@@ -117,7 +133,7 @@ fun NovelReaderScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .pointerInput(Unit) { detectTapGestures { viewModel.toggleMenu() } },
+                        .fastTap { viewModel.toggleMenu() },
                 ) {
                     Text(
                         text = error ?: "加载失败",
@@ -135,6 +151,7 @@ fun NovelReaderScreen(
                     fontSize = fontSize,
                     textColor = textColor,
                     hideChapterTitle = hideChapterTitle,
+                    pageAnim = pageAnim,
                     onTap = { viewModel.toggleMenu() },
                 )
             }
@@ -170,6 +187,7 @@ fun NovelReaderScreen(
                 fontSize = fontSize,
                 nightMode = nightMode,
                 pageMode = pageMode,
+                pageAnim = pageAnim,
                 hideTopBar = hideTopBar,
                 hideBottomBar = hideBottomBar,
                 hideChapterTitle = hideChapterTitle,
@@ -194,8 +212,8 @@ private fun ScrollNovel(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .fastTap { onTap() }
             .verticalScroll(rememberScrollState())
-            .pointerInput(Unit) { detectTapGestures { onTap() } }
             .padding(horizontal = 20.dp, vertical = 48.dp),
     ) {
         if (!hideChapterTitle) {
@@ -219,7 +237,7 @@ private fun ScrollNovel(
     }
 }
 
-/** 左右翻页正文（按段落边界切片分页） */
+/** 左右翻页正文（按段落边界切片分页，支持翻页动画） */
 @Composable
 private fun HorizontalPagerNovel(
     content: String,
@@ -227,6 +245,7 @@ private fun HorizontalPagerNovel(
     fontSize: Float,
     textColor: Color,
     hideChapterTitle: Boolean,
+    pageAnim: Int,
     onTap: () -> Unit,
 ) {
     val pages = remember(content, hideChapterTitle) {
@@ -237,18 +256,35 @@ private fun HorizontalPagerNovel(
 
     HorizontalPager(
         state = pagerState,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .fastTap { onTap() },
     ) { page ->
+        val offset = pagerState.currentPageOffsetFraction
+        // 根据翻页动画类型，计算该页的 graphicsLayer 变换
+        val transform = when (pageAnim) {
+            0 -> PageTransform.NoAnim
+            2 -> PageTransform.cover(offset, page)
+            3 -> PageTransform.simulate(offset, page)
+            else -> PageTransform.slide
+        }
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(Unit) { detectTapGestures { onTap() } },
+                .graphicsLayer {
+                    translationX = transform.translationX
+                    scaleX = transform.scaleX
+                    scaleY = transform.scaleY
+                    alpha = transform.alpha
+                    rotationY = transform.rotationY
+                    shadowElevation = transform.shadowElevation
+                    cameraDistance = 12f * density
+                },
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .pointerInput(Unit) { detectTapGestures { onTap() } }
                     .padding(horizontal = 20.dp, vertical = 48.dp),
             ) {
                 if (page == 0 && !hideChapterTitle) {
@@ -270,6 +306,56 @@ private fun HorizontalPagerNovel(
                     textAlign = TextAlign.Justify,
                 )
             }
+        }
+    }
+}
+
+/**
+ * 翻页动画的变换参数（作用于单个 page 的 graphicsLayer）。
+ */
+private data class PageTransform(
+    val translationX: Float = 0f,
+    val scaleX: Float = 1f,
+    val scaleY: Float = 1f,
+    val alpha: Float = 1f,
+    val rotationY: Float = 0f,
+    val shadowElevation: Float = 0f,
+) {
+    companion object {
+        /** 无动画：页面不做额外变换 */
+        val NoAnim = PageTransform()
+        /** 滑动（默认）：HorizontalPager 原生平移，这里不额外处理 */
+        val slide = PageTransform()
+
+        /** 覆盖：翻页时当前页轻微缩放淡出，下一页从右侧覆盖 */
+        fun cover(offset: Float, page: Int): PageTransform {
+            // offset：当前页被拖离中心的比例（0~1，正值表示往左滑）
+            // 正在离开的页（offset 使 page 往左移）做缩放淡出
+            val leaving = if (page == 0) offset else offset
+            val abs = kotlin.math.abs(offset).coerceIn(0f, 1f)
+            val scale = 1f - abs * 0.12f
+            val alpha = 1f - abs * 0.25f
+            return PageTransform(
+                scaleX = scale,
+                scaleY = scale,
+                alpha = alpha,
+                shadowElevation = abs * 8f,
+            )
+        }
+
+        /** 仿真翻页：页面绕 Y 轴 3D 旋转 */
+        fun simulate(offset: Float, page: Int): PageTransform {
+            val abs = kotlin.math.abs(offset).coerceIn(0f, 1f)
+            // 旋转角度：最大约 -60°
+            val rotation = -abs * 60f
+            val scale = 1f - abs * 0.05f
+            return PageTransform(
+                rotationY = rotation,
+                scaleX = scale,
+                scaleY = scale,
+                alpha = 1f - abs * 0.15f,
+                shadowElevation = abs * 12f,
+            )
         }
     }
 }
@@ -357,6 +443,7 @@ private fun BoxScope.ReaderBottomMenu(
     fontSize: Float,
     nightMode: Boolean,
     pageMode: Int,
+    pageAnim: Int,
     hideTopBar: Boolean,
     hideBottomBar: Boolean,
     hideChapterTitle: Boolean,
@@ -373,8 +460,7 @@ private fun BoxScope.ReaderBottomMenu(
         color = backgroundColor,
         shadowElevation = 8.dp,
         shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
-    ) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+    ) {        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             when (menuTab) {
                 0 -> {
                     // ===== 目录面板 =====
@@ -435,12 +521,12 @@ private fun BoxScope.ReaderBottomMenu(
                     Text("背景颜色", color = textColor, style = MaterialTheme.typography.titleSmall)
                     Spacer(Modifier.height(8.dp))
                     Row {
-                        backgroundColors.forEachIndexed { index, (color, _) ->
+                        backgroundColors.forEachIndexed { index, rc ->
                             Box(
                                 modifier = Modifier
                                     .padding(end = 12.dp)
                                     .size(36.dp)
-                                    .background(color, CircleShape)
+                                    .background(rc.background, CircleShape)
                                     .clickable { viewModel.setBackground(index) },
                             )
                         }
@@ -459,6 +545,31 @@ private fun BoxScope.ReaderBottomMenu(
                         }
                     }
                     Spacer(Modifier.height(12.dp))
+                    // 翻页动画（仅左右翻页生效）
+                    if (pageMode == 1) {
+                        Text("翻页动画", color = textColor, style = MaterialTheme.typography.titleSmall)
+                        Spacer(Modifier.height(8.dp))
+                        Row {
+                            MenuButton("无动画", selected = pageAnim == 0, textColor = textColor) {
+                                viewModel.setPageAnim(0)
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            MenuButton("滑动", selected = pageAnim == 1, textColor = textColor) {
+                                viewModel.setPageAnim(1)
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            MenuButton("覆盖", selected = pageAnim == 2, textColor = textColor) {
+                                viewModel.setPageAnim(2)
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Row {
+                            MenuButton("仿真翻页", selected = pageAnim == 3, textColor = textColor) {
+                                viewModel.setPageAnim(3)
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                    }
                 }
                 else -> {
                     // ===== 设置面板（含隐藏栏目选项） =====

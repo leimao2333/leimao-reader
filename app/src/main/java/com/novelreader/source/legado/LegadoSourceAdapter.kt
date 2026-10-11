@@ -34,12 +34,30 @@ class LegadoSourceAdapter(
     override suspend fun search(keyword: String, page: Int): List<MediaItem> {
         if (source.searchUrl.isBlank()) return emptyList()
 
-        val url = renderUrl(source.searchUrl, keyword, page)
-        val content = fetch(url)
-        if (content.isNullOrBlank()) return emptyList()
+        // searchUrl 可能形如 "url,{请求配置JSON}"（含 method/body/charset）
+        val (urlTemplate, requestConfig) = splitRequestConfig(source.searchUrl)
+        var url = renderUrl(urlTemplate, keyword, page)
+        if (!url.startsWith("http")) {
+            url = LegadoRuleEngine.toAbsoluteUrl(baseUrl, url) ?: url
+        }
 
-        // searchUrl 可能形如 "url,{json}"（逗号后是请求配置），取逗号前
-        val actualUrl = url.substringBefore(",")
+        val content = runCatching {
+            val method = requestConfig?.get("method")?.asString?.uppercase() ?: "GET"
+            val charset = requestConfig?.get("charset")?.asString?.takeIf { it.isNotBlank() }
+            if (method == "POST") {
+                val bodyTemplate = requestConfig?.get("body")?.asString ?: ""
+                val body = renderUrl(bodyTemplate, keyword, page)
+                val contentType = if (bodyTemplate.trimStart().startsWith("{")) {
+                    "application/json; charset=utf-8"
+                } else {
+                    "application/x-www-form-urlencoded"
+                }
+                HttpClient.post(url, body, headers, charset, contentType)
+            } else {
+                HttpClient.get(url, headers, charset)
+            }
+        }.getOrNull()
+        if (content.isNullOrBlank()) return emptyList()
 
         // 判断响应是否为 JSON（@json 规则或 JSON 内容）
         val isJson = content.trimStart().startsWith("{") || content.trimStart().startsWith("[")
@@ -285,12 +303,15 @@ class LegadoSourceAdapter(
         val content = fetch(detailUrl) ?: return emptyList()
 
         // 目录可能有独立 URL：
-        // 1. ruleToc.url
-        // 2. ruleBookInfo.tocUrl（需渲染 {{baseUrl}}，此处的 baseUrl 指详情页 URL）
-        val tocUrlRaw = rule["url"]
-            ?: source.ruleBookInfo["tocUrl"]?.let { renderUrlTemplate(it, detailUrl) }
-        val tocUrl = tocUrlRaw?.let { LegadoRuleEngine.toAbsoluteUrl(baseUrl, it) }
-        val listContent = if (tocUrl != null && tocUrl != detailUrl) fetch(tocUrl) ?: content else content
+        // 1. ruleToc.url（URL 模板或选择器规则）
+        // 2. ruleBookInfo.tocUrl（需从详情页渲染/提取，baseUrl 指详情页 URL）
+        val tocUrlRaw = rule["url"]?.takeIf { it.isNotBlank() }
+            ?: source.ruleBookInfo["tocUrl"]?.takeIf { it.isNotBlank() }
+        val tocUrl = tocUrlRaw?.let { resolveTocUrl(it, content, detailUrl) }
+            ?.let { LegadoRuleEngine.toAbsoluteUrl(detailUrl, it) }
+        val listContent = if (tocUrl != null && tocUrl.isNotBlank() && tocUrl != detailUrl) {
+            fetch(tocUrl) ?: content
+        } else content
 
         val listRule = rule["chapterList"] ?: rule["list"] ?: return emptyList()
         val fieldRules = rule
@@ -310,7 +331,9 @@ class LegadoSourceAdapter(
         return list.mapIndexed { index, fields ->
             val name = fields["chapterName"] ?: fields["name"] ?: fields["title"] ?: "第${index + 1}章"
             val chapterUrlRaw = fields["chapterUrl"] ?: fields["url"] ?: ""
-            val chapterUrl = LegadoRuleEngine.toAbsoluteUrl(baseUrl, chapterUrlRaw) ?: chapterUrlRaw
+            // 章节相对地址以「目录页」为基准解析（legado 语义：相对当前页面）
+            val pageBase = tocUrl ?: detailUrl
+            val chapterUrl = LegadoRuleEngine.toAbsoluteUrl(pageBase, chapterUrlRaw) ?: chapterUrlRaw
             ChapterItem(
                 id = chapterUrl.ifBlank { "$index" },
                 title = name,
@@ -325,6 +348,21 @@ class LegadoSourceAdapter(
     private fun renderUrlTemplate(template: String, contextUrl: String): String {
         return template.replace("{{baseUrl}}", contextUrl)
             .replace("{{baseUrl.replace('?paging=0','')}}", contextUrl.replace("?paging=0", ""))
+    }
+
+    /**
+     * 解析目录地址。
+     * - 含 `http` 或 `{{占位}}` → 视为 URL 模板，直接渲染；
+     * - 否则视为「选择器规则」，从详情页中提取（如 `.yuedu@a@href##...`）。
+     */
+    private fun resolveTocUrl(raw: String, detailContent: String, detailUrl: String): String? {
+        val r = raw.trim()
+        if (r.isBlank()) return null
+        return if (r.startsWith("http") || r.contains("{{")) {
+            renderUrlTemplate(r, detailUrl)
+        } else {
+            LegadoRuleEngine.extractString(detailContent, r, detailUrl)
+        }
     }
 
     // ===== 正文 =====
@@ -480,6 +518,25 @@ class LegadoSourceAdapter(
             result = result.replace("{{$k}}", java.net.URLEncoder.encode(v, "UTF-8"))
         }
         return result
+    }
+
+    /**
+     * 拆分 `"url,{请求配置JSON}"` 形式的 searchUrl。
+     * 返回 (url 模板, 配置对象或 null)。配置含 method / body / charset 等字段。
+     */
+    private fun splitRequestConfig(raw: String): Pair<String, com.google.gson.JsonObject?> {
+        var i = raw.indexOf(',')
+        while (i >= 0) {
+            val rest = raw.substring(i + 1).trim()
+            if (rest.startsWith("{")) {
+                val cfg = runCatching {
+                    com.google.gson.JsonParser.parseString(rest).asJsonObject
+                }.getOrNull()
+                if (cfg != null) return raw.substring(0, i).trim() to cfg
+            }
+            i = raw.indexOf(',', i + 1)
+        }
+        return raw.trim() to null
     }
 
     /** 带请求头抓取 */

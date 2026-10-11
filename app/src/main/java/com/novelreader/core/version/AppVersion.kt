@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.0.0.7"
+    const val CURRENT_VERSION = "1.0.0.8"
 
     /**
      * 更新日志。
@@ -19,6 +19,23 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.0.0.8",
+            date = "2026-10-11",
+            changes = listOf(
+                "重写书源规则引擎的选择器解析：支持 legado 原生短式语法（.class、.class.索引）",
+                "修复：class./tag./id. 前缀选择器从未生效的严重缺陷（此前 HTML 类书源几乎全部解析失败）",
+                "支持 @ 链式选择（选择器@子选择器@提取符）与多级属性提取（如 .fix@p.0@text）",
+                "支持数字索引（.0、.1、负数从末尾取）与索引区间（1:6），修复目录/列表选择器报错",
+                "支持 && 组合规则（多段结果依次拼接）与 textNodes 提取符",
+                "新增 XPath 规则支持（以 // 或 (/ 开头的选择器）",
+                "解析健壮性：非法选择器、@js/JS 规则、空选择器不再抛异常中断整条书源，统一降级为空",
+                "URL 自动清洗：空格/中文等非法字符自动百分号编码",
+                "阅读正文为空时给出提示而非白屏，并引导「切换书源」",
+                "搜索支持相对地址自动补全与 POST 请求（含 method/body/charset 配置）",
+                "HTTP 客户端新增 POST 能力",
+            ),
+        ),
         VersionEntry(
             version = "1.0.0.7",
             date = "2026-10-11",

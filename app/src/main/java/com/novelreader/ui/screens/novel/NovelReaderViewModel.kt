@@ -209,8 +209,15 @@ class NovelReaderViewModel(
             _error.value = null
             runCatching { contentRepository.content(chapter) }
                 .onSuccess { result ->
-                    _content.value = result.novelText ?: ""
-                    saveProgress()
+                    val text = result.novelText?.trim().orEmpty()
+                    if (text.isEmpty()) {
+                        // 源返回空正文（多为源失效 / 规则不匹配）：给出提示而非白屏，便于用户换源
+                        _content.value = ""
+                        _error.value = "本章正文为空：该书源可能已失效，可在菜单中「切换书源」重试"
+                    } else {
+                        _content.value = result.novelText ?: ""
+                        saveProgress()
+                    }
                 }
                 .onFailure { e ->
                     _error.value = e.message ?: "加载失败"

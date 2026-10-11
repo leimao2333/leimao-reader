@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.novelreader.core.preferences.PreferencesManager
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
+import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.ProgressRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -121,6 +122,35 @@ class NovelReaderViewModel(
     private val _currentChapterIndex = MutableStateFlow(0)
     val currentChapterIndex: StateFlow<Int> = _currentChapterIndex.asStateFlow()
 
+    // ===== 换源 =====
+    /** 换源面板是否打开 */
+    private val _changeSourceOpen = MutableStateFlow(false)
+    val changeSourceOpen: StateFlow<Boolean> = _changeSourceOpen.asStateFlow()
+
+    /** 换源候选列表 */
+    private val _changeSourceCandidates = MutableStateFlow<List<MediaItem>>(emptyList())
+    val changeSourceCandidates: StateFlow<List<MediaItem>> = _changeSourceCandidates.asStateFlow()
+
+    /** 换源搜索中 */
+    private val _changeSourceLoading = MutableStateFlow(false)
+    val changeSourceLoading: StateFlow<Boolean> = _changeSourceLoading.asStateFlow()
+
+    /** 换源筛选：仅同作者（默认开） */
+    private val _sameAuthorOnly = MutableStateFlow(true)
+    val sameAuthorOnly: StateFlow<Boolean> = _sameAuthorOnly.asStateFlow()
+
+    /** 换源错误信息 */
+    private val _changeSourceError = MutableStateFlow<String?>(null)
+    val changeSourceError: StateFlow<String?> = _changeSourceError.asStateFlow()
+
+    /** 当前阅读的书籍名（换源搜索用） */
+    private val _currentTitle = MutableStateFlow("")
+    val currentTitle: StateFlow<String> = _currentTitle.asStateFlow()
+
+    /** 当前阅读的书籍作者（换源同作者筛选用） */
+    private val _currentAuthor = MutableStateFlow<String?>(null)
+    val currentAuthor: StateFlow<String?> = _currentAuthor.asStateFlow()
+
     /**
      * 初始化阅读（进入阅读页时调用）。
      *
@@ -133,6 +163,8 @@ class NovelReaderViewModel(
         _chapters.value = chapters
         currentChapter = chapter
         _chapterTitle.value = chapter.title
+        _currentTitle.value = item.title
+        _currentAuthor.value = item.author
         loadContent(chapter)
     }
 
@@ -229,6 +261,113 @@ class NovelReaderViewModel(
     /** 切换菜单页签（目录/界面/设置） */
     fun setMenuTab(tab: Int) {
         _menuTab.value = tab
+    }
+
+    // ===== 换源 =====
+    /** 打开换源面板并搜索同名书 */
+    fun openChangeSource() {
+        _changeSourceOpen.value = true
+        searchSameTitle()
+    }
+
+    /** 关闭换源面板 */
+    fun closeChangeSource() {
+        _changeSourceOpen.value = false
+    }
+
+    /** 切换「仅同作者」开关（切换后重新过滤，无需重新搜索） */
+    fun setSameAuthorOnly(value: Boolean) {
+        _sameAuthorOnly.value = value
+        filterCandidates()
+    }
+
+    /** 搜索当前书名的候选源 */
+    private fun searchSameTitle() {
+        val title = _currentTitle.value
+        if (title.isBlank()) return
+        viewModelScope.launch {
+            _changeSourceLoading.value = true
+            _changeSourceError.value = null
+            runCatching {
+                contentRepository.search(SourceType.NOVEL, title, 1)
+            }.onSuccess { results ->
+                _allCandidates = results
+                filterCandidates()
+            }.onFailure { e ->
+                _changeSourceError.value = e.message ?: "换源搜索失败"
+                _allCandidates = emptyList()
+                _changeSourceCandidates.value = emptyList()
+            }
+            _changeSourceLoading.value = false
+        }
+    }
+
+    /** 全量候选（未按同作者过滤） */
+    private var _allCandidates: List<MediaItem> = emptyList()
+
+    /**
+     * 按书名 + 可选同作者过滤候选。
+     * 排除当前源同一本书（sourceId+id 相同）。
+     */
+    private fun filterCandidates() {
+        val title = _currentTitle.value.trim()
+        val author = _currentAuthor.value
+        val current = currentItem
+        val sameAuthor = _sameAuthorOnly.value
+        val filtered = _allCandidates.filter { cand ->
+            // 排除当前正在读的这本书
+            if (current != null && cand.sourceId == current.sourceId && cand.id == current.id) return@filter false
+            // 书名匹配（完全相等或互相包含，忽略大小写）
+            val titleMatch = cand.title.trim().equals(title, ignoreCase = true) ||
+                cand.title.contains(title, ignoreCase = true) ||
+                title.contains(cand.title.trim(), ignoreCase = true)
+            if (!titleMatch) return@filter false
+            // 同作者筛选：开启时要求作者一致（任一为空视为不匹配则太严，空作者视为匹配）
+            if (sameAuthor) {
+                val candAuthor = cand.author?.trim()
+                val curAuthor = author?.trim()
+                if (curAuthor.isNullOrBlank() || candAuthor.isNullOrBlank()) true
+                else candAuthor.equals(curAuthor, ignoreCase = true)
+            } else true
+        }
+        _changeSourceCandidates.value = filtered
+    }
+
+    /**
+     * 切换到候选源。
+     * 拉取目标源目录，按当前章节标题匹配定位；匹配不到则从第一章开始。
+     */
+    fun switchSource(target: MediaItem) {
+        val currentTitleText = currentChapter?.title ?: ""
+        viewModelScope.launch {
+            _changeSourceLoading.value = true
+            _changeSourceError.value = null
+            runCatching { contentRepository.chapterList(target) }
+                .onSuccess { newChapters ->
+                    if (newChapters.isEmpty()) {
+                        _changeSourceError.value = "该源无章节"
+                        _changeSourceLoading.value = false
+                        return@launch
+                    }
+                    // 按章节标题匹配定位
+                    var index = newChapters.indexOfFirst { it.title.trim() == currentTitleText.trim() }
+                    if (index < 0) {
+                        index = newChapters.indexOfFirst { it.title.contains(currentTitleText, ignoreCase = true) }
+                    }
+                    if (index < 0) index = 0
+                    // 切换：更新当前书、章节列表、书名作者，加载对应章节
+                    currentItem = target
+                    _chapters.value = newChapters
+                    _currentTitle.value = target.title
+                    _currentAuthor.value = target.author
+                    loadContent(newChapters[index])
+                    _changeSourceOpen.value = false
+                }
+                .onFailure { e ->
+                    _changeSourceError.value = e.message ?: "切换源失败"
+                }
+            _changeSourceLoading.value = false
+        }
     }
 
     // ===== 进度保存 =====

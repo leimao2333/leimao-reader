@@ -36,6 +36,7 @@ import com.novelreader.ui.components.SearchProgressBar
 fun NovelSearchScreen(
     viewModel: NovelSearchViewModel,
     onItemClick: (MediaItem) -> Unit,
+    onRead: (MediaItem) -> Unit,
     onBack: () -> Unit,
 ) {
     val query by viewModel.query.collectAsState()
@@ -92,6 +93,7 @@ fun NovelSearchScreen(
                     results = state.results,
                     isEmptyHint = "正在搜索中，结果将实时显示…",
                     onItemClick = onItemClick,
+                    onRead = onRead,
                 )
             }
             // 搜索完成且有错误
@@ -119,6 +121,7 @@ fun NovelSearchScreen(
                     results = state.results,
                     isEmptyHint = "",
                     onItemClick = onItemClick,
+                    onRead = onRead,
                 )
             }
         }
@@ -133,6 +136,7 @@ private fun SearchResultList(
     results: List<MediaItem>,
     isEmptyHint: String,
     onItemClick: (MediaItem) -> Unit,
+    onRead: (MediaItem) -> Unit,
 ) {
     if (results.isEmpty()) {
         if (isEmptyHint.isNotBlank()) {
@@ -151,7 +155,7 @@ private fun SearchResultList(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         items(results, key = { "${it.sourceId}_${it.id}" }) { item ->
-            MediaItemCard(item = item, onClick = { onItemClick(item) })
+            MediaItemCard(item = item, onClick = { onItemClick(item) }, onRead = { onRead(item) })
         }
     }
 }

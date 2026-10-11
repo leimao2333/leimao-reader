@@ -64,6 +64,28 @@ fun MediaItemCard(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+                // 简介（小说等展示）
+                item.desc?.takeIf { it.isNotBlank() }?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                // 来源名
+                if (item.sourceName.isNotBlank()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "来源：${item.sourceName}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }

@@ -41,7 +41,7 @@ class VideoSearchViewModel(
             preferencesManager.fuzzySearchFlow.collect { _fuzzyEnabled.value = it }
         }
         viewModelScope.launch {
-            preferencesManager.searchHistoryFlow.collect { _history.value = it }
+            preferencesManager.searchHistoryFlow(SourceType.VIDEO).collect { _history.value = it }
         }
     }
 
@@ -54,14 +54,14 @@ class VideoSearchViewModel(
     }
 
     fun clearHistory() {
-        viewModelScope.launch { preferencesManager.clearSearchHistory() }
+        viewModelScope.launch { preferencesManager.clearSearchHistory(SourceType.VIDEO) }
     }
 
     fun search() {
         val keyword = _query.value.trim()
         if (keyword.isEmpty()) return
 
-        viewModelScope.launch { preferencesManager.addSearchHistory(keyword) }
+        viewModelScope.launch { preferencesManager.addSearchHistory(SourceType.VIDEO, keyword) }
 
         searchJob?.cancel()
 

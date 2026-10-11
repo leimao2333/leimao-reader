@@ -51,13 +51,15 @@ fun AppNavHost(container: AppContainer) {
         // ===== 首页 =====
         composable(Routes.HOME) {
             HomeScreen(
-                container = container,
                 onOpenNovelItem = { item -> navController.navigate(Routes.novelDetail(item)) },
                 onOpenComicItem = { item -> navController.navigate(Routes.comicDetail(item)) },
                 onOpenVideoItem = { item -> navController.navigate(Routes.videoDetail(item)) },
                 onOpenBookshelf = { navController.navigate(Routes.BOOKSHELF) },
                 onOpenSources = { navController.navigate(Routes.SOURCE_MANAGE) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+                onOpenNovelSearch = { navController.navigate(Routes.NOVEL_SEARCH) },
+                onOpenComicSearch = { navController.navigate(Routes.COMIC_SEARCH) },
+                onOpenVideoSearch = { navController.navigate(Routes.VIDEO_SEARCH) },
             )
         }
 
@@ -168,6 +170,7 @@ fun AppNavHost(container: AppContainer) {
                 onItemClick = { item ->
                     navController.navigate(Routes.novelDetail(item))
                 },
+                onBack = { navController.popBackStack() },
             )
         }
 
@@ -237,6 +240,7 @@ fun AppNavHost(container: AppContainer) {
                 onItemClick = { item ->
                     navController.navigate(Routes.comicDetail(item))
                 },
+                onBack = { navController.popBackStack() },
             )
         }
 
@@ -304,6 +308,7 @@ fun AppNavHost(container: AppContainer) {
                 onItemClick = { item ->
                     navController.navigate(Routes.videoDetail(item))
                 },
+                onBack = { navController.popBackStack() },
             )
         }
 

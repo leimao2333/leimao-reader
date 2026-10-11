@@ -410,11 +410,37 @@ class LegadoSourceAdapter(
         }
         // ## 正则净化（非 JSON 路径下已由 renderJsonRule 处理；此处兜底 HTML 路径）
         val cleaned = if (!isJson) {
-            rule["replaceRegex"]?.let { regex ->
+            val afterRegex = rule["replaceRegex"]?.let { regex ->
                 runCatching { text.replace(Regex(regex), "") }.getOrDefault(text)
             } ?: text
+            // 正文规则常带 @html 提取（如 xxx@html），结果是 HTML 片段，
+            // 必须转成纯文本（按块级标签保留段落换行），否则 div/br/&nbsp; 直接显示给用户
+            htmlToPlainText(afterRegex)
         } else text
         return ContentResult.novel(cleaned)
+    }
+
+    /**
+     * HTML 片段转正文纯文本：
+     * - br 视为换行；p/div 等块级标签边界视为段落换行；
+     * - 其余标签剥除；HTML 实体（&nbsp; 等）由 Jsoup 自动解码。
+     * 已经是纯文本（不含标签）时原样返回（避免误伤含 < 的正文）。
+     */
+    private fun htmlToPlainText(text: String): String {
+        if (!text.contains('<')) return text
+        return runCatching {
+            val doc = Jsoup.parse(text)
+            doc.outputSettings().prettyPrint(false)
+            // Jsoup 的 text() 会丢失段落边界，先用 br 换行占位再转
+            doc.select("br").forEach { it.appendText("\n") }
+            val raw = doc.wholeText()
+            // 逐段压缩连续空行，去除行内多余空白（全角空格保留）
+            raw.split("\n")
+                .map { line -> line.replace(Regex("[ \\t\\u00A0\\u3000]+"), " ").trim() }
+                .joinToString("\n")
+                .replace(Regex("\n{3,}"), "\n\n")
+                .trim()
+        }.getOrDefault(text)
     }
 
     /** 提取漫画图片列表 */

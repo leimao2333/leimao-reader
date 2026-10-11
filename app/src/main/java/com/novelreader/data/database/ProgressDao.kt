@@ -22,26 +22,33 @@ interface ProgressDao {
     suspend fun delete(sourceId: String, itemId: String)
 
     /**
-     * 最近阅读列表：progress 表按更新时间倒序，左连接 books 表补充书名/封面/类型。
+     * 最近阅读列表：progress 表按更新时间倒序，左连接 books 表补充封面等字段。
      * 返回 [RecentReadingRow]（POJO 投影，非实体表）。
      *
      * 用子查询按 sourceId+itemId 去重（progress 表无该联合唯一约束，可能有多行，
      * 取每本书最新的一条 updatedAt），避免列表 key 重复。
+     *
+     * 标题/类型优先取 progress 表自有的 itemTitle/itemType（v4 起记录），
+     * 回退到 books 表，最后回退章节标题。
+     *
+     * @param type 类型过滤；空字符串 = 不过滤（全部类型）
      */
     @Query(
         """
         SELECT p.sourceId, p.itemId, p.chapterTitle, p.chapterIndex, p.updatedAt,
-               b.title, b.cover, b.type, b.detailUrl
+               IFNULL(NULLIF(p.itemTitle, ''), b.title) AS title,
+               b.cover, IFNULL(NULLIF(p.itemType, ''), b.type) AS type, b.detailUrl
         FROM (
-            SELECT sourceId, itemId, chapterTitle, chapterIndex, MAX(updatedAt) AS updatedAt
+            SELECT sourceId, itemId, chapterTitle, chapterIndex, itemType, itemTitle, MAX(updatedAt) AS updatedAt
             FROM progress
             GROUP BY sourceId, itemId
         ) p
         LEFT JOIN books b ON b.sourceId = p.sourceId AND b.itemId = p.itemId
+        WHERE :type = '' OR IFNULL(NULLIF(p.itemType, ''), b.type) = :type
         ORDER BY p.updatedAt DESC
         """
     )
-    suspend fun recentReadings(): List<RecentReadingRow>
+    suspend fun recentReadings(type: String = ""): List<RecentReadingRow>
 }
 
 /**

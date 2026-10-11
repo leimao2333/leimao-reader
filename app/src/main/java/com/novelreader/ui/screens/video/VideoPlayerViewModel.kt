@@ -173,6 +173,8 @@ class VideoPlayerViewModel(
                 chapterTitle = episode.title,
                 chapterIndex = episode.index,
                 playPositionMs = player?.currentPosition ?: 0L,
+                itemType = com.novelreader.domain.model.SourceType.VIDEO.name,
+                itemTitle = item.title,
             )
         }
     }

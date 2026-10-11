@@ -172,6 +172,7 @@ fun NovelReaderScreen(
                     hideChapterTitle = hideChapterTitle,
                     pageAnim = pageAnim,
                     onTap = { viewModel.toggleMenu() },
+                    onNextChapter = { viewModel.nextChapter() },
                 )
             }
             else -> {
@@ -185,6 +186,7 @@ fun NovelReaderScreen(
                     hideChapterTitle = hideChapterTitle,
                     onScrollRatio = { ratio -> viewModel.saveScrollRatio(chapterIndex, ratio) },
                     onTap = { viewModel.toggleMenu() },
+                    onNextChapter = { viewModel.nextChapter() },
                 )
             }
         }
@@ -234,7 +236,7 @@ fun NovelReaderScreen(
     }
 }
 
-/** 上下滚动正文（记住正文位置：进入恢复、滚动停止回写） */
+/** 上下滚动正文（记住正文位置：进入恢复、滚动停止回写；滚到章末显示「下一章」续读入口） */
 @Composable
 private fun ScrollNovel(
     content: String,
@@ -246,6 +248,7 @@ private fun ScrollNovel(
     hideChapterTitle: Boolean,
     onScrollRatio: (Float) -> Unit,
     onTap: () -> Unit,
+    onNextChapter: () -> Unit,
 ) {
     // 每章一个独立滚动状态：切章回到顶部，不沿用上一章位置
     val scrollState = remember(chapterIndex) { ScrollState(0) }
@@ -292,10 +295,30 @@ private fun ScrollNovel(
             lineHeight = (fontSize * 1.6).sp,
             textAlign = TextAlign.Justify,
         )
+
+        // 章末续读：滚到底部出现「下一章」入口，保证阅读连续性
+        if (content.isNotBlank()) {
+            Spacer(Modifier.height(32.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onNextChapter)
+                    .padding(vertical = 16.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "下一章 ›",
+                    fontSize = (fontSize + 2).sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            Spacer(Modifier.height(24.dp))
+        }
     }
 }
 
-/** 左右翻页正文（按屏幕容量精确分页，每页铺满一屏、到屏幕底端即止，无内部滚动，支持翻页动画） */
+/** 左右翻页正文（按屏幕容量精确分页，每页铺满一屏、到屏幕底端即止，无内部滚动，支持翻页动画；章末可续翻下一章） */
 @Composable
 private fun HorizontalPagerNovel(
     content: String,
@@ -306,6 +329,7 @@ private fun HorizontalPagerNovel(
     hideChapterTitle: Boolean,
     pageAnim: Int,
     onTap: () -> Unit,
+    onNextChapter: () -> Unit,
 ) {
     BoxWithConstraints(
         modifier = Modifier
@@ -328,11 +352,27 @@ private fun HorizontalPagerNovel(
             if (hideChapterTitle) splitContentIntoPages(content, pageSize = charsPerPage)
             else splitContentIntoPages(content, pageSize = charsPerPage, firstPageTitle = chapterTitle)
         }
-        val pagerState = rememberPagerState(initialPage = 0, pageCount = { pages.size })
+        // 章末附加一页「下一章」引导页：正文滑完还能继续翻入下一章，
+        // 否则滑到章末就卡住，无法连续阅读（空正文/无下一章时不加）
+        val hasNextGate = content.isNotBlank()
+        val pageCount = pages.size + if (hasNextGate) 1 else 0
+        val pagerState = rememberPagerState(initialPage = 0, pageCount = { pageCount })
 
         // 切换章节时回到第一页，避免沿用上一章的页码
         LaunchedEffect(content, chapterIndex) {
             if (pagerState.currentPage != 0) pagerState.scrollToPage(0)
+        }
+
+        // 翻到章末引导页时自动进入下一章（每章只触发一次，防切章瞬间页码未复位造成连跳）
+        var gateConsumed by remember { androidx.compose.runtime.mutableIntStateOf(-1) }
+        LaunchedEffect(pagerState.currentPage, pageCount, chapterIndex) {
+            if (hasNextGate && pageCount > 0 &&
+                pagerState.currentPage == pageCount - 1 &&
+                gateConsumed != chapterIndex
+            ) {
+                gateConsumed = chapterIndex
+                onNextChapter()
+            }
         }
 
         HorizontalPager(
@@ -359,7 +399,28 @@ private fun HorizontalPagerNovel(
                         cameraDistance = 12f * density
                     },
             ) {
-                Column(
+                if (page >= pages.size) {
+                    // 章末引导页：本章已读完，继续滑动将进入下一章
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(48.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        Text(
+                            text = "本章已读完",
+                            fontSize = fontSize.sp,
+                            color = textColor.copy(alpha = 0.6f),
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = "继续翻页进入下一章 ›",
+                            fontSize = (fontSize - 2).sp,
+                            color = textColor.copy(alpha = 0.4f),
+                        )
+                    }
+                } else Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(horizontal = 20.dp, vertical = 48.dp),

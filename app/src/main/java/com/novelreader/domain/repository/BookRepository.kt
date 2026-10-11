@@ -38,13 +38,20 @@ interface ProgressRepository {
         chapterIndex: Int = 0,
         textPosition: Int = 0,
         playPositionMs: Long = 0,
+        itemType: String = "",
+        itemTitle: String = "",
     )
 
     /** 读取进度 */
     suspend fun getProgress(sourceId: String, itemId: String): ReadingProgress?
 
-    /** 最近阅读列表（按更新时间倒序） */
-    suspend fun recentReadings(): List<com.novelreader.domain.model.RecentReading>
+    /**
+     * 最近阅读列表（按更新时间倒序）。
+     *
+     * @param type 类型过滤；null = 全部类型
+     */
+    suspend fun recentReadings(type: com.novelreader.domain.model.SourceType? = null):
+        List<com.novelreader.domain.model.RecentReading>
 }
 
 /**

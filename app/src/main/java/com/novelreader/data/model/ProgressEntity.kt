@@ -21,6 +21,10 @@ data class ProgressEntity(
     val sourceId: String,
     /** 源内条目 ID */
     val itemId: String,
+    /** 条目类型（novel/comic/video）——最近阅读按类型过滤用 */
+    val itemType: String = "",
+    /** 条目标题（书名/漫名/节目名）——书不在书架时最近阅读也能显示正确标题 */
+    val itemTitle: String = "",
     /** 最后阅读的章节 URL */
     val chapterUrl: String,
     /** 最后阅读的章节标题 */

@@ -7,6 +7,7 @@ import com.novelreader.core.download.DownloadState
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.ContentResult
 import com.novelreader.domain.model.MediaItem
+import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.BookRepository
 import com.novelreader.domain.repository.ContentRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,6 +45,23 @@ class NovelDetailViewModel(
     /** 下载状态 */
     private val _download = MutableStateFlow<DownloadState?>(null)
     val download: StateFlow<DownloadState?> = _download.asStateFlow()
+
+    // ===== 换源（详情页） =====
+    /** 换源面板是否打开 */
+    private val _changeSourceOpen = MutableStateFlow(false)
+    val changeSourceOpen: StateFlow<Boolean> = _changeSourceOpen.asStateFlow()
+
+    /** 同名同作者的候选源（排除当前源） */
+    private val _changeSourceCandidates = MutableStateFlow<List<MediaItem>>(emptyList())
+    val changeSourceCandidates: StateFlow<List<MediaItem>> = _changeSourceCandidates.asStateFlow()
+
+    /** 换源搜索中 */
+    private val _changeSourceLoading = MutableStateFlow(false)
+    val changeSourceLoading: StateFlow<Boolean> = _changeSourceLoading.asStateFlow()
+
+    /** 换源错误信息 */
+    private val _changeSourceError = MutableStateFlow<String?>(null)
+    val changeSourceError: StateFlow<String?> = _changeSourceError.asStateFlow()
 
     fun load(item: MediaItem) {
         _detail.value = item
@@ -112,6 +130,53 @@ class NovelDetailViewModel(
             }.onFailure { e ->
                 _download.value = DownloadState(isDownloading = false, success = false, message = "下载失败：${e.message}")
             }
+        }
+    }
+
+    // ===== 换源（详情页） =====
+
+    /** 打开换源面板并搜索同名书 */
+    fun openChangeSource() {
+        _changeSourceOpen.value = true
+        searchSameTitle()
+    }
+
+    /** 关闭换源面板 */
+    fun closeChangeSource() {
+        _changeSourceOpen.value = false
+    }
+
+    /** 搜索同名书：按「书名 + 作者」匹配（与阅读页换源同一套判定），排除当前源 */
+    private fun searchSameTitle() {
+        val current = _detail.value ?: return
+        val title = current.title.trim()
+        if (title.isBlank()) return
+        viewModelScope.launch {
+            _changeSourceLoading.value = true
+            _changeSourceError.value = null
+            runCatching { contentRepository.search(SourceType.NOVEL, title, 1) }
+                .onSuccess { results ->
+                    val curAuthor = current.author?.trim()?.lowercase()
+                    val candidates = results.filter { cand ->
+                        // 排除当前这本书
+                        if (cand.sourceId == current.sourceId && cand.id == current.id) return@filter false
+                        // 书名匹配（归一化后互相包含或相等）
+                        val t = com.novelreader.source.search.FuzzyMatch.normalize(cand.title)
+                        val k = com.novelreader.source.search.FuzzyMatch.normalize(title)
+                        val titleMatch = t == k || t.contains(k) || k.contains(t)
+                        if (!titleMatch) return@filter false
+                        // 作者一致（任一为空视为通过）
+                        val candAuthor = cand.author?.trim()?.lowercase()
+                        if (curAuthor.isNullOrBlank() || candAuthor.isNullOrBlank()) true
+                        else candAuthor == curAuthor
+                    }
+                    _changeSourceCandidates.value = candidates
+                }
+                .onFailure { e ->
+                    _changeSourceError.value = e.message ?: "换源搜索失败"
+                    _changeSourceCandidates.value = emptyList()
+                }
+            _changeSourceLoading.value = false
         }
     }
 }

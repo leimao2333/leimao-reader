@@ -1,15 +1,11 @@
 package com.novelreader.ui.screens.novel
 
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.Icon
@@ -23,7 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.novelreader.domain.model.MediaItem
-import com.novelreader.ui.components.MediaItemCard
+import com.novelreader.ui.components.GroupedSearchResults
 import com.novelreader.ui.components.SearchBar
 import com.novelreader.ui.components.SearchProgressBar
 
@@ -89,14 +85,14 @@ fun NovelSearchScreen(
             // 搜索中：进度条 + 实时结果（可能为空）
             state.isSearching -> {
                 SearchProgressBar(state = state)
-                SearchResultList(
+                GroupedSearchResults(
                     results = state.results,
                     isEmptyHint = "正在搜索中，结果将实时显示…",
                     onItemClick = onItemClick,
                     onRead = onRead,
                 )
             }
-            // 搜索完成且有错误
+            // 搜索完成但有错误
             state.error != null -> {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
@@ -117,45 +113,13 @@ fun NovelSearchScreen(
             }
             // 搜索完成且有结果
             else -> {
-                SearchResultList(
+                GroupedSearchResults(
                     results = state.results,
                     isEmptyHint = "",
                     onItemClick = onItemClick,
                     onRead = onRead,
                 )
             }
-        }
-    }
-}
-
-/**
- * 搜索结果列表（共用）。
- */
-@Composable
-private fun SearchResultList(
-    results: List<MediaItem>,
-    isEmptyHint: String,
-    onItemClick: (MediaItem) -> Unit,
-    onRead: (MediaItem) -> Unit,
-) {
-    if (results.isEmpty()) {
-        if (isEmptyHint.isNotBlank()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    text = isEmptyHint,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        return
-    }
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        items(results, key = { "${it.sourceId}_${it.id}" }) { item ->
-            MediaItemCard(item = item, onClick = { onItemClick(item) }, onRead = { onRead(item) })
         }
     }
 }

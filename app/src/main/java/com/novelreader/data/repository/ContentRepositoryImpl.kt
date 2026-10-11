@@ -61,9 +61,10 @@ class ContentRepositoryImpl(
 
         val total = adapters.size
 
-        // 结果排序/过滤：启用模糊搜索才做本地评分，否则保持源返回原序
+        // 结果处理：模糊模式做相似度排序并过滤不相关；精准模式只保留书名归一化后
+        // 与关键词一致的条目（源返回的修饰性差异由 FuzzyMatch.normalize 抹平）
         fun applyRank(items: List<MediaItem>): List<MediaItem> =
-            if (fuzzyEnabled) FuzzyMatch.rank(items, keyword) else items
+            if (fuzzyEnabled) FuzzyMatch.rank(items, keyword) else FuzzyMatch.exactRank(items, keyword)
 
         // 初始状态：开始搜索
         emit(

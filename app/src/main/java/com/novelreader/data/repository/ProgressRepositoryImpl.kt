@@ -22,11 +22,15 @@ class ProgressRepositoryImpl(
         chapterIndex: Int,
         textPosition: Int,
         playPositionMs: Long,
+        itemType: String,
+        itemTitle: String,
     ) {
         progressDao.insert(
             ProgressEntity(
                 sourceId = sourceId,
                 itemId = itemId,
+                itemType = itemType,
+                itemTitle = itemTitle,
                 chapterUrl = chapterUrl,
                 chapterTitle = chapterTitle,
                 chapterIndex = chapterIndex,
@@ -47,8 +51,14 @@ class ProgressRepositoryImpl(
         )
     }
 
-    override suspend fun recentReadings(): List<RecentReading> =
-        progressDao.recentReadings().map { row ->
+    override suspend fun recentReadings(type: SourceType?): List<RecentReading> {
+        val typeKey = when (type) {
+            SourceType.NOVEL -> "novel"
+            SourceType.COMIC -> "comic"
+            SourceType.VIDEO -> "video"
+            null -> ""
+        }
+        return progressDao.recentReadings(typeKey).map { row ->
             RecentReading(
                 sourceId = row.sourceId,
                 itemId = row.itemId,
@@ -61,4 +71,5 @@ class ProgressRepositoryImpl(
                 updatedAt = row.updatedAt,
             )
         }
+    }
 }

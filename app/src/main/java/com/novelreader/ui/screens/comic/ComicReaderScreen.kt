@@ -121,6 +121,7 @@ fun ComicReaderScreen(
                     currentPage = currentPage,
                     onPageChange = viewModel::goToPage,
                     onTap = { showSettings.value = !showSettings.value },
+                    onNextChapter = { viewModel.nextChapter() },
                 )
             }
         }
@@ -228,23 +229,37 @@ private fun HorizontalPagerReader(
     currentPage: Int,
     onPageChange: (Int) -> Unit,
     onTap: () -> Unit,
+    onNextChapter: () -> Unit = {},
 ) {
+    // 章末附加一页引导页：最后一话图片滑完后还能继续翻入下一话
+    val hasNextGate = images.isNotEmpty()
+    val pageCount = images.size + if (hasNextGate) 1 else 0
     val pagerState = rememberPagerState(
-        initialPage = currentPage,
-        pageCount = { images.size },
+        initialPage = currentPage.coerceAtMost((pageCount - 1).coerceAtLeast(0)),
+        pageCount = { pageCount },
     )
     val context = LocalContext.current
 
     // 同步外部 currentPage 与 pager 状态
     LaunchedEffect(currentPage) {
-        if (pagerState.currentPage != currentPage) {
-            pagerState.animateScrollToPage(currentPage)
+        if (pagerState.currentPage != currentPage.coerceAtMost(images.size - 1).coerceAtLeast(0)) {
+            pagerState.animateScrollToPage(currentPage.coerceAtMost(images.size - 1).coerceAtLeast(0))
         }
     }
 
-    // 用户滑动翻页时，回写 currentPage
+    // 用户滑动翻页时，回写 currentPage（引导页不计入图片页码）
     LaunchedEffect(pagerState.currentPage) {
-        onPageChange(pagerState.currentPage)
+        val page = pagerState.currentPage
+        if (page < images.size) onPageChange(page)
+    }
+
+    // 滑到章末引导页时进入下一话（每话只触发一次，防连跳）
+    var gateConsumed by remember { mutableIntStateOf(-1) }
+    LaunchedEffect(pagerState.currentPage, images, currentPage) {
+        if (hasNextGate && pagerState.currentPage == images.size && gateConsumed != currentPage) {
+            gateConsumed = currentPage
+            onNextChapter()
+        }
     }
 
     // 预加载相邻页
@@ -269,7 +284,14 @@ private fun HorizontalPagerReader(
                 ),
             contentAlignment = Alignment.Center,
         ) {
-            ComicImage(
+            if (page >= images.size) {
+                // 章末引导页：本话已读完，继续滑动进入下一话
+                Text(
+                    text = "本话已读完 · 继续翻页进入下一话 ›",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            } else ComicImage(
                 url = images.getOrNull(page) ?: "",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.FillWidth,

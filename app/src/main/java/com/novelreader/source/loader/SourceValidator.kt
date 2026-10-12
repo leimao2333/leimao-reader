@@ -51,6 +51,8 @@ object SourceValidator {
             SourceFormat.JSON -> validateJsonOrLegado(content)
             SourceFormat.JS -> validateJs(content)
             SourceFormat.LEGADO -> validateJsonOrLegado(content)
+            // 本地书不走导入校验链路（独立入口），理论上不会到这里
+            SourceFormat.LOCAL -> Result(false, "本地书请在书架页导入，不走书源导入")
         }
     }
 

@@ -65,6 +65,7 @@ fun AppNavHost(container: AppContainer, initialNovelSearchKeyword: String? = nul
                         it.bookRepository,
                         it.progressRepository,
                         it.contentRepository,
+                        it.localBookStore,
                     )
                 }
             )
@@ -112,6 +113,8 @@ fun AppNavHost(container: AppContainer, initialNovelSearchKeyword: String? = nul
                         it.bookRepository,
                         it.progressRepository,
                         it.contentRepository,
+                        it.preferencesManager,
+                        it.localBookStore,
                     )
                 }
             )
@@ -185,7 +188,7 @@ fun AppNavHost(container: AppContainer, initialNovelSearchKeyword: String? = nul
         composable(Routes.SETTINGS) {
             val viewModel: SettingsViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
-                    SettingsViewModel(it.preferencesManager)
+                    SettingsViewModel(it.preferencesManager, it.backupManager)
                 }
             )
             SettingsScreen(

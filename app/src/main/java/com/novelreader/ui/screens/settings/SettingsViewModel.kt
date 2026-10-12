@@ -15,7 +15,34 @@ import kotlinx.coroutines.launch
  */
 class SettingsViewModel(
     private val preferencesManager: PreferencesManager,
+    private val backupManager: com.novelreader.core.backup.BackupManager? = null,
 ) : ViewModel() {
+
+    /** 备份 / 恢复结果提示（UI 展示后自动消失） */
+    private val _backupMessage = MutableStateFlow<String?>(null)
+    val backupMessage: StateFlow<String?> = _backupMessage.asStateFlow()
+
+    fun dismissBackupMessage() {
+        _backupMessage.value = null
+    }
+
+    /** 导出备份到 SAF Uri */
+    fun exportBackup(uri: android.net.Uri) {
+        val mgr = backupManager ?: return
+        viewModelScope.launch {
+            _backupMessage.value = runCatching { mgr.export(uri) }
+                .getOrElse { "备份失败：${it.message ?: "未知错误"}" }
+        }
+    }
+
+    /** 从 SAF Uri 恢复备份 */
+    fun importBackup(uri: android.net.Uri) {
+        val mgr = backupManager ?: return
+        viewModelScope.launch {
+            _backupMessage.value = runCatching { mgr.import(uri) }
+                .getOrElse { "恢复失败：${it.message ?: "未知错误"}" }
+        }
+    }
 
     /** 日夜间模式 0=关闭 1=开启 2=跟随系统（#36） */
     private val _darkThemeMode = MutableStateFlow(PreferencesManager.THEME_MODE_LIGHT)

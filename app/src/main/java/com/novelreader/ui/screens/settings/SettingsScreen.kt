@@ -29,7 +29,11 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -54,6 +58,26 @@ fun SettingsScreen(
     onOpenCacheManage: () -> Unit = {},
 ) {
     val darkTheme by viewModel.darkTheme.collectAsState()
+    val backupMessage by viewModel.backupMessage.collectAsState()
+    val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    // 备份导出（SAF CREATE_DOCUMENT）
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri -> uri?.let { viewModel.exportBackup(it) } }
+
+    // 备份导入（SAF OPEN_DOCUMENT）
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> uri?.let { viewModel.importBackup(it) } }
+
+    LaunchedEffect(backupMessage) {
+        backupMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.dismissBackupMessage()
+        }
+    }
     val darkThemeMode by viewModel.darkThemeMode.collectAsState()
     val novelFontSize by viewModel.novelFontSize.collectAsState()
     val novelBgIndex by viewModel.novelBgIndex.collectAsState()
@@ -61,6 +85,7 @@ fun SettingsScreen(
     val searchConcurrency by viewModel.searchConcurrency.collectAsState()
 
     Scaffold(
+        snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("设置") },
@@ -184,6 +209,22 @@ fun SettingsScreen(
                 subtitle = "查看与清理本地已缓存章节",
             ) {
                 TextButton(onClick = onOpenCacheManage) { Text("管理") }
+            }
+            SettingRow(
+                title = "备份与恢复",
+                subtitle = "书源 / 书架 / 进度 / 书签 / 替换规则导出为 JSON，可跨设备恢复",
+            ) {
+                Row {
+                    TextButton(onClick = {
+                        val name = "leimao-backup-" +
+                            java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.CHINA)
+                                .format(java.util.Date()) + ".json"
+                        exportLauncher.launch(name)
+                    }) { Text("导出") }
+                    TextButton(onClick = {
+                        importLauncher.launch(arrayOf("application/json", "text/*", "application/octet-stream"))
+                    }) { Text("导入") }
+                }
             }
 
             Spacer(Modifier.height(24.dp))

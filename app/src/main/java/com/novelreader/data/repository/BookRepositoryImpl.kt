@@ -54,4 +54,5 @@ fun BookEntity.toDomain(): MediaItem = MediaItem(
     type = SourceType.fromString(type) ?: SourceType.NOVEL,
     detailUrl = detailUrl,
     sourceId = sourceId,
+    addedAt = addedAt,
 )

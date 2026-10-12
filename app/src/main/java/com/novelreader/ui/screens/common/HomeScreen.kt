@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
@@ -35,6 +36,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -72,6 +74,27 @@ fun HomeScreen(
     onOpenVideoSearch: () -> Unit,
     onContinueReading: (MediaItem, List<ChapterItem>, ChapterItem?) -> Unit,
 ) {
+    val importMessage by viewModel.importMessage.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    LaunchedEffect(importMessage) {
+        importMessage?.let {
+            android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_SHORT).show()
+            viewModel.dismissImportMessage()
+        }
+    }
+    val txtPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            val displayName = runCatching {
+                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx) else null
+                }
+            }.getOrNull() ?: uri.lastPathSegment
+            viewModel.importLocalBook(uri, displayName)
+        }
+    }
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     val books by viewModel.books.collectAsState()
     val progressMap by viewModel.progressMap.collectAsState()
@@ -162,6 +185,7 @@ fun HomeScreen(
                     chapterCountMap = chapterCountMap,
                     gridMode = gridMode,
                     onToggleGridMode = { gridMode = if (gridMode == 0) 1 else 0 },
+                    onImportLocalBook = { txtPicker.launch(arrayOf("text/plain", "text/*", "application/octet-stream")) },
                     onItemClick = { item ->
                         viewModel.continueReading(item) { chapters, target ->
                             onContinueReading(item, chapters, target)
@@ -186,6 +210,7 @@ private fun BookshelfContent(
     chapterCountMap: Map<String, Int>,
     gridMode: Int,
     onToggleGridMode: () -> Unit,
+    onImportLocalBook: () -> Unit = {},
     onItemClick: (MediaItem) -> Unit,
 ) {
     // 按当前 tab 类型过滤
@@ -203,6 +228,13 @@ private fun BookshelfContent(
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f),
             )
+            IconButton(onClick = onImportLocalBook) {
+                Icon(
+                    imageVector = Icons.Filled.LibraryAdd,
+                    contentDescription = "导入本地 TXT",
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
             IconButton(onClick = onToggleGridMode) {
                 Icon(
                     imageVector = if (gridMode == 0) Icons.AutoMirrored.Filled.ViewList else Icons.Filled.GridView,
@@ -227,6 +259,7 @@ private fun BookshelfContent(
             // 封面墙网格（复用书架组件）
             BookGrid(
                 books = filtered,
+                columns = 3,
                 progressMap = progressMap,
                 lastChapterMap = lastChapterMap,
                 chapterCountMap = chapterCountMap,

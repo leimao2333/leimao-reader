@@ -1,6 +1,8 @@
 package com.novelreader.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -41,7 +43,9 @@ import androidx.compose.ui.unit.dp
  * @param history 搜索历史（空列表则不显示历史记录）
  * @param onHistoryClick 点击历史记录回调
  * @param onClearHistory 清空历史回调
+ * @param onRemoveHistory 长按删除单条历史（null 则不响应长按）
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SearchBar(
     query: String,
@@ -54,6 +58,7 @@ fun SearchBar(
     history: List<String> = emptyList(),
     onHistoryClick: ((String) -> Unit)? = null,
     onClearHistory: (() -> Unit)? = null,
+    onRemoveHistory: ((String) -> Unit)? = null,
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
         // 圆角填充式搜索框（无边框描边），贴合开源阅读观感
@@ -143,6 +148,7 @@ fun SearchBar(
                     HistoryChip(
                         keyword = keyword,
                         onClick = { onHistoryClick?.invoke(keyword) },
+                        onLongClick = onRemoveHistory?.let { rm -> { rm(keyword) } },
                     )
                 }
             }
@@ -151,17 +157,22 @@ fun SearchBar(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun HistoryChip(
     keyword: String,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
 ) {
     Text(
         text = keyword,
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurface,
         modifier = Modifier
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick,
+            )
             .padding(horizontal = 12.dp, vertical = 6.dp),
     )
 }

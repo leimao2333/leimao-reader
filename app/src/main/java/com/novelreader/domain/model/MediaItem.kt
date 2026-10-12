@@ -26,6 +26,8 @@ data class MediaItem(
     val sourceName: String = "",
     /** 其他扩展字段（预留冗余，各源可自定义） */
     val extras: Map<String, String> = emptyMap(),
+    /** 收藏时间戳（书架条目带出，用于「按加入时间」排序；搜索结果为 0） */
+    val addedAt: Long = 0,
 )
 
 /**

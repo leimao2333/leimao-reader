@@ -68,7 +68,7 @@ class AppContainer(context: Context) {
     }
 
     val contentRepository: ContentRepository by lazy {
-        ContentRepositoryImpl(sourceManager)
+        ContentRepositoryImpl(sourceManager, localBookStore)
     }
 
     val bookRepository: BookRepository by lazy {
@@ -92,6 +92,16 @@ class AppContainer(context: Context) {
     /** 下载管理器 */
     val downloadManager: DownloadManager by lazy {
         DownloadManager(appContext)
+    }
+
+    /** 本地 TXT 书库（v1.2.0 对标 legado 本地书） */
+    val localBookStore: com.novelreader.core.local.LocalBookStore by lazy {
+        com.novelreader.core.local.LocalBookStore(appContext)
+    }
+
+    /** 本地备份 / 恢复（v1.2.0 对标 legado 备份的本地版） */
+    val backupManager: com.novelreader.core.backup.BackupManager by lazy {
+        com.novelreader.core.backup.BackupManager(appContext, database, preferencesManager)
     }
 
     /**

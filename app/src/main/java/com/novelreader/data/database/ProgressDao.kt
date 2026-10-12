@@ -12,6 +12,9 @@ import com.novelreader.data.model.ProgressEntity
 @Dao
 interface ProgressDao {
 
+    @Query("SELECT * FROM progress")
+    suspend fun getAll(): List<com.novelreader.data.model.ProgressEntity>
+
     @Query("SELECT * FROM progress WHERE sourceId = :sourceId AND itemId = :itemId LIMIT 1")
     suspend fun get(sourceId: String, itemId: String): ProgressEntity?
 

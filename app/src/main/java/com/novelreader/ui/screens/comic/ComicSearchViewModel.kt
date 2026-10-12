@@ -57,6 +57,11 @@ class ComicSearchViewModel(
         viewModelScope.launch { preferencesManager.clearSearchHistory(SourceType.COMIC) }
     }
 
+    /** 长按删除单条搜索历史 */
+    fun removeHistory(keyword: String) {
+        viewModelScope.launch { preferencesManager.removeSearchHistory(SourceType.COMIC, keyword) }
+    }
+
     fun search() {
         val keyword = _query.value.trim()
         if (keyword.isEmpty()) return

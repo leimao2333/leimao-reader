@@ -134,6 +134,12 @@ class PreferencesManager(private val context: Context) {
         /** 并行搜索线程数（并发搜索的源数量） */
         val KEY_SEARCH_CONCURRENCY = intPreferencesKey("search_concurrency")
 
+        // ===== 书架（v1.2.0 对标 legado 书架布局） =====
+        /** 书架展现形式：0=封面墙 1=紧凑网格 2=列表 */
+        val KEY_BOOKSHELF_VIEW_MODE = intPreferencesKey("bookshelf_view_mode")
+        /** 封面墙 / 紧凑网格列数（2~6） */
+        val KEY_BOOKSHELF_COLUMNS = intPreferencesKey("bookshelf_columns")
+
         /** 模糊搜索开关 */
         val KEY_FUZZY_SEARCH = booleanPreferencesKey("fuzzy_search")
 
@@ -433,6 +439,23 @@ class PreferencesManager(private val context: Context) {
     // ===== 搜索 =====
     val searchConcurrencyFlow: Flow<Int> = context.dataStore.data
         .map { it[KEY_SEARCH_CONCURRENCY] ?: DEFAULT_SEARCH_CONCURRENCY }
+
+    // ===== 书架（v1.2.0） =====
+    /** 书架展现形式：0=封面墙 1=紧凑网格 2=列表 */
+    val bookshelfViewModeFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_BOOKSHELF_VIEW_MODE] ?: 0 }
+
+    suspend fun setBookshelfViewMode(value: Int) {
+        context.dataStore.edit { it[KEY_BOOKSHELF_VIEW_MODE] = value.coerceIn(0, 2) }
+    }
+
+    /** 封面墙 / 紧凑网格列数（2~6，默认 3） */
+    val bookshelfColumnsFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_BOOKSHELF_COLUMNS] ?: 3 }
+
+    suspend fun setBookshelfColumns(value: Int) {
+        context.dataStore.edit { it[KEY_BOOKSHELF_COLUMNS] = value.coerceIn(2, 6) }
+    }
 
     suspend fun setSearchConcurrency(value: Int) {
         context.dataStore.edit { it[KEY_SEARCH_CONCURRENCY] = value.coerceIn(1, MAX_SEARCH_CONCURRENCY) }

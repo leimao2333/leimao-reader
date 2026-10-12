@@ -69,6 +69,7 @@ fun NovelSearchScreen(
                     viewModel.search()
                 },
                 onClearHistory = viewModel::clearHistory,
+                onRemoveHistory = viewModel::removeHistory,
                 modifier = Modifier.weight(1f),
             )
         }

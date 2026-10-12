@@ -394,9 +394,9 @@ class NovelReaderViewModel(
         clearMemory()
         currentItem = item
         _currentItem.value = item
-        _chapters.value = chapters
+        _chapters.value = cleanChapterTitles(chapters)
         currentChapter = chapter
-        _chapterTitle.value = chapter.title
+        _chapterTitle.value = cleanChapterTitle(chapter.title)
         _currentTitle.value = item.title
         _currentAuthor.value = item.author
         refreshNavFlags()
@@ -510,7 +510,7 @@ class NovelReaderViewModel(
      */
     private fun loadChapter(chapter: ChapterItem, forceRefresh: Boolean = false) {
         currentChapter = chapter
-        _chapterTitle.value = chapter.title
+        _chapterTitle.value = cleanChapterTitle(chapter.title)
         _currentChapterIndex.value = chapter.index
         refreshNavFlags()
         val item = currentItem
@@ -583,6 +583,20 @@ class NovelReaderViewModel(
         _content.value = cleaned
         _fromCache.value = fromCache
         _charCount.value = TextCleaner.charCount(cleaned)
+    }
+
+    /**
+     * 章节名净化（对标 legado TocRegex）：把替换规则同样应用到章节标题，
+     * 去掉「123456第X章 xxx」「最新章节：」等站点噪音。单条规则出错自动跳过。
+     */
+    private fun cleanChapterTitle(title: String): String =
+        TextReplaceRules.apply(title, replaceRules.value).trim()
+
+    /** 批量清洗目录标题 */
+    private fun cleanChapterTitles(chapters: List<ChapterItem>): List<ChapterItem> {
+        val rules = replaceRules.value
+        if (rules.isEmpty()) return chapters
+        return chapters.map { ch -> ch.copy(title = TextReplaceRules.apply(ch.title, rules).trim()) }
     }
 
     /** 预加载相邻章节（下一章优先，其次上一章），提升翻章流畅度 */
@@ -982,7 +996,7 @@ class NovelReaderViewModel(
     }
 
     /**
-     * 后台逐个验证换源候选的目录，剔除 0 章（目录为空）的候选。
+     * 后台逐个验证换源候选：剔除 0 章（目录为空）与「有章节但正文为空」的候选。
      * 并发小（3 路），避免阻塞；验证结果增量回写候选列表。
      */
     private fun verifyCandidates(candidates: List<MediaItem>) {
@@ -1001,6 +1015,15 @@ class NovelReaderViewModel(
                             if (chapters.isEmpty()) {
                                 emptyChapterKeys.add(key)
                                 // 从候选列表剔除该 0 章候选
+                                _changeSourceCandidates.value =
+                                    _changeSourceCandidates.value.filter { candidateKey(it) != key }
+                                return@withPermit
+                            }
+                            // 抽验第一章正文：有章节但抓不到正文 → 章节是空壳，同样剔除
+                            val sample = runCatching { contentRepository.content(chapters.first()) }
+                                .getOrNull()?.novelText?.trim().orEmpty()
+                            if (sample.isEmpty()) {
+                                emptyChapterKeys.add(key)
                                 _changeSourceCandidates.value =
                                     _changeSourceCandidates.value.filter { candidateKey(it) != key }
                             }
@@ -1029,7 +1052,7 @@ class NovelReaderViewModel(
                     val index = ChapterLocator.locate(newChapters, curTitle, curPos, oldTotal)
                     currentItem = target
                     _currentItem.value = target
-                    _chapters.value = newChapters
+                    _chapters.value = cleanChapterTitles(newChapters)
                     _currentTitle.value = target.title
                     _currentAuthor.value = target.author
                     clearMemory()

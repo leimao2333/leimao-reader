@@ -41,6 +41,9 @@ interface BookmarkDao {
     )
     suspend fun listForChapter(sourceId: String, itemId: String, chapterUrl: String): List<BookmarkEntity>
 
+    @Query("SELECT * FROM bookmarks")
+    suspend fun getAll(): List<com.novelreader.data.model.BookmarkEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(bookmark: BookmarkEntity): Long
 

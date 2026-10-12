@@ -30,7 +30,22 @@ import kotlinx.coroutines.withContext
  */
 class ContentRepositoryImpl(
     private val sourceManager: SourceManager,
+    private val localBookStore: com.novelreader.core.local.LocalBookStore? = null,
 ) : ContentRepository {
+
+    /**
+     * 取适配器：优先在线源；找不到时回退本地书库（v1.2.0），
+     * 使本地 TXT 书走与在线书相同的详情/目录/正文链路。
+     */
+    private fun resolveAdapter(sourceId: String): com.novelreader.domain.model.SourceAdapter? {
+        sourceManager.getAdapter(sourceId)?.let { return it }
+        if (sourceId.startsWith(com.novelreader.core.local.LocalBookStore.SOURCE_PREFIX) && localBookStore != null) {
+            val localId = sourceId.removePrefix(com.novelreader.core.local.LocalBookStore.SOURCE_PREFIX)
+            val meta = localBookStore.getBook(localId) ?: return null
+            return com.novelreader.source.local.LocalBookAdapter(meta, localBookStore)
+        }
+        return null
+    }
 
     override suspend fun search(type: SourceType, keyword: String, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
@@ -179,21 +194,21 @@ class ContentRepositoryImpl(
 
     override suspend fun detail(item: MediaItem): MediaItem =
         withContext(Dispatchers.IO) {
-            val adapter = sourceManager.getAdapter(item.sourceId)
+            val adapter = resolveAdapter(item.sourceId)
                 ?: return@withContext item
             runCatching { adapter.detail(item) }.getOrDefault(item)
         }
 
     override suspend fun chapterList(item: MediaItem): List<ChapterItem> =
         withContext(Dispatchers.IO) {
-            val adapter = sourceManager.getAdapter(item.sourceId)
+            val adapter = resolveAdapter(item.sourceId)
                 ?: return@withContext emptyList()
             runCatching { adapter.chapterList(item) }.getOrDefault(emptyList())
         }
 
     override suspend fun content(chapter: ChapterItem): ContentResult =
         withContext(Dispatchers.IO) {
-            val adapter = sourceManager.getAdapter(chapter.sourceId)
+            val adapter = resolveAdapter(chapter.sourceId)
                 ?: return@withContext ContentResult()
             runCatching { adapter.content(chapter) }.getOrDefault(ContentResult())
         }

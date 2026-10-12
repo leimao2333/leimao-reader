@@ -24,6 +24,8 @@ class BookShelfViewModel(
     private val bookRepository: BookRepository,
     private val progressRepository: ProgressRepository,
     private val contentRepository: ContentRepository,
+    private val preferencesManager: com.novelreader.core.preferences.PreferencesManager? = null,
+    private val localBookStore: com.novelreader.core.local.LocalBookStore? = null,
 ) : ViewModel() {
 
     /** 书架条目 */
@@ -42,8 +44,34 @@ class BookShelfViewModel(
     private val _chapterCountMap = MutableStateFlow<Map<String, Int>>(emptyMap())
     val chapterCountMap: StateFlow<Map<String, Int>> = _chapterCountMap.asStateFlow()
 
+    /** 书架展现形式（0=封面墙 1=紧凑网格 2=列表，持久化） */
+    private val _viewMode = MutableStateFlow(0)
+    val viewMode: StateFlow<Int> = _viewMode.asStateFlow()
+
+    /** 封面墙 / 紧凑网格列数（2~6，持久化） */
+    private val _columns = MutableStateFlow(3)
+    val columns: StateFlow<Int> = _columns.asStateFlow()
+
     init {
         observeBooks()
+        preferencesManager?.let { prefs ->
+            viewModelScope.launch {
+                prefs.bookshelfViewModeFlow.collect { _viewMode.value = it }
+            }
+            viewModelScope.launch {
+                prefs.bookshelfColumnsFlow.collect { _columns.value = it }
+            }
+        }
+    }
+
+    /** 切换书架展现形式（持久化） */
+    fun setViewMode(value: Int) {
+        viewModelScope.launch { preferencesManager?.setBookshelfViewMode(value) }
+    }
+
+    /** 设置封面墙 / 紧凑网格列数（持久化） */
+    fun setColumns(value: Int) {
+        viewModelScope.launch { preferencesManager?.setBookshelfColumns(value) }
     }
 
     private fun observeBooks() {
@@ -57,6 +85,32 @@ class BookShelfViewModel(
                 }
                 _progressMap.value = map
             }
+        }
+    }
+
+    /** 导入结果提示（UI 展示后自动消失） */
+    private val _importMessage = MutableStateFlow<String?>(null)
+    val importMessage: StateFlow<String?> = _importMessage.asStateFlow()
+
+    fun dismissImportMessage() {
+        _importMessage.value = null
+    }
+
+    /**
+     * 导入本地 TXT 书（v1.2.0）：解析章节 → 存入本地书库 → 加入书架。
+     */
+    fun importLocalBook(uri: android.net.Uri, displayName: String?) {
+        val store = localBookStore ?: return
+        viewModelScope.launch {
+            runCatching { store.import(uri, displayName) }
+                .onSuccess { meta ->
+                    val adapter = com.novelreader.source.local.LocalBookAdapter(meta, store)
+                    runCatching { bookRepository.addToBookshelf(adapter.item()) }
+                    _importMessage.value = "已导入「${meta.title}」（${meta.chapterCount} 章）"
+                }
+                .onFailure { e ->
+                    _importMessage.value = "导入失败：${e.message ?: "未知错误"}"
+                }
         }
     }
 

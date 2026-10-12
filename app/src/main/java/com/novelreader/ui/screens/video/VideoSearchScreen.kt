@@ -70,6 +70,7 @@ fun VideoSearchScreen(
                 viewModel.search()
             },
             onClearHistory = viewModel::clearHistory,
+            onRemoveHistory = viewModel::removeHistory,
         )
 
         when {

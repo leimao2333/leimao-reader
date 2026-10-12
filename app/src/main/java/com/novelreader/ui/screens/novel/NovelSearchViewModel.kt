@@ -90,6 +90,11 @@ class NovelSearchViewModel(
         viewModelScope.launch { preferencesManager.clearSearchHistory(SourceType.NOVEL) }
     }
 
+    /** 长按删除单条搜索历史 */
+    fun removeHistory(keyword: String) {
+        viewModelScope.launch { preferencesManager.removeSearchHistory(SourceType.NOVEL, keyword) }
+    }
+
     fun search() {
         search(_query.value)
     }

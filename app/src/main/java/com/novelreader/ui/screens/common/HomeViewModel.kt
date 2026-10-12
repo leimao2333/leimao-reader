@@ -27,7 +27,32 @@ class HomeViewModel(
     private val bookRepository: BookRepository,
     private val progressRepository: ProgressRepository,
     private val contentRepository: ContentRepository,
+    private val localBookStore: com.novelreader.core.local.LocalBookStore? = null,
 ) : ViewModel() {
+
+    /** 本地 TXT 导入结果提示（首页 Toast 展示） */
+    private val _importMessage = MutableStateFlow<String?>(null)
+    val importMessage: StateFlow<String?> = _importMessage.asStateFlow()
+
+    fun dismissImportMessage() {
+        _importMessage.value = null
+    }
+
+    /** 导入本地 TXT 书：解析章节 → 存入本地书库 → 加入书架（v1.2.0） */
+    fun importLocalBook(uri: android.net.Uri, displayName: String?) {
+        val store = localBookStore ?: return
+        viewModelScope.launch {
+            runCatching { store.import(uri, displayName) }
+                .onSuccess { meta ->
+                    val adapter = com.novelreader.source.local.LocalBookAdapter(meta, store)
+                    runCatching { bookRepository.addToBookshelf(adapter.item()) }
+                    _importMessage.value = "已导入「${meta.title}」（${meta.chapterCount} 章）"
+                }
+                .onFailure { e ->
+                    _importMessage.value = "导入失败：${e.message ?: "未知错误"}"
+                }
+        }
+    }
 
     /** 书架条目（收藏内容） */
     private val _books = MutableStateFlow<List<MediaItem>>(emptyList())

@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.1.10"
+    const val CURRENT_VERSION = "1.2.0"
 
     /**
      * 更新日志。
@@ -19,6 +19,20 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.2.0",
+            date = "2026-10-12",
+            changes = listOf(
+                "本地 TXT 书导入阅读（对标 legado 本地书）：书架右上角导入，自动编码探测（UTF-8/GBK/UTF-16）与章节切分，详情/目录/正文/进度全链路可用",
+                "本地备份与恢复：书源、书架、阅读进度、书签、替换规则一键导出 JSON（设置 → 存储 → 备份与恢复），支持跨设备导入恢复",
+                "阅读背景主题扩充：白天 12 种纸张色、夜间 6 种深色（对标 legado 12+ 主题）",
+                "书架布局升级：新增紧凑网格（仅封面+悬浮书名），封面墙/紧凑网格列数 2~6 可调，布局与列数持久化",
+                "书架排序新增：按作者、按加入时间（对标 legado 多维排序）",
+                "搜索历史长按删除单条（小说/漫画/视频三处）",
+                "换源候选有效性校验加强：除 0 章外，抽验首章正文为空的「空壳源」一并剔除",
+                "章节名净化（对标 legado TocRegex）：正文替换规则同样应用到目录/章节标题",
+            ),
+        ),
         VersionEntry(
             version = "1.1.10",
             date = "2026-10-12",

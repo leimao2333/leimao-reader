@@ -58,6 +58,8 @@ class PreferencesManager(private val context: Context) {
         val KEY_NOVEL_AUTO_PAGE = booleanPreferencesKey("novel_auto_page")
         /** 自动翻页间隔（秒，5 ~ 120） */
         val KEY_NOVEL_AUTO_PAGE_INTERVAL = intPreferencesKey("novel_auto_page_interval")
+        /** 音量键翻页开关（开启后音量键上/下翻页，不调音量） */
+        val KEY_NOVEL_VOLUME_PAGE = booleanPreferencesKey("novel_volume_page")
 
         // ===== 漫画阅读 =====
         /** 翻页方式：0=上下滚动，1=左右翻页 */
@@ -220,6 +222,14 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setNovelAutoPageInterval(value: Int) {
         context.dataStore.edit { it[KEY_NOVEL_AUTO_PAGE_INTERVAL] = value.coerceIn(5, 120) }
+    }
+
+    /** 音量键翻页开关 */
+    val novelVolumePageFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_NOVEL_VOLUME_PAGE] ?: false }
+
+    suspend fun setNovelVolumePage(value: Boolean) {
+        context.dataStore.edit { it[KEY_NOVEL_VOLUME_PAGE] = value }
     }
 
     // ===== 漫画 =====

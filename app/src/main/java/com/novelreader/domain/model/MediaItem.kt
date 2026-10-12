@@ -96,6 +96,8 @@ data class RecentReading(
     val chapterTitle: String,
     /** 章节索引 */
     val chapterIndex: Int = 0,
+    /** 章节总数（用于计算已读百分比；0 表示未知） */
+    val totalChapter: Int = 0,
     /** 更新时间戳 */
     val updatedAt: Long = 0L,
 )

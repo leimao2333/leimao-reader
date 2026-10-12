@@ -6,10 +6,12 @@ import com.novelreader.core.download.DownloadManager
 import com.novelreader.core.preferences.PreferencesManager
 import com.novelreader.data.database.AppDatabase
 import com.novelreader.data.repository.BookRepositoryImpl
+import com.novelreader.data.repository.ChapterCacheRepositoryImpl
 import com.novelreader.data.repository.ContentRepositoryImpl
 import com.novelreader.data.repository.ProgressRepositoryImpl
 import com.novelreader.data.repository.SourceRepositoryImpl
 import com.novelreader.domain.repository.BookRepository
+import com.novelreader.domain.repository.ChapterCacheRepository
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.ProgressRepository
 import com.novelreader.domain.repository.SourceRepository
@@ -41,6 +43,8 @@ class AppContainer(context: Context) {
                 AppDatabase.MIGRATION_2_3,
                 AppDatabase.MIGRATION_3_4,
                 AppDatabase.MIGRATION_4_5,
+                AppDatabase.MIGRATION_5_6,
+                AppDatabase.MIGRATION_6_7,
             )
             .build()
     }
@@ -70,6 +74,11 @@ class AppContainer(context: Context) {
 
     val progressRepository: ProgressRepository by lazy {
         ProgressRepositoryImpl(database.progressDao())
+    }
+
+    /** 章节缓存仓库（单章缓存 + 缓存管理） */
+    val chapterCacheRepository: ChapterCacheRepository by lazy {
+        ChapterCacheRepositoryImpl(database.chapterCacheDao())
     }
 
     /** 下载管理器 */

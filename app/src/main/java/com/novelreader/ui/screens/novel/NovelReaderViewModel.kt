@@ -11,6 +11,7 @@ import com.novelreader.domain.repository.ProgressRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -24,6 +25,7 @@ class NovelReaderViewModel(
     private val contentRepository: ContentRepository,
     private val progressRepository: ProgressRepository,
     private val preferences: PreferencesManager,
+    private val chapterCacheRepository: com.novelreader.domain.repository.ChapterCacheRepository? = null,
 ) : ViewModel() {
 
     // ===== 正文 =====
@@ -35,6 +37,14 @@ class NovelReaderViewModel(
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
+
+    /** 当前正文是否来自本地缓存（#30：UI 可提示「离线缓存」） */
+    private val _fromCache = MutableStateFlow(false)
+    val fromCache: StateFlow<Boolean> = _fromCache.asStateFlow()
+
+    /** 已缓存章节索引（#30：目录标记「已缓存」） */
+    private val _cachedIndices = MutableStateFlow<Set<Int>>(emptySet())
+    val cachedIndices: StateFlow<Set<Int>> = _cachedIndices.asStateFlow()
 
     // ===== 章节信息 =====
     private var currentItem: MediaItem? = null
@@ -150,6 +160,14 @@ class NovelReaderViewModel(
             state
         }
 
+    /** 音量键翻页开关（#8） */
+    val volumePage: StateFlow<Boolean> = preferences.novelVolumePageFlow
+        .let { flow ->
+            val state = MutableStateFlow(false)
+            viewModelScope.launch { flow.collectLatest { state.value = it } }
+            state
+        }
+
     /** 是否显示菜单（顶栏 + 底部菜单） */
     private val _showMenu = MutableStateFlow(false)
     val showMenu: StateFlow<Boolean> = _showMenu.asStateFlow()
@@ -247,7 +265,38 @@ class NovelReaderViewModel(
                 lastPageIndex = 0
                 _initialPageIndex.value = 0
             }
+            refreshCachedIndices()
             loadChapter(chapter)
+        }
+    }
+
+    /** 刷新已缓存章节索引（#30：目录标记 / 缓存状态展示） */
+    fun refreshCachedIndices() {
+        val item = currentItem ?: return
+        val repo = chapterCacheRepository ?: return
+        viewModelScope.launch {
+            runCatching { repo.cachedIndices(item.sourceId, item.id) }
+                .onSuccess { _cachedIndices.value = it }
+        }
+    }
+
+    /** 手动缓存当前章节（#30） */
+    fun cacheCurrentChapter() {
+        val item = currentItem ?: return
+        val chapter = currentChapter ?: return
+        val repo = chapterCacheRepository ?: return
+        val text = _content.value
+        if (text.isBlank()) return
+        viewModelScope.launch {
+            runCatching {
+                repo.saveCache(
+                    item = item,
+                    chapterIndex = chapter.index,
+                    chapterTitle = chapter.title,
+                    chapterUrl = chapter.url,
+                    content = text,
+                )
+            }.onSuccess { refreshCachedIndices() }
         }
     }
 
@@ -265,9 +314,26 @@ class NovelReaderViewModel(
         currentChapter = chapter
         _chapterTitle.value = chapter.title
         _currentChapterIndex.value = chapter.index
+        val item = currentItem
         viewModelScope.launch {
             _loading.value = true
             _error.value = null
+
+            // #30 优先读本地缓存：源失效 / 离线时仍可阅读
+            if (item != null && chapterCacheRepository != null) {
+                val cached = runCatching {
+                    chapterCacheRepository.getCached(item.sourceId, item.id, chapter.index)
+                }.getOrNull()
+                if (!cached.isNullOrBlank()) {
+                    _content.value = cached
+                    _fromCache.value = true
+                    saveProgress()
+                    _loading.value = false
+                    return@launch
+                }
+            }
+
+            _fromCache.value = false
             runCatching { contentRepository.content(chapter) }
                 .onSuccess { result ->
                     val text = result.novelText?.trim().orEmpty()
@@ -278,6 +344,18 @@ class NovelReaderViewModel(
                     } else {
                         _content.value = result.novelText ?: ""
                         saveProgress()
+                        // 缓存到本地（供离线阅读 / 缓存管理）
+                        if (item != null && chapterCacheRepository != null) {
+                            runCatching {
+                                chapterCacheRepository.saveCache(
+                                    item = item,
+                                    chapterIndex = chapter.index,
+                                    chapterTitle = chapter.title,
+                                    chapterUrl = chapter.url,
+                                    content = _content.value,
+                                )
+                            }
+                        }
                     }
                 }
                 .onFailure { e ->
@@ -385,6 +463,29 @@ class NovelReaderViewModel(
 
     fun setAutoPageInterval(value: Int) {
         viewModelScope.launch { preferences.setNovelAutoPageInterval(value) }
+    }
+
+    /** 音量键翻页开关 */
+    fun setVolumePage(value: Boolean) {
+        viewModelScope.launch { preferences.setNovelVolumePage(value) }
+    }
+
+    // ===== 音量键翻页事件（#8） =====
+    /** 翻页请求：-1=上一页，1=下一页（0 无）。子组件（翻页/滚动）订阅后执行。 */
+    private val _pageTurn = kotlinx.coroutines.flow.MutableSharedFlow<Int>(
+        extraBufferCapacity = 4,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
+    val pageTurn: kotlinx.coroutines.flow.SharedFlow<Int> = _pageTurn.asSharedFlow()
+
+    /** 音量键上一页 */
+    fun volumePrevPage() {
+        _pageTurn.tryEmit(-1)
+    }
+
+    /** 音量键下一页 */
+    fun volumeNextPage() {
+        _pageTurn.tryEmit(1)
     }
 
     /** 单击屏幕中央：弹出/收起菜单 */
@@ -551,6 +652,7 @@ class NovelReaderViewModel(
                 itemCover = item.cover,
                 itemAuthor = item.author,
                 pageIndex = lastPageIndex,
+                totalChapter = _chapters.value.size,
             )
         }
     }

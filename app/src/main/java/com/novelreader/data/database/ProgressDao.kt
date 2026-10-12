@@ -35,13 +35,13 @@ interface ProgressDao {
      */
     @Query(
         """
-        SELECT p.sourceId, p.itemId, p.chapterTitle, p.chapterIndex, p.updatedAt,
+        SELECT p.sourceId, p.itemId, p.chapterTitle, p.chapterIndex, p.totalChapter, p.updatedAt,
                IFNULL(NULLIF(p.itemTitle, ''), b.title) AS title,
                IFNULL(NULLIF(p.itemCover, ''), b.cover) AS cover,
                IFNULL(NULLIF(p.itemAuthor, ''), b.author) AS author,
                IFNULL(NULLIF(p.itemType, ''), b.type) AS type, b.detailUrl
         FROM (
-            SELECT sourceId, itemId, chapterTitle, chapterIndex, itemType, itemTitle,
+            SELECT sourceId, itemId, chapterTitle, chapterIndex, totalChapter, itemType, itemTitle,
                    itemCover, itemAuthor, MAX(updatedAt) AS updatedAt
             FROM progress
             GROUP BY sourceId, itemId
@@ -64,6 +64,7 @@ data class RecentReadingRow(
     val itemId: String,
     val chapterTitle: String,
     val chapterIndex: Int,
+    val totalChapter: Int,
     val updatedAt: Long,
     val title: String?,
     val cover: String?,

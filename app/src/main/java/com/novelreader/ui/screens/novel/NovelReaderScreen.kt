@@ -56,6 +56,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -69,38 +77,71 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * 三区单击检测（阅读页手势核心）：
  *
- * 按下后抬手立即判定为单击，不做双击/长按超时等待，消除翻页/呼出菜单的点击延迟。
- * 按落点横向位置划分三个区域：
- * - 左 1/3：调用 [onLeft]（上一页 / 上一章）
- * - 右 1/3：调用 [onRight]（下一页 / 下一章）
- * - 中间 1/3：调用 [onCenter]（呼出 / 收起菜单）
+ * - 左 1/3 单击：上一页 / 上一章
+ * - 右 1/3 单击：下一页 / 下一章
+ * - 中间 1/3 单击：呼出 / 收起菜单
  *
- * 通过 extendedTouchPadding 保证边缘区域也能稳定命中（避免系统边缘手势抢占）。
+ * #5 手势增强：
+ * - 双击（任意位置，中央优先）：呼出菜单
+ * - 长按：调用 [onLongPress]（弹出文本选择 / 复制）
+ *
+ * 单击立即响应以保证翻页低延迟；双击/长按在各自分支内单独判定。
  */
 private fun Modifier.pageTap(
     onLeft: () -> Unit,
     onCenter: () -> Unit,
     onRight: () -> Unit,
-): Modifier = this.pointerInput(Unit) {
+    onLongPress: (() -> Unit)? = null,
+): Modifier = this.pointerInput(onLongPress != null) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
-        val up = waitForUpOrCancellation()
-        if (up == null) return@awaitEachGesture
+        val downPos = down.position
+        // 等待抬手或长按超时
+        var up: androidx.compose.ui.input.pointer.PointerInputChange? = null
+        var longPressed = false
+        withTimeoutOrNull(450L) {
+            up = waitForUpOrCancellation()
+        }
+        if (up == null) {
+            // 超时未抬手 → 长按
+            longPressed = true
+        }
+        if (longPressed) {
+            onLongPress?.invoke()
+            // 长按后消费本次手势，等待抬手结束
+            waitForUpOrCancellation()
+            return@awaitEachGesture
+        }
+        val u = up ?: return@awaitEachGesture
         // 滑动距离过大视为翻页/滚动拖拽，不当作单击
-        val dx = kotlin.math.abs(up.position.x - down.position.x)
-        val dy = kotlin.math.abs(up.position.y - down.position.y)
+        val dx = kotlin.math.abs(u.position.x - downPos.x)
+        val dy = kotlin.math.abs(u.position.y - downPos.y)
         if (dx > 24f || dy > 24f) return@awaitEachGesture
         val w = size.width.toFloat()
         if (w <= 0f) return@awaitEachGesture
-        val x = up.position.x
+        val x = u.position.x
+        // 单击立即响应
         when {
             x < w / 3f -> onLeft()
             x > w * 2f / 3f -> onRight()
             else -> onCenter()
+        }
+        // 双击判定：短窗口内若再来一次点击 → 呼出菜单
+        val secondDown = withTimeoutOrNull(260L) {
+            awaitFirstDown(requireUnconsumed = false)
+        }
+        if (secondDown != null) {
+            val secondUp = waitForUpOrCancellation()
+            if (secondUp != null) {
+                val sdx = kotlin.math.abs(secondUp.position.x - secondDown.position.x)
+                val sdy = kotlin.math.abs(secondUp.position.y - secondDown.position.y)
+                if (sdx <= 24f && sdy <= 24f) onCenter()
+            }
         }
     }
 }
@@ -108,24 +149,35 @@ private fun Modifier.pageTap(
 /**
  * 滚动模式单击判定：整屏分上下两半，上半=向上翻、下半=向下翻（菜单呼出走顶栏返回键）。
  * 中心竖条区域仍保留「呼出菜单」，兼顾两种习惯。
+ * #5：长按 → [onLongPress]（文本选择/复制）；双击 → 呼出菜单。
  */
 private fun Modifier.scrollTap(
     onUp: () -> Unit,
     onCenter: () -> Unit,
     onDown: () -> Unit,
-): Modifier = this.pointerInput(Unit) {
+    onLongPress: (() -> Unit)? = null,
+): Modifier = this.pointerInput(onLongPress != null) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
-        val up = waitForUpOrCancellation()
-        if (up == null) return@awaitEachGesture
-        val dx = kotlin.math.abs(up.position.x - down.position.x)
-        val dy = kotlin.math.abs(up.position.y - down.position.y)
+        val downPos = down.position
+        var up: androidx.compose.ui.input.pointer.PointerInputChange? = null
+        var longPressed = false
+        withTimeoutOrNull(450L) { up = waitForUpOrCancellation() }
+        if (up == null) longPressed = true
+        if (longPressed) {
+            onLongPress?.invoke()
+            waitForUpOrCancellation()
+            return@awaitEachGesture
+        }
+        val u = up ?: return@awaitEachGesture
+        val dx = kotlin.math.abs(u.position.x - downPos.x)
+        val dy = kotlin.math.abs(u.position.y - downPos.y)
         if (dx > 24f || dy > 24f) return@awaitEachGesture
         val w = size.width.toFloat()
         val h = size.height.toFloat()
         if (w <= 0f || h <= 0f) return@awaitEachGesture
-        val x = up.position.x
-        val y = up.position.y
+        val x = u.position.x
+        val y = u.position.y
         // 中间竖条（水平方向中间 1/3）且落在屏幕中部 → 呼出菜单
         if (x in (w / 3f)..(w * 2f / 3f) && y in (h * 0.28f)..(h * 0.72f)) {
             onCenter()
@@ -133,6 +185,16 @@ private fun Modifier.scrollTap(
             onUp()
         } else {
             onDown()
+        }
+        // 双击 → 呼出菜单
+        val secondDown = withTimeoutOrNull(260L) { awaitFirstDown(requireUnconsumed = false) }
+        if (secondDown != null) {
+            val secondUp = waitForUpOrCancellation()
+            if (secondUp != null) {
+                val sdx = kotlin.math.abs(secondUp.position.x - secondDown.position.x)
+                val sdy = kotlin.math.abs(secondUp.position.y - secondDown.position.y)
+                if (sdx <= 24f && sdy <= 24f) onCenter()
+            }
         }
     }
 }
@@ -191,10 +253,14 @@ fun NovelReaderScreen(
     val changeSourceLoading by viewModel.changeSourceLoading.collectAsState()
     val sameAuthorOnly by viewModel.sameAuthorOnly.collectAsState()
     val changeSourceError by viewModel.changeSourceError.collectAsState()
+    val fromCache by viewModel.fromCache.collectAsState()
 
     // 当前章节的页码展示（如 «1/18»），由翻页/滚动子组件回传，供顶栏统一显示进度（#10）
     var pageText by remember { androidx.compose.runtime.mutableStateOf("") }
     val chapterCount = chapters.size
+
+    // #5 长按弹出正文选择/复制面板
+    var showTextSelect by remember { androidx.compose.runtime.mutableStateOf(false) }
 
     LaunchedEffect(item, chapter) {
         viewModel.init(item, chapters, chapter)
@@ -213,9 +279,31 @@ fun NovelReaderScreen(
     val backgroundColor = backgroundColors[bgIndexSafe].background
     val textColor = backgroundColors[bgIndexSafe].text
 
+    // 音量键翻页（#8）：阅读页持有焦点并拦截音量键，上下键分别上一页/下一页
+    val volumePageEnabled by viewModel.volumePage.collectAsState()
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    val volumeKeyModifier = Modifier
+        .focusRequester(focusRequester)
+        .focusable()
+        .onPreviewKeyEvent { event ->
+            if (!volumePageEnabled) return@onPreviewKeyEvent false
+            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            when (event.key) {
+                Key.VolumeUp -> {
+                    viewModel.volumePrevPage(); true
+                }
+                Key.VolumeDown -> {
+                    viewModel.volumeNextPage(); true
+                }
+                else -> false
+            }
+        }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .then(volumeKeyModifier)
             .background(backgroundColor),
     ) {
         when {
@@ -264,6 +352,8 @@ fun NovelReaderScreen(
                     onNextChapter = { viewModel.nextChapter() },
                     onPageChanged = { page -> viewModel.savePageIndex(chapterIndex, page) },
                     onPageTextChanged = { pageText = it },
+                    pageTurn = viewModel.pageTurn,
+                    onLongPress = { showTextSelect = true },
                 )
             }
             else -> {
@@ -284,6 +374,8 @@ fun NovelReaderScreen(
                     onTapCenter = { viewModel.toggleMenu() },
                     onNextChapter = { viewModel.nextChapter() },
                     onPageTextChanged = { pageText = it },
+                    pageTurn = viewModel.pageTurn,
+                    onLongPress = { showTextSelect = true },
                 )
             }
         }
@@ -300,6 +392,7 @@ fun NovelReaderScreen(
                     chapterIndex = chapterIndex,
                     chapterCount = chapterCount,
                     pageText = pageText,
+                    fromCache = fromCache,
                     onBack = onBack,
                 )
             }
@@ -324,6 +417,7 @@ fun NovelReaderScreen(
                 backgroundColor = backgroundColor,
                 textColor = textColor,
                 menuTab = menuTab,
+                volumePage = volumePageEnabled,
             )
         }
 
@@ -337,6 +431,17 @@ fun NovelReaderScreen(
                 error = changeSourceError,
                 backgroundColor = backgroundColor,
                 textColor = textColor,
+            )
+        }
+
+        // ===== 长按选择/复制面板（#5） =====
+        if (showTextSelect) {
+            TextSelectPanel(
+                content = content,
+                chapterTitle = chapterTitle,
+                backgroundColor = backgroundColor,
+                textColor = textColor,
+                onClose = { showTextSelect = false },
             )
         }
     }
@@ -361,10 +466,33 @@ private fun ScrollNovel(
     onTapCenter: () -> Unit,
     onNextChapter: () -> Unit,
     onPageTextChanged: (String) -> Unit = {},
+    pageTurn: kotlinx.coroutines.flow.SharedFlow<Int>? = null,
+    onLongPress: (() -> Unit)? = null,
 ) {
     // 每章一个独立滚动状态：切章回到顶部，不沿用上一章位置
     val scrollState = remember(chapterIndex) { ScrollState(0) }
     val scope = rememberCoroutineScope()
+
+    // 音量键翻页（#8）：-1 上翻一屏，+1 下翻一屏，到底进入下一章
+    if (pageTurn != null) {
+        LaunchedEffect(pageTurn, chapterIndex, content) {
+            pageTurn.collect { dir ->
+                val max = scrollState.maxValue
+                if (max <= 0) return@collect
+                if (dir > 0) {
+                    if (scrollState.value >= max - 8) {
+                        onNextChapter()
+                    } else {
+                        val target = (scrollState.value + max * 0.9f).toInt().coerceAtMost(max)
+                        scrollState.animateScrollTo(target)
+                    }
+                } else {
+                    val target = (scrollState.value - max * 0.9f).toInt().coerceAtLeast(0)
+                    scrollState.animateScrollTo(target)
+                }
+            }
+        }
+    }
 
     // 滚动模式下的本章百分比（#10）：滚动位置 / 可滚范围
     val scrollRatio by remember {
@@ -435,6 +563,7 @@ private fun ScrollNovel(
                         }
                     }
                 },
+                onLongPress = onLongPress,
             )
             .verticalScroll(scrollState)
             .padding(horizontal = sidePadding.dp, vertical = 48.dp),
@@ -503,6 +632,8 @@ private fun HorizontalPagerNovel(
     onNextChapter: () -> Unit,
     onPageChanged: (Int) -> Unit,
     onPageTextChanged: (String) -> Unit = {},
+    pageTurn: kotlinx.coroutines.flow.SharedFlow<Int>? = null,
+    onLongPress: (() -> Unit)? = null,
 ) {
     BoxWithConstraints(
         modifier = Modifier.fillMaxSize(),
@@ -534,6 +665,28 @@ private fun HorizontalPagerNovel(
         }
         val pagerState = rememberPagerState(initialPage = startPage, pageCount = { pageCount })
         val scope = rememberCoroutineScope()
+
+        // 音量键翻页（#8）：-1 上一页，+1 下一页，越界时跨章
+        if (pageTurn != null) {
+            LaunchedEffect(pageTurn, chapterIndex) {
+                pageTurn.collect { dir ->
+                    if (dir > 0) {
+                        val last = pagerState.pageCount - 1
+                        if (pagerState.currentPage < last) {
+                            pagerState.animateScrollToPage(pagerState.currentPage + 1)
+                        } else {
+                            onNextChapter()
+                        }
+                    } else {
+                        if (pagerState.currentPage > 0) {
+                            pagerState.animateScrollToPage(pagerState.currentPage - 1)
+                        } else {
+                            onReachFirst()
+                        }
+                    }
+                }
+            }
+        }
 
         // 切换章节时回到第一页，避免沿用上一章的页码。
         // 注意：仅在「章号真正变化」时复位；首次进入本章要保留 initialPage（恢复上次页码），
@@ -611,6 +764,7 @@ private fun HorizontalPagerNovel(
                             onNextChapter()
                         }
                     },
+                    onLongPress = onLongPress,
                 ),
         ) { page ->
             val offset = pagerState.currentPageOffsetFraction
@@ -799,6 +953,7 @@ private fun BoxScope.ReaderTopBar(
     chapterIndex: Int,
     chapterCount: Int,
     pageText: String,
+    fromCache: Boolean,
     onBack: () -> Unit,
 ) {
     Row(
@@ -827,6 +982,15 @@ private fun BoxScope.ReaderTopBar(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        // 离线缓存提示（#30）
+        if (fromCache) {
+            Text(
+                text = "缓存",
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(end = 8.dp),
             )
         }
         // 阅读进度：全书章节进度（第 n/N 章）+ 本章页码，供快速定位
@@ -868,6 +1032,7 @@ private fun BoxScope.ReaderBottomMenu(
     backgroundColor: Color,
     textColor: Color,
     menuTab: Int,
+    volumePage: Boolean,
 ) {
     val backgroundColors = if (nightMode) ReaderBackgrounds.nightColors else ReaderBackgrounds.dayColors
 
@@ -1090,6 +1255,7 @@ private fun BoxScope.ReaderBottomMenu(
                     SettingSwitch("隐藏顶部栏", hideTopBar) { viewModel.setHideTopBar(it) }
                     SettingSwitch("隐藏进度栏", hideBottomBar) { viewModel.setHideBottomBar(it) }
                     SettingSwitch("隐藏章节标题", hideChapterTitle) { viewModel.setHideChapterTitle(it) }
+                    SettingSwitch("音量键翻页", volumePage) { viewModel.setVolumePage(it) }
                     Spacer(Modifier.height(12.dp))
                     // 换源
                     Text("换源", color = textColor, style = MaterialTheme.typography.titleSmall)
@@ -1097,6 +1263,15 @@ private fun BoxScope.ReaderBottomMenu(
                     Row {
                         MenuButton("切换书源", selected = false, textColor = textColor) {
                             viewModel.openChangeSource()
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    // 缓存（#30）
+                    Text("缓存", color = textColor, style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(8.dp))
+                    Row {
+                        MenuButton("缓存本章", selected = false, textColor = textColor) {
+                            viewModel.cacheCurrentChapter()
                         }
                     }
                     Spacer(Modifier.height(8.dp))
@@ -1408,6 +1583,103 @@ private fun BoxScope.ChangeSourcePanel(
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 长按弹出的正文选择/复制面板（#5）。
+ *
+ * 以章节正文为内容，提供「全选并复制」「复制本章」以及可拖拽选择的操作，
+ * 底层使用 Compose 的 SelectionContainer 支持系统级长按选词/复制。
+ */
+@Composable
+private fun TextSelectPanel(
+    content: String,
+    chapterTitle: String,
+    backgroundColor: Color,
+    textColor: Color,
+    onClose: () -> Unit,
+) {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+    var feedback by remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.5f))
+            .fastTap { onClose() },
+    ) {
+        Surface(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .fillMaxHeight(0.78f),
+            color = backgroundColor,
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "选择文本",
+                        color = textColor,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "关闭",
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier
+                            .clickable { onClose() }
+                            .padding(8.dp),
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                // 操作行
+                Row {
+                    MenuButton("复制本章", selected = false, textColor = textColor) {
+                        clipboard.setText(androidx.compose.ui.text.AnnotatedString(content))
+                        feedback = "已复制本章全文"
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    MenuButton("复制标题+正文", selected = false, textColor = textColor) {
+                        clipboard.setText(
+                            androidx.compose.ui.text.AnnotatedString("$chapterTitle\n\n$content"),
+                        )
+                        feedback = "已复制标题与正文"
+                    }
+                }
+                feedback?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = it,
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    LaunchedEffect(it) {
+                        delay(1500)
+                        feedback = null
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                HorizontalDivider(color = textColor.copy(alpha = 0.15f))
+                Spacer(Modifier.height(4.dp))
+                // 正文可选区域
+                androidx.compose.foundation.text.selection.SelectionContainer(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(ScrollState(0)),
+                ) {
+                    Text(
+                        text = content,
+                        color = textColor,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(vertical = 8.dp),
+                    )
                 }
             }
         }

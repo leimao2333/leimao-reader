@@ -404,7 +404,14 @@ private fun RecentReadingCard(
                 }
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    text = "读到 ${item.chapterIndex + 1} 章 · ${item.chapterTitle}",
+                    text = "读到 ${item.chapterIndex + 1} 章" +
+                        (if (item.totalChapter > 0) {
+                            val pct = ((item.chapterIndex + 1).toFloat() / item.totalChapter * 100)
+                                .toInt().coerceIn(0, 100)
+                            " · 已读 $pct% · ${item.chapterTitle}"
+                        } else {
+                            " · ${item.chapterTitle}"
+                        }),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,

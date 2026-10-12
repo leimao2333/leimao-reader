@@ -5,27 +5,30 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.novelreader.data.model.BookEntity
+import com.novelreader.data.model.ChapterCacheEntity
 import com.novelreader.data.model.ProgressEntity
 import com.novelreader.data.model.SourceEntity
 
 /**
  * 应用数据库。
  *
- * 三张表：源（sources）、书架（books）、进度（progress）。
+ * 四张表：源（sources）、书架（books）、进度（progress）、章节缓存（chapter_cache）。
  */
 @Database(
     entities = [
         SourceEntity::class,
         BookEntity::class,
         ProgressEntity::class,
+        ChapterCacheEntity::class,
     ],
-    version = 5,
+    version = 7,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun sourceDao(): SourceDao
     abstract fun bookDao(): BookDao
     abstract fun progressDao(): ProgressDao
+    abstract fun chapterCacheDao(): ChapterCacheDao
 
     companion object {
         /** v1 -> v2：sources 表新增 category 列 */
@@ -96,6 +99,45 @@ abstract class AppDatabase : RoomDatabase() {
                         itemAuthor = IFNULL(itemAuthor, (SELECT b.author FROM books b
                             WHERE b.sourceId = progress.sourceId AND b.itemId = progress.itemId))
                     """.trimIndent()
+                )
+            }
+        }
+
+        /**
+         * v5 -> v6：progress 表新增 totalChapter 列（章节总数，用于最近阅读显示"已读 xx%"，#13）。
+         * 存量数据无从得知总章节数，默认 0（前端按未知处理，不显示百分比）。
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE progress ADD COLUMN totalChapter INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * v6 -> v7：新增 chapter_cache 表（单章缓存 + 缓存管理，#30）。
+         */
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS chapter_cache (
+                        cacheId INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        sourceId TEXT NOT NULL,
+                        itemId TEXT NOT NULL,
+                        itemTitle TEXT NOT NULL DEFAULT '',
+                        itemType TEXT NOT NULL DEFAULT '',
+                        chapterIndex INTEGER NOT NULL,
+                        chapterTitle TEXT NOT NULL DEFAULT '',
+                        chapterUrl TEXT NOT NULL DEFAULT '',
+                        content TEXT NOT NULL DEFAULT '',
+                        size INTEGER NOT NULL DEFAULT 0,
+                        cachedAt INTEGER NOT NULL DEFAULT 0
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_chapter_cache_sourceId_itemId_chapterIndex " +
+                        "ON chapter_cache (sourceId, itemId, chapterIndex)"
                 )
             }
         }

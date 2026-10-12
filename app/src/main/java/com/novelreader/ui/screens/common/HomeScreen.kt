@@ -1,34 +1,29 @@
 package com.novelreader.ui.screens.common
 
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.ViewList
-import androidx.compose.material.icons.filled.CollectionsBookmark
 import androidx.compose.material.icons.filled.GridView
-import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Source
-import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,40 +33,29 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImagePainter
-import coil.compose.SubcomposeAsyncImage
-import coil.compose.SubcomposeAsyncImageContent
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
-import com.novelreader.domain.model.RecentReading
 import com.novelreader.domain.model.SourceType
-import com.novelreader.ui.components.BookMeta
-import com.novelreader.ui.components.CoverPlaceholderLetter
+import com.novelreader.ui.screens.bookshelf.BookGrid
 
 /**
- * 主页。
+ * 主页（合并书架 + 最近阅读）。
  *
  * 底部导航三栏：小说 / 动漫 / 视频，各自对应独立页面。
- * 每个页面顶部是「搜索栏」（点击进入独立搜索页，带历史记录），
- * 搜索栏下方是「书架」入口，再往下是「最近阅读」列表（可切换列表/表格展现形式），
- * 最下方是内容引导区。
+ * 每个页面顶部是「搜索栏」（点击进入独立搜索页），
+ * 搜索栏下方直接是「书架」封面墙（收藏内容，按最近阅读时间倒序），
+ * 不再单设「最近阅读」列表与「书架」入口——两者本就是同一件事。
  * 顶栏右侧提供 源管理 / 设置 入口。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -81,7 +65,6 @@ fun HomeScreen(
     onOpenNovelItem: (MediaItem) -> Unit,
     onOpenComicItem: (MediaItem) -> Unit,
     onOpenVideoItem: (MediaItem) -> Unit,
-    onOpenBookshelf: () -> Unit,
     onOpenSources: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenNovelSearch: () -> Unit,
@@ -90,28 +73,24 @@ fun HomeScreen(
     onContinueReading: (MediaItem, List<ChapterItem>, ChapterItem?) -> Unit,
 ) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
-    val recent by viewModel.recent.collectAsState()
+    val books by viewModel.books.collectAsState()
+    val progressMap by viewModel.progressMap.collectAsState()
+    val lastChapterMap by viewModel.lastChapterMap.collectAsState()
+    val chapterCountMap by viewModel.chapterCountMap.collectAsState()
 
-    // 每次回到前台（从阅读/搜索页返回）时刷新最近阅读列表
+    // 展现形式：0=封面墙网格，1=列表
+    var gridMode by rememberSaveable { mutableIntStateOf(0) }
+
+    // 每次回到前台时刷新（进度可能已变化）
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                viewModel.refresh()
+                viewModel.refreshProgress()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    // 最近阅读展示形式：0=列表，1=表格
-    var recentViewMode by rememberSaveable { mutableIntStateOf(0) }
-
-    // 点击最近阅读条目：加载章节列表并定位进度后导航
-    val handleContinue: (RecentReading) -> Unit = { item ->
-        viewModel.continueReading(item) { chapters, target ->
-            onContinueReading(item.toMediaItem(), chapters, target)
-        }
     }
 
     data class TabItem(val label: String, val icon: ImageVector)
@@ -121,6 +100,13 @@ fun HomeScreen(
         TabItem("动漫", Icons.Filled.PhotoLibrary),
         TabItem("视频", Icons.Filled.PlayCircle),
     )
+
+    // 当前 tab 的类型（用于书架过滤）
+    val currentType = when (selectedTab) {
+        0 -> SourceType.NOVEL
+        1 -> SourceType.COMIC
+        else -> SourceType.VIDEO
+    }
 
     Scaffold(
         topBar = {
@@ -150,367 +136,132 @@ fun HomeScreen(
         },
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
-            when (selectedTab) {
-                0 -> {
-                    viewModel.setType(SourceType.NOVEL)
-                    HomeTab(
-                        label = "小说",
-                        searchPlaceholder = "搜索小说",
-                        recent = recent,
-                        recentViewMode = recentViewMode,
-                        onToggleRecentView = { recentViewMode = if (recentViewMode == 0) 1 else 0 },
-                        onContinueReading = handleContinue,
-                        onRemoveRecent = { item -> viewModel.removeRecent(item) },
-                        onOpenSearch = onOpenNovelSearch,
-                        onOpenBookshelf = onOpenBookshelf,
-                    )
-                }
-                1 -> {
-                    viewModel.setType(SourceType.COMIC)
-                    HomeTab(
-                        label = "动漫",
-                        searchPlaceholder = "搜索漫画",
-                        recent = recent,
-                        recentViewMode = recentViewMode,
-                        onToggleRecentView = { recentViewMode = if (recentViewMode == 0) 1 else 0 },
-                        onContinueReading = handleContinue,
-                        onRemoveRecent = { item -> viewModel.removeRecent(item) },
-                        onOpenSearch = onOpenComicSearch,
-                        onOpenBookshelf = onOpenBookshelf,
-                    )
-                }
-                else -> {
-                    viewModel.setType(SourceType.VIDEO)
-                    HomeTab(
-                        label = "视频",
-                        searchPlaceholder = "搜索视频",
-                        recent = recent,
-                        recentViewMode = recentViewMode,
-                        onToggleRecentView = { recentViewMode = if (recentViewMode == 0) 1 else 0 },
-                        onContinueReading = handleContinue,
-                        onRemoveRecent = { item -> viewModel.removeRecent(item) },
-                        onOpenSearch = onOpenVideoSearch,
-                        onOpenBookshelf = onOpenBookshelf,
-                    )
-                }
+            val placeholder = when (selectedTab) {
+                0 -> "搜索小说"
+                1 -> "搜索漫画"
+                else -> "搜索视频"
+            }
+            val onOpenSearch = when (selectedTab) {
+                0 -> onOpenNovelSearch
+                1 -> onOpenComicSearch
+                else -> onOpenVideoSearch
+            }
+
+            Column(modifier = Modifier.fillMaxSize()) {
+                // 搜索栏（点击进入独立搜索页）
+                SearchEntryBar(placeholder = placeholder, onClick = onOpenSearch)
+
+                Spacer(Modifier.height(8.dp))
+
+                // 书架内容（合并后的主内容区）
+                BookshelfContent(
+                    books = books,
+                    currentType = currentType,
+                    progressMap = progressMap,
+                    lastChapterMap = lastChapterMap,
+                    chapterCountMap = chapterCountMap,
+                    gridMode = gridMode,
+                    onToggleGridMode = { gridMode = if (gridMode == 0) 1 else 0 },
+                    onItemClick = { item ->
+                        viewModel.continueReading(item) { chapters, target ->
+                            onContinueReading(item, chapters, target)
+                        }
+                    },
+                )
             }
         }
     }
 }
 
 /**
- * 单个 tab 的主页内容：搜索栏 + 书架入口 + 最近阅读列表 + 引导区。
+ * 书架内容区：标题行（含网格/列表切换）+ 封面墙。
+ * 内容按当前 tab 类型过滤，未开始阅读的收藏也展示（无进度）。
  */
 @Composable
-private fun HomeTab(
-    label: String,
-    searchPlaceholder: String,
-    recent: List<RecentReading>,
-    recentViewMode: Int,
-    onToggleRecentView: () -> Unit,
-    onContinueReading: (RecentReading) -> Unit,
-    onRemoveRecent: (RecentReading) -> Unit,
-    onOpenSearch: () -> Unit,
-    onOpenBookshelf: () -> Unit,
+private fun BookshelfContent(
+    books: List<MediaItem>,
+    currentType: SourceType,
+    progressMap: Map<String, com.novelreader.domain.repository.ReadingProgress>,
+    lastChapterMap: Map<String, String>,
+    chapterCountMap: Map<String, Int>,
+    gridMode: Int,
+    onToggleGridMode: () -> Unit,
+    onItemClick: (MediaItem) -> Unit,
 ) {
+    // 按当前 tab 类型过滤
+    val filtered = books.filter { it.type == currentType }
+
     Column(modifier = Modifier.fillMaxSize()) {
-        // 搜索栏（点击进入独立搜索页）
-        SearchEntryBar(
-            placeholder = searchPlaceholder,
-            onClick = onOpenSearch,
-        )
-
-        Spacer(Modifier.height(8.dp))
-
-        // 书架入口
-        BookshelfEntry(onClick = onOpenBookshelf)
-
-        Spacer(Modifier.height(8.dp))
-
-        // 最近阅读列表（可滚动）
-        RecentReadingSection(
-            recent = recent,
-            viewMode = recentViewMode,
-            onToggleView = onToggleRecentView,
-            onContinueReading = onContinueReading,
-            onRemove = onRemoveRecent,
-            modifier = Modifier.weight(1f),
-        )
-    }
-}
-
-/**
- * 最近阅读区：标题 + 切换展现形式按钮 + 列表/表格。
- */
-@Composable
-private fun RecentReadingSection(
-    recent: List<RecentReading>,
-    viewMode: Int,
-    onToggleView: () -> Unit,
-    onContinueReading: (RecentReading) -> Unit,
-    onRemove: (RecentReading) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(modifier = modifier.fillMaxWidth()) {
-        // 标题行 + 切换按钮
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                imageVector = Icons.Filled.History,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-            )
-            Spacer(Modifier.width(6.dp))
             Text(
-                text = "最近阅读",
+                text = "书架",
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f),
             )
-            // 切换展现形式按钮
-            IconButton(onClick = onToggleView) {
+            IconButton(onClick = onToggleGridMode) {
                 Icon(
-                    imageVector = if (viewMode == 0) Icons.AutoMirrored.Filled.ViewList else Icons.Filled.GridView,
-                    contentDescription = if (viewMode == 0) "切换为表格" else "切换为列表",
+                    imageVector = if (gridMode == 0) Icons.AutoMirrored.Filled.ViewList else Icons.Filled.GridView,
+                    contentDescription = if (gridMode == 0) "切换为列表" else "切换为封面墙",
                     tint = MaterialTheme.colorScheme.primary,
                 )
             }
         }
 
-        if (recent.isEmpty()) {
+        if (filtered.isEmpty()) {
             Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 24.dp),
+                modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    text = "暂无阅读记录，去搜索开始阅读吧",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        } else if (viewMode == 0) {
-            // 列表形式
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    start = 16.dp, end = 16.dp, bottom = 16.dp,
-                ),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(recent, key = { "${it.sourceId}:${it.itemId}" }) { item ->
-                    RecentReadingCard(
-                        item = item,
-                        onClick = { onContinueReading(item) },
-                        onLongClick = { onRemove(item) },
-                    )
-                }
-            }
-        } else {
-            // 表格形式
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    start = 16.dp, end = 16.dp, bottom = 16.dp,
-                ),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                items(recent, key = { "${it.sourceId}:${it.itemId}" }) { item ->
-                    RecentReadingTableRow(
-                        item = item,
-                        onClick = { onContinueReading(item) },
-                    )
-                }
-            }
-        }
-    }
-}
-
-/** 列表形式的最近阅读卡片（封面占位 + 类型 + 读到章节 + 相对时间 + 长按移除） */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun RecentReadingCard(
-    item: RecentReading,
-    onClick: () -> Unit,
-    onLongClick: (() -> Unit)? = null,
-) {
-    // 长按弹出「移除记录」确认（#15）
-    var showRemoveDialog by remember { mutableStateOf(false) }
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = if (onLongClick != null) ({ showRemoveDialog = true }) else null,
-            ),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // 封面：无封面时用书名首字占位（#12）
-            val cover = item.cover
-            if (cover.isNullOrBlank()) {
-                CoverPlaceholderLetter(
-                    Modifier.size(width = 48.dp, height = 64.dp),
-                    item.title,
-                )
-            } else {
-                SubcomposeAsyncImage(
-                    model = cover,
-                    contentDescription = item.title,
-                    modifier = Modifier.size(width = 48.dp, height = 64.dp),
-                    contentScale = ContentScale.Crop,
-                ) {
-                    when (painter.state) {
-                        is AsyncImagePainter.State.Error ->
-                            CoverPlaceholderLetter(Modifier.fillMaxSize(), item.title)
-                        is AsyncImagePainter.State.Loading ->
-                            CoverPlaceholderLetter(Modifier.fillMaxSize(), item.title)
-                        else -> SubcomposeAsyncImageContent()
-                    }
-                }
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = item.title,
+                    text = "书架空空如也\n去搜索并收藏喜欢的内容吧",
                     style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.height(2.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = typeLabel(item.type),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    item.author?.takeIf { it.isNotBlank() }?.let {
-                        Text(
-                            text = " · $it",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = "读到 ${item.chapterIndex + 1} 章" +
-                        (if (item.totalChapter > 0) {
-                            val pct = ((item.chapterIndex + 1).toFloat() / item.totalChapter * 100)
-                                .toInt().coerceIn(0, 100)
-                            " · 已读 $pct% · ${item.chapterTitle}"
-                        } else {
-                            " · ${item.chapterTitle}"
-                        }),
-                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
-                // 相对时间（#14）
-                if (item.updatedAt > 0) {
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = BookMeta.recentTime(item.updatedAt),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            }
+        } else if (gridMode == 0) {
+            // 封面墙网格（复用书架组件）
+            BookGrid(
+                books = filtered,
+                progressMap = progressMap,
+                lastChapterMap = lastChapterMap,
+                chapterCountMap = chapterCountMap,
+                selecting = false,
+                selectedKeys = emptySet(),
+                onClick = onItemClick,
+                onLongClick = { },
+            )
+        } else {
+            // 列表形式（复用书架网格 cell 的封面+信息，简化）
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                items(filtered, key = { it.itemKey() }) { item ->
+                    com.novelreader.ui.screens.bookshelf.BookGridCell(
+                        item = item,
+                        progress = progressMap[item.itemKey()],
+                        lastChapter = lastChapterMap[item.itemKey()],
+                        chapterCount = chapterCountMap[item.itemKey()],
+                        selected = false,
+                        selecting = false,
+                        onClick = { onItemClick(item) },
+                        onLongClick = { },
                     )
                 }
             }
-            Text(
-                text = "›",
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-
-    if (showRemoveDialog && onLongClick != null) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { showRemoveDialog = false },
-            title = { Text("移除阅读记录") },
-            text = { Text("确定移除《${item.title}》的阅读记录吗？") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showRemoveDialog = false
-                    onLongClick()
-                }) { Text("移除") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showRemoveDialog = false }) { Text("取消") }
-            },
-        )
-    }
-}
-
-/** 表格形式的最近阅读行 */
-@Composable
-private fun RecentReadingTableRow(
-    item: RecentReading,
-    onClick: () -> Unit,
-) {
-    Surface(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = item.title,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = typeLabel(item.type),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = item.chapterTitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
         }
     }
 }
 
-private fun RecentReading.toMediaItem(): MediaItem = MediaItem(
-    id = itemId,
-    title = title,
-    cover = cover,
-    type = type,
-    detailUrl = detailUrl,
-    sourceId = sourceId,
-)
-
-private fun typeLabel(type: SourceType): String = when (type) {
-    SourceType.NOVEL -> "小说"
-    SourceType.COMIC -> "漫画"
-    SourceType.VIDEO -> "视频"
-}
+private fun com.novelreader.domain.model.MediaItem.itemKey(): String = "$sourceId:$id"
 
 /**
  * 可点击的「搜索栏」入口（非输入框，点击跳转搜索页）。
@@ -543,49 +294,6 @@ private fun SearchEntryBar(
             Text(
                 text = placeholder,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-/**
- * 书架入口卡片。
- */
-@Composable
-private fun BookshelfEntry(onClick: () -> Unit) {
-    Card(
-        onClick = onClick,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector = Icons.Filled.CollectionsBookmark,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-            )
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "书架",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Text(
-                    text = "查看收藏的小说 / 漫画 / 视频",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Text(
-                text = "›",
-                style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }

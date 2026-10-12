@@ -8,9 +8,7 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -87,137 +85,61 @@ import kotlinx.coroutines.withTimeoutOrNull
 /* ===================== 手势 ===================== */
 
 /**
- * 三区单击：左 1/3 上一页，右 1/3 下一页，中间呼出菜单；长按 → 选文。
+ * 三区单击（左右翻页 / 上下翻页共用）：左 1/3 上一页，右 1/3 下一页，中间呼出菜单。
  *
- * 关键修正：长按判定必须结合「移动距离」。旧实现仅用 450ms 超时判定长按，
- * 手指滑动时若停留稍久（如按住拖拽停顿）会被误判为长按 → 弹出复制面板。
- * 现在：一旦移动超过阈值（24px）立即取消长按与单击，滑动再也不会触发选文/菜单。
+ * 关键修正（滑动翻页失效根因）：旧实现手写 `awaitEachGesture` + `awaitFirstDown` +
+ * `it.consume()`，会与 Pager 内置的拖动翻页手势**竞争并消费指针事件**，导致滑动无法翻页。
+ * 现改为 `detectTapGestures`——它天然只响应「按下即抬起」的 tap，不拦截、不消费
+ * 拖动（drag）事件，Pager 的滑动翻页恢复生效。
  */
 private fun Modifier.pageTap(
     onLeft: () -> Unit,
     onCenter: () -> Unit,
     onRight: () -> Unit,
-    onLongPress: (() -> Unit)? = null,
-): Modifier = this.pointerInput(onLongPress != null) {
-    awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false)
-        val downPos = down.position
-        var moved = false
-        var longPressed = false
-        var up: androidx.compose.ui.input.pointer.PointerInputChange? = null
-        // 逐个处理指针事件：能感知移动，移动超阈值立即放弃长按/单击
-        var done = false
-        while (!done) {
-            val event = withTimeoutOrNull(500L) { awaitPointerEvent() }
-            if (event == null) {
-                longPressed = true
-                done = true
-            } else {
-                val change = event.changes.firstOrNull()
-                if (change == null) {
-                    // 无变化，继续
-                } else if (change.changedToUp()) {
-                    up = change
-                    done = true
-                } else {
-                    val curDx = kotlin.math.abs(change.position.x - downPos.x)
-                    val curDy = kotlin.math.abs(change.position.y - downPos.y)
-                    if (curDx > 24f || curDy > 24f) {
-                        moved = true
-                        done = true
-                    } else {
-                        event.changes.forEach { it.consume() }
-                    }
-                }
+): Modifier = this.pointerInput(Unit) {
+    detectTapGestures(
+        onTap = { offset ->
+            val w = size.width.toFloat()
+            if (w <= 0f) return@detectTapGestures
+            val x = offset.x
+            when {
+                x < w / 3f -> onLeft()
+                x > w * 2f / 3f -> onRight()
+                else -> onCenter()
             }
-        }
-        if (longPressed && !moved) {
-            onLongPress?.invoke()
-            waitForUpOrCancellation()
-            return@awaitEachGesture
-        }
-        if (moved) return@awaitEachGesture
-        val u = up ?: return@awaitEachGesture
-        val w = size.width.toFloat()
-        if (w <= 0f) return@awaitEachGesture
-        val x = u.position.x
-        when {
-            x < w / 3f -> onLeft()
-            x > w * 2f / 3f -> onRight()
-            else -> onCenter()
-        }
-    }
+        },
+    )
 }
 
 /**
- * 滚动模式：整屏分上下两半翻屏，中间竖条呼出菜单；长按选文。
- * 长按判定结合移动距离，滚动不再误触发选文/菜单。
+ * 滚动模式：整屏分上下两半翻屏，中间竖条呼出菜单。
+ * 同样用 `detectTapGestures`，不拦截滚动拖拽。
  */
 private fun Modifier.scrollTap(
     onUp: () -> Unit,
     onCenter: () -> Unit,
     onDown: () -> Unit,
-    onLongPress: (() -> Unit)? = null,
-): Modifier = this.pointerInput(onLongPress != null) {
-    awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false)
-        val downPos = down.position
-        var moved = false
-        var longPressed = false
-        var up: androidx.compose.ui.input.pointer.PointerInputChange? = null
-        var done = false
-        while (!done) {
-            val event = withTimeoutOrNull(500L) { awaitPointerEvent() }
-            if (event == null) {
-                longPressed = true
-                done = true
+): Modifier = this.pointerInput(Unit) {
+    detectTapGestures(
+        onTap = { offset ->
+            val w = size.width.toFloat()
+            val h = size.height.toFloat()
+            if (w <= 0f || h <= 0f) return@detectTapGestures
+            val x = offset.x
+            val y = offset.y
+            if (x in (w / 3f)..(w * 2f / 3f) && y in (h * 0.28f)..(h * 0.72f)) {
+                onCenter()
+            } else if (y < h / 2f) {
+                onUp()
             } else {
-                val change = event.changes.firstOrNull()
-                if (change == null) {
-                    // 无变化，继续
-                } else if (change.changedToUp()) {
-                    up = change
-                    done = true
-                } else {
-                    val curDx = kotlin.math.abs(change.position.x - downPos.x)
-                    val curDy = kotlin.math.abs(change.position.y - downPos.y)
-                    if (curDx > 24f || curDy > 24f) {
-                        moved = true
-                        done = true
-                    } else {
-                        event.changes.forEach { it.consume() }
-                    }
-                }
+                onDown()
             }
-        }
-        if (longPressed && !moved) {
-            onLongPress?.invoke()
-            waitForUpOrCancellation()
-            return@awaitEachGesture
-        }
-        if (moved) return@awaitEachGesture
-        val u = up ?: return@awaitEachGesture
-        val w = size.width.toFloat()
-        val h = size.height.toFloat()
-        if (w <= 0f || h <= 0f) return@awaitEachGesture
-        val x = u.position.x
-        val y = u.position.y
-        if (x in (w / 3f)..(w * 2f / 3f) && y in (h * 0.28f)..(h * 0.72f)) {
-            onCenter()
-        } else if (y < h / 2f) {
-            onUp()
-        } else {
-            onDown()
-        }
-    }
+        },
+    )
 }
 
 private fun Modifier.fastTap(onTap: () -> Unit): Modifier = this.pointerInput(Unit) {
-    awaitEachGesture {
-        awaitFirstDown(requireUnconsumed = false)
-        val up = waitForUpOrCancellation()
-        if (up != null) onTap()
-    }
+    detectTapGestures(onTap = { onTap() })
 }
 
 /* ===================== 阅读页 ===================== */
@@ -292,7 +214,6 @@ fun NovelReaderScreen(
     var pageText by remember { mutableStateOf("") }
     var currentRatio by remember { mutableIntStateOf(0) }
     val chapterCount = chapterList.size
-    var showTextSelect by remember { mutableStateOf(false) }
 
     LaunchedEffect(item, chapter) {
         viewModel.init(item, chapters, chapter)
@@ -456,7 +377,6 @@ fun NovelReaderScreen(
                     onNextChapter = { viewModel.nextChapter() },
                     onPageTextChanged = { pageText = it },
                     pageTurn = viewModel.pageTurn,
-                    onLongPress = { showTextSelect = true },
                 )
             }
             isVertical -> {
@@ -486,7 +406,6 @@ fun NovelReaderScreen(
                     onRatioChanged = { r -> currentRatio = r; viewModel.updatePagerRatio(r) },
                     onPageTextChanged = { pageText = it },
                     pageTurn = viewModel.pageTurn,
-                    onLongPress = { showTextSelect = true },
                 )
             }
             else -> {
@@ -517,7 +436,6 @@ fun NovelReaderScreen(
                     onRatioChanged = { r -> currentRatio = r; viewModel.updatePagerRatio(r) },
                     onPageTextChanged = { pageText = it },
                     pageTurn = viewModel.pageTurn,
-                    onLongPress = { showTextSelect = true },
                 )
             }
         }
@@ -606,16 +524,6 @@ fun NovelReaderScreen(
             )
         }
 
-        if (showTextSelect) {
-            TextSelectPanel(
-                content = content,
-                chapterTitle = chapterTitle,
-                backgroundColor = backgroundColor,
-                textColor = textColor,
-                onClose = { showTextSelect = false },
-            )
-        }
-
         toast?.let { msg ->
             Surface(
                 modifier = Modifier
@@ -678,7 +586,6 @@ private fun ScrollNovel(
     onNextChapter: () -> Unit,
     onPageTextChanged: (String) -> Unit = {},
     pageTurn: kotlinx.coroutines.flow.SharedFlow<Int>? = null,
-    onLongPress: (() -> Unit)? = null,
 ) {
     val scrollState = remember(chapterIndex) { ScrollState(0) }
     val scope = rememberCoroutineScope()
@@ -764,7 +671,6 @@ private fun ScrollNovel(
                         }
                     }
                 },
-                onLongPress = onLongPress,
             )
             .verticalScroll(scrollState)
             .padding(horizontal = sidePadding.dp, vertical = 48.dp),
@@ -843,7 +749,6 @@ private fun HorizontalPagerNovel(
     onRatioChanged: (Int) -> Unit,
     onPageTextChanged: (String) -> Unit = {},
     pageTurn: kotlinx.coroutines.flow.SharedFlow<Int>? = null,
-    onLongPress: (() -> Unit)? = null,
 ) {
     BoxWithConstraintsCompat { maxWidthDp, maxHeightDp ->
         val textMeasurer = rememberTextMeasurer()
@@ -959,7 +864,6 @@ private fun HorizontalPagerNovel(
                             scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
                         } else onNextChapter()
                     },
-                    onLongPress = onLongPress,
                 ),
         ) { page ->
             val offset = pagerState.currentPageOffsetFraction
@@ -1031,7 +935,6 @@ private fun VerticalPagerNovel(
     onRatioChanged: (Int) -> Unit,
     onPageTextChanged: (String) -> Unit = {},
     pageTurn: kotlinx.coroutines.flow.SharedFlow<Int>? = null,
-    onLongPress: (() -> Unit)? = null,
 ) {
     BoxWithConstraintsCompat { maxWidthDp, maxHeightDp ->
         val textMeasurer = rememberTextMeasurer()
@@ -1136,7 +1039,6 @@ private fun VerticalPagerNovel(
                     onLeft = onReachFirst,
                     onCenter = onTapCenter,
                     onRight = onNextChapter,
-                    onLongPress = onLongPress,
                 ),
         ) { page ->
             Box(modifier = Modifier.fillMaxSize()) {
@@ -1411,104 +1313,6 @@ private fun paginateByMeasurement(
         isFirstPage = false
     }
     return pages.ifEmpty { listOf("") }.filter { it.isNotEmpty() || pages.size == 1 }
-}
-
-/* ===================== 长按选文 ===================== */
-
-@Composable
-private fun TextSelectPanel(
-    content: String,
-    chapterTitle: String,
-    backgroundColor: Color,
-    textColor: Color,
-    onClose: () -> Unit,
-) {
-    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
-    var feedback by remember { mutableStateOf<String?>(null) }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.5f))
-            .fastTap { onClose() },
-    ) {
-        BoxWithConstraints(modifier = Modifier.align(Alignment.BottomCenter)) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(maxHeight * 0.78f),
-            color = backgroundColor,
-            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "选择文本",
-                        color = textColor,
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        text = "关闭",
-                        color = Color(0xFF4A6FA5),
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier
-                            .clickable { onClose() }
-                            .padding(8.dp),
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-                Row {
-                    SelectChip("复制本章") {
-                        clipboard.setText(AnnotatedString(content))
-                        feedback = "已复制本章全文"
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    SelectChip("复制标题+正文") {
-                        clipboard.setText(AnnotatedString("$chapterTitle\n\n$content"))
-                        feedback = "已复制标题与正文"
-                    }
-                }
-                feedback?.let {
-                    Spacer(Modifier.height(6.dp))
-                    Text(it, color = Color(0xFF4A6FA5), style = MaterialTheme.typography.labelMedium)
-                    LaunchedEffect(it) {
-                        delay(1500)
-                        feedback = null
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                HorizontalDivider(color = textColor.copy(alpha = 0.15f))
-                Spacer(Modifier.height(4.dp))
-                androidx.compose.foundation.text.selection.SelectionContainer(
-                    modifier = Modifier
-                        .weight(1f)
-                        .verticalScroll(rememberScrollState()),
-                ) {
-                    Text(
-                        text = content,
-                        color = textColor,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(vertical = 8.dp),
-                    )
-                }
-            }
-        }
-        }
-    }
-}
-
-@Composable
-private fun SelectChip(text: String, onClick: () -> Unit) {
-    Text(
-        text = text,
-        color = MaterialTheme.colorScheme.onSurface,
-        style = MaterialTheme.typography.bodyMedium,
-        modifier = Modifier
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-    )
 }
 
 private fun Context.findActivity(): Activity? {

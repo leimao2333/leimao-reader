@@ -294,7 +294,7 @@ fun BookShelfScreen(
 /** 封面墙网格 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun BookGrid(
+internal fun BookGrid(
     books: List<MediaItem>,
     progressMap: Map<String, ReadingProgress>,
     lastChapterMap: Map<String, String>,
@@ -329,7 +329,7 @@ private fun BookGrid(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun BookGridCell(
+internal fun BookGridCell(
     item: MediaItem,
     progress: ReadingProgress?,
     lastChapter: String?,
@@ -574,13 +574,13 @@ private fun BookList(
 }
 
 /** 进度标签：有总章节数时显示百分比，否则显示第几章 */
-private fun progressLabel(progress: ReadingProgress, chapterCount: Int?): String {
+internal fun progressLabel(progress: ReadingProgress, chapterCount: Int?): String {
     val fraction = progressFraction(progress, chapterCount)
     return if (fraction != null) "${(fraction * 100).toInt()}%" else "${progress.chapterIndex + 1}章"
 }
 
 /** 进度比例（0~1）；无总章节数时返回 null */
-private fun progressFraction(progress: ReadingProgress, chapterCount: Int?): Float? {
+internal fun progressFraction(progress: ReadingProgress, chapterCount: Int?): Float? {
     if (chapterCount == null || chapterCount <= 0) return null
     return ((progress.chapterIndex + 1).toFloat() / chapterCount).coerceIn(0f, 1f)
 }
@@ -588,9 +588,9 @@ private fun progressFraction(progress: ReadingProgress, chapterCount: Int?): Flo
 private fun toggleKey(set: Set<String>, key: String): Set<String> =
     if (key in set) set - key else set + key
 
-private fun MediaItem.itemKey(): String = "$sourceId:$id"
+internal fun MediaItem.itemKey(): String = "$sourceId:$id"
 
-private fun typeLabel(type: SourceType): String = when (type) {
+internal fun typeLabel(type: SourceType): String = when (type) {
     SourceType.NOVEL -> "小说"
     SourceType.COMIC -> "漫画"
     SourceType.VIDEO -> "视频"

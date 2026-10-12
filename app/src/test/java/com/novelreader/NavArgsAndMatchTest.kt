@@ -199,6 +199,42 @@ class FuzzyMatchTest {
     }
 
     @Test
+    fun `作者为空的同名书也应合并为一组`() {
+        // 回归：同名书一个作者为空、一个有作者，仅按书名归一化分组应合并
+        val items = listOf(
+            item("1", "千面之龙", author = "柿子鲸", sourceId = "s1"),
+            item("2", "千面之龙", author = null, sourceId = "s2"),
+            item("3", "《千面之龙》", author = "番茄小说·柿子鲸", sourceId = "s3"),
+        )
+        val groups = FuzzyMatch.groupDuplicates(items)
+        assertEquals("作者为空/带前缀/带书名号的同名书都应合并为一组", 1, groups.size)
+        assertEquals(3, groups[0].size)
+    }
+
+    @Test
+    fun `同名书跨源不因作者差异拆成多组`() {
+        // 核心回归：搜索结果同名书来自不同源，作者字段差异大，必须合并为一组（换源语义）
+        val items = listOf(
+            item("1", "千面之龙", author = "柿子鲸", sourceId = "s1"),
+            item("2", "千面之龙", author = "柿子鲸著", sourceId = "s2"),
+            item("3", "千面之龙", author = "", sourceId = "s3"),
+        )
+        val groups = FuzzyMatch.groupDuplicates(items)
+        assertEquals(1, groups.size)
+        assertEquals(3, groups[0].size)
+    }
+
+    @Test
+    fun `不同书名不合并`() {
+        val items = listOf(
+            item("1", "剑来", sourceId = "s1"),
+            item("2", "剑来同人", sourceId = "s2"),
+        )
+        val groups = FuzzyMatch.groupDuplicates(items)
+        assertEquals(2, groups.size)
+    }
+
+    @Test
     fun `作者归一化去掉来源前缀`() {
         assertEquals("烽火戏诸侯", FuzzyMatch.normalizeAuthor("番茄小说·烽火戏诸侯"))
         assertEquals("烽火戏诸侯", FuzzyMatch.normalizeAuthor("烽火戏诸侯"))

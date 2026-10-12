@@ -17,12 +17,16 @@ import com.novelreader.domain.repository.ProgressRepository
 import com.novelreader.source.search.ChapterLocator
 import com.novelreader.source.search.FuzzyMatch
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /**
  * 小说阅读 ViewModel（v1.1.0 大修）。
@@ -227,6 +231,10 @@ class NovelReaderViewModel(
 
     private var changeSourcePage: Int = 1
     private var _allCandidates: List<MediaItem> = emptyList()
+    /** 候选验证任务（0 章 / 无内容过滤），换源关闭或重新搜索时取消 */
+    private var verifyJob: Job? = null
+    /** 已验证「0 章」的候选 key 集合（在候选中排除） */
+    private val emptyChapterKeys = HashSet<String>()
 
     private val _currentTitle = MutableStateFlow("")
     val currentTitle: StateFlow<String> = _currentTitle.asStateFlow()
@@ -698,10 +706,12 @@ class NovelReaderViewModel(
     // ===== 换源 =====
     fun openChangeSource() {
         _changeSourceOpen.value = true
+        emptyChapterKeys.clear()
         searchSameTitle()
     }
 
     fun closeChangeSource() {
+        verifyJob?.cancel()
         _changeSourceOpen.value = false
     }
 
@@ -719,13 +729,15 @@ class NovelReaderViewModel(
         viewModelScope.launch {
             _changeSourceLoading.value = true
             _changeSourceError.value = null
-            // 用带进度的跨源搜索，实时反馈「已搜 x/y 源」
+            // 换源搜索用「模糊模式」——书名归一化一致的结果排最前，其次近似匹配。
+            // 精确模式要求书名完全等于关键词，不同源书名带书名号/副标题时全部漏掉，
+            // 导致换源候选为空（换源「没用」的根因）。
             contentRepository.searchWithProgress(
                 type = SourceType.NOVEL,
                 keyword = title,
                 page = 1,
                 concurrency = 8,
-                fuzzyEnabled = false,
+                fuzzyEnabled = true,
             ).collectLatest { state ->
                 _changeSourceProgress.value =
                     if (state.isSearching) "正在搜索书源 ${state.searchedCount}/${state.totalCount}"
@@ -763,8 +775,10 @@ class NovelReaderViewModel(
     }
 
     /**
-     * 合并换源候选：按「归一化书名 + 作者」去重，彻底合并同名书跨源重复。
-     * 同一本书可能在多个源以不同 id 出现，仅按 sourceId|id 去重会漏掉。
+     * 合并换源候选：按「源 + 源内 ID」去重。
+     * 换源语义是「同一本书在每个源各一条」——同名书来自不同源必须保留每一条，
+     * 供用户挑选切换。因此不能按书名+作者合并（会把不同源误并成一条）。
+     * 同一源内同 id 的重复条目才需要去重。
      */
     private fun mergeCandidates(base: List<MediaItem>, incoming: List<MediaItem>): List<MediaItem> {
         val merged = base.toMutableList()
@@ -776,10 +790,9 @@ class NovelReaderViewModel(
         return merged
     }
 
-    /** 候选去重键：书名归一化 + 作者归一化（作者为空时仅书名），再叠加 sourceId|id 兜底 */
+    /** 候选去重键：源 + 源内 ID（同名书跨源不去重，换源需展示每个源） */
     private fun candidateKey(item: MediaItem): String {
-        val author = item.author?.trim()?.let { FuzzyMatch.normalize(it) }.orEmpty()
-        return "${FuzzyMatch.normalize(item.title)}|${author}"
+        return "${item.sourceId}|${item.id.ifBlank { item.detailUrl }}"
     }
 
     private fun filterCandidates() {
@@ -787,25 +800,66 @@ class NovelReaderViewModel(
         val author = _currentAuthor.value
         val current = currentItem
         val sameAuthor = _sameAuthorOnly.value
+        val titleNorm = FuzzyMatch.normalize(title)
         val filtered = _allCandidates.filter { cand ->
+            // 排除当前正在用的源
             if (current != null && cand.sourceId == current.sourceId && cand.id == current.id) return@filter false
-            val titleMatch = cand.title.trim().equals(title, ignoreCase = true) ||
-                cand.title.contains(title, ignoreCase = true) ||
-                title.contains(cand.title.trim(), ignoreCase = true)
+            // 书名归一化后与当前书名相等（同名），或以当前书名为前缀/包含（近似）
+            val candTitleNorm = FuzzyMatch.normalize(cand.title)
+            val titleMatch = candTitleNorm == titleNorm ||
+                candTitleNorm.startsWith(titleNorm) ||
+                candTitleNorm.contains(titleNorm) ||
+                titleNorm.contains(candTitleNorm)
             if (!titleMatch) return@filter false
+            // 同作者过滤（作者归一化去前缀后比较）
             if (sameAuthor) {
-                val candAuthor = cand.author?.trim()
-                val curAuthor = author?.trim()
+                val candAuthor = cand.author?.trim()?.let { FuzzyMatch.normalizeAuthor(it) }
+                val curAuthor = author?.trim()?.let { FuzzyMatch.normalizeAuthor(it) }
                 if (curAuthor.isNullOrBlank() || candAuthor.isNullOrBlank()) true
-                else candAuthor.equals(curAuthor, ignoreCase = true)
+                else candAuthor == curAuthor
             } else true
         }
         // 按「书名 + 作者」归一化合并去重，彻底消除同名书跨源重复
         val deduped = linkedMapOf<String, MediaItem>()
         for (cand in filtered) {
-            deduped.putIfAbsent(candidateKey(cand), cand)
+            val key = candidateKey(cand)
+            // 排除已验证为「0 章」的候选
+            if (key in emptyChapterKeys) continue
+            deduped.putIfAbsent(key, cand)
         }
         _changeSourceCandidates.value = deduped.values.toList()
+        // 后台验证候选章节数，0 章的候选从列表剔除
+        verifyCandidates(deduped.values.toList())
+    }
+
+    /**
+     * 后台逐个验证换源候选的目录，剔除 0 章（目录为空）的候选。
+     * 并发小（3 路），避免阻塞；验证结果增量回写候选列表。
+     */
+    private fun verifyCandidates(candidates: List<MediaItem>) {
+        verifyJob?.cancel()
+        if (candidates.isEmpty()) return
+        verifyJob = viewModelScope.launch {
+            val semaphore = Semaphore(3)
+            coroutineScope {
+                candidates.map { cand ->
+                    async {
+                        semaphore.withPermit {
+                            val key = candidateKey(cand)
+                            if (key in emptyChapterKeys) return@withPermit
+                            val chapters = runCatching { contentRepository.chapterList(cand) }
+                                .getOrDefault(emptyList())
+                            if (chapters.isEmpty()) {
+                                emptyChapterKeys.add(key)
+                                // 从候选列表剔除该 0 章候选
+                                _changeSourceCandidates.value =
+                                    _changeSourceCandidates.value.filter { candidateKey(it) != key }
+                            }
+                        }
+                    }
+                }.forEach { it.await() }
+            }
+        }
     }
 
     /** 切换到候选源（四级定位，避免一律回退第一章） */

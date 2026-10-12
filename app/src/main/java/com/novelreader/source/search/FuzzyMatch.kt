@@ -222,18 +222,21 @@ object FuzzyMatch {
     }
 
     /**
-     * 把搜索结果按「书名 + 作者」归一化分组（用于结果折叠）。
+     * 把搜索结果按「书名」归一化分组（用于结果折叠），作者作为辅助排序依据。
      *
-     * 作者为空时仅按书名分组。组内保持原顺序（源返回序），
-     * 组间按组内最高匹配分排序（由调用方先 rank 后传入即已有序）。
+     * 核心原则：**同名书必须合并**——只要书名归一化后一致（忽略书名号/空白/标点），
+     * 就归为一组，无论作者字段是否带来源前缀、是否为空、格式是否一致。
+     * 这正是「换源」的语义：同名书的不同源结果聚在一起供切换。
+     *
+     * 组内保持原顺序（源返回序，已由调用方 rank 后传入即有序）。
      *
      * @return 分组列表，每组至少 1 条
      */
     fun groupDuplicates(items: List<MediaItem>): List<List<MediaItem>> {
         val groups = LinkedHashMap<String, MutableList<MediaItem>>()
         for (item in items) {
-            val author = item.author?.trim()?.let { normalizeAuthor(it) }.orEmpty()
-            val key = "${normalize(item.title)}|${author}"
+            // 仅按书名归一化分组：作者前缀/空值/格式差异都不影响同名合并
+            val key = normalize(item.title)
             groups.getOrPut(key) { mutableListOf() }.add(item)
         }
         return groups.values.toList()

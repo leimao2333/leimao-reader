@@ -3,25 +3,35 @@ package com.novelreader.ui.screens.novel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novelreader.core.preferences.PreferencesManager
+import com.novelreader.core.text.ReplaceRule
+import com.novelreader.core.text.TextCleaner
+import com.novelreader.core.text.TextReplaceRules
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.BookRepository
+import com.novelreader.domain.repository.Bookmark
+import com.novelreader.domain.repository.BookmarkRepository
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.ProgressRepository
 import com.novelreader.source.search.ChapterLocator
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 /**
- * 小说阅读 ViewModel。
+ * 小说阅读 ViewModel（v1.1.0 大修）。
  *
- * 管理正文内容、章节切换，以及阅读设置（字体大小、背景色、日夜间）。
- * 设置通过 PreferencesManager 持久化，跨页面/重启保留。
+ * 对标开源阅读补齐的能力：
+ * - 章节预加载（下一章 / 上一章）与内存缓存，翻页切章近乎瞬时；
+ * - 书签（增删查 + 跳转）；
+ * - 正文净化（替换规则）；
+ * - 阅读时长统计；
+ * - 统一翻页方式（覆盖 / 仿真 / 滑动 / 滚动 / 上下 / 无动画）与扩展阅读设置。
  */
 class NovelReaderViewModel(
     private val contentRepository: ContentRepository,
@@ -29,11 +39,15 @@ class NovelReaderViewModel(
     private val preferences: PreferencesManager,
     private val chapterCacheRepository: com.novelreader.domain.repository.ChapterCacheRepository? = null,
     private val bookRepository: BookRepository? = null,
+    private val bookmarkRepository: BookmarkRepository? = null,
 ) : ViewModel() {
 
     // ===== 正文 =====
     private val _content = MutableStateFlow("")
     val content: StateFlow<String> = _content.asStateFlow()
+
+    /** 当前章未净化原文（替换规则变更时据此重新净化） */
+    private var currentRaw: String = ""
 
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
@@ -49,11 +63,9 @@ class NovelReaderViewModel(
     private val _collected = MutableStateFlow(false)
     val collected: StateFlow<Boolean> = _collected.asStateFlow()
 
-    /** 当前书是否有下一章（末章文案 / 是否显示「下一章」入口） */
     private val _hasNextChapter = MutableStateFlow(false)
     val hasNextChapter: StateFlow<Boolean> = _hasNextChapter.asStateFlow()
 
-    /** 当前书是否有上一章 */
     private val _hasPrevChapter = MutableStateFlow(false)
     val hasPrevChapter: StateFlow<Boolean> = _hasPrevChapter.asStateFlow()
 
@@ -61,218 +73,175 @@ class NovelReaderViewModel(
     private val _currentItem = MutableStateFlow<MediaItem?>(null)
     val currentItemState: StateFlow<MediaItem?> = _currentItem.asStateFlow()
 
-    /** 当前正文是否来自本地缓存（#30：UI 可提示「离线缓存」） */
+    /** 当前正文是否来自本地缓存（离线缓存提示） */
     private val _fromCache = MutableStateFlow(false)
     val fromCache: StateFlow<Boolean> = _fromCache.asStateFlow()
 
-    /** 已缓存章节索引（#30：目录标记「已缓存」） */
+    /** 已缓存章节索引（目录标记「已缓存」） */
     private val _cachedIndices = MutableStateFlow<Set<Int>>(emptySet())
     val cachedIndices: StateFlow<Set<Int>> = _cachedIndices.asStateFlow()
+
+    /** 当前章字数（界面面板展示） */
+    private val _charCount = MutableStateFlow(0)
+    val charCount: StateFlow<Int> = _charCount.asStateFlow()
 
     // ===== 章节信息 =====
     private var currentItem: MediaItem? = null
     private var currentChapter: ChapterItem? = null
 
-    /** 章节列表（用于切换上一章/下一章） */
     private val _chapters = MutableStateFlow<List<ChapterItem>>(emptyList())
     val chapters: StateFlow<List<ChapterItem>> = _chapters.asStateFlow()
 
-    /** 当前章节标题 */
     private val _chapterTitle = MutableStateFlow("")
     val chapterTitle: StateFlow<String> = _chapterTitle.asStateFlow()
 
+    // ===== 章节内存缓存（预加载） =====
+    /** 章节正文原文内存缓存：chapterIndex -> raw */
+    private val memoryCache = LinkedHashMap<Int, String>()
+
+    private fun putMemory(index: Int, raw: String) {
+        if (raw.isBlank()) return
+        memoryCache[index] = raw
+        while (memoryCache.size > 8) {
+            val eldest = memoryCache.keys.firstOrNull() ?: break
+            memoryCache.remove(eldest)
+        }
+    }
+
+    private fun clearMemory() = memoryCache.clear()
+
+    /** 预加载任务（切章时取消重启） */
+    private var preloadJob: Job? = null
+
     // ===== 阅读设置（从 DataStore 订阅） =====
-    val fontSize: StateFlow<Float> = preferences.novelFontSizeFlow
-        .let { flow ->
-            val state = MutableStateFlow(PreferencesManager.DEFAULT_FONT_SIZE)
-            viewModelScope.launch { flow.collectLatest { state.value = it } }
+    private fun <T> stateOf(flow: kotlinx.coroutines.flow.Flow<T>, default: T): StateFlow<T> {
+        val state = MutableStateFlow(default)
+        viewModelScope.launch { flow.collectLatest { state.value = it } }
+        return state
+    }
+
+    val fontSize: StateFlow<Float> = stateOf(preferences.novelFontSizeFlow, PreferencesManager.DEFAULT_FONT_SIZE)
+    val bgIndex: StateFlow<Int> = stateOf(preferences.novelBgIndexFlow, 0)
+    val nightMode: StateFlow<Boolean> = stateOf(preferences.novelNightFlow, false)
+
+    /** 统一翻页方式：0=覆盖 1=仿真 2=滑动 3=滚动 4=上下 5=无动画 */
+    val pageType: StateFlow<Int> = stateOf(preferences.novelPageTypeFlow, PreferencesManager.DEFAULT_PAGE_TYPE)
+
+    val hideTopBar: StateFlow<Boolean> = stateOf(preferences.novelHideTopBarFlow, false)
+    val hideBottomBar: StateFlow<Boolean> = stateOf(preferences.novelHideBottomBarFlow, false)
+    val hideChapterTitle: StateFlow<Boolean> = stateOf(preferences.novelHideChapterTitleFlow, false)
+    val lineHeight: StateFlow<Float> = stateOf(preferences.novelLineHeightFlow, PreferencesManager.DEFAULT_LINE_HEIGHT)
+    val paragraphSpacing: StateFlow<Float> = stateOf(preferences.novelParagraphSpacingFlow, PreferencesManager.DEFAULT_PARAGRAPH_SPACING)
+    val sidePadding: StateFlow<Float> = stateOf(preferences.novelSidePaddingFlow, PreferencesManager.DEFAULT_SIDE_PADDING)
+    val autoPage: StateFlow<Boolean> = stateOf(preferences.novelAutoPageFlow, false)
+    val autoPageInterval: StateFlow<Int> = stateOf(preferences.novelAutoPageIntervalFlow, PreferencesManager.DEFAULT_AUTO_PAGE_INTERVAL)
+    val volumePage: StateFlow<Boolean> = stateOf(preferences.novelVolumePageFlow, false)
+
+    // 大修新增设置
+    val fontFamily: StateFlow<Int> = stateOf(preferences.novelFontFamilyFlow, PreferencesManager.FONT_FAMILY_DEFAULT)
+    val bold: StateFlow<Boolean> = stateOf(preferences.novelBoldFlow, false)
+    val indent: StateFlow<Boolean> = stateOf(preferences.novelIndentFlow, true)
+    val letterSpacing: StateFlow<Float> = stateOf(preferences.novelLetterSpacingFlow, 0f)
+    val brightness: StateFlow<Float> = stateOf(preferences.novelBrightnessFlow, PreferencesManager.DEFAULT_BRIGHTNESS)
+    val fullScreen: StateFlow<Boolean> = stateOf(preferences.novelFullScreenFlow, false)
+    val volumeUpPrev: StateFlow<Boolean> = stateOf(preferences.novelVolumeUpPrevFlow, true)
+    val readSeconds: StateFlow<Long> = stateOf(preferences.novelReadSecondsFlow, 0L)
+    val replaceRules: StateFlow<List<ReplaceRule>> =
+        stateOf(preferences.novelReplaceRulesFlow, "").let { raw ->
+            // raw 为字符串流，转成规则列表
+            val state = MutableStateFlow<List<ReplaceRule>>(emptyList())
+            viewModelScope.launch { raw.collectLatest { state.value = TextReplaceRules.decode(it) } }
             state
         }
 
-    val bgIndex: StateFlow<Int> = preferences.novelBgIndexFlow
-        .let { flow ->
-            val state = MutableStateFlow(0)
-            viewModelScope.launch { flow.collectLatest { state.value = it } }
-            state
-        }
-
-    val nightMode: StateFlow<Boolean> = preferences.novelNightFlow
-        .let { flow ->
-            val state = MutableStateFlow(false)
-            viewModelScope.launch { flow.collectLatest { state.value = it } }
-            state
-        }
-
-    /** 翻页方式：0=上下滚动，1=左右翻页 */
-    val pageMode: StateFlow<Int> = preferences.novelPageModeFlow
-        .let { flow ->
-            val state = MutableStateFlow(0)
-            viewModelScope.launch { flow.collectLatest { state.value = it } }
-            state
-        }
-
-    /** 翻页动画：0=无动画，1=滑动，2=覆盖，3=仿真翻页 */
-    val pageAnim: StateFlow<Int> = preferences.novelPageAnimFlow
-        .let { flow ->
-            val state = MutableStateFlow(1)
-            viewModelScope.launch { flow.collectLatest { state.value = it } }
-            state
-        }
-
-    /** 隐藏栏目：顶部栏 */
-    val hideTopBar: StateFlow<Boolean> = preferences.novelHideTopBarFlow
-        .let { flow ->
-            val state = MutableStateFlow(false)
-            viewModelScope.launch { flow.collectLatest { state.value = it } }
-            state
-        }
-
-    /** 隐藏栏目：底部进度栏 */
-    val hideBottomBar: StateFlow<Boolean> = preferences.novelHideBottomBarFlow
-        .let { flow ->
-            val state = MutableStateFlow(false)
-            viewModelScope.launch { flow.collectLatest { state.value = it } }
-            state
-        }
-
-    /** 隐藏栏目：正文章节标题 */
-    val hideChapterTitle: StateFlow<Boolean> = preferences.novelHideChapterTitleFlow
-        .let { flow ->
-            val state = MutableStateFlow(false)
-            viewModelScope.launch { flow.collectLatest { state.value = it } }
-            state
-        }
-
-    /** 行距倍数 */
-    val lineHeight: StateFlow<Float> = preferences.novelLineHeightFlow
-        .let { flow ->
-            val state = MutableStateFlow(PreferencesManager.DEFAULT_LINE_HEIGHT)
-            viewModelScope.launch { flow.collectLatest { state.value = it } }
-            state
-        }
-
-    /** 段距（dp） */
-    val paragraphSpacing: StateFlow<Float> = preferences.novelParagraphSpacingFlow
-        .let { flow ->
-            val state = MutableStateFlow(PreferencesManager.DEFAULT_PARAGRAPH_SPACING)
-            viewModelScope.launch { flow.collectLatest { state.value = it } }
-            state
-        }
-
-    /** 左右页边距（dp） */
-    val sidePadding: StateFlow<Float> = preferences.novelSidePaddingFlow
-        .let { flow ->
-            val state = MutableStateFlow(PreferencesManager.DEFAULT_SIDE_PADDING)
-            viewModelScope.launch { flow.collectLatest { state.value = it } }
-            state
-        }
-
-    /** 自动翻页开关 */
-    val autoPage: StateFlow<Boolean> = preferences.novelAutoPageFlow
-        .let { flow ->
-            val state = MutableStateFlow(false)
-            viewModelScope.launch { flow.collectLatest { state.value = it } }
-            state
-        }
-
-    /** 自动翻页间隔（秒） */
-    val autoPageInterval: StateFlow<Int> = preferences.novelAutoPageIntervalFlow
-        .let { flow ->
-            val state = MutableStateFlow(PreferencesManager.DEFAULT_AUTO_PAGE_INTERVAL)
-            viewModelScope.launch { flow.collectLatest { state.value = it } }
-            state
-        }
-
-    /** 音量键翻页开关（#8） */
-    val volumePage: StateFlow<Boolean> = preferences.novelVolumePageFlow
-        .let { flow ->
-            val state = MutableStateFlow(false)
-            viewModelScope.launch { flow.collectLatest { state.value = it } }
-            state
-        }
-
-    /** 是否显示菜单（顶栏 + 底部菜单） */
+    /** 菜单开关 */
     private val _showMenu = MutableStateFlow(false)
     val showMenu: StateFlow<Boolean> = _showMenu.asStateFlow()
 
-    /** 菜单当前页签：0=目录，1=界面，2=设置 */
+    /** 菜单页签：0=目录，1=界面，2=设置 */
     private val _menuTab = MutableStateFlow(0)
     val menuTab: StateFlow<Int> = _menuTab.asStateFlow()
 
-    /** 当前章节索引（进度滑块用） */
+    /** 目录搜索关键词 */
+    private val _chapterQuery = MutableStateFlow("")
+    val chapterQuery: StateFlow<String> = _chapterQuery.asStateFlow()
+
+    /** 目录倒序 */
+    private val _chapterDesc = MutableStateFlow(false)
+    val chapterDesc: StateFlow<Boolean> = _chapterDesc.asStateFlow()
+
+    /** 正文净化规则配置面板开关 */
+    private val _replaceOpen = MutableStateFlow(false)
+    val replaceOpen: StateFlow<Boolean> = _replaceOpen.asStateFlow()
+
+    fun openReplaceRules() {
+        _replaceOpen.value = true
+    }
+
+    fun closeReplaceRules() {
+        _replaceOpen.value = false
+    }
+
+    /** 当前章节索引 */
     private val _currentChapterIndex = MutableStateFlow(0)
     val currentChapterIndex: StateFlow<Int> = _currentChapterIndex.asStateFlow()
 
-    /**
-     * 进入章节时用于恢复滚动的正文位置比例（0~10000）。
-     *
-     * 0 表示从顶部开始；非 0 表示该章上次退出时的位置，滚动页据此还原。
-     */
+    /** 进入章节时用于恢复的正文位置比例（0~10000） */
     private val _initialTextPosition = MutableStateFlow(0)
     val initialTextPosition: StateFlow<Int> = _initialTextPosition.asStateFlow()
 
-    /** 当前章节内的正文位置比例（0~10000），随滚动回写并持久化 */
     private var lastTextPosition: Int = 0
 
-    /**
-     * 进入本章时用于恢复的翻页模式页码（0 起）。
-     *
-     * 仅在翻页方式=左右翻页、且历史进度章节与本次进入章节一致时才有意义。
-     */
+    /** 进入本章时用于恢复的翻页页码（0 起） */
     private val _initialPageIndex = MutableStateFlow(0)
     val initialPageIndex: StateFlow<Int> = _initialPageIndex.asStateFlow()
 
-    /** 翻页模式当前页码（0 起），随翻页回写并持久化 */
     private var lastPageIndex: Int = 0
 
     // ===== 换源 =====
-    /** 换源面板是否打开 */
     private val _changeSourceOpen = MutableStateFlow(false)
     val changeSourceOpen: StateFlow<Boolean> = _changeSourceOpen.asStateFlow()
 
-    /** 换源候选列表 */
     private val _changeSourceCandidates = MutableStateFlow<List<MediaItem>>(emptyList())
     val changeSourceCandidates: StateFlow<List<MediaItem>> = _changeSourceCandidates.asStateFlow()
 
-    /** 换源搜索中 */
     private val _changeSourceLoading = MutableStateFlow(false)
     val changeSourceLoading: StateFlow<Boolean> = _changeSourceLoading.asStateFlow()
 
-    /** 换源筛选：仅同作者（默认开） */
     private val _sameAuthorOnly = MutableStateFlow(true)
     val sameAuthorOnly: StateFlow<Boolean> = _sameAuthorOnly.asStateFlow()
 
-    /** 换源错误信息 */
     private val _changeSourceError = MutableStateFlow<String?>(null)
     val changeSourceError: StateFlow<String?> = _changeSourceError.asStateFlow()
 
-    /** 换源候选是否还有下一页（分页搜索） */
     private val _changeSourceHasMore = MutableStateFlow(false)
     val changeSourceHasMore: StateFlow<Boolean> = _changeSourceHasMore.asStateFlow()
 
-    /** 正在加载换源候选下一页 */
     private val _changeSourceLoadingMore = MutableStateFlow(false)
     val changeSourceLoadingMore: StateFlow<Boolean> = _changeSourceLoadingMore.asStateFlow()
 
-    /** 已搜索到的换源页码（从 1 开始） */
     private var changeSourcePage: Int = 1
+    private var _allCandidates: List<MediaItem> = emptyList()
 
-    /** 当前阅读的书籍名（换源搜索用） */
     private val _currentTitle = MutableStateFlow("")
     val currentTitle: StateFlow<String> = _currentTitle.asStateFlow()
 
-    /** 当前阅读的书籍作者（换源同作者筛选用） */
     private val _currentAuthor = MutableStateFlow<String?>(null)
     val currentAuthor: StateFlow<String?> = _currentAuthor.asStateFlow()
 
-    /**
-     * 初始化阅读（进入阅读页时调用）。
-     *
-     * @param item 书籍信息
-     * @param chapters 章节列表
-     * @param chapter 当前章节
-     */
+    // ===== 书签 =====
+    private val _bookmarks = MutableStateFlow<List<Bookmark>>(emptyList())
+    val bookmarks: StateFlow<List<Bookmark>> = _bookmarks.asStateFlow()
+
+    /** 初始化阅读（进入阅读页时调用） */
     fun init(item: MediaItem, chapters: List<ChapterItem>, chapter: ChapterItem) {
+        val sameBook = currentItem?.sourceId == item.sourceId && currentItem?.id == item.id
+        if (sameBook && _chapters.value == chapters && currentChapter?.url == chapter.url) {
+            // 同一本书同一章重复进入：不重载，仅刷新外围状态
+            refreshCachedIndices()
+            return
+        }
+        clearMemory()
         currentItem = item
         _currentItem.value = item
         _chapters.value = chapters
@@ -282,10 +251,8 @@ class NovelReaderViewModel(
         _currentAuthor.value = item.author
         refreshNavFlags()
         viewModelScope.launch {
-            // 收藏状态（顶栏收藏按钮）
             runCatching { bookRepository?.isCollected(item) == true }
                 .onSuccess { _collected.value = it }
-            // 读取历史进度：若进度所属章节正是本次进入的章节，则恢复其正文位置比例
             val saved = runCatching {
                 progressRepository.getProgress(item.sourceId, item.id)
             }.getOrNull()
@@ -296,7 +263,6 @@ class NovelReaderViewModel(
                 lastTextPosition = 0
                 _initialTextPosition.value = 0
             }
-            // 翻页模式页码恢复：同样要求历史进度属于本章，避免串章
             if (saved != null && saved.chapterUrl == chapter.url && saved.pageIndex > 0) {
                 lastPageIndex = saved.pageIndex.coerceAtLeast(0)
                 _initialPageIndex.value = lastPageIndex
@@ -305,11 +271,12 @@ class NovelReaderViewModel(
                 _initialPageIndex.value = 0
             }
             refreshCachedIndices()
+            refreshBookmarks()
             loadChapter(chapter)
         }
     }
 
-    /** 刷新已缓存章节索引（#30：目录标记 / 缓存状态展示） */
+    /** 刷新已缓存章节索引 */
     fun refreshCachedIndices() {
         val item = currentItem ?: return
         val repo = chapterCacheRepository ?: return
@@ -319,27 +286,27 @@ class NovelReaderViewModel(
         }
     }
 
-    /** 手动缓存当前章节（#30） */
+    /** 手动缓存当前章节 */
     fun cacheCurrentChapter() {
         val item = currentItem ?: return
         val chapter = currentChapter ?: return
         val repo = chapterCacheRepository ?: return
-        val text = _content.value
-        if (text.isBlank()) return
+        val text = currentRaw
+        if (text.isBlank()) {
+            showToast("本章暂无可缓存内容")
+            return
+        }
         viewModelScope.launch {
             runCatching {
-                repo.saveCache(
-                    item = item,
-                    chapterIndex = chapter.index,
-                    chapterTitle = chapter.title,
-                    chapterUrl = chapter.url,
-                    content = text,
-                )
-            }.onSuccess { refreshCachedIndices() }
+                repo.saveCache(item, chapter.index, chapter.title, chapter.url, text)
+            }.onSuccess {
+                refreshCachedIndices()
+                showToast("已缓存本章")
+            }
         }
     }
 
-    /** 刷新「是否有上一章 / 下一章」标记（末章文案、章节边界提示用） */
+    /** 刷新「是否有上一章 / 下一章」标记 */
     private fun refreshNavFlags() {
         val idx = currentIndex()
         val size = _chapters.value.size
@@ -347,17 +314,16 @@ class NovelReaderViewModel(
         _hasNextChapter.value = idx >= 0 && idx < size - 1
     }
 
-    /** 轻量提示（自动消失由 UI 控制） */
+    /** 轻量提示 */
     fun showToast(message: String) {
         _toast.value = message
     }
 
-    /** 关闭提示条 */
     fun dismissToast() {
         _toast.value = null
     }
 
-    /** 收藏 / 取消收藏当前书（顶栏收藏按钮） */
+    /** 收藏 / 取消收藏当前书 */
     fun toggleCollect() {
         val repo = bookRepository ?: return
         val item = currentItem ?: return
@@ -374,10 +340,10 @@ class NovelReaderViewModel(
 
     /** 正文加载失败后重试本章 */
     fun retry() {
-        currentChapter?.let { loadChapter(it) }
+        currentChapter?.let { loadChapter(it, forceRefresh = true) }
     }
 
-    /** 切换章节（会重置正文位置，回到该章顶部 / 第一页） */
+    /** 切换章节（重置位置，回到该章顶部 / 第一页） */
     fun loadContent(chapter: ChapterItem) {
         lastTextPosition = 0
         _initialTextPosition.value = 0
@@ -386,43 +352,60 @@ class NovelReaderViewModel(
         loadChapter(chapter)
     }
 
-    /** 加载章节正文（不改变正文位置比例） */
-    private fun loadChapter(chapter: ChapterItem) {
+    /**
+     * 加载章节正文。
+     *
+     * 取内容顺序：内存预加载缓存 → 本地章节缓存 → 网络。
+     * 命中缓存时不显示 loading 遮罩，做到「切章秒开」。
+     */
+    private fun loadChapter(chapter: ChapterItem, forceRefresh: Boolean = false) {
         currentChapter = chapter
         _chapterTitle.value = chapter.title
         _currentChapterIndex.value = chapter.index
         refreshNavFlags()
         val item = currentItem
+
+        if (!forceRefresh) {
+            val mem = memoryCache[chapter.index]
+            if (!mem.isNullOrBlank()) {
+                applyContent(mem, fromCache = false)
+                _loading.value = false
+                _error.value = null
+                preloadAround(chapter.index)
+                saveProgress()
+                return
+            }
+        }
+
         viewModelScope.launch {
             _loading.value = true
             _error.value = null
 
-            // #30 优先读本地缓存：源失效 / 离线时仍可阅读
-            if (item != null && chapterCacheRepository != null) {
+            if (!forceRefresh && item != null && chapterCacheRepository != null) {
                 val cached = runCatching {
                     chapterCacheRepository.getCached(item.sourceId, item.id, chapter.index)
                 }.getOrNull()
                 if (!cached.isNullOrBlank()) {
-                    _content.value = cached
-                    _fromCache.value = true
-                    saveProgress()
+                    putMemory(chapter.index, cached)
+                    applyContent(cached, fromCache = true)
                     _loading.value = false
+                    preloadAround(chapter.index)
+                    saveProgress()
                     return@launch
                 }
             }
 
-            _fromCache.value = false
             runCatching { contentRepository.content(chapter) }
                 .onSuccess { result ->
-                    val text = result.novelText?.trim().orEmpty()
-                    if (text.isEmpty()) {
-                        // 源返回空正文（多为源失效 / 规则不匹配）：给出提示而非白屏，便于用户换源
+                    val raw = result.novelText?.trim().orEmpty()
+                    if (raw.isEmpty()) {
                         _content.value = ""
-                        _error.value = "本章正文为空：该书源可能已失效，可在菜单中「切换书源」重试"
+                        currentRaw = ""
+                        _charCount.value = 0
+                        _error.value = "本章正文为空：该书源可能已失效，可在菜单中「换源」重试"
                     } else {
-                        _content.value = result.novelText ?: ""
-                        saveProgress()
-                        // 缓存到本地（供离线阅读 / 缓存管理）
+                        putMemory(chapter.index, raw)
+                        applyContent(raw, fromCache = false)
                         if (item != null && chapterCacheRepository != null) {
                             runCatching {
                                 chapterCacheRepository.saveCache(
@@ -430,32 +413,73 @@ class NovelReaderViewModel(
                                     chapterIndex = chapter.index,
                                     chapterTitle = chapter.title,
                                     chapterUrl = chapter.url,
-                                    content = _content.value,
+                                    content = raw,
                                 )
-                            }
+                            }.onSuccess { refreshCachedIndices() }
+                        }
+                        saveProgress()
+                    }
+                }
+                .onFailure { e -> _error.value = e.message ?: "加载失败" }
+            _loading.value = false
+            preloadAround(chapter.index)
+        }
+    }
+
+    /** 净化并落地正文 */
+    private fun applyContent(raw: String, fromCache: Boolean) {
+        currentRaw = raw
+        val cleaned = TextCleaner.clean(raw, replaceRules.value)
+        _content.value = cleaned
+        _fromCache.value = fromCache
+        _charCount.value = TextCleaner.charCount(cleaned)
+    }
+
+    /** 预加载相邻章节（下一章优先，其次上一章），提升翻章流畅度 */
+    private fun preloadAround(index: Int) {
+        preloadJob?.cancel()
+        val chapters = _chapters.value
+        val targets = buildList {
+            chapters.getOrNull(index + 1)?.let { add(it) }
+            chapters.getOrNull(index - 1)?.let { add(it) }
+        }
+        if (targets.isEmpty()) return
+        preloadJob = viewModelScope.launch {
+            for (ch in targets) {
+                if (memoryCache[ch.index]?.isNotBlank() == true) continue
+                if (ch.index == currentChapter?.index) continue
+                val item = currentItem ?: break
+                // 先本地缓存
+                val cached = chapterCacheRepository?.let {
+                    runCatching { it.getCached(item.sourceId, item.id, ch.index) }.getOrNull()
+                }
+                if (!cached.isNullOrBlank()) {
+                    putMemory(ch.index, cached)
+                    continue
+                }
+                // 再网络预取
+                val raw = runCatching { contentRepository.content(ch) }
+                    .getOrNull()?.novelText?.trim().orEmpty()
+                if (raw.isNotBlank()) {
+                    putMemory(ch.index, raw)
+                    chapterCacheRepository?.let { repo ->
+                        runCatching {
+                            repo.saveCache(item, ch.index, ch.title, ch.url, raw)
                         }
                     }
                 }
-                .onFailure { e ->
-                    _error.value = e.message ?: "加载失败"
-                }
-            _loading.value = false
+            }
+            refreshCachedIndices()
         }
     }
 
-    /** 切换章节 */
+    /** 切换章节（按列表下标） */
     fun switchChapter(index: Int) {
         val chapters = _chapters.value
-        if (index in chapters.indices) {
-            loadContent(chapters[index])
-        }
+        if (index in chapters.indices) loadContent(chapters[index])
     }
 
-    /**
-     * 当前章节在列表中的位置。
-     * 依次尝试：对象同一性 → (index,url) 双重匹配 → url 匹配 → index 匹配。
-     * 防御个别源 url 重复或 index 字段漂移导致的翻页错位。
-     */
+    /** 当前章节在列表中的位置 */
     private fun currentIndex(): Int {
         val chapters = _chapters.value
         val ch = currentChapter ?: return -1
@@ -484,131 +508,203 @@ class NovelReaderViewModel(
         }
     }
 
+    /** 跳转到某章（不重置位置，用于书签恢复） */
+    fun jumpTo(chapterIndex: Int, ratio: Int) {
+        val chapters = _chapters.value
+        val ch = chapters.getOrNull(chapterIndex)
+        if (ch == null) {
+            showToast("章节已不存在")
+            return
+        }
+        lastTextPosition = ratio.coerceIn(0, 10000)
+        _initialTextPosition.value = lastTextPosition
+        lastPageIndex = 0
+        _initialPageIndex.value = 0
+        loadChapter(ch)
+    }
+
     // ===== 设置调节 =====
     fun increaseFontSize() {
-        val current = fontSize.value
         val steps = com.novelreader.ui.theme.ReaderBackgrounds.fontSizeSteps
-        val next = steps.firstOrNull { it > current } ?: steps.last()
+        val next = steps.firstOrNull { it > fontSize.value } ?: steps.last()
         viewModelScope.launch { preferences.setNovelFontSize(next) }
     }
 
     fun decreaseFontSize() {
-        val current = fontSize.value
         val steps = com.novelreader.ui.theme.ReaderBackgrounds.fontSizeSteps
-        val next = steps.lastOrNull { it < current } ?: steps.first()
+        val next = steps.lastOrNull { it < fontSize.value } ?: steps.first()
         viewModelScope.launch { preferences.setNovelFontSize(next) }
     }
 
-    fun setBackground(index: Int) {
-        viewModelScope.launch { preferences.setNovelBgIndex(index) }
+    fun setBackground(index: Int) = viewModelScope.launch { preferences.setNovelBgIndex(index) }
+    fun toggleNightMode() = viewModelScope.launch { preferences.setNovelNight(!nightMode.value) }
+    fun setPageType(type: Int) = viewModelScope.launch { preferences.setNovelPageType(type) }
+    fun setHideTopBar(v: Boolean) = viewModelScope.launch { preferences.setNovelHideTopBar(v) }
+    fun setHideBottomBar(v: Boolean) = viewModelScope.launch { preferences.setNovelHideBottomBar(v) }
+    fun setHideChapterTitle(v: Boolean) = viewModelScope.launch { preferences.setNovelHideChapterTitle(v) }
+    fun setLineHeight(v: Float) = viewModelScope.launch { preferences.setNovelLineHeight(v) }
+    fun setParagraphSpacing(v: Float) = viewModelScope.launch { preferences.setNovelParagraphSpacing(v) }
+    fun setSidePadding(v: Float) = viewModelScope.launch { preferences.setNovelSidePadding(v) }
+    fun setAutoPage(v: Boolean) = viewModelScope.launch { preferences.setNovelAutoPage(v) }
+    fun setAutoPageInterval(v: Int) = viewModelScope.launch { preferences.setNovelAutoPageInterval(v) }
+    fun setVolumePage(v: Boolean) = viewModelScope.launch { preferences.setNovelVolumePage(v) }
+    fun setVolumeUpPrev(v: Boolean) = viewModelScope.launch { preferences.setNovelVolumeUpPrev(v) }
+    fun setFontFamily(v: Int) = viewModelScope.launch { preferences.setNovelFontFamily(v) }
+    fun setBold(v: Boolean) = viewModelScope.launch { preferences.setNovelBold(v) }
+    fun setIndent(v: Boolean) = viewModelScope.launch { preferences.setNovelIndent(v) }
+    fun setLetterSpacing(v: Float) = viewModelScope.launch { preferences.setNovelLetterSpacing(v) }
+    fun setFullScreen(v: Boolean) = viewModelScope.launch { preferences.setNovelFullScreen(v) }
+    fun setBrightness(v: Float) = viewModelScope.launch { preferences.setNovelBrightness(v) }
+
+    /** 保存替换规则并立即重新净化当前章 */
+    fun setReplaceRules(rules: List<ReplaceRule>) {
+        viewModelScope.launch {
+            preferences.setNovelReplaceRules(TextReplaceRules.encode(rules))
+            if (currentRaw.isNotBlank()) applyContent(currentRaw, _fromCache.value)
+        }
     }
 
-    fun toggleNightMode() {
-        viewModelScope.launch { preferences.setNovelNight(!nightMode.value) }
-    }
-
-    fun setPageMode(mode: Int) {
-        viewModelScope.launch { preferences.setNovelPageMode(mode) }
-    }
-
-    fun setPageAnim(anim: Int) {
-        viewModelScope.launch { preferences.setNovelPageAnim(anim) }
-    }
-
-    fun setHideTopBar(value: Boolean) {
-        viewModelScope.launch { preferences.setNovelHideTopBar(value) }
-    }
-
-    fun setHideBottomBar(value: Boolean) {
-        viewModelScope.launch { preferences.setNovelHideBottomBar(value) }
-    }
-
-    fun setHideChapterTitle(value: Boolean) {
-        viewModelScope.launch { preferences.setNovelHideChapterTitle(value) }
-    }
-
-    fun setLineHeight(value: Float) {
-        viewModelScope.launch { preferences.setNovelLineHeight(value) }
-    }
-
-    fun setParagraphSpacing(value: Float) {
-        viewModelScope.launch { preferences.setNovelParagraphSpacing(value) }
-    }
-
-    fun setSidePadding(value: Float) {
-        viewModelScope.launch { preferences.setNovelSidePadding(value) }
-    }
-
-    fun setAutoPage(value: Boolean) {
-        viewModelScope.launch { preferences.setNovelAutoPage(value) }
-    }
-
-    fun setAutoPageInterval(value: Int) {
-        viewModelScope.launch { preferences.setNovelAutoPageInterval(value) }
-    }
-
-    /** 音量键翻页开关 */
-    fun setVolumePage(value: Boolean) {
-        viewModelScope.launch { preferences.setNovelVolumePage(value) }
-    }
-
-    // ===== 音量键翻页事件（#8） =====
-    /** 翻页请求：-1=上一页，1=下一页（0 无）。子组件（翻页/滚动）订阅后执行。 */
+    // ===== 音量键翻页 =====
     private val _pageTurn = kotlinx.coroutines.flow.MutableSharedFlow<Int>(
         extraBufferCapacity = 4,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
     val pageTurn: kotlinx.coroutines.flow.SharedFlow<Int> = _pageTurn.asSharedFlow()
 
-    /** 音量键上一页 */
     fun volumePrevPage() {
         _pageTurn.tryEmit(-1)
         showToast("↑ 上一页")
     }
 
-    /** 音量键下一页 */
     fun volumeNextPage() {
         _pageTurn.tryEmit(1)
         showToast("↓ 下一页")
     }
 
-    /** 单击屏幕中央：弹出/收起菜单 */
+    /** 单击屏幕中央：弹出/收起菜单（带连击去抖） */
     fun toggleMenu() {
-        // 连击去抖：单击已开关菜单、紧随其后的双击判定会再触发一次，
-        // 200ms 内的第二次调用直接忽略，避免菜单「闪一下就不见」。
         val now = System.currentTimeMillis()
         if (now - lastMenuToggleAt < 200L) return
         lastMenuToggleAt = now
         _showMenu.value = !_showMenu.value
     }
 
-    /** 上次切换菜单的时间戳（连击去抖用） */
+    /** 直接收起菜单（点选项目后调用） */
+    fun closeMenu() {
+        _showMenu.value = false
+    }
+
     private var lastMenuToggleAt: Long = 0L
 
-    /** 切换菜单页签（目录/界面/设置） */
     fun setMenuTab(tab: Int) {
         _menuTab.value = tab
     }
 
+    fun setChapterQuery(q: String) {
+        _chapterQuery.value = q
+    }
+
+    fun toggleChapterOrder() {
+        _chapterDesc.value = !_chapterDesc.value
+    }
+
+    // ===== 阅读时长 =====
+    private var sessionStartMs: Long = 0L
+
+    /** 阅读页可见时开始计时 */
+    fun onReaderVisible() {
+        if (sessionStartMs == 0L) sessionStartMs = System.currentTimeMillis()
+    }
+
+    /** 阅读页不可见时结算时长 */
+    fun onReaderHidden() {
+        flushReadTime()
+    }
+
+    private fun flushReadTime() {
+        if (sessionStartMs == 0L) return
+        val now = System.currentTimeMillis()
+        val delta = (now - sessionStartMs) / 1000L
+        sessionStartMs = now
+        if (delta > 0) viewModelScope.launch { preferences.addNovelReadSeconds(delta) }
+    }
+
+    // ===== 书签 =====
+    fun refreshBookmarks() {
+        val repo = bookmarkRepository ?: return
+        val item = currentItem ?: return
+        viewModelScope.launch {
+            runCatching { repo.listForBook(item.sourceId, item.id) }
+                .onSuccess { _bookmarks.value = it }
+        }
+    }
+
+    /**
+     * 在当前阅读位置添加书签。
+     *
+     * @param ratio 当前章内位置比例（0~10000）
+     */
+    fun addBookmark(ratio: Int, snippet: String) {
+        val repo = bookmarkRepository ?: return
+        val item = currentItem ?: return
+        val chapter = currentChapter ?: return
+        viewModelScope.launch {
+            runCatching {
+                repo.add(
+                    item = item,
+                    chapterIndex = chapter.index,
+                    chapterUrl = chapter.url,
+                    chapterTitle = chapter.title,
+                    textPosition = ratio.coerceIn(0, 10000),
+                    snippet = snippet,
+                )
+            }.onSuccess {
+                showToast("已添加书签")
+                refreshBookmarks()
+            }.onFailure { showToast("添加书签失败") }
+        }
+    }
+
+    fun removeBookmark(id: Long) {
+        val repo = bookmarkRepository ?: return
+        viewModelScope.launch {
+            runCatching { repo.removeById(id) }
+                .onSuccess {
+                    showToast("已删除书签")
+                    refreshBookmarks()
+                }
+        }
+    }
+
+    /** 跳转到书签 */
+    fun jumpToBookmark(bookmark: Bookmark) {
+        val chapters = _chapters.value
+        val pos = chapters.indexOfFirst { it.url == bookmark.chapterUrl && it.url.isNotBlank() }
+            .let { if (it >= 0) it else chapters.indexOfFirst { it.index == bookmark.chapterIndex } }
+        if (pos < 0) {
+            showToast("书签所在章节已不存在")
+            return
+        }
+        closeChangeSource()
+        jumpTo(pos, bookmark.textPosition)
+        showToast("已跳转到书签")
+    }
+
     // ===== 换源 =====
-    /** 打开换源面板并搜索同名书 */
     fun openChangeSource() {
         _changeSourceOpen.value = true
         searchSameTitle()
     }
 
-    /** 关闭换源面板 */
     fun closeChangeSource() {
         _changeSourceOpen.value = false
     }
 
-    /** 切换「仅同作者」开关（切换后重新过滤，无需重新搜索） */
     fun setSameAuthorOnly(value: Boolean) {
         _sameAuthorOnly.value = value
         filterCandidates()
     }
 
-    /** 搜索当前书名的候选源（第 1 页） */
     private fun searchSameTitle() {
         val title = _currentTitle.value
         if (title.isBlank()) return
@@ -617,28 +713,22 @@ class NovelReaderViewModel(
         viewModelScope.launch {
             _changeSourceLoading.value = true
             _changeSourceError.value = null
-            runCatching {
-                contentRepository.search(SourceType.NOVEL, title, 1)
-            }.onSuccess { results ->
-                _allCandidates = results
-                _changeSourceHasMore.value = results.isNotEmpty()
-                filterCandidates()
-            }.onFailure { e ->
-                _changeSourceError.value = e.message ?: "换源搜索失败"
-                _allCandidates = emptyList()
-                _changeSourceCandidates.value = emptyList()
-                _changeSourceHasMore.value = false
-            }
+            runCatching { contentRepository.search(SourceType.NOVEL, title, 1) }
+                .onSuccess { results ->
+                    _allCandidates = results
+                    _changeSourceHasMore.value = results.isNotEmpty()
+                    filterCandidates()
+                }
+                .onFailure { e ->
+                    _changeSourceError.value = e.message ?: "换源搜索失败"
+                    _allCandidates = emptyList()
+                    _changeSourceCandidates.value = emptyList()
+                    _changeSourceHasMore.value = false
+                }
             _changeSourceLoading.value = false
         }
     }
 
-    /**
-     * 加载换源候选的下一页。
-     *
-     * 旧实现只搜第 1 页，热门书在前几页之外的其他源永远搜不到（「换源形同虚设」之一）。
-     * 这里支持翻页追加，并做去重，保证候选池够用。
-     */
     fun loadMoreChangeSource() {
         val title = _currentTitle.value
         if (title.isBlank() || _changeSourceLoadingMore.value) return
@@ -653,39 +743,26 @@ class NovelReaderViewModel(
                     } else {
                         changeSourcePage = next
                         val existed = _allCandidates.map { it.sourceId + "|" + it.id }.toHashSet()
-                        val merged = _allCandidates + more.filter { (it.sourceId + "|" + it.id) !in existed }
-                        _allCandidates = merged
+                        _allCandidates += more.filter { (it.sourceId + "|" + it.id) !in existed }
                         filterCandidates()
                     }
                 }
-                .onFailure { e ->
-                    _changeSourceError.value = e.message ?: "加载更多失败"
-                }
+                .onFailure { e -> _changeSourceError.value = e.message ?: "加载更多失败" }
             _changeSourceLoadingMore.value = false
         }
     }
 
-    /** 全量候选（未按同作者过滤） */
-    private var _allCandidates: List<MediaItem> = emptyList()
-
-    /**
-     * 按书名 + 可选同作者过滤候选。
-     * 排除当前源同一本书（sourceId+id 相同）。
-     */
     private fun filterCandidates() {
         val title = _currentTitle.value.trim()
         val author = _currentAuthor.value
         val current = currentItem
         val sameAuthor = _sameAuthorOnly.value
         val filtered = _allCandidates.filter { cand ->
-            // 排除当前正在读的这本书
             if (current != null && cand.sourceId == current.sourceId && cand.id == current.id) return@filter false
-            // 书名匹配（完全相等或互相包含，忽略大小写）
             val titleMatch = cand.title.trim().equals(title, ignoreCase = true) ||
                 cand.title.contains(title, ignoreCase = true) ||
                 title.contains(cand.title.trim(), ignoreCase = true)
             if (!titleMatch) return@filter false
-            // 同作者筛选：开启时要求作者一致（任一为空视为不匹配则太严，空作者视为匹配）
             if (sameAuthor) {
                 val candAuthor = cand.author?.trim()
                 val curAuthor = author?.trim()
@@ -696,17 +773,7 @@ class NovelReaderViewModel(
         _changeSourceCandidates.value = filtered
     }
 
-    /**
-     * 切换到候选源。
-     *
-     * 定位策略（三级，避免「一律回退第一章」）：
-     * 1. 章节标题完全相等
-     * 2. 标题归一化后相等（忽略空格/标点/繁简差异）
-     * 3. 标题互相包含
-     * 4. 以上都失败 → 按当前阅读进度比例映射到目标目录（近似续读位置）
-     *
-     * 成功后：更新当前书信息、章节列表，关闭面板并给出提示；失败保留错误信息。
-     */
+    /** 切换到候选源（四级定位，避免一律回退第一章） */
     fun switchSource(target: MediaItem) {
         val curTitle = currentChapter?.title ?: ""
         val curPos = currentIndex()
@@ -721,47 +788,29 @@ class NovelReaderViewModel(
                         _changeSourceLoading.value = false
                         return@launch
                     }
-                    val index = locateChapter(newChapters, curTitle, curPos, oldTotal)
-                    // 切换：更新当前书、章节列表、书名作者，加载对应章节
+                    val index = ChapterLocator.locate(newChapters, curTitle, curPos, oldTotal)
                     currentItem = target
                     _currentItem.value = target
                     _chapters.value = newChapters
                     _currentTitle.value = target.title
                     _currentAuthor.value = target.author
-                    // 重置换源面板状态
+                    clearMemory()
                     _changeSourceOpen.value = false
                     _allCandidates = emptyList()
                     _changeSourceCandidates.value = emptyList()
                     _changeSourceHasMore.value = false
                     changeSourcePage = 1
+                    refreshBookmarks()
                     loadContent(newChapters[index])
-                    // 换源成功反馈（旧实现切换后无任何提示，用户不知道是否生效）
                     val srcLabel = target.sourceName.ifBlank { target.title }
                     showToast("已切换到「$srcLabel」，定位到第 ${index + 1}/${newChapters.size} 章")
                 }
-                .onFailure { e ->
-                    _changeSourceError.value = e.message ?: "切换源失败"
-                }
+                .onFailure { e -> _changeSourceError.value = e.message ?: "切换源失败" }
             _changeSourceLoading.value = false
         }
     }
 
-    /** 在目标目录中定位对应的阅读位置（见 [ChapterLocator.locate]） */
-    private fun locateChapter(
-        newChapters: List<ChapterItem>,
-        curTitle: String,
-        curPos: Int,
-        oldTotal: Int,
-    ): Int = ChapterLocator.locate(newChapters, curTitle, curPos, oldTotal)
-
     // ===== 进度保存 =====
-
-    /**
-     * 回写当前章节内的正文位置比例（0~1），由滚动阅读页在滚动停止后调用。
-     * 位置变化时才落库，避免无意义的重复写入。
-     *
-     * @param chapterIndex 触发回写的章节索引；与当前章节不一致（切章瞬间）时忽略，防止串章
-     */
     fun saveScrollRatio(chapterIndex: Int, ratio: Float) {
         if (currentChapter?.index != chapterIndex) return
         val pos = (ratio.coerceIn(0f, 1f) * 10000f).toInt()
@@ -770,19 +819,17 @@ class NovelReaderViewModel(
         saveProgress()
     }
 
-    /**
-     * 回写翻页模式的当前页码，由左右翻页页在停稳后调用。
-     * 与 [saveScrollRatio] 互不干扰：同一章两种模式各自记录位置。
-     *
-     * @param chapterIndex 触发回写的章节索引；与当前章节不一致（切章瞬间）时忽略，防止串章
-     * @param page 当前页码（0 起）
-     */
     fun savePageIndex(chapterIndex: Int, page: Int) {
         if (currentChapter?.index != chapterIndex) return
         val p = page.coerceAtLeast(0)
         if (p == lastPageIndex) return
         lastPageIndex = p
         saveProgress()
+    }
+
+    /** 翻页模式回写比例（书签 / 位置展示用，不落库位置字段） */
+    fun updatePagerRatio(ratio: Int) {
+        if (ratio in 0..10000) lastTextPosition = ratio
     }
 
     private fun saveProgress() {
@@ -796,7 +843,7 @@ class NovelReaderViewModel(
                 chapterTitle = chapter.title,
                 chapterIndex = chapter.index,
                 textPosition = lastTextPosition,
-                itemType = com.novelreader.domain.model.SourceType.NOVEL.name,
+                itemType = SourceType.NOVEL.name,
                 itemTitle = item.title,
                 itemCover = item.cover,
                 itemAuthor = item.author,

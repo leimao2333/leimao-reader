@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -60,6 +61,55 @@ class PreferencesManager(private val context: Context) {
         val KEY_NOVEL_AUTO_PAGE_INTERVAL = intPreferencesKey("novel_auto_page_interval")
         /** 音量键翻页开关（开启后音量键上/下翻页，不调音量） */
         val KEY_NOVEL_VOLUME_PAGE = booleanPreferencesKey("novel_volume_page")
+
+        // ----- 以下为「对标开源阅读」大修新增（v1.1.0） -----
+        /**
+         * 统一翻页方式（替代旧的 pageMode + pageAnim 双键）：
+         * 0=覆盖 1=仿真 2=滑动 3=滚动 4=上下 5=无动画（与开源阅读一致）。
+         * 未设置（-1）时由旧的 pageMode/pageAnim 迁移推导。
+         */
+        val KEY_NOVEL_PAGE_TYPE = intPreferencesKey("novel_page_type")
+        /** 字体族：0=系统默认 1=衬线 2=等宽 */
+        val KEY_NOVEL_FONT_FAMILY = intPreferencesKey("novel_font_family")
+        /** 正文加粗 */
+        val KEY_NOVEL_BOLD = booleanPreferencesKey("novel_bold")
+        /** 首行缩进开关 */
+        val KEY_NOVEL_INDENT = booleanPreferencesKey("novel_indent")
+        /** 字间距（sp，0 ~ 3） */
+        val KEY_NOVEL_LETTER_SPACING = floatPreferencesKey("novel_letter_spacing")
+        /** 阅读亮度：-1 = 跟随系统，0 ~ 1 = 屏幕亮度系数 */
+        val KEY_NOVEL_BRIGHTNESS = floatPreferencesKey("novel_brightness")
+        /** 沉浸式全屏（隐藏状态栏 / 导航栏） */
+        val KEY_NOVEL_FULLSCREEN = booleanPreferencesKey("novel_fullscreen")
+        /** 音量键方向：true = 音量上键上一页（默认），false = 音量上键下一页 */
+        val KEY_NOVEL_VOLUME_UP_PREV = booleanPreferencesKey("novel_volume_up_prev")
+        /** 文本替换 / 净化规则（多行编码字符串，见 TextReplaceRules） */
+        val KEY_NOVEL_REPLACE_RULES = stringPreferencesKey("novel_replace_rules")
+        /** 累计阅读时长（秒，全局） */
+        val KEY_NOVEL_READ_SECONDS = longPreferencesKey("novel_read_seconds")
+
+        // 统一翻页方式常量
+        const val PAGE_TYPE_COVER = 0
+        const val PAGE_TYPE_SIMULATE = 1
+        const val PAGE_TYPE_SLIDE = 2
+        const val PAGE_TYPE_SCROLL = 3
+        const val PAGE_TYPE_VERTICAL = 4
+        const val PAGE_TYPE_NO_ANIM = 5
+        /** 默认翻页方式：滑动（与开源阅读默认一致） */
+        const val DEFAULT_PAGE_TYPE = PAGE_TYPE_SLIDE
+        /** 是否横向分页（覆盖/仿真/滑动/无动画） */
+        fun isHorizontalPager(type: Int): Boolean = when (type) {
+            PAGE_TYPE_COVER, PAGE_TYPE_SIMULATE, PAGE_TYPE_SLIDE, PAGE_TYPE_NO_ANIM -> true
+            else -> false
+        }
+
+        // 字体族常量
+        const val FONT_FAMILY_DEFAULT = 0
+        const val FONT_FAMILY_SERIF = 1
+        const val FONT_FAMILY_MONO = 2
+
+        /** 默认亮度（跟随系统） */
+        const val DEFAULT_BRIGHTNESS = -1f
 
         // ===== 漫画阅读 =====
         /** 翻页方式：0=上下滚动，1=左右翻页 */
@@ -230,6 +280,117 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setNovelVolumePage(value: Boolean) {
         context.dataStore.edit { it[KEY_NOVEL_VOLUME_PAGE] = value }
+    }
+
+    /**
+     * 统一翻页方式（0=覆盖 1=仿真 2=滑动 3=滚动 4=上下 5=无动画）。
+     *
+     * 旧版本存的是 [KEY_NOVEL_PAGE_MODE]（0=滚动 / 1=左右）+ [KEY_NOVEL_PAGE_ANIM]
+     * （0=无动画 / 1=滑动 / 2=覆盖 / 3=仿真）。新键缺失时按旧键推导，保证老用户升级后
+     * 阅读方式不跳变。
+     */
+    val novelPageTypeFlow: Flow<Int> = context.dataStore.data.map { p ->
+        p[KEY_NOVEL_PAGE_TYPE]?.takeIf { it >= 0 } ?: run {
+            val oldMode = p[KEY_NOVEL_PAGE_MODE] ?: 0
+            val oldAnim = p[KEY_NOVEL_PAGE_ANIM] ?: 1
+            if (oldMode == 0) PAGE_TYPE_SCROLL
+            else when (oldAnim) {
+                0 -> PAGE_TYPE_NO_ANIM
+                2 -> PAGE_TYPE_COVER
+                3 -> PAGE_TYPE_SIMULATE
+                else -> PAGE_TYPE_SLIDE
+            }
+        }
+    }
+
+    suspend fun setNovelPageType(value: Int) {
+        context.dataStore.edit {
+            it[KEY_NOVEL_PAGE_TYPE] = value.coerceIn(0, 5)
+            // 同步写回旧键，保持与旧版本行为一致
+            it[KEY_NOVEL_PAGE_MODE] = if (value == PAGE_TYPE_SCROLL || value == PAGE_TYPE_VERTICAL) 0 else 1
+            it[KEY_NOVEL_PAGE_ANIM] = when (value) {
+                PAGE_TYPE_NO_ANIM -> 0
+                PAGE_TYPE_COVER -> 2
+                PAGE_TYPE_SIMULATE -> 3
+                else -> 1
+            }
+        }
+    }
+
+    /** 字体族：0=系统默认 1=衬线 2=等宽 */
+    val novelFontFamilyFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_NOVEL_FONT_FAMILY] ?: FONT_FAMILY_DEFAULT }
+
+    suspend fun setNovelFontFamily(value: Int) {
+        context.dataStore.edit { it[KEY_NOVEL_FONT_FAMILY] = value.coerceIn(0, 2) }
+    }
+
+    /** 正文加粗 */
+    val novelBoldFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_NOVEL_BOLD] ?: false }
+
+    suspend fun setNovelBold(value: Boolean) {
+        context.dataStore.edit { it[KEY_NOVEL_BOLD] = value }
+    }
+
+    /** 首行缩进 */
+    val novelIndentFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_NOVEL_INDENT] ?: true }
+
+    suspend fun setNovelIndent(value: Boolean) {
+        context.dataStore.edit { it[KEY_NOVEL_INDENT] = value }
+    }
+
+    /** 字间距(sp) */
+    val novelLetterSpacingFlow: Flow<Float> = context.dataStore.data
+        .map { it[KEY_NOVEL_LETTER_SPACING] ?: 0f }
+
+    suspend fun setNovelLetterSpacing(value: Float) {
+        context.dataStore.edit { it[KEY_NOVEL_LETTER_SPACING] = value.coerceIn(0f, 3f) }
+    }
+
+    /** 阅读亮度（-1 跟随系统 / 0~1） */
+    val novelBrightnessFlow: Flow<Float> = context.dataStore.data
+        .map { it[KEY_NOVEL_BRIGHTNESS] ?: DEFAULT_BRIGHTNESS }
+
+    suspend fun setNovelBrightness(value: Float) {
+        context.dataStore.edit {
+            it[KEY_NOVEL_BRIGHTNESS] = value.coerceIn(DEFAULT_BRIGHTNESS, 1f)
+        }
+    }
+
+    /** 沉浸式全屏 */
+    val novelFullScreenFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_NOVEL_FULLSCREEN] ?: false }
+
+    suspend fun setNovelFullScreen(value: Boolean) {
+        context.dataStore.edit { it[KEY_NOVEL_FULLSCREEN] = value }
+    }
+
+    /** 音量上键是否上一页（false 表示音量上键下一页） */
+    val novelVolumeUpPrevFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_NOVEL_VOLUME_UP_PREV] ?: true }
+
+    suspend fun setNovelVolumeUpPrev(value: Boolean) {
+        context.dataStore.edit { it[KEY_NOVEL_VOLUME_UP_PREV] = value }
+    }
+
+    /** 文本替换 / 净化规则（编码字符串） */
+    val novelReplaceRulesFlow: Flow<String> = context.dataStore.data
+        .map { it[KEY_NOVEL_REPLACE_RULES] ?: "" }
+
+    suspend fun setNovelReplaceRules(value: String) {
+        context.dataStore.edit { it[KEY_NOVEL_REPLACE_RULES] = value }
+    }
+
+    /** 累计阅读时长（秒） */
+    val novelReadSecondsFlow: Flow<Long> = context.dataStore.data
+        .map { it[KEY_NOVEL_READ_SECONDS] ?: 0L }
+
+    /** 累加阅读时长（秒） */
+    suspend fun addNovelReadSeconds(delta: Long) {
+        if (delta <= 0) return
+        context.dataStore.edit { it[KEY_NOVEL_READ_SECONDS] = (it[KEY_NOVEL_READ_SECONDS] ?: 0L) + delta }
     }
 
     // ===== 漫画 =====

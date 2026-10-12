@@ -338,6 +338,7 @@ fun AppNavHost(container: AppContainer) {
                         it.preferencesManager,
                         it.chapterCacheRepository,
                         it.bookRepository,
+                        it.bookmarkRepository,
                     )
                 }
             )

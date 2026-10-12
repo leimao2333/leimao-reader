@@ -320,6 +320,189 @@ class LegadoRealSourceTest {
         assertEquals(listOf("B", "A"), got.map { it["chapterName"] })
     }
 
+    // ===== JSON 字段规则里的 JS（`@js:` / `{{}}` 模板 / 变量）=====
+
+    /**
+     * 取值为纯 JS 的 JSON 字段规则必须执行 JS，而不是当成普通路径。
+     *
+     * 全免漫画（api-cdn.kaimanhua.com）的 `ruleSearch.bookUrl` 就是这种写法：
+     * 用 `java.md5Encode` 算出接口签名，返回 `地址,{请求配置}`。
+     * 此前 `renderJsonRule` 见到 `{{` 就只做模板替换、不执行 JS，
+     * 结果 bookUrl 变成一段 JS 源码 → 详情/目录请求地址错乱 → 目录空白。
+     */
+    @Test
+    fun `legado JS - JSON 字段规则执行 @js 并支持 java_md5Encode`() {
+        val json = """{"comic_id":97500,"comic_name":"噬龙蚁"}"""
+        val rule = """
+@js:
+t="/x?comic_id={{$.comic_id}}&chapter_id=1152731suffix";
+sign=java.md5Encode(t);
+b={"method": "GET","headers": {"m-request-id": sign}};
+"https://h/x?comic_id={{$.comic_id}}&chapter_id=1152731,"+JSON.stringify(b);
+        """.trim()
+        val out = adapter(minimalComicJson()).jsonFieldForTest(json, rule)
+        assertNotNull(out)
+        // 地址正确、`{{$.comic_id}}` 已替换
+        assertTrue("实际=$out", out!!.startsWith("https://h/x?comic_id=97500&chapter_id=1152731,"))
+        // 签名 = md5("/x?comic_id=97500&chapter_id=1152731suffix")
+        assertTrue("实际=$out", out.contains("\"m-request-id\":\"541bf23fcde0bb9ca6f823b5fc9eba80\""))
+        assertEquals("GET", out.substringAfter("\"method\":\"").substringBefore("\""))
+    }
+
+    /** `<js>` 内含 `@get:{k}` 变量回填（目录章节地址规则的真实形态） */
+    @Test
+    fun `legado JS - 字段 JS 里的 @get 变量先回填再执行`() {
+        val json = """{"chapter_id":1152731}"""
+        val rule = "@js:cid='@get:{cid}';\"https://h/c?comic_id=\"+cid+\"&chapter_id={{$.chapter_id}}\""
+        LegadoRuleEngine.variables = hashMapOf("cid" to "97500")
+        val out = adapter(minimalComicJson()).jsonFieldForTest(json, rule)
+        LegadoRuleEngine.variables = HashMap()
+        assertEquals("https://h/c?comic_id=97500&chapter_id=1152731", out)
+    }
+
+    /** 纯 JS 字段规则的 `<js>` 写法：直接对 JSON 节点求值 */
+    @Test
+    fun `legado JS - 字段规则用 js 块拼接`() {
+        val json = """{"comic_id":97500}"""
+        val rule = "<js>\n\"https://h/d?comic_id=\"+java.getString(\"$.comic_id\")\n</js>"
+        assertEquals(
+            "https://h/d?comic_id=97500",
+            adapter(minimalComicJson()).jsonFieldForTest(json, rule),
+        )
+    }
+
+    /**
+     * `java.*` 桥的核心加密能力（源里的签名与解密都依赖它）。
+     * 密文由同一 key/iv 离线生成，可直接断言解密结果与 MD5。
+     */
+    @Test
+    fun `legado JS - java 桥的 md5 与 aes 解密`() {
+        val bridge = com.novelreader.source.legado.LegadoJavaBridge(null, null, "")
+        assertEquals("900150983cd24fb0d6963f7d28e17f72", bridge.md5Encode("abc"))
+
+        // AES/CBC/PKCS5Padding，key=4548ded8c9e02690，iv=1992360ee9bc4f8f
+        val cipher = "zRpi1d0vWHiK6YhmuUbFHw0KDYaBbevaVPec9gqyigjN+VD9ELxOxhWKgqCYrBhU+" +
+            "h2jpswbUXf3hA89kdtXlBsyjzussAoS1GYBGsbqoA3BCVY4BdP56epnusV0rFVdFTRA/7CYr3DCjIENvd8" +
+            "ZrcLyE0Uo2Xq0mVkF1QQiwhq73FzcVhNQ6GnKb014Xxaxq3lJ7lXS1J8Jij6k6t5DWc3JdKkTm6PZ3G+rSyNqM+Y="
+        val plain = bridge.aesBase64DecodeToString(
+            cipher,
+            "4548ded8c9e02690",
+            "AES/CBC/PKCS5Padding",
+            "1992360ee9bc4f8f",
+        )
+        assertTrue("实际=$plain", plain.contains("\"chapter_name\":\"第1话 \""))
+        assertTrue("实际=$plain", plain.contains("\"chapter_id\":1152733"))
+        // 参数不合法时返回空串而不是抛异常（不能中断整条书源解析）
+        assertEquals("", bridge.aesBase64DecodeToString("!!!not-base64!!!", "k", "AES/CBC/PKCS5Padding", "v"))
+    }
+
+    /**
+     * 列表规则「前置 `<js>` 块 + 后续 JSONPath」链式：先整体解密，再取数组。
+     *
+     * 全免漫画 `ruleToc.chapterList` 的真实形态：
+     * `<js>…java.aesBase64DecodeToString($.data)…</js>` 换行 `$.chapters[*]`。
+     */
+    @Test
+    fun `legado JS - 列表规则的前置 js 块链式解密后再取数组`() {
+        val cipher = "zRpi1d0vWHiK6YhmuUbFHw0KDYaBbevaVPec9gqyigjN+VD9ELxOxhWKgqCYrBhU+" +
+            "h2jpswbUXf3hA89kdtXlBsyjzussAoS1GYBGsbqoA3BCVY4BdP56epnusV0rFVdFTRA/7CYr3DCjIENvd8" +
+            "ZrcLyE0Uo2Xq0mVkF1QQiwhq73FzcVhNQ6GnKb014Xxaxq3lJ7lXS1J8Jij6k6t5DWc3JdKkTm6PZ3G+rSyNqM+Y="
+        val content = """{"data":"arsadata$cipher","status":1,"message":"ok"}"""
+        val listRule = """
+<js>
+result=String(java.getString("${'$'}.data")).replace(/arsadata/,"");
+java.aesBase64DecodeToString(result,"4548ded8c9e02690","AES/CBC/PKCS5Padding","1992360ee9bc4f8f");
+</js>
+${'$'}.chapters[*]
+        """.trim()
+
+        val fields = mapOf("chapterName" to "${'$'}.chapter_name", "chapterUrl" to "${'$'}.chapter_id")
+        val got = adapter(minimalComicJson()).jsonListForTest(content, fields, listRule)
+        assertEquals(3, got.size)
+        assertEquals(listOf("第1话 ", "第2话 ", "第3话 "), got.map { it["chapterName"] })
+        assertEquals(listOf("1152731", "1152732", "1152733"), got.map { it["chapterUrl"] })
+    }
+
+    /** 地址后的请求配置必须与地址分离（配置用于发请求，不能混进 URL） */
+    @Test
+    fun `legado JS - 拆分地址后的请求配置`() {
+        val ad = adapter(minimalComicJson())
+        val (url, options) = ad.splitUrlOptions(
+            """https://api.example.com/c?comic_id=1,{"method":"GET","headers":{"m-request-id":"abc"}}""",
+        )
+        assertEquals("https://api.example.com/c?comic_id=1", url)
+        assertTrue(options.contains("\"m-request-id\":\"abc\""))
+
+        // 没有配置时原样返回
+        val (plain, none) = ad.splitUrlOptions("https://api.example.com/c?comic_id=1")
+        assertEquals("https://api.example.com/c?comic_id=1", plain)
+        assertEquals("", none)
+    }
+
+    /**
+     * 全免漫画 `ruleContent.content` 的真实形态：**整条规则就是一个 `<js>` 块**，
+     * 内部用 `java.getString("$.data")` 取密文 → 去 `arsadata` 前缀 → AES 解密 →
+     * 正则截出 JSON 数组 → 拼成 `<img src="...">` 多行文本。
+     *
+     * 回归点：正文规则没有前置取值段、也没有尾部 `@js:`，若引擎只认 `前缀@js:` 形态，
+     * 整条规则会被当成选择器 → 一张图都取不到 → 阅读页显示「本章暂无可用图片」。
+     */
+    @Test
+    fun `漫画正文 - 整体 js 块解密后拼图（全免漫画）`() {
+        val ad = adapter(minimalComicJson())
+        // key=4548ded8c9e02690 / iv=1992360ee9bc4f8f，明文为 URL 的 JSON 数组（离线生成）
+        val cipher = "i3D92OqDuiQWte4Q0lNgdjR4gAy5Ds7hzn7WUogQfSdsYJPv0lfwrtjqxG3Db4c7" +
+            "Vprno0dNmsO+SSYhej7W1T+uxcM2YmHHVzMtIK/4ndcgGHdS0irYiFrRsktjCCxzm" +
+            "KcdHy+g8mITrFB/oEcFLoAxWbI6V7+SbAmAuH0R9EVMaPQvOe7koOovQ7Cf2FPbUw" +
+            "J7KjGMr3q95APK/A/Tq6n7Jk+G6QNGaI7+t5qDru0="
+        val body = """{"data":"arsadata$cipher","status":1}"""
+
+        val contentRule = "<js>" +
+            "result=String(java.getString(\"\$.data\")).replace(/arsadata/,\"\");" +
+            "u=java.aesBase64DecodeToString(result,\"4548ded8c9e02690\"," +
+            "\"AES/CBC/PKCS5Padding\",\"1992360ee9bc4f8f\");" +
+            "u.match(/\\[(.*)\\]/)[1].split(\",\").map(x=>'<img src='+x+'>').join(\"\\n\")" +
+            "</js>"
+
+        val res = ad.extractComicImages(
+            body, mapOf("content" to contentRule), "https://api-cdn.kaimanhua.com/",
+        )
+        assertEquals(
+            listOf(
+                "https://hw-chapter2.kaimanhua.com/comic/S/1.jpg-qmmh.middle.webp?auth_key=aaa",
+                "https://hw-chapter2.kaimanhua.com/comic/S/2.jpg-qmmh.middle.webp?auth_key=bbb",
+            ),
+            res.comicImages,
+        )
+        // 图片地址未带 headers 后缀时，仍应给出默认防盗链 Referer（按被请求接口的站点）
+        assertEquals("https://api-cdn.kaimanhua.com/", res.comicHeaders["Referer"])
+    }
+
+    /**
+     * 章节地址 `,{...}` 请求配置的拆分：干净地址用于发请求，配置里带签名请求头。
+     *
+     * 回归点：曾因只保留干净地址、而正文取配置时去读 `chapter.url`，
+     * 导致签名请求头整体丢失 → 全免漫画接口返回错误数据 → 阅读页空白。
+     */
+    @Test
+    fun `漫画章节 - 地址携带的请求配置可被拆分且不丢签名`() {
+        val ad = adapter(minimalComicJson())
+        val raw = "https://api-cdn.kaimanhua.com/comic-api/v2/comic/getchapterdata" +
+            "?comic_id=97500&chapter_id=1152731&quality=middle" +
+            ",{\"method\":\"GET\",\"headers\":{\"access-token\":\"v1_abc\",\"m-request-id\":\"541bf23\"}}"
+
+        val (clean, options) = ad.splitUrlOptions(raw)
+        assertEquals(
+            "https://api-cdn.kaimanhua.com/comic-api/v2/comic/getchapterdata" +
+                "?comic_id=97500&chapter_id=1152731&quality=middle",
+            clean,
+        )
+        assertTrue(options.contains("\"access-token\":\"v1_abc\""))
+        assertTrue(options.contains("\"m-request-id\":\"541bf23\""))
+        // 含逗号的查询串不会被误当成配置起点（必须匹配 `,{`）
+        assertTrue(!clean.contains("97500,"))
+    }
+
     // ===== 联网真实源验证 =====
 
     private fun realTestsEnabled(): Boolean = System.getenv("LEIMAO_REAL_TESTS") == "1"

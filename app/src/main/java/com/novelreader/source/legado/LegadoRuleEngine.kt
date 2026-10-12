@@ -190,6 +190,14 @@ object LegadoRuleEngine {
 
     /** 从完整 HTML/JSON 文档按规则提取单个字符串 */
     private fun extractFromDocument(content: String, rule: String, baseUrl: String): String? {
+        // 前置 `<js>` 块：先跑 JS 得到新内容，再对结果套用后续规则
+        // （legado 常见写法：`<js>整体解密 / 去包装</js>\n$.data.list`）
+        splitLeadingJs(rule)?.let { (js, rest) ->
+            val decoded = evalJsWithContent(js, content, baseUrl)
+            if (!decoded.isNullOrBlank()) {
+                return if (rest.isBlank()) decoded else extractFromDocument(decoded, rest, baseUrl)
+            }
+        }
         val trimmed = rule.trimStart()
         // 顶层 @json: 规则：从 JSON 内容提取（内容本身可能不是 JSON，先尝试）
         if (trimmed.startsWith("@json:", ignoreCase = true)) {
@@ -422,6 +430,31 @@ object LegadoRuleEngine {
             if (!json.isNullOrBlank() && json.trimStart().startsWith("{")) return json
         }
         return null
+    }
+
+    /**
+     * 拆出规则**前置**的 `<js>...</js>` 块。
+     *
+     * legado 里列表 / 取值规则允许「先跑一段 JS 得到新内容，再对结果套用后续规则」，
+     * 例如 `<js>整体解密</js>\n$.chapters[*]`（全免漫画、部分漫画 App 接口源都用它）。
+     * 返回 (JS 代码, 剩余规则)；没有前置 JS 块时返回 null。
+     */
+    fun splitLeadingJs(rule: String?): Pair<String, String>? {
+        val r = rule?.trimStart() ?: return null
+        if (!r.startsWith("<js>")) return null
+        val end = r.indexOf("</js>")
+        if (end < 0) return null
+        return r.substring(4, end) to r.substring(end + 5).trim()
+    }
+
+    /** 以 [content] 为数据源求值一段 JS（JS 里 `java.getString(...)` 读的就是这份内容） */
+    fun evalJsWithContent(code: String, content: String, baseUrl: String): String? =
+        evalJsRich(code, content, content, baseUrl).first
+
+    /** 以 JSON 节点为数据源求值 JS（JSON 字段规则里的 `@js:` / `<js>`） */
+    fun evalJsonJs(code: String, node: com.google.gson.JsonElement?, baseUrl: String): String? {
+        val json = node?.toString()
+        return evalJsRich(code, json, json, baseUrl).first
     }
 
     /** 供 JS 桥接使用：按规则选取元素列表（支持 @ 链、@css:、- 倒置） */
@@ -876,6 +909,11 @@ object LegadoRuleEngine {
 
         val tokens = cleaned.split(Regex("[.\\[\\]]")).filter { it.isNotBlank() }
         for (token in tokens) {
+            // `[*]` / `.*`：数组全部元素，原样返回数组，由调用方决定拼接方式
+            if (token == "*") {
+                if (current.isJsonArray) return current
+                continue
+            }
             current = when {
                 current.isJsonObject -> current.asJsonObject.get(token) ?: return null
                 current.isJsonArray -> {
@@ -1002,19 +1040,202 @@ class LegadoJavaBridge(
 
     fun s2t(text: String): String = com.novelreader.core.text.ChineseConverter.toTraditional(text)
 
-    fun base64Decode(text: String): String = runCatching {
-        String(android.util.Base64.decode(text, android.util.Base64.DEFAULT), Charsets.UTF_8)
+    fun base64Decode(text: String): String =
+        runCatching { String(Base64Codec.decode(text), Charsets.UTF_8) }.getOrDefault("")
+
+    fun base64Encode(text: String): String =
+        runCatching { Base64Codec.encode(text.toByteArray(Charsets.UTF_8)) }.getOrDefault("")
+
+    /**
+     * MD5（小写十六进制）。
+     *
+     * 大量「App 接口型」漫画 / 小说源用它做接口签名：
+     * `sign=java.md5Encode("/comic-api/v2/...&client-version=1.4.8erciyuan2020")`，
+     * 再把 sign 放进请求头 `m-request-id`，缺失时服务端直接返回空数据。
+     */
+    fun md5Encode(text: String): String = runCatching {
+        val md = java.security.MessageDigest.getInstance("MD5")
+        md.digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     }.getOrDefault("")
 
-    fun base64Encode(text: String): String = runCatching {
-        android.util.Base64.encodeToString(text.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
+    /** MD5 短码（取中间 16 位，部分源用此写法） */
+    fun md5Encode16(text: String): String {
+        val full = md5Encode(text)
+        return if (full.length == 32) full.substring(8, 24) else full
+    }
+
+    /** SHA-1（十六进制，小写） */
+    fun digestHex(text: String): String = runCatching {
+        val md = java.security.MessageDigest.getInstance("SHA-1")
+        md.digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     }.getOrDefault("")
 
+    /**
+     * AES 解密（Base64 输入 → 明文字符串）。
+     *
+     * 对应 legado 的 `java.aesBase64DecodeToString(data, key, transformation, iv)`。
+     * 与 legado 一致：key / iv 都按 UTF-8 字节直接使用（16 字节即 AES-128）。
+     * 参数不合法时返回空串，由上层 `runCatching` 兜住，不中断整条书源解析。
+     */
+    fun aesBase64DecodeToString(
+        data: String,
+        key: String,
+        transformation: String = "AES/CBC/PKCS5Padding",
+        iv: String = "",
+    ): String = runCatching {
+        String(aesDoFinal(Base64Codec.decode(data), key, iv, transformation, false), Charsets.UTF_8)
+    }.getOrDefault("")
+
+    /** 同 [aesBase64DecodeToString]，兼容部分源使用的别名 */
+    fun aesDecodeToString(
+        data: String,
+        key: String,
+        transformation: String = "AES/CBC/PKCS5Padding",
+        iv: String = "",
+    ): String = aesBase64DecodeToString(data, key, transformation, iv)
+
+    /** AES 加密（明文 → Base64），对应 legado 的 `java.aesBase64EncodeToString` */
+    fun aesBase64EncodeToString(
+        data: String,
+        key: String,
+        transformation: String = "AES/CBC/PKCS5Padding",
+        iv: String = "",
+    ): String = runCatching {
+        Base64Codec.encode(aesDoFinal(data.toByteArray(Charsets.UTF_8), key, iv, transformation, true))
+    }.getOrDefault("")
+
+    /** 十六进制字符串 → 文本 */
     fun hexDecodeToString(hex: String): String = runCatching {
         val bytes = hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
         String(bytes, Charsets.UTF_8)
     }.getOrDefault("")
 
+    /**
+     * 时间格式化（毫秒时间戳 → 文本）。
+     *
+     * legado 的 `java.timeFormat(time)` 默认格式为 `yyyy/MM/dd HH:mm`；
+     * 源里常写 `java.timeFormat($.update_time).replace(/\//g,"-")`。
+     */
+    fun timeFormat(time: Long): String = timeFormat(time, "yyyy/MM/dd HH:mm")
+
+    fun timeFormat(time: String): String = timeFormat(time.toLongOrNull() ?: 0L, "yyyy/MM/dd HH:mm")
+
+    fun timeFormat(time: Long, format: String): String = runCatching {
+        java.text.SimpleDateFormat(format, java.util.Locale.getDefault())
+            .format(java.util.Date(time))
+    }.getOrDefault("")
+
+    fun timeFormat(time: String, format: String): String =
+        timeFormat(time.toLongOrNull() ?: 0L, format)
+
     fun urlEncode(text: String): String =
         runCatching { java.net.URLEncoder.encode(text, "UTF-8") }.getOrDefault(text)
+
+    fun urlDecode(text: String): String =
+        runCatching { java.net.URLDecoder.decode(text, "UTF-8") }.getOrDefault(text)
+
+    /** 与 legado 一致的空实现，避免源里的提示调用直接报错中断 JS */
+    fun toast(msg: Any?) {
+        android.util.Log.d("LegadoJs", "toast: ${msg?.toString() ?: ""}")
+    }
+
+    fun longToast(msg: Any?) = toast(msg)
+
+    fun getStringOrNull(key: String): String? = vars[key]?.toString()
+
+    /**
+     * AES 加解密的公共实现。
+     *
+     * @param encrypt true=加密，false=解密
+     * @param keyText / ivText 按 UTF-8 字节使用；iv 为空时退化为 ECB
+     */
+    private fun aesDoFinal(
+        input: ByteArray,
+        keyText: String,
+        ivText: String,
+        transformation: String,
+        encrypt: Boolean,
+    ): ByteArray {
+        val t = transformation.uppercase()
+        val mode = when {
+            t.contains("ECB") -> "ECB"
+            t.contains("CBC") -> "CBC"
+            ivText.isEmpty() -> "ECB"
+            else -> "CBC"
+        }
+        val padding = if (t.contains("NOPADDING")) "NoPadding" else "PKCS5Padding"
+        val cipher = javax.crypto.Cipher.getInstance("AES/$mode/$padding")
+        val keySpec = javax.crypto.spec.SecretKeySpec(keyText.toByteArray(Charsets.UTF_8), "AES")
+        val mode2 = if (encrypt) javax.crypto.Cipher.ENCRYPT_MODE else javax.crypto.Cipher.DECRYPT_MODE
+        if (mode == "CBC") {
+            cipher.init(
+                mode2,
+                keySpec,
+                javax.crypto.spec.IvParameterSpec(ivText.toByteArray(Charsets.UTF_8)),
+            )
+        } else {
+            cipher.init(mode2, keySpec)
+        }
+        return cipher.doFinal(input)
+    }
+}
+
+/**
+ * 纯 Kotlin 的 Base64 编解码。
+ *
+ * 不使用 `android.util.Base64`（单元测试的 JVM 环境里不可用，无法离线回归），
+ * 也不使用 `java.util.Base64`（API 26 起才有，项目 minSdk 24）。
+ */
+internal object Base64Codec {
+
+    private const val TABLE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+    private val REVERSE: IntArray = IntArray(128) { -1 }.also { map ->
+        TABLE.forEachIndexed { i, c -> map[c.code] = i }
+    }
+
+    /** 解码（忽略换行、空格等空白字符与 URL-safe 的 `-` `_`） */
+    fun decode(text: String): ByteArray {
+        val sb = StringBuilder(text.length)
+        for (ch in text) {
+            when {
+                ch == '-' -> sb.append('+')
+                ch == '_' -> sb.append('/')
+                ch == '=' || ch.isWhitespace() -> {}
+                else -> sb.append(ch)
+            }
+        }
+        val s = sb.toString()
+        val out = java.io.ByteArrayOutputStream(s.length * 3 / 4 + 3)
+        var buffer = 0
+        var bits = 0
+        for (ch in s) {
+            val v = if (ch.code < 128) REVERSE[ch.code] else -1
+            if (v < 0) continue
+            buffer = (buffer shl 6) or v
+            bits += 6
+            if (bits >= 8) {
+                bits -= 8
+                out.write((buffer shr bits) and 0xFF)
+            }
+        }
+        return out.toByteArray()
+    }
+
+    /** 编码（标准 Base64，无换行） */
+    fun encode(bytes: ByteArray): String {
+        val sb = StringBuilder((bytes.size + 2) / 3 * 4)
+        var i = 0
+        while (i < bytes.size) {
+            val b0 = bytes[i].toInt() and 0xFF
+            val b1 = if (i + 1 < bytes.size) bytes[i + 1].toInt() and 0xFF else 0
+            val b2 = if (i + 2 < bytes.size) bytes[i + 2].toInt() and 0xFF else 0
+            sb.append(TABLE[b0 shr 2])
+            sb.append(TABLE[((b0 and 0x03) shl 4) or (b1 shr 4)])
+            if (i + 1 < bytes.size) sb.append(TABLE[((b1 and 0x0F) shl 2) or (b2 shr 6)]) else sb.append('=')
+            if (i + 2 < bytes.size) sb.append(TABLE[b2 and 0x3F]) else sb.append('=')
+            i += 3
+        }
+        return sb.toString()
+    }
 }

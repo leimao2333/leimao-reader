@@ -29,6 +29,13 @@ data class BookEntity(
     val type: String,
     /** 详情地址 */
     val detailUrl: String,
+    /**
+     * 详情地址随带的请求配置（legado `url,{...}` 后缀，App 接口源用于携带签名请求头）。
+     *
+     * 必须持久化：从书架重进详情时要原样带上 `m-request-id` / `access-token`，
+     * 否则签名丢失 → 接口返回错误数据 → 目录空白（#全免漫画）。
+     */
+    val requestOptions: String = "",
     /** 收藏时间戳 */
     val addedAt: Long = System.currentTimeMillis(),
     /** 自定义分组名（空 = 未分组，v1.3.0） */

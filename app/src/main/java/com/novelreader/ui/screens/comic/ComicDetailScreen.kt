@@ -1,5 +1,6 @@
 package com.novelreader.ui.screens.comic
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -24,6 +27,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -49,12 +55,27 @@ fun ComicDetailScreen(
     val loading by viewModel.loading.collectAsState()
     val collected by viewModel.collected.collectAsState()
     val download by viewModel.download.collectAsState()
+    val chapterDesc by viewModel.chapterDesc.collectAsState()
 
     LaunchedEffect(item) {
         viewModel.load(item)
     }
 
     val display = detail ?: item
+    // 倒序仅改变展示顺序：点击仍用章节自身的 index，阅读器的「上一话/下一话」按源顺序走
+    val visibleChapters = remember(chapters, chapterDesc) {
+        if (chapterDesc) chapters.asReversed().toList() else chapters
+    }
+
+    val listState = rememberLazyListState()
+    // 切换正/倒序后滚到章节标题处，让顺序变化立即可见
+    var lastDesc by remember { mutableStateOf(chapterDesc) }
+    LaunchedEffect(chapterDesc) {
+        if (lastDesc != chapterDesc) {
+            lastDesc = chapterDesc
+            listState.animateScrollToItem(1)
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -96,6 +117,7 @@ fun ComicDetailScreen(
         }
 
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 24.dp),
         ) {
@@ -182,14 +204,26 @@ fun ComicDetailScreen(
             }
 
             item {
-                Text(
-                    text = "章节（${chapters.size}）",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "章节（${chapters.size}）",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OrderChip(
+                        text = if (chapterDesc) "倒序" else "正序",
+                        selected = chapterDesc,
+                        onClick = { viewModel.toggleChapterOrder() },
+                    )
+                }
             }
 
-            items(chapters) { chapter ->
+            items(visibleChapters, key = { "${it.index}_${it.url}" }) { chapter ->
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -207,4 +241,29 @@ fun ComicDetailScreen(
             }
         }
     }
+}
+
+/**
+ * 目录排序切换按钮（正序 / 倒序）。
+ *
+ * 与小说阅读器目录面板的「正序/倒序」对齐：漫画站有的从第 1 话排到最新话，
+ * 有的相反，给用户一个直接切换的入口。
+ */
+@Composable
+private fun OrderChip(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val bg = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+    val fg = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+    Text(
+        text = text,
+        color = fg,
+        style = MaterialTheme.typography.labelLarge,
+        modifier = Modifier
+            .background(bg, RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+    )
 }

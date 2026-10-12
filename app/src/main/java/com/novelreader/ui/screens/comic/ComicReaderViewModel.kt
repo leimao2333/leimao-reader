@@ -49,6 +49,21 @@ class ComicReaderViewModel(
     private val _chapters = MutableStateFlow<List<ChapterItem>>(emptyList())
     val chapters: StateFlow<List<ChapterItem>> = _chapters.asStateFlow()
 
+    /** 当前话在目录中的下标（0 基） */
+    private val _chapterIndex = MutableStateFlow(0)
+    val chapterIndex: StateFlow<Int> = _chapterIndex.asStateFlow()
+
+    /** 目录总话数 */
+    private val _chapterCount = MutableStateFlow(0)
+    val chapterCount: StateFlow<Int> = _chapterCount.asStateFlow()
+
+    /** 是否存在上一话 / 下一话（底部导航条与章末入口据此显示可用态） */
+    private val _hasPrevChapter = MutableStateFlow(false)
+    val hasPrevChapter: StateFlow<Boolean> = _hasPrevChapter.asStateFlow()
+
+    private val _hasNextChapter = MutableStateFlow(false)
+    val hasNextChapter: StateFlow<Boolean> = _hasNextChapter.asStateFlow()
+
     /** 翻页方式：0=上下滚动，1=左右翻页 */
     val pageMode: StateFlow<Int> = preferences.comicPageModeFlow
         .let { flow ->
@@ -66,6 +81,7 @@ class ComicReaderViewModel(
         _chapters.value = chapters
         currentChapter = chapter
         _chapterTitle.value = chapter.title
+        syncPosition()
         loadContent(chapter)
     }
 
@@ -78,6 +94,7 @@ class ComicReaderViewModel(
         _chapterTitle.value = chapter.title
         _currentPage.value = 0
         _images.value = emptyList()
+        syncPosition()
         viewModelScope.launch {
             _loading.value = true
             _error.value = null
@@ -148,19 +165,34 @@ class ComicReaderViewModel(
         return chapters.indexOfFirst { it.index == ch.index }
     }
 
-    fun nextChapter() {
+    /** 同步「当前位置 / 总话数 / 是否有上下话」，供底部导航条与章末入口使用 */
+    private fun syncPosition() {
+        val idx = currentIndex()
+        _chapterIndex.value = if (idx >= 0) idx else 0
+        _chapterCount.value = _chapters.value.size
+        _hasPrevChapter.value = idx > 0
+        _hasNextChapter.value = idx >= 0 && idx + 1 < _chapters.value.size
+    }
+
+    /** 切到下一话；已到最后一话返回 false（调用方据此提示） */
+    fun nextChapter(): Boolean {
         val idx = currentIndex()
         val chapters = _chapters.value
         if (idx >= 0 && idx + 1 < chapters.size) {
             loadContent(chapters[idx + 1])
+            return true
         }
+        return false
     }
 
-    fun prevChapter() {
+    /** 切到上一话；已在第一话返回 false */
+    fun prevChapter(): Boolean {
         val idx = currentIndex()
         if (idx > 0) {
             loadContent(_chapters.value[idx - 1])
+            return true
         }
+        return false
     }
 
     private fun saveProgress() {

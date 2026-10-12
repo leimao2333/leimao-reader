@@ -3,15 +3,22 @@ package com.novelreader.ui.screens.comic
 import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -38,18 +45,24 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.SubcomposeAsyncImage
 import coil.imageLoader
 import coil.request.ImageRequest
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
+import kotlinx.coroutines.launch
 
 /**
  * 漫画阅读页。
@@ -76,6 +89,10 @@ fun ComicReaderScreen(
     val currentPage by viewModel.currentPage.collectAsState()
     val chapterTitle by viewModel.chapterTitle.collectAsState()
     val imageHeaders by viewModel.imageHeaders.collectAsState()
+    val chapterPosition by viewModel.chapterIndex.collectAsState()
+    val chapterCount by viewModel.chapterCount.collectAsState()
+    val hasPrevChapter by viewModel.hasPrevChapter.collectAsState()
+    val hasNextChapter by viewModel.hasNextChapter.collectAsState()
 
     LaunchedEffect(item, chapter) {
         viewModel.init(item, chapters, chapter)
@@ -89,6 +106,14 @@ fun ComicReaderScreen(
 
     // 是否显示设置面板
     val showSettings = remember { mutableStateOf(false) }
+
+    // 应用是 edge-to-edge（targetSdk 35）绘制：系统状态栏 / 手势条会盖在内容之上。
+    // 顶部栏与底部章节条必须避开系统栏区域，否则：
+    // - 顶部「设置」图标上半部落在状态栏里，点它没反应（实测 y=84 无效、y=140 生效）；
+    // - 底部章节条被手势条遮挡。
+    val navBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    // 底部章节条总占位 = 条高 + 手势条高度（滚动列表的 contentPadding 要用这个值）
+    val barTotalHeight = CHAPTER_BAR_HEIGHT + navBottomInset
 
     Box(
         modifier = Modifier
@@ -138,7 +163,13 @@ fun ComicReaderScreen(
                 VerticalScrollReader(
                     images = images,
                     headers = imageHeaders,
+                    chapterIndex = chapterPosition,
+                    hasPrevChapter = hasPrevChapter,
+                    hasNextChapter = hasNextChapter,
+                    onPrevChapter = { viewModel.prevChapter() },
+                    onNextChapter = { viewModel.nextChapter() },
                     onTap = { showSettings.value = !showSettings.value },
+                    bottomContentPadding = barTotalHeight,
                 )
             }
             else -> {
@@ -149,6 +180,7 @@ fun ComicReaderScreen(
                     currentPage = currentPage,
                     onPageChange = viewModel::goToPage,
                     onTap = { showSettings.value = !showSettings.value },
+                    onPrevChapter = { viewModel.prevChapter() },
                     onNextChapter = { viewModel.nextChapter() },
                 )
             }
@@ -159,6 +191,7 @@ fun ComicReaderScreen(
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .fillMaxWidth()
+                .statusBarsPadding()
                 .background(Color.Black.copy(alpha = 0.7f))
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -184,12 +217,13 @@ fun ComicReaderScreen(
             }
         }
 
-        // 设置面板
+        // 设置面板（上移整个底部章节条的高度，避免被遮挡）
         if (showSettings.value) {
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .padding(bottom = barTotalHeight),
                 color = Color(0xFF1E1E1E),
                 shadowElevation = 8.dp,
             ) {
@@ -201,39 +235,123 @@ fun ComicReaderScreen(
                         Spacer(Modifier.width(12.dp))
                         PageModeButton("左右翻页", pageMode == 1) { viewModel.setPageMode(1) }
                     }
-                    Spacer(Modifier.height(16.dp))
-                    Text("章节", color = Color.White, style = MaterialTheme.typography.titleSmall)
-                    Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = { viewModel.prevChapter() }) {
-                            Icon(Icons.Filled.SkipPrevious, contentDescription = "上一话", tint = Color.White)
-                        }
-                        Text(
-                            text = chapterTitle.ifBlank { "未知章节" },
-                            color = Color.White,
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 1,
-                            modifier = Modifier.weight(1f),
-                        )
-                        IconButton(onClick = { viewModel.nextChapter() }) {
-                            Icon(Icons.Filled.SkipNext, contentDescription = "下一话", tint = Color.White)
-                        }
-                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "滚动/翻页到本话结尾即可进入下一话，也可用底部导航条切换",
+                        color = Color(0xFF9E9E9E),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
                 }
             }
+        }
+
+        // ===== 常驻底部章节导航条（与小说阅读器一致的「上一话 / 下一话」机制）=====
+        ComicChapterBar(
+            modifier = Modifier.align(Alignment.BottomCenter),
+            chapterTitle = chapterTitle,
+            chapterPosition = chapterPosition,
+            chapterCount = chapterCount,
+            hasPrevChapter = hasPrevChapter,
+            hasNextChapter = hasNextChapter,
+            onPrevChapter = { viewModel.prevChapter() },
+            onNextChapter = { viewModel.nextChapter() },
+        )
+    }
+}
+
+/**
+ * 底部常驻章节导航条：`‹ 上一话 ｜ 第 x/y 话 · 话名 ｜ 下一话 ›`。
+ *
+ * 漫画阅读器此前的章节切换只藏在设置面板里，且滚动模式读完本话没有任何去向；
+ * 这里与小说阅读器的「上一章 / 下一章」对齐，任何时候都能直接切话。
+ */
+@Composable
+private fun ComicChapterBar(
+    chapterTitle: String,
+    chapterPosition: Int,
+    chapterCount: Int,
+    hasPrevChapter: Boolean,
+    hasNextChapter: Boolean,
+    onPrevChapter: () -> Unit,
+    onNextChapter: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val available = Color.White
+    val unavailable = Color.White.copy(alpha = 0.3f)
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            // 背景铺满整块（含手势条区域），内容再避开系统手势条：
+            // 否则章节条被手势条压住，点击命中率低
+            .background(Color.Black.copy(alpha = 0.72f))
+            .navigationBarsPadding()
+            .height(CHAPTER_BAR_HEIGHT)
+            .padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(
+            onClick = onPrevChapter,
+            enabled = hasPrevChapter,
+            modifier = Modifier.size(40.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.SkipPrevious,
+                contentDescription = "上一话",
+                tint = if (hasPrevChapter) available else unavailable,
+            )
+        }
+        Text(
+            text = buildString {
+                if (chapterCount > 0) append("第 ").append(chapterPosition + 1)
+                    .append("/").append(chapterCount).append(" 话")
+                if (chapterTitle.isNotBlank()) {
+                    if (chapterCount > 0) append(" · ")
+                    append(chapterTitle)
+                }
+                if (chapterCount == 0 && chapterTitle.isBlank()) append("未知章节")
+            },
+            color = Color.White,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.weight(1f),
+        )
+        IconButton(
+            onClick = onNextChapter,
+            enabled = hasNextChapter,
+            modifier = Modifier.size(40.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.SkipNext,
+                contentDescription = "下一话",
+                tint = if (hasNextChapter) available else unavailable,
+            )
         }
     }
 }
 
-/** 上下滚动阅读（滚动时预加载后续图片） */
+/** 上下滚动阅读（滚动时预加载后续图片；章末给出下一话入口） */
 @Composable
 private fun VerticalScrollReader(
     images: List<String>,
     headers: Map<String, String>,
+    chapterIndex: Int,
+    hasPrevChapter: Boolean,
+    hasNextChapter: Boolean,
+    onPrevChapter: () -> Unit,
+    onNextChapter: () -> Unit,
     onTap: () -> Unit,
+    bottomContentPadding: Dp,
 ) {
     val listState = rememberLazyListState()
     val context = LocalContext.current
+
+    // 切话后回到顶部：LazyListState 在同一个 Composable 实例上会保留上一话的滚动位置，
+    // 不重置的话点「下一话」会直接停在新一话的末尾。
+    LaunchedEffect(chapterIndex, images) {
+        listState.scrollToItem(0)
+    }
 
     // 预加载：当前可见项之后的 [PRELOAD_AHEAD] 张
     LaunchedEffect(listState.firstVisibleItemIndex, images, headers) {
@@ -253,6 +371,7 @@ private fun VerticalScrollReader(
                 onClick = onTap,
             ),
         horizontalAlignment = Alignment.CenterHorizontally,
+        contentPadding = PaddingValues(bottom = bottomContentPadding),
     ) {
         itemsIndexed(images) { _, url ->
             ComicImage(
@@ -267,10 +386,83 @@ private fun VerticalScrollReader(
                 headers = headers,
             )
         }
+        // 章末：本话读完与去向（小说滚动模式同款「下一章 ›」入口）
+        if (images.isNotEmpty()) {
+            item {
+                ChapterEndFooter(
+                    hasPrevChapter = hasPrevChapter,
+                    hasNextChapter = hasNextChapter,
+                    onPrevChapter = onPrevChapter,
+                    onNextChapter = onNextChapter,
+                )
+            }
+        }
     }
 }
 
-/** 左右翻页阅读（预加载相邻页） */
+/** 章末去向区：上一话 / 下一话（到边界时给出明确提示，不静默无响应） */
+@Composable
+private fun ChapterEndFooter(
+    hasPrevChapter: Boolean,
+    hasNextChapter: Boolean,
+    onPrevChapter: () -> Unit,
+    onNextChapter: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 28.dp, horizontal = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = if (hasNextChapter) "本话已读完" else "已是最后一话",
+            color = Color(0xFF9E9E9E),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Spacer(Modifier.height(14.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            ChapterEndButton(
+                text = "‹ 上一话",
+                enabled = hasPrevChapter,
+                onClick = onPrevChapter,
+            )
+            Spacer(Modifier.width(16.dp))
+            ChapterEndButton(
+                text = "下一话 ›",
+                enabled = hasNextChapter,
+                highlight = true,
+                onClick = onNextChapter,
+            )
+        }
+    }
+}
+
+/** 章末按钮（主按钮高亮，到边界置灰不可点） */
+@Composable
+private fun ChapterEndButton(
+    text: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    highlight: Boolean = false,
+) {
+    val bg = when {
+        !enabled -> Color(0xFF2A2A2A)
+        highlight -> Color(0xFF4A6FA5)
+        else -> Color(0xFF333333)
+    }
+    val fg = if (enabled) Color.White else Color(0xFF7A7A7A)
+    Text(
+        text = text,
+        color = fg,
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier
+            .background(bg, RoundedCornerShape(8.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 10.dp),
+    )
+}
+
+/** 左右翻页阅读（预加载相邻页；三区点击：左=上一页/上一话，中=设置，右=下一页/下一话） */
 @Composable
 private fun HorizontalPagerReader(
     images: List<String>,
@@ -278,6 +470,7 @@ private fun HorizontalPagerReader(
     currentPage: Int,
     onPageChange: (Int) -> Unit,
     onTap: () -> Unit,
+    onPrevChapter: () -> Unit = {},
     onNextChapter: () -> Unit = {},
 ) {
     // 章末附加一页引导页：最后一话图片滑完后还能继续翻入下一话
@@ -288,6 +481,7 @@ private fun HorizontalPagerReader(
         pageCount = { pageCount },
     )
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     // 同步外部 currentPage 与 pager 状态
     LaunchedEffect(currentPage) {
@@ -326,10 +520,22 @@ private fun HorizontalPagerReader(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clickable(
-                    interactionSource = null,
-                    indication = null,
-                    onClick = onTap,
+                .comicPagerTap(
+                    onLeft = {
+                        if (pagerState.currentPage > 0) {
+                            scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+                        } else {
+                            onPrevChapter()
+                        }
+                    },
+                    onCenter = onTap,
+                    onRight = {
+                        if (pagerState.currentPage < images.size - 1) {
+                            scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
+                        } else {
+                            onNextChapter()
+                        }
+                    },
                 ),
             contentAlignment = Alignment.Center,
         ) {
@@ -349,6 +555,31 @@ private fun HorizontalPagerReader(
             )
         }
     }
+}
+
+/**
+ * 翻页模式三区点击：左 1/3 上一页（首页再点→上一话）、右 1/3 下一页（末页再点→下一话）、
+ * 中间呼出设置面板。
+ *
+ * 用 `detectTapGestures` 而非 `awaitEachGesture`：它只响应「按下即抬起」的 tap，
+ * 不消费拖动事件，因此不会与 Pager 的滑动翻页抢手势。
+ */
+private fun Modifier.comicPagerTap(
+    onLeft: () -> Unit,
+    onCenter: () -> Unit,
+    onRight: () -> Unit,
+): Modifier = this.pointerInput(Unit) {
+    detectTapGestures(
+        onTap = { offset ->
+            val w = size.width.toFloat()
+            if (w <= 0f) return@detectTapGestures
+            when {
+                offset.x < w / 3f -> onLeft()
+                offset.x > w * 2f / 3f -> onRight()
+                else -> onCenter()
+            }
+        },
+    )
 }
 
 /**
@@ -452,3 +683,6 @@ private fun PageModeButton(
 /** 预加载常量 */
 private const val PRELOAD_INITIAL = 4
 private const val PRELOAD_AHEAD = 2
+
+/** 底部章节导航条高度（正文/设置面板都据此让位） */
+private val CHAPTER_BAR_HEIGHT = 48.dp

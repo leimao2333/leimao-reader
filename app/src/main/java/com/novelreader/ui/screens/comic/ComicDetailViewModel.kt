@@ -38,23 +38,38 @@ class ComicDetailViewModel(
     private val _download = MutableStateFlow<DownloadState?>(null)
     val download: StateFlow<DownloadState?> = _download.asStateFlow()
 
+    /**
+     * 目录是否倒序展示（新话在前）。
+     *
+     * 只影响**展示顺序**：内部章节列表始终保持源顺序，
+     * 「下一话 / 上一话」与阅读进度都按源顺序计算，避免倒序后翻页错乱。
+     */
+    private val _chapterDesc = MutableStateFlow(false)
+    val chapterDesc: StateFlow<Boolean> = _chapterDesc.asStateFlow()
+
+    fun toggleChapterOrder() {
+        _chapterDesc.value = !_chapterDesc.value
+    }
+
     fun load(item: MediaItem) {
         _detail.value = item
         viewModelScope.launch {
             _loading.value = true
-            val detailDeferred = launch { loadDetail(item) }
-            val chapterDeferred = launch { loadChapters(item) }
-            loadCollected(item)
-            detailDeferred.join()
-            chapterDeferred.join()
+            // 目录必须在详情之后取：详情规则可能写入 legado 变量
+            // （全免漫画等源在 ruleBookInfo.name 里 `@put:{cid:$.comic_id}`），
+            // 章节地址里的 `@get:{cid}` 依赖它；并行会导致目录拿到空 ID → 目录空白。
+            val collectedDeferred = launch { loadCollected(item) }
+            val detailed = loadDetail(item)
+            loadChapters(detailed)
+            collectedDeferred.join()
             _loading.value = false
         }
     }
 
-    private suspend fun loadDetail(item: MediaItem) {
+    private suspend fun loadDetail(item: MediaItem): MediaItem =
         runCatching { contentRepository.detail(item) }
             .onSuccess { _detail.value = it }
-    }
+            .getOrDefault(item)
 
     private suspend fun loadChapters(item: MediaItem) {
         runCatching { contentRepository.chapterList(item) }

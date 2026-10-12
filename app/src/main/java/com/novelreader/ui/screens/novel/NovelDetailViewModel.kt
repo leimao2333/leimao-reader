@@ -84,13 +84,15 @@ class NovelDetailViewModel(
         _detail.value = item
         viewModelScope.launch {
             _loading.value = true
-            // 并行加载详情和章节
-            val detailDeferred = launch { loadDetail(item) }
-            val chapterDeferred = launch { loadChapters(item) }
-            loadCollected(item)
-            loadProgressFlag(item)
-            detailDeferred.join()
-            chapterDeferred.join()
+            // 详情与章节的收藏/进度状态并行取，但**目录必须在详情之后**：
+            // 详情规则可能写入 legado 变量（`@put:{cid:$.comic_id}` 等），
+            // 目录地址里的 `@get:{cid}` 依赖它；并行会导致目录拿到空 ID → 目录空白。
+            val metaDeferred = launch { loadCollected(item) }
+            val progressDeferred = launch { loadProgressFlag(item) }
+            val detailed = loadDetail(item)
+            loadChapters(detailed)
+            metaDeferred.join()
+            progressDeferred.join()
             _loading.value = false
         }
     }
@@ -115,10 +117,11 @@ class NovelDetailViewModel(
         load(target)
     }
 
-    private suspend fun loadDetail(item: MediaItem) {
+    /** 取详情，返回带上详情阶段变量的条目（目录规则要用） */
+    private suspend fun loadDetail(item: MediaItem): MediaItem =
         runCatching { contentRepository.detail(item) }
             .onSuccess { _detail.value = it }
-    }
+            .getOrDefault(item)
 
     private suspend fun loadChapters(item: MediaItem) {
         runCatching { contentRepository.chapterList(item) }

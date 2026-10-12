@@ -38,6 +38,14 @@ data class MediaItem(
      * 目录地址再用 `...&comic_id=@get:{bid}` 取回，否则目录会请求到错误地址而空白。
      */
     val variableMap: Map<String, String> = emptyMap(),
+    /**
+     * 随地址带出的请求配置（legado 的 `URL,{请求配置JSON}` 写法）。
+     *
+     * 「App 接口型」源在搜索结果的 bookUrl 后拼一段 JSON 指定 method / headers
+     * （如把接口签名塞进 `m-request-id`），详情 / 目录 / 正文请求必须原样带上，
+     * 否则服务端返回空数据 → 目录空白、图片不显示。存 JSON 原文，用时再解析。
+     */
+    val requestOptions: String = "",
 )
 
 /**
@@ -56,6 +64,8 @@ data class ChapterItem(
     val index: Int = 0,
     /** 所属源 ID（用于定位源适配器） */
     val sourceId: String = "",
+    /** 随地址带出的请求配置（同 [MediaItem.requestOptions]，漫画章节接口常用） */
+    val requestOptions: String = "",
 )
 
 /**

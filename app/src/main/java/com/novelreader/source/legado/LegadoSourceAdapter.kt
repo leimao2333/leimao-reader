@@ -99,7 +99,10 @@ class LegadoSourceAdapter(
 
         return list.mapIndexed { idx, fields ->
             val title = fields["name"] ?: fields["title"] ?: ""
-            val bookUrl = fields["bookUrl"] ?: fields["url"] ?: ""
+            val bookUrlRaw = fields["bookUrl"] ?: fields["url"] ?: ""
+            // 地址后可能跟一段请求配置：`url,{"method":"GET","headers":{...}}`（legado 约定）。
+            // App 接口型源把接口签名放在这里（如 `m-request-id`），详情/目录/正文请求都得原样带上。
+            val (bookUrl, reqOptions) = splitUrlOptions(bookUrlRaw)
             val detailUrl = LegadoRuleEngine.toAbsoluteUrl(baseUrl, bookUrl) ?: bookUrl
             // 清理简介中的 HTML 标签（legado intro 规则常插入 <br>）
             val intro = (fields["intro"] ?: fields["desc"])
@@ -116,6 +119,7 @@ class LegadoSourceAdapter(
                 detailUrl = detailUrl,
                 sourceId = info.id,
                 variableMap = varsSink.getOrNull(idx)?.takeIf { it.isNotEmpty() } ?: emptyMap(),
+                requestOptions = reqOptions,
                 extras = buildMap {
                     fields["kind"]?.let { put("kind", it) }
                     fields["lastChapter"]?.let { put("lastChapter", it) }
@@ -138,8 +142,22 @@ class LegadoSourceAdapter(
         listRule: String? = null,
     ): List<Map<String, String>> {
         return runCatching {
-            val root = com.google.gson.JsonParser.parseString(content)
-            val (arr, reverse) = resolveJsonList(root, listRule)
+            // 列表规则可能是「前置 <js> 块 + 后续 JSONPath」的链式写法：
+            // 如目录规则 `<js>整体解密</js>\n$.chapters[*]`（全免漫画 / 彩绘漫画等 App 接口源）。
+            // 先执行 JS 得到新的内容，再按剩余路径取数组。
+            var json = content
+            var effectiveRule = listRule
+            LegadoRuleEngine.splitLeadingJs(listRule)?.let { (js, rest) ->
+                LegadoRuleEngine.evalJsWithContent(js, content, contextUrl)
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { decoded ->
+                        json = decoded
+                        effectiveRule = rest
+                    }
+            }
+
+            val root = com.google.gson.JsonParser.parseString(json)
+            val (arr, reverse) = resolveJsonList(root, effectiveRule)
             val list = arr?.toList() ?: emptyList()
 
             val pairs = list.map { node ->
@@ -171,6 +189,16 @@ class LegadoSourceAdapter(
         listRule: String,
         contextUrl: String = baseUrl,
     ): List<Map<String, String>> = extractJsonResults(content, fields, contextUrl, listRule = listRule)
+
+    /**
+     * 测试用：按 JSON 字段规则渲染单个字段（含 `@js:` / `<js>` / `{{}}` 模板 / 变量机制）。
+     * 与 [extractComicImages] 同为 internal，便于离线单测覆盖。
+     */
+    internal fun jsonFieldForTest(content: String, rule: String, contextUrl: String = baseUrl): String? =
+        runCatching {
+            val root = com.google.gson.JsonParser.parseString(content)
+            renderJsonRule(rule, root, contextUrl)
+        }.getOrNull()
 
     /**
      * 解析 JSON 列表规则，取「列表数组」与「是否倒置」。
@@ -226,7 +254,12 @@ class LegadoSourceAdapter(
             val cleaned = path.removePrefix("$").removePrefix(".").trim()
             if (cleaned.isEmpty()) return node
             var current: com.google.gson.JsonElement = node
-            for (t in cleaned.split(Regex("[.\\[\\]]")).filter { it.isNotBlank() && it != "*" }) {
+            for (t in cleaned.split(Regex("[.\\[\\]]")).filter { it.isNotBlank() }) {
+                // `[*]` / `.*`：数组全部元素，原样返回数组
+                if (t == "*") {
+                    if (current.isJsonArray) return current
+                    continue
+                }
                 current = when {
                     current.isJsonObject -> current.asJsonObject.get(t) ?: return null
                     current.isJsonArray -> {
@@ -268,6 +301,15 @@ class LegadoSourceAdapter(
             if (normalized.isBlank()) return null
         }
 
+        // 整条规则就是一段 JS（`@js:...` / `<js>...</js>`）：JSON 接口源大量使用，
+        // 例如 `bookUrl` 里拼「带 md5 签名的地址,{请求配置}」、`chapterUrl` 里拼图片接口地址。
+        // legado 语义：先替换规则中的 {{表达式}}（如 {{$.comic_id}}），再执行 JS。
+        // 必须放在 `##` 拆分之前，避免 JS 代码里出现 `##` 被误当正则段切开。
+        jsBodyOf(normalized)?.let { js ->
+            val script = renderJsonTemplate(js, node, contextUrl) ?: js
+            return LegadoRuleEngine.evalJsonJs(script, node, contextUrl)
+        }
+
         // 拆分 ## 正则段（第一段是取值表达式，后续段是 正则[##替换]）
         val parts = normalized.split("##")
         val expr = parts[0].trim()
@@ -285,6 +327,20 @@ class LegadoSourceAdapter(
             value = applyLegadoReplace(value, parts.drop(1))
         }
         return value
+    }
+
+    /**
+     * 判断整条规则是否就是一段 JS，是则返回 JS 代码。
+     *
+     * 支持 `@js:代码` 与 `<js>代码</js>` 两种写法；
+     * `xxx@js:代码`（前段取值 + 尾部 JS）不属于此情形，由 selector 路径处理。
+     */
+    private fun jsBodyOf(rule: String): String? {
+        val r = rule.trim()
+        if (r.startsWith("@js:", ignoreCase = true)) return r.substringAfter("@js:")
+        LegadoRuleEngine.splitLeadingJs(r)?.let { (js, rest) -> if (rest.isBlank()) return js }
+        if (r.startsWith("<js>") && r.endsWith("</js>")) return r.substring(4, r.length - 5)
+        return null
     }
 
     /** 应用 legado ## 正则替换（支持 正则##替换，替换中可用 $1 分组引用） */
@@ -327,8 +383,8 @@ class LegadoSourceAdapter(
         if (expr == "baseUrl") {
             return contextUrl
         }
-        // {{baseUrl.replace('a','b')}} 等简单表达式 → 用 Rhino
-        if (expr.contains("baseUrl") || expr.contains("$")) {
+        // {{baseUrl.replace('a','b')}}、{{java.getString('$.x')}} 等表达式 → 用 Rhino
+        if (expr.contains("baseUrl") || expr.contains("$") || expr.contains("java.")) {
             return runCatching {
                 val ctx = org.mozilla.javascript.Context.enter()
                 try {
@@ -339,6 +395,15 @@ class LegadoSourceAdapter(
                     val jsJson = ctx.evaluateString(scope, "($jsonStr)", "<json>", 1, null)
                     scope.put("$", scope, jsJson)
                     scope.put("baseUrl", scope, contextUrl)
+                    // 注入 java 桥：{{java.getString('$.x')}} / {{java.timeFormat(...)}} 等
+                    scope.put(
+                        "java",
+                        scope,
+                        org.mozilla.javascript.Context.javaToJS(
+                            LegadoJavaBridge(jsonStr, jsonStr, contextUrl),
+                            scope,
+                        ),
+                    )
                     val v = ctx.evaluateString(scope, "($expr)", "<expr>", 1, null)
                     org.mozilla.javascript.Context.toString(v)
                 } finally {
@@ -384,10 +449,15 @@ class LegadoSourceAdapter(
         val rule = source.ruleBookInfo
         if (rule.isEmpty()) return item
 
-        val url = if (item.detailUrl.startsWith("http")) item.detailUrl
-        else LegadoRuleEngine.toAbsoluteUrl(baseUrl, item.detailUrl) ?: return item
+        // 详情地址也可能自带 `,{...}` 请求配置（如从书架读回的历史数据），先拆出来
+        val (detailUrlClean, detailUrlOptions) = splitUrlOptions(item.detailUrl)
+        val detailOptions = item.requestOptions.ifBlank { detailUrlOptions }
+        val url = if (detailUrlClean.startsWith("http")) detailUrlClean
+        else LegadoRuleEngine.toAbsoluteUrl(baseUrl, detailUrlClean) ?: return item
 
-        val content = fetch(url) ?: return item
+        var content = fetch(url, detailOptions) ?: return item
+        // legado 的 init 规则：先对响应体做一次整体变换（很多 App 接口源用它做整体解密 / 去包装）
+        content = applyInitRule(content, rule["init"], url)
 
         var cover = item.cover
         var author = item.author
@@ -427,6 +497,13 @@ class LegadoSourceAdapter(
             fieldValue("wordCount")?.takeIf { it.isNotBlank() }?.let { extras["wordCount"] = it }
             fieldValue("lastUpdate")?.takeIf { it.isNotBlank() }?.let { extras["lastUpdate"] = it }
             fieldValue("lastChapter")?.takeIf { it.isNotBlank() }?.let { extras["lastChapter"] = it }
+            // `@put:{k:取值规则}` 是「渲染字段时的副作用」，legado 只要渲染过该字段就会写入变量表。
+            // 上面只渲染了 UI 用得到的字段，但变量可能挂在别的字段上：
+            // 全免漫画把 `@put:{cid:$.comic_id}` 挂在 `ruleBookInfo.name` 上，
+            // 而详情页书名直接用搜索/书架的值（不渲染 name）→ cid 永远写不进变量表 →
+            // 章节地址里 `@get:{cid}` 变成空 → 图片接口签名错误 → 正文空白。
+            // 因此把所有带 `@put:` 的字段补渲染一遍，保证副作用完整。
+            rule.forEach { (key, r) -> if (r.contains("@put:")) fieldValue(key) }
         }
 
         // 清理简介中的 HTML 标签
@@ -442,14 +519,25 @@ class LegadoSourceAdapter(
         val rule = source.ruleToc
         if (rule.isEmpty()) return emptyList()
 
-        val detailUrl = if (item.detailUrl.startsWith("http")) item.detailUrl
-        else LegadoRuleEngine.toAbsoluteUrl(baseUrl, item.detailUrl) ?: return emptyList()
+        val (detailUrlClean, detailUrlOptions) = splitUrlOptions(item.detailUrl)
+        val detailOptions = item.requestOptions.ifBlank { detailUrlOptions }
+        val detailUrl = if (detailUrlClean.startsWith("http")) detailUrlClean
+        else LegadoRuleEngine.toAbsoluteUrl(baseUrl, detailUrlClean) ?: return emptyList()
 
-        val content = fetch(detailUrl) ?: return emptyList()
+        val rawContent = fetch(detailUrl, detailOptions) ?: return emptyList()
+        // 注意：只应用 **目录规则自己的** init。ruleBookInfo.init 不能套到目录响应上——
+        // 很多源的目录列表规则自身就带 `<js>` 解密（如全免漫画），
+        // 若先把响应体整体解密，规则里的 `java.getString("$.data")` 就取不到原文了。
+        val content = applyInitRule(rawContent, rule["init"], detailUrl)
 
-        // 目录阶段的 `@get:{...}` 变量来自搜索/详情（如 `&comic_id=@get:{bid}`）。
+        // 目录阶段的 `@get:{...}` 变量来自搜索/详情（如 `&comic_id=@get:{cid}`）。
         // 注意：变量表按线程隔离，因此这里只在「不挂起」的求值块内使用，不跨 fetch 持有。
-        val vars = item.variableMap.toMutableMap()
+        var vars = item.variableMap.toMutableMap()
+        // 变量表为空、但详情规则里确实有 `@put:` 时，先补跑一次详情取变量：
+        // 从书架直接打开（条目来自数据库，不带变量表）时否则会取到空 ID → 目录空白。
+        if (vars.isEmpty() && source.ruleBookInfo.values.any { it.contains("@put:") }) {
+            vars = detail(item).variableMap.toMutableMap()
+        }
 
         // 目录可能有独立 URL：
         // 1. ruleToc.url（URL 模板或选择器规则）
@@ -459,17 +547,24 @@ class LegadoSourceAdapter(
         val tocUrl = LegadoRuleEngine.withVariables(vars) {
             tocUrlRaw?.let { resolveTocUrl(it, content, detailUrl) }
         }?.let { LegadoRuleEngine.toAbsoluteUrl(detailUrl, it) }
-        val firstPageUrl = tocUrl?.takeIf { it.isNotBlank() && it != detailUrl } ?: detailUrl
-        val listContent = if (firstPageUrl != detailUrl) fetch(firstPageUrl) ?: content else content
+        // 目录地址后可能跟请求配置（`url,{...}`）：地址用于取值与相对拼接，配置用于发请求
+        val (tocUrlClean, tocOptions) = splitUrlOptions(tocUrl)
+        val effectiveTocOptions = tocOptions.ifBlank { detailOptions }
+        val usesOwnPage = tocUrlClean.isNotBlank() && tocUrlClean != detailUrl
+        val firstPageUrl = if (usesOwnPage) tocUrlClean else detailUrl
+        val listContent = if (usesOwnPage) {
+            fetch(firstPageUrl, effectiveTocOptions) ?: content
+        } else content
 
         val listRule = rule["chapterList"] ?: rule["list"] ?: return emptyList()
         val fieldRules = rule
 
-        val isJson = listRule.startsWith("@json:") ||
+        // 列表规则以 `<js>` 开头时同样是「JS 产出 JSON」的形态（先用 JS 整体解密）
+        val isJson = listRule.startsWith("@json:") || listRule.trimStart().startsWith("<js>") ||
             listContent.trimStart().startsWith("{") || listContent.trimStart().startsWith("[")
 
         // JSON 目录时，{{baseUrl}} 指代目录实际请求 URL（tocUrl），供 chapterUrl 模板使用
-        val jsonContextUrl = tocUrl ?: detailUrl
+        val jsonContextUrl = tocUrlClean.ifBlank { detailUrl }
 
         if (isJson) {
             val list = LegadoRuleEngine.withVariables(vars) {
@@ -499,7 +594,7 @@ class LegadoSourceAdapter(
                 } ?: break
                 val nextUrl = LegadoRuleEngine.toAbsoluteUrl(last.url, nextRaw) ?: break
                 if (!visited.add(nextUrl)) break
-                val nextContent = fetch(nextUrl) ?: break
+                val nextContent = fetch(nextUrl, effectiveTocOptions) ?: break
                 pages.add(TocPage(nextUrl, nextContent))
             }
         }
@@ -520,11 +615,20 @@ class LegadoSourceAdapter(
     private fun fieldsToChapter(fields: Map<String, String>, index: Int, pageBase: String): ChapterItem {
         val name = fields["chapterName"] ?: fields["name"] ?: fields["title"] ?: "第${index + 1}章"
         val chapterUrlRaw = fields["chapterUrl"] ?: fields["url"] ?: ""
-        val chapterUrl = LegadoRuleEngine.toAbsoluteUrl(pageBase, chapterUrlRaw) ?: chapterUrlRaw
+        // 章节地址后可能跟请求配置（`url,{"method":...,"headers":{...}}`）：
+        // 漫画 App 接口源把 access-token / m-request-id 签名放在这里，正文请求必须带上。
+        // 注意：**地址保持原样（含请求配置）**，另外再单独解析出 requestOptions。
+        // 这样 url 被写进进度 / 章节缓存 / 书签后，签名依旧随地址保留，
+        // 「最近阅读续读」「离线缓存重放」不会因为配置丢失而请求失败；
+        // 发请求时由 content() 统一拆分（见其中注释）。
+        val (chapterUrlOnly, reqOptions) = splitUrlOptions(chapterUrlRaw)
+        val absClean = LegadoRuleEngine.toAbsoluteUrl(pageBase, chapterUrlOnly) ?: chapterUrlOnly
+        val chapterUrl = if (reqOptions.isBlank()) absClean else "$absClean,${reqOptions}"
         return ChapterItem(
-            id = chapterUrl.ifBlank { "$index" },
+            id = absClean.ifBlank { "$index" },
             title = name,
             url = chapterUrl,
+            requestOptions = reqOptions,
             index = index,
             sourceId = info.id,
         )
@@ -558,10 +662,16 @@ class LegadoSourceAdapter(
         val rule = source.ruleContent
         if (rule.isEmpty()) return ContentResult()
 
-        val url = if (chapter.url.startsWith("http")) chapter.url
-        else LegadoRuleEngine.toAbsoluteUrl(baseUrl, chapter.url) ?: return ContentResult()
+        // 章节地址后可能跟请求配置（access-token / m-request-id 等签名），先拆出来再发请求。
+        // 注意：目录阶段（fieldsToChapter）已把这段配置剥离并存进 ChapterItem.requestOptions，
+        // 因此这里必须优先用 requestOptions，否则 `url` 已是干净地址 → 后缀为空 →
+        // 签名请求头全部丢失 → 全免漫画等 App 接口源返回错误数据 → 正文空白。
+        val (chapterUrlClean, urlOptions) = splitUrlOptions(chapter.url)
+        val reqOptions = chapter.requestOptions.ifBlank { urlOptions }
+        val url = if (chapterUrlClean.startsWith("http")) chapterUrlClean
+        else LegadoRuleEngine.toAbsoluteUrl(baseUrl, chapterUrlClean) ?: return ContentResult()
 
-        val content = fetch(url) ?: return ContentResult()
+        val content = fetch(url, reqOptions) ?: return ContentResult()
 
         return when (info.type) {
             com.novelreader.domain.model.SourceType.COMIC -> {
@@ -1082,10 +1192,82 @@ class LegadoSourceAdapter(
         return raw.trim() to null
     }
 
-    /** 带请求头抓取 */
-    private suspend fun fetch(url: String): String? {
+    /**
+     * 应用 legado 的 `init` 规则（整体变换响应体）。
+     *
+     * 很多 App 接口型源用它把响应整体解密 / 去掉外层包装，之后再按普通规则取值。
+     * 规则求值失败（或结果为空）时返回原内容，保证不影响其他源。
+     */
+    private fun applyInitRule(content: String, initRule: String?, baseUrl: String): String {
+        if (initRule.isNullOrBlank()) return content
         return runCatching {
-            HttpClient.get(url, headers)
+            LegadoRuleEngine.evalContentRule(content, initRule, baseUrl).first
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: content
+    }
+
+    /**
+     * 拆分「地址 + 请求配置」：`url,{"method":"GET","headers":{...}}` → (url, 配置 JSON)。
+     *
+     * legado 允许在任意地址后追加一段请求配置（搜索结果的 bookUrl、目录地址、章节地址都常见），
+     * 配置里的 headers 往往是接口签名（m-request-id / access-token），不带就会拿到空数据。
+     */
+    internal fun splitUrlOptions(raw: String?): Pair<String, String> {
+        val text = raw?.trim().orEmpty()
+        if (text.isEmpty()) return "" to ""
+        val idx = text.indexOf(",{")
+        if (idx <= 0) return text to ""
+        val url = text.substring(0, idx).trim()
+        val options = extractJsonObject(text.substring(idx + 1)) ?: text.substring(idx + 1).trim()
+        return url to options
+    }
+
+    /** 解析请求配置 JSON → method / headers / body / charset */
+    private data class RequestOptions(
+        val method: String = "GET",
+        val headers: Map<String, String> = emptyMap(),
+        val body: String = "",
+        val charset: String? = null,
+    )
+
+    private fun parseRequestOptions(json: String?): RequestOptions {
+        if (json.isNullOrBlank()) return RequestOptions()
+        return runCatching {
+            val obj = com.google.gson.JsonParser.parseString(json).asJsonObject
+            val method = obj.get("method")?.takeIf { it.isJsonPrimitive }?.asString
+                ?.uppercase()?.takeIf { it.isNotBlank() } ?: "GET"
+            val headers = obj.get("headers")?.let { h ->
+                when {
+                    h.isJsonObject -> h.asJsonObject.entrySet()
+                        .filter { it.value.isJsonPrimitive }
+                        .associate { it.key to it.value.asString }
+                    h.isJsonPrimitive && h.asJsonPrimitive.isString ->
+                        parseHeaderJson(h.asString)
+                    else -> emptyMap()
+                }
+            } ?: emptyMap()
+            val body = obj.get("body")?.takeIf { it.isJsonPrimitive }?.asString ?: ""
+            val charset = obj.get("charset")?.takeIf { it.isJsonPrimitive }?.asString
+                ?.takeIf { it.isNotBlank() }
+            RequestOptions(method, headers, body, charset)
+        }.getOrDefault(RequestOptions())
+    }
+
+    /** 带请求头抓取（可带 `URL,{...}` 里的请求配置：method / headers / body / charset） */
+    private suspend fun fetch(url: String, optionsJson: String? = null): String? {
+        val opts = parseRequestOptions(optionsJson)
+        val h = LinkedHashMap(headers)
+        h.putAll(opts.headers)
+        return runCatching {
+            if (opts.method == "POST") {
+                val contentType = if (opts.body.trimStart().startsWith("{")) {
+                    "application/json; charset=utf-8"
+                } else {
+                    "application/x-www-form-urlencoded"
+                }
+                HttpClient.post(url, opts.body, h, opts.charset, contentType)
+            } else {
+                HttpClient.get(url, h, opts.charset)
+            }
         }.getOrNull()
     }
 }

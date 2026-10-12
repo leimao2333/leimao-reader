@@ -38,6 +38,7 @@ class BookRepositoryImpl(
                 desc = item.desc,
                 type = item.type.name.lowercase(),
                 detailUrl = item.detailUrl,
+                requestOptions = item.requestOptions,
                 groupName = item.groupName.ifBlank { existing?.groupName.orEmpty() },
             )
         )
@@ -73,6 +74,7 @@ fun BookEntity.toDomain(): MediaItem = MediaItem(
     desc = desc,
     type = SourceType.fromString(type) ?: SourceType.NOVEL,
     detailUrl = detailUrl,
+    requestOptions = requestOptions,
     sourceId = sourceId,
     addedAt = addedAt,
     groupName = groupName,

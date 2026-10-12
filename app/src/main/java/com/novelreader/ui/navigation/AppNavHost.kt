@@ -46,8 +46,15 @@ import kotlinx.coroutines.launch
  * 首页 → 书架 / 源管理（含导入）/ 设置
  */
 @Composable
-fun AppNavHost(container: AppContainer) {
+fun AppNavHost(container: AppContainer, initialNovelSearchKeyword: String? = null) {
     val navController = rememberNavController()
+
+    // 深链预搜索：进入首页后自动跳转小说搜索并执行搜索
+    androidx.compose.runtime.LaunchedEffect(initialNovelSearchKeyword) {
+        if (!initialNovelSearchKeyword.isNullOrBlank()) {
+            navController.navigate(Routes.novelSearch(initialKeyword = initialNovelSearchKeyword))
+        }
+    }
 
     NavHost(navController = navController, startDestination = Routes.HOME) {
         // ===== 首页 =====

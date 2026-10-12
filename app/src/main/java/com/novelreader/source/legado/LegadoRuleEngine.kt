@@ -38,6 +38,9 @@ object LegadoRuleEngine {
         "href", "src", "data-src", "data-original", "content", "value", "title", "alt", "data",
     )
 
+    /** 文本类提取符：多元素匹配时逐个拼接 */
+    private val TEXT_KEYS = setOf("text", "textnodes", "html", "all", "ownhtml", "owntext")
+
     /** legado 索引区间语法（如 `1:6`、`-3:-1`） */
     private val RANGE_REGEX = Regex("-?\\d+:-?\\d+")
 
@@ -120,10 +123,25 @@ object LegadoRuleEngine {
             }
         }
 
-        // @css: 直接选择器
+        // 尾部 JS 规则：`xxx@js:代码` 或 `xxx<js>代码</js>`（legado 语义：
+        // 前段取值注入 result 变量，JS 返回值为最终结果）
+        extractJsSuffix(expr)?.let { (pre, js) ->
+            val preValue = if (pre.isBlank()) root.text() else selectAndExtract(root, pre, baseUrl)
+            return evalFieldJs(js, preValue, baseUrl)
+        }
+
+        // @css: 直接选择器，支持 `@css:选择器@属性`（如 @css:img@src）
         if (expr.startsWith("@css:")) {
-            val sel = expr.substringAfter("@css:").trim()
-            return runCatching { root.selectFirst(sel)?.text() }.getOrNull()
+            val rest = expr.substringAfter("@css:")
+            val at = rest.lastIndexOf('@')
+            val (sel, attr) = if (at > 0) {
+                val a = rest.substring(at + 1).trim()
+                if (a.isNotBlank() && (isAttrKey(a) || a.matches(Regex("[\\w-]+")))) {
+                    rest.substring(0, at).trim() to a
+                } else rest.trim() to null
+            } else rest.trim() to null
+            val el = runCatching { root.selectFirst(sel) }.getOrNull() ?: return null
+            return if (attr != null) extractTextOrAttr(el, attr, baseUrl) else el.text()
         }
         // @json: 元素文本中解析 JSON
         if (expr.startsWith("@json:")) {
@@ -143,13 +161,57 @@ object LegadoRuleEngine {
         }
 
         val last = segs.last()
-        // 最后一段是属性关键字 → 取第一个元素的对应属性
-        if (isAttrKey(last)) {
-            return cur.firstOrNull()?.let { extractTextOrAttr(it, last, baseUrl) }
+        val first = cur.firstOrNull()
+        // 最后一段是属性关键字，或元素确有该属性（legado 语义：@后跟任意属性名，如 @onclick/@data-lazyload）
+        if (first != null && (isAttrKey(last) || first.hasAttr(last))) {
+            // 文本类提取：多元素时逐个拼接（legado 语义，如 tag.span[0:1]@text）；
+            // URL 类属性（href/src 等）只取第一个，避免多地址拼接
+            val key = last.trim().lowercase()
+            return if (key in TEXT_KEYS && cur.size > 1) {
+                cur.joinToString("\n") { extractTextOrAttr(it, last, baseUrl) }.trim()
+            } else {
+                extractTextOrAttr(first, last, baseUrl)
+            }
         }
         // 否则最后一段是选择器 → 取第一个匹配元素的文本
         val els = walkSteps(cur, last)
         return els.firstOrNull()?.text()
+    }
+
+    /**
+     * 拆分尾部 JS 规则。
+     * 返回 (前置规则, JS 代码)，无 JS 段时返回 null。
+     * 支持 `...@js:代码` 与 `...<js>代码</js>` 两种写法。
+     */
+    private fun extractJsSuffix(expr: String): Pair<String, String>? {
+        // <js>...</js> 块（通常在规则末尾）
+        val blockMatch = Regex("<js>([\\s\\S]*?)</js>").find(expr)
+        if (blockMatch != null && blockMatch.range.last >= expr.length - 8) {
+            val pre = expr.removeRange(blockMatch.range).trim()
+            return pre to blockMatch.groupValues[1]
+        }
+        val idx = expr.lastIndexOf("@js:")
+        if (idx >= 0) {
+            return expr.substring(0, idx).trim() to expr.substring(idx + 4)
+        }
+        return null
+    }
+
+    /** 用 Rhino 求值字段 JS：注入 result（前段取值）与 baseUrl */
+    private fun evalFieldJs(code: String, result: String?, baseUrl: String): String? {
+        return runCatching {
+            val ctx = org.mozilla.javascript.Context.enter()
+            try {
+                ctx.optimizationLevel = -1
+                val scope = ctx.initSafeStandardObjects()
+                scope.put("result", scope, result ?: "")
+                scope.put("baseUrl", scope, baseUrl)
+                val v = ctx.evaluateString(scope, code, "<rule-js>", 1, null)
+                org.mozilla.javascript.Context.toString(v)
+            } finally {
+                org.mozilla.javascript.Context.exit()
+            }
+        }.getOrNull()?.takeIf { it.isNotBlank() }
     }
 
     private fun isAttrKey(s: String): Boolean {
@@ -292,11 +354,25 @@ object LegadoRuleEngine {
                 // 显式前缀：class./id./tag./text. → 绑定下一个 token 作为值
                 (p == "class" || p == "id" || p == "tag" || p == "text") && i + 1 < parts.size -> {
                     val v = parts[i + 1]
-                    when (p) {
-                        "class" -> steps.add(Step.Cls(v))
-                        "id" -> steps.add(Step.Id(v))
-                        "tag" -> steps.add(Step.Tag(v))
-                        else -> steps.add(Step.Text(v))
+                    // 值带区间后缀（如 `tag.span[0:1]`）→ 选择后取区间
+                    val rangeMatch = Regex("^(.*)\\[(-?\\d+:-?\\d+)]$").find(v)
+                    if (rangeMatch != null) {
+                        val name = rangeMatch.groupValues[1]
+                        val r = rangeMatch.groupValues[2].split(':').map { it.toInt() }
+                        when (p) {
+                            "class" -> steps.add(Step.Cls(name))
+                            "id" -> steps.add(Step.Id(name))
+                            "tag" -> steps.add(Step.Tag(name))
+                            else -> steps.add(Step.Text(name))
+                        }
+                        steps.add(Step.Range(r[0], r[1]))
+                    } else {
+                        when (p) {
+                            "class" -> steps.add(Step.Cls(v))
+                            "id" -> steps.add(Step.Id(v))
+                            "tag" -> steps.add(Step.Tag(v))
+                            else -> steps.add(Step.Text(v))
+                        }
                     }
                     i += 2
                     first = false
@@ -309,6 +385,19 @@ object LegadoRuleEngine {
                     steps.add(Step.Range(a, b))
                 }
                 p.toIntOrNull() != null -> steps.add(Step.Index(p.toInt()))
+                // 标签/类名带区间后缀（如 `span[0:1]`、`li[1:5]`）→ 选择后取区间
+                p.contains('[') && p.endsWith("]") &&
+                    RANGE_REGEX.matches(p.substringAfterLast('[').removeSuffix("]")) -> {
+                    val name = p.substringBeforeLast('[')
+                    val r = p.substringAfterLast('[').removeSuffix("]")
+                    val a = r.substringBefore(':').toIntOrNull() ?: 0
+                    val b = r.substringAfter(':').toIntOrNull() ?: 0
+                    when {
+                        name.lowercase() in KNOWN_TAGS -> steps.add(Step.Tag(name))
+                        else -> steps.add(Step.Cls(name))
+                    }
+                    steps.add(Step.Range(a, b))
+                }
                 // 无前缀裸 token：首段且在无前导点、且是常见标签名 → tag；否则按 class
                 first && !leadingDot && p.lowercase() in KNOWN_TAGS -> steps.add(Step.Tag(p))
                 else -> steps.add(Step.Cls(p))

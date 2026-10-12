@@ -335,6 +335,30 @@ fun SourceManageScreen(
                     ) { Text("禁用失效") }
                 }
 
+                // 书源 URL 一键更新（v1.3.0 对标 legado）
+                val updating by viewModel.updating.collectAsState()
+                val updateProgress by viewModel.updateProgress.collectAsState()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = when {
+                            updating -> updateProgress ?: "正在更新…"
+                            else -> "从网络源地址拉取最新书源规则"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        enabled = !updating,
+                        onClick = { viewModel.updateFromNetwork(displayedSources) },
+                    ) { Text(if (updating) "更新中" else "一键更新") }
+                }
+
                 if (tableView) {
                     SourceTableView(
                         sources = displayedSources,

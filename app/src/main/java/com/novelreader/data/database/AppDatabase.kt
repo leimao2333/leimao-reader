@@ -23,7 +23,7 @@ import com.novelreader.data.model.SourceEntity
         ChapterCacheEntity::class,
         BookmarkEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -177,5 +177,15 @@ abstract class AppDatabase : RoomDatabase() {
                 )
             }
         }
+
+        /**
+         * v8 -> v9：books 表新增 groupName 列（书架自定义分组，v1.3.0）。
+         */
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE books ADD COLUMN groupName TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
     }
 }

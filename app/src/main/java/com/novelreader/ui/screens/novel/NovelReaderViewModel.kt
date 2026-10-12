@@ -241,6 +241,7 @@ class NovelReaderViewModel(
         _contentQuery.value = ""
         _contentMatches.value = emptyList()
         _currentMatchIndex.value = -1
+        pendingMatchPosition = -1
     }
 
     /**
@@ -250,28 +251,7 @@ class NovelReaderViewModel(
      */
     fun updateContentQuery(query: String) {
         _contentQuery.value = query
-        if (query.isBlank()) {
-            _contentMatches.value = emptyList()
-            _currentMatchIndex.value = -1
-            return
-        }
-        val text = _content.value
-        if (text.isEmpty()) {
-            _contentMatches.value = emptyList()
-            _currentMatchIndex.value = -1
-            return
-        }
-        val matches = mutableListOf<Int>()
-        var from = 0
-        while (true) {
-            val idx = text.indexOf(query, from)
-            if (idx < 0) break
-            matches.add(idx)
-            from = idx + query.length
-            if (from >= text.length) break
-        }
-        _contentMatches.value = matches
-        _currentMatchIndex.value = if (matches.isEmpty()) -1 else 0
+        recomputeMatches()
     }
 
     /** 跳到指定匹配项 */
@@ -294,6 +274,184 @@ class NovelReaderViewModel(
         if (size == 0) return
         _currentMatchIndex.value =
             if (_currentMatchIndex.value <= 0) size - 1 else _currentMatchIndex.value - 1
+    }
+
+    /** 按当前关键词重算匹配（正文加载/切换后调用） */
+    private fun recomputeMatches() {
+        val query = _contentQuery.value
+        val text = _content.value
+        if (query.isBlank() || text.isEmpty()) {
+            _contentMatches.value = emptyList()
+            _currentMatchIndex.value = -1
+            return
+        }
+        val matches = mutableListOf<Int>()
+        var from = 0
+        while (true) {
+            val idx = text.indexOf(query, from)
+            if (idx < 0) break
+            matches.add(idx)
+            from = idx + query.length
+            if (from >= text.length) break
+        }
+        _contentMatches.value = matches
+        _currentMatchIndex.value = if (matches.isEmpty()) -1 else 0
+    }
+
+    // ===== 全书搜索（v1.3.0 对标开源阅读「搜索全书」） =====
+
+    /** 全书搜索结果项 */
+    data class BookSearchResult(
+        /** 章节在目录列表中的位置（switchChapter 用） */
+        val listIndex: Int,
+        /** 章节 index 字段 */
+        val chapterIndex: Int,
+        val chapterTitle: String,
+        /** 匹配位置（净化后正文内下标） */
+        val position: Int,
+        /** 匹配处上下文摘录 */
+        val excerpt: String,
+        /** 该章正文总长（估算章内位置比例用） */
+        val chapterLength: Int,
+    )
+
+    private val _bookSearchOpen = MutableStateFlow(false)
+    val bookSearchOpen: StateFlow<Boolean> = _bookSearchOpen.asStateFlow()
+
+    /** 全书搜索关键词 */
+    private val _bookSearchQuery = MutableStateFlow("")
+    val bookSearchQuery: StateFlow<String> = _bookSearchQuery.asStateFlow()
+
+    private val _bookSearchResults = MutableStateFlow<List<BookSearchResult>>(emptyList())
+    val bookSearchResults: StateFlow<List<BookSearchResult>> = _bookSearchResults.asStateFlow()
+
+    /** 全书搜索进度提示（null = 无进行中任务） */
+    private val _bookSearchProgress = MutableStateFlow<String?>(null)
+    val bookSearchProgress: StateFlow<String?> = _bookSearchProgress.asStateFlow()
+
+    private var bookSearchJob: Job? = null
+
+    /** 待定位的章内匹配位置（跳转到全书搜索结果时用，正文加载后消费） */
+    private var pendingMatchPosition: Int = -1
+
+    fun openBookSearch() {
+        _bookSearchOpen.value = true
+        _bookSearchResults.value = emptyList()
+        _bookSearchProgress.value = null
+    }
+
+    fun closeBookSearch() {
+        bookSearchJob?.cancel()
+        _bookSearchOpen.value = false
+        _bookSearchProgress.value = null
+    }
+
+    /**
+     * 全书搜索：并发抓取各章正文（内存 → 章节缓存 → 网络），逐章查找关键词。
+     *
+     * - 4 路并发 + 增量进度，避免千章大书卡死；
+     * - 抓到的正文顺带写入章节缓存，搜索本身也是一次预热；
+     * - 结果上限 500 条，防止 UI 卡顿。
+     */
+    fun searchWholeBook(query: String) {
+        _bookSearchQuery.value = query
+        bookSearchJob?.cancel()
+        if (query.isBlank()) {
+            _bookSearchResults.value = emptyList()
+            _bookSearchProgress.value = null
+            return
+        }
+        val item = currentItem ?: return
+        val chapters = _chapters.value
+        if (chapters.isEmpty()) return
+        val repo = chapterCacheRepository
+        val rules = replaceRules.value
+        bookSearchJob = viewModelScope.launch {
+            _bookSearchProgress.value = "正在搜索 0/${chapters.size}"
+            val results = java.util.Collections.synchronizedList(mutableListOf<BookSearchResult>())
+            val semaphore = Semaphore(4)
+            var done = 0
+            val doneLock = Any()
+            coroutineScope {
+                chapters.forEachIndexed { listIndex, ch ->
+                    launch {
+                        semaphore.withPermit {
+                            val raw = run {
+                                val mem = memoryCache[ch.index]
+                                if (!mem.isNullOrBlank()) return@run mem
+                                val cached = repo?.let {
+                                    runCatching { it.getCached(item.sourceId, item.id, ch.index) }.getOrNull()
+                                }
+                                if (!cached.isNullOrBlank()) return@run cached
+                                val fetched = runCatching { contentRepository.content(ch) }
+                                    .getOrNull()?.novelText?.trim().orEmpty()
+                                if (fetched.isNotBlank() && repo != null) {
+                                    runCatching { repo.saveCache(item, ch.index, ch.title, ch.url, fetched) }
+                                }
+                                fetched
+                            }
+                            if (raw.isNotBlank()) {
+                                val text = TextCleaner.clean(raw, rules)
+                                var from = 0
+                                while (results.size < 500) {
+                                    val idx = text.indexOf(query, from)
+                                    if (idx < 0) break
+                                    val start = (idx - 20).coerceAtLeast(0)
+                                    val end = (idx + query.length + 30).coerceAtMost(text.length)
+                                    val excerpt = text.substring(start, end)
+                                        .replace("\n", " ")
+                                        .let { s ->
+                                            (if (start > 0) "…" else "") + s + (if (end < text.length) "…" else "")
+                                        }
+                                    results.add(
+                                        BookSearchResult(
+                                            listIndex = listIndex,
+                                            chapterIndex = ch.index,
+                                            chapterTitle = ch.title,
+                                            position = idx,
+                                            excerpt = excerpt,
+                                            chapterLength = text.length,
+                                        )
+                                    )
+                                    from = idx + query.length
+                                    if (from >= text.length) break
+                                }
+                            }
+                            synchronized(doneLock) {
+                                done++
+                                if (done % 5 == 0 || done == chapters.size) {
+                                    _bookSearchProgress.value = "正在搜索 $done/${chapters.size}"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            results.sortBy { it.listIndex }
+            _bookSearchResults.value = results.toList()
+            _bookSearchProgress.value =
+                if (results.isEmpty()) "全书未找到「$query」" else null
+        }
+    }
+
+    /** 跳转到全书搜索结果：切章 + 章内按位置定位匹配 */
+    fun gotoBookResult(result: BookSearchResult) {
+        val chapters = _chapters.value
+        if (result.listIndex !in chapters.indices) {
+            showToast("章节已不存在")
+            return
+        }
+        bookSearchJob?.cancel()
+        _bookSearchOpen.value = false
+        _bookSearchProgress.value = null
+        _contentSearchOpen.value = true
+        _contentQuery.value = _bookSearchQuery.value
+        pendingMatchPosition = result.position
+        // 章内位置 → 比例（供滚动恢复），正文加载后 applyContent 会按 pendingMatchPosition 精确定位匹配
+        val ratio = if (result.chapterLength > 0) {
+            (result.position.toFloat() / result.chapterLength * 10000f).toInt().coerceIn(0, 10000)
+        } else 0
+        jumpTo(result.listIndex, ratio)
     }
 
     /** 菜单开关 */
@@ -583,6 +741,21 @@ class NovelReaderViewModel(
         _content.value = cleaned
         _fromCache.value = fromCache
         _charCount.value = TextCleaner.charCount(cleaned)
+        // 有进行中的章内查询时重算匹配（全书搜索跳章 / 切章后保持搜索态）
+        if (_contentQuery.value.isNotBlank()) {
+            recomputeMatches()
+            // 消费全书搜索的定位请求：跳到目标位置之后（或最后一个）匹配项
+            if (pendingMatchPosition >= 0) {
+                val matches = _contentMatches.value
+                val target = matches.indexOfFirst { it >= pendingMatchPosition }
+                _currentMatchIndex.value = when {
+                    target >= 0 -> target
+                    matches.isNotEmpty() -> matches.lastIndex
+                    else -> -1
+                }
+                pendingMatchPosition = -1
+            }
+        }
     }
 
     /**

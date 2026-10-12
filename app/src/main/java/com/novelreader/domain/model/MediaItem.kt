@@ -28,6 +28,8 @@ data class MediaItem(
     val extras: Map<String, String> = emptyMap(),
     /** 收藏时间戳（书架条目带出，用于「按加入时间」排序；搜索结果为 0） */
     val addedAt: Long = 0,
+    /** 书架分组名（书架条目带出，空 = 未分组，v1.3.0） */
+    val groupName: String = "",
 )
 
 /**

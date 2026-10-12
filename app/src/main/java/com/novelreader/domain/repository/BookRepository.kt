@@ -22,6 +22,20 @@ interface BookRepository {
 
     /** 从书架移除 */
     suspend fun removeFromBookshelf(item: MediaItem)
+
+    // ===== 分组管理（v1.3.0） =====
+
+    /** 设置条目分组（空串 = 移出分组） */
+    suspend fun setBookGroup(item: MediaItem, group: String)
+
+    /** 所有已用分组名 */
+    fun observeGroupNames(): Flow<List<String>>
+
+    /** 重命名分组 */
+    suspend fun renameGroup(oldName: String, newName: String)
+
+    /** 删除分组（组内条目变为未分组） */
+    suspend fun deleteGroup(name: String)
 }
 
 /**

@@ -1236,6 +1236,12 @@ fun ContentSearchPanel(
     val matches by viewModel.contentMatches.collectAsState()
     val currentIndex by viewModel.currentMatchIndex.collectAsState()
 
+    // 搜索范围：false=本章，true=全书（v1.3.0 对标开源阅读「搜索全书」）
+    var wholeBook by remember { mutableStateOf(false) }
+    val bookResults by viewModel.bookSearchResults.collectAsState()
+    val bookProgress by viewModel.bookSearchProgress.collectAsState()
+    var bookInput by remember { mutableStateOf("") }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1269,44 +1275,118 @@ fun ContentSearchPanel(
                             .padding(8.dp),
                     )
                 }
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { viewModel.updateContentQuery(it) },
-                    placeholder = { Text("输入要查找的内容") },
-                    maxLines = 1,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp),
-                )
-                Spacer(Modifier.height(8.dp))
+                // 范围切换：本章 / 全书
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    MenuChip("本章", !wholeBook, textColor) { wholeBook = false }
+                    Spacer(Modifier.width(8.dp))
+                    MenuChip("全书", wholeBook, textColor) { wholeBook = true }
+                }
+                Spacer(Modifier.height(8.dp))
+                if (!wholeBook) {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { viewModel.updateContentQuery(it) },
+                        placeholder = { Text("输入要查找的内容") },
+                        maxLines = 1,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = when {
+                                query.isBlank() -> "输入关键词开始搜索"
+                                matches.isEmpty() -> "本章未找到「$query」"
+                                else -> "第 ${currentIndex + 1}/${matches.size} 个匹配"
+                            },
+                            color = textColor.copy(alpha = 0.75f),
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (matches.isNotEmpty()) {
+                            Text(
+                                text = "上一个",
+                                color = AccentColor,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier
+                                    .clickable { viewModel.prevMatch() }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                            )
+                            Text(
+                                text = "下一个",
+                                color = AccentColor,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier
+                                    .clickable { viewModel.nextMatch() }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                            )
+                        }
+                    }
+                } else {
+                    // 全书搜索：输入 + 触发按钮 + 结果列表
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = bookInput,
+                            onValueChange = { bookInput = it },
+                            placeholder = { Text("搜索全书内容") },
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp),
+                        )
+                        Text(
+                            text = "搜索",
+                            color = AccentColor,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier
+                                .clickable {
+                                    if (bookInput.isNotBlank()) viewModel.searchWholeBook(bookInput.trim())
+                                }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
                     Text(
                         text = when {
-                            query.isBlank() -> "输入关键词开始搜索"
-                            matches.isEmpty() -> "本章未找到「$query」"
-                            else -> "第 ${currentIndex + 1}/${matches.size} 个匹配"
+                            bookProgress != null -> bookProgress!!
+                            bookInput.isBlank() -> "输入关键词搜索全书"
+                            bookResults.isEmpty() -> "暂无结果"
+                            else -> "共 ${bookResults.size} 处匹配，点击跳转"
                         },
                         color = textColor.copy(alpha = 0.75f),
                         style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.weight(1f),
                     )
-                    if (matches.isNotEmpty()) {
-                        Text(
-                            text = "上一个",
-                            color = AccentColor,
-                            style = MaterialTheme.typography.bodyMedium,
+                    if (bookResults.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        LazyColumn(
                             modifier = Modifier
-                                .clickable { viewModel.prevMatch() }
-                                .padding(horizontal = 8.dp, vertical = 4.dp),
-                        )
-                        Text(
-                            text = "下一个",
-                            color = AccentColor,
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier
-                                .clickable { viewModel.nextMatch() }
-                                .padding(horizontal = 8.dp, vertical = 4.dp),
-                        )
+                                .fillMaxWidth()
+                                .heightIn(max = 380.dp),
+                        ) {
+                            items(bookResults) { r ->
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { viewModel.gotoBookResult(r) }
+                                        .padding(vertical = 6.dp),
+                                ) {
+                                    Text(
+                                        text = r.chapterTitle,
+                                        color = textColor,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = r.excerpt,
+                                        color = textColor.copy(alpha = 0.7f),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                HorizontalDivider(color = textColor.copy(alpha = 0.1f))
+                            }
+                        }
                     }
                 }
             }

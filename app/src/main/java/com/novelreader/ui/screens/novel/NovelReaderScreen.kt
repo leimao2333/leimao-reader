@@ -579,14 +579,22 @@ private fun ScrollNovel(
             )
             Spacer(Modifier.height(16.dp))
         }
+        // 段距用文本段落间距实现（而非在正文底部加 padding）：
+        // 旧实现把段距当作整段文本的 bottom padding，只会在正文最后留一条空白，
+        // 段落之间毫无间距，视觉上像「大片空白」堆在末尾。这里改用 buildAnnotatedString
+        // 在每个段落起始注入首行缩进与段间距，使段间呼吸均匀。
         Text(
-            text = content,
+            text = buildReaderText(
+                content = content,
+                indentEm = 2f,
+                fontSize = fontSize,
+                paragraphSpacingDp = paragraphSpacing,
+            ),
             fontSize = fontSize.sp,
             color = textColor,
             lineHeight = (fontSize * lineHeightMultiplier).sp,
             textAlign = TextAlign.Justify,
             letterSpacing = 0.sp,
-            modifier = Modifier.padding(bottom = paragraphSpacing.dp),
         )
 
         // 章末续读：滚到底部出现「下一章」入口，保证阅读连续性
@@ -638,21 +646,38 @@ private fun HorizontalPagerNovel(
     BoxWithConstraints(
         modifier = Modifier.fillMaxSize(),
     ) {
-        // 可用尺寸（dp 转 px）：按字号估算每页可容纳字符数，做到「满一屏即止、无滚动」
+        val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
+        // 用真实文本排版测量分页（P0 修复）：
+        // 旧实现按 fontSize*density 假设「每个字符都是全角方块」估算每行字数，
+        // 忽略标点/西文/数字的实际宽度与换行规则，导致行数偏少、末页内容越过屏幕底端被裁掉
+        // （表现为「字只显示一半」「大片空白」）。此处改用 TextMeasurer 真实测量。
         val density = LocalDensity.current.density
-        val availWidthPx = maxWidth.value * density
-        val availHeightPx = maxHeight.value * density
-        val textWidthPx = availWidthPx - (sidePadding * 2f) * density   // 左右各 sidePadding
-        val textHeightPx = availHeightPx - 96f * density                // 上下各 48dp padding
-        val lineHeightPx = fontSize * lineHeightMultiplier * density
-        val charWidthPx = fontSize * density                            // 汉字近似全角宽度
-        val charsPerLine = (textWidthPx / charWidthPx).toInt().coerceAtLeast(1)
-        val linesPerPage = (textHeightPx / lineHeightPx).toInt().coerceAtLeast(1)
-        val charsPerPage = (charsPerLine * linesPerPage).coerceAtLeast(100)
+        // 可用文字区域尺寸（px）：与下面正文 Column 的 padding 严格一致（左右 sidePadding，上下 48dp）
+        val availWidthPx = (maxWidth.value - sidePadding * 2f).coerceAtLeast(1f) * density
+        val textHeightPx = (maxHeight.value - 96f).coerceAtLeast(1f) * density
 
-        val pages = remember(content, hideChapterTitle, charsPerPage) {
-            if (hideChapterTitle) splitContentIntoPages(content, pageSize = charsPerPage)
-            else splitContentIntoPages(content, pageSize = charsPerPage, firstPageTitle = chapterTitle)
+        val textStyle = androidx.compose.ui.text.TextStyle(
+            fontSize = fontSize.sp,
+            lineHeight = (fontSize * lineHeightMultiplier).sp,
+            textAlign = TextAlign.Justify,
+        )
+        // 段距（dp → px）：按段落切分后每段之间的额外间距
+        val paraSpacingPx = paragraphSpacing * density
+
+        val pages = remember(
+            content, chapterTitle, hideChapterTitle,
+            availWidthPx, textHeightPx, fontSize, lineHeightMultiplier, paraSpacingPx,
+        ) {
+            paginateByMeasurement(
+                measurer = textMeasurer,
+                content = content,
+                chapterTitle = chapterTitle,
+                showTitle = !hideChapterTitle,
+                widthPx = availWidthPx,
+                heightPx = textHeightPx,
+                style = textStyle,
+                paragraphSpacingPx = paraSpacingPx,
+            )
         }
         // 章末附加一页「下一章」引导页：正文滑完还能继续翻入下一章，
         // 否则滑到章末就卡住，无法连续阅读（空正文/无下一章时不加）
@@ -825,12 +850,16 @@ private fun HorizontalPagerNovel(
                         Spacer(Modifier.height(16.dp))
                     }
                     Text(
-                        text = pages[page],
+                        text = buildReaderText(
+                            content = pages[page],
+                            indentEm = 2f,
+                            fontSize = fontSize,
+                            paragraphSpacingDp = paragraphSpacing,
+                        ),
                         fontSize = fontSize.sp,
                         color = textColor,
                         lineHeight = (fontSize * lineHeightMultiplier).sp,
                         textAlign = TextAlign.Justify,
-                        modifier = Modifier.padding(bottom = paragraphSpacing.dp),
                         // 每页内容已按屏幕容量切分，禁止内部滚动——到屏幕底端即止
                     )
                     Spacer(Modifier.weight(1f))
@@ -899,49 +928,191 @@ private data class PageTransform(
 }
 
 /**
- * 把正文按固定字符数切成若干页。firstPageTitle 非空时第一页前留出标题空间（少放一点内容）。
+ * 构造阅读正文的 [androidx.compose.ui.text.AnnotatedString]：
+ *
+ * - 首行缩进：每个段落开头注入 2 个全角空格（[indentEm]，1 = 一个全角字宽）。
+ *   源文本里的全角缩进常在清洗时被 trim 掉，这里统一补齐，保证段首视觉规整。
+ * - 段间距：在每个段落之后追加一个换行 + 一个「占位空行」，通过给该空行加大字号
+ *   来撑开段间高度（Compose 的 `ParagraphStyle.lineHeight` 无法直接做段间距）。
+ *
+ * 若原文已带首行缩进（如 \u3000\u3000），则不重复注入。
  */
-private fun splitContentIntoPages(
+private fun buildReaderText(
     content: String,
-    pageSize: Int = 900,
-    firstPageTitle: String? = null,
+    indentEm: Float,
+    fontSize: Float,
+    paragraphSpacingDp: Float,
+): androidx.compose.ui.text.AnnotatedString {
+    if (content.isBlank()) return androidx.compose.ui.text.AnnotatedString("")
+    val builder = androidx.compose.ui.text.AnnotatedString.Builder()
+
+    // 段间距用「加高字号」的占位空行实现，避免额外 Spacer 破坏整段可选/换行连续性
+    val spacingEm = (paragraphSpacingDp / fontSize).coerceAtLeast(0f)
+    val lines = content.split("\n")
+    lines.forEachIndexed { i, raw ->
+        if (i > 0) {
+            builder.append("\n")
+            if (spacingEm > 0.05f) {
+                val spacerStyle = androidx.compose.ui.text.SpanStyle(
+                    fontSize = (paragraphSpacingDp.coerceAtLeast(0f)).sp,
+                    letterSpacing = 0.sp,
+                )
+                val start = builder.length
+                builder.append("\u200B") // 零宽空格占位（不可见，仅用于撑开行高）
+                builder.addStyle(spacerStyle, start, builder.length)
+                builder.append("\n")
+            }
+        }
+        val line = raw.trimStart('\u3000', ' ', '\t')
+        val needIndent = line.isNotEmpty() && !raw.startsWith("\u3000\u3000")
+        if (needIndent) {
+            builder.append("\u3000".repeat(indentEm.toInt().coerceAtLeast(1)))
+        }
+        builder.append(line)
+    }
+    return builder.toAnnotatedString()
+}
+
+/**
+ * 按真实排版测量切页（P0 修复核心）。
+ *
+ * 旧实现用「字号 × density」当作每个字符宽度来估算每行字数，再乘行数得到每页容量：
+ * 汉字确为全角，但标点、数字、英文字母均为半角，且标点不能出现在行首（避头尾），
+ * 于是实际每行能放的字比估算值多，导致「每页字符数」偏大 → 一页文字实际排版后比屏幕高
+ * → 最后一屏内容被裁掉（字只显示一半），同时因为切分点与真实折行位置错位，段落被硬切，
+ * 页面里出现大片空白。
+ *
+ * 现在改为：把文本按段落合并成候选串，交给 [androidx.compose.ui.text.TextMeasurer] 用
+ * 与渲染完全一致的 TextStyle / 宽度做真实测量，用 `didOverflowHeight` 二分出「刚好装得下」
+ * 的最大字符数，再做切分。这样每页内容都能完整落在屏幕内，且切分点在真实折行边界附近。
+ */
+private fun paginateByMeasurement(
+    measurer: androidx.compose.ui.text.TextMeasurer,
+    content: String,
+    chapterTitle: String,
+    showTitle: Boolean,
+    widthPx: Float,
+    heightPx: Float,
+    style: androidx.compose.ui.text.TextStyle,
+    paragraphSpacingPx: Float,
 ): List<String> {
     if (content.isBlank()) return listOf("")
-    val paragraphs = content.split("\n").filter { it.isNotBlank() }
-    if (paragraphs.isEmpty()) return listOf(content)
+
+    val constraints = androidx.compose.ui.unit.Constraints(
+        maxWidth = widthPx.toInt().coerceAtLeast(1),
+        maxHeight = androidx.compose.ui.unit.Constraints.Infinity,
+    )
+
+    // 待处理段落队列（可增删）：切页后剩余内容会插回队首
+    val queue = ArrayDeque<String>()
+    content.split("\n").forEach { queue.addLast(it.trimEnd()) }
+
+    // 标题占据的高度（仅第一页额外消耗）
+    val titleHeight: Float = if (showTitle && chapterTitle.isNotBlank()) {
+        runCatching {
+            measurer.measure(
+                text = androidx.compose.ui.text.AnnotatedString(chapterTitle),
+                style = style.copy(
+                    fontSize = (style.fontSize.value + 2).sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                ),
+                constraints = constraints,
+            ).size.height.toFloat() + 16 * 2.6f
+        }.getOrDefault(0f)
+    } else 0f
+
+    fun measureHeight(text: String): Int = measurer.measure(
+        text = androidx.compose.ui.text.AnnotatedString(text),
+        style = style,
+        constraints = constraints,
+    ).size.height
+
+    fun fits(text: String, limitPx: Float): Boolean {
+        val m = measurer.measure(
+            text = androidx.compose.ui.text.AnnotatedString(text),
+            style = style,
+            constraints = constraints,
+        )
+        return !m.didOverflowHeight && m.size.height <= limitPx
+    }
+
+    /** 二分查找 [text] 中能在 [limitPx] 内放下的最大字符前缀长度 */
+    fun maxFittingLength(text: String, limitPx: Float): Int {
+        var lo = 1
+        var hi = text.length
+        var best = 0
+        while (lo <= hi) {
+            val mid = (lo + hi) / 2
+            if (fits(text.substring(0, mid), limitPx)) {
+                best = mid
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+        return best
+    }
+
+    /** 在 [limit] 附近挑选更自然的切分点（优先换行，其次中文句读，否则任意处） */
+    fun naturalCut(text: String, limit: Int): Int {
+        if (limit >= text.length) return text.length
+        if (limit <= 0) return 0
+        val windowStart = (limit - 40).coerceAtLeast(0)
+        for (i in limit downTo (windowStart + 1)) {
+            val c = text[i - 1]
+            if (c == '\n' || c == '。' || c == '！' || c == '？' || c == '”' || c == '…') return i
+        }
+        return limit
+    }
 
     val pages = mutableListOf<String>()
-    val buffer = StringBuilder()
-    // 第一页预留标题空间
-    var firstPage = firstPageTitle != null
-    for (para in paragraphs) {
-        val limit = if (firstPage) pageSize - 120 else pageSize
-        if (buffer.isNotEmpty() && buffer.length + para.length + 1 > limit) {
-            pages.add(buffer.toString())
-            buffer.clear()
-            firstPage = false
-        }
-        if (para.length > limit && buffer.isEmpty()) {
-            var start = 0
-            while (start < para.length) {
-                val end = (start + limit).coerceAtMost(para.length)
-                pages.add(para.substring(start, end))
-                start = end
-                firstPage = false
+    var isFirstPage = true
+    var guard = 0
+
+    while (queue.isNotEmpty() && guard < 20000) {
+        guard++
+        val remainingHeight = (heightPx - if (isFirstPage) titleHeight else 0f).coerceAtLeast(1f)
+
+        // 贪心装入完整段落，直到塞不下
+        val buffer = StringBuilder()
+        var consumed = 0
+        while (queue.isNotEmpty()) {
+            val para = queue.first()
+            val addition = when {
+                para.isEmpty() && buffer.isEmpty() -> "\n"
+                buffer.isEmpty() -> para
+                else -> "\n$para"
             }
+            val trial = buffer.toString() + addition
+            if (!fits(trial, remainingHeight)) break
+            buffer.append(addition)
+            queue.removeFirst()
+            consumed++
+            // 已接近一屏，停止扩展（避免超大字符串测量开销）
+            if (measureHeight(buffer.toString()) >= remainingHeight * 0.92f) break
+        }
+
+        val current = buffer.toString()
+        if (current.isEmpty()) {
+            // 第一个段落就装不下：按字符二分切分，把剩余内容插回队首
+            val para = queue.first()
+            val maxLen = maxFittingLength(para, remainingHeight)
+            val cut = if (maxLen <= 0) 1 else naturalCut(para, maxLen)
+            val head = para.substring(0, cut.coerceAtMost(para.length))
+            val tail = para.substring(cut.coerceAtMost(para.length))
+            queue.removeFirst()
+            if (tail.isNotEmpty()) queue.addFirst(tail)
+            pages.add(head)
         } else {
-            if (buffer.isNotEmpty() && buffer.length + para.length + 1 > limit) {
-                pages.add(buffer.toString())
-                buffer.clear()
-                firstPage = false
-            }
-            if (buffer.isNotEmpty()) buffer.append('\n')
-            buffer.append(para)
+            // 已装入的整段内容刚好放得下，但若还塞得下更多（queue 仍有）则继续下一轮即可
+            pages.add(current)
         }
+        isFirstPage = false
     }
-    if (buffer.isNotEmpty()) pages.add(buffer.toString())
-    return pages.ifEmpty { listOf("") }
+
+    return pages.ifEmpty { listOf("") }.filter { it.isNotEmpty() || pages.size == 1 }
 }
+
 
 /** 顶部栏（书名 + 章节标题两行，长按可收起菜单） */
 @Composable

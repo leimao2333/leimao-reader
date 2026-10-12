@@ -98,16 +98,18 @@ object FuzzyMatch {
      * @param minScore 最低匹配分，默认 [MIN_FUZZY_SCORE]——低于此分视为不相关直接过滤
      */
     fun rank(items: List<MediaItem>, keyword: String, minScore: Int = MIN_FUZZY_SCORE): List<MediaItem> {
-        if (keyword.isBlank()) return items
+        if (keyword.isBlank()) return dedupe(items)
         val kn = normalize(keyword)
-        return items
-            .map { item ->
-                val s = score(item.title, keyword, authorMatch = item.author?.let { normalize(it) == kn } == true)
-                item to s
-            }
-            .filter { (_, s) -> s >= minScore }
-            .sortedWith(compareByDescending<Pair<MediaItem, Int>> { (_, s) -> s }.thenBy { (item, _) -> item.title.length })
-            .map { (item, _) -> item }
+        return dedupe(
+            items
+                .map { item ->
+                    val s = score(item.title, keyword, authorMatch = item.author?.let { normalize(it) == kn } == true)
+                    item to s
+                }
+                .filter { (_, s) -> s >= minScore }
+                .sortedWith(compareByDescending<Pair<MediaItem, Int>> { (_, s) -> s }.thenBy { (item, _) -> item.title.length })
+                .map { (item, _) -> item }
+        )
     }
 
     /**
@@ -115,19 +117,50 @@ object FuzzyMatch {
      * 一个源都没命中时回退到「标题以关键词开头」的最短结果，避免过度死板。
      */
     fun exactRank(items: List<MediaItem>, keyword: String): List<MediaItem> {
-        if (keyword.isBlank()) return items
+        if (keyword.isBlank()) return dedupe(items)
         val kn = normalize(keyword)
         val exact = items.filter { normalize(it.title) == kn }
         if (exact.isNotEmpty()) {
-            return exact.sortedWith(
-                compareBy<MediaItem> { it.author?.let { a -> normalize(a) == kn } != true }
-                    .thenBy { it.title.length }
+            return dedupe(
+                exact.sortedWith(
+                    compareBy<MediaItem> { it.author?.let { a -> normalize(a) == kn } != true }
+                        .thenBy { it.title.length }
+                )
             )
         }
         // 回退：标题以关键词开头（如「剑来」命中「剑来同人」），取最短标题
-        return items
-            .filter { normalize(it.title).startsWith(kn) }
-            .sortedBy { it.title.length }
+        return dedupe(
+            items
+                .filter { normalize(it.title).startsWith(kn) }
+                .sortedBy { it.title.length }
+        )
+    }
+
+    /**
+     * 去除「同一源 + 同一本书」的重复项（搜索时同一源可能返回重复条目）。
+     *
+     * 去重键：sourceId + item.id（回退到详情 URL / 归一化书名+作者）。
+     * 保留首次出现者（已按匹配分排序，即最优者）。
+     */
+    fun dedupe(items: List<MediaItem>): List<MediaItem> {
+        if (items.size <= 1) return items
+        val seen = HashSet<String>(items.size)
+        val out = ArrayList<MediaItem>(items.size)
+        for (item in items) {
+            val key = buildString {
+                append(item.sourceId)
+                append('|')
+                append(item.id.ifBlank { item.detailUrl })
+                if (item.id.isBlank() && item.detailUrl.isBlank()) {
+                    append('|')
+                    append(normalize(item.title))
+                    append('|')
+                    append(normalize(item.author ?: ""))
+                }
+            }
+            if (seen.add(key)) out.add(item)
+        }
+        return out
     }
 
     /**

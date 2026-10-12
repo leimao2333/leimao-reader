@@ -363,6 +363,7 @@ fun AppNavHost(container: AppContainer) {
                     ComicDetailViewModel(it.contentRepository, it.bookRepository, it.downloadManager)
                 }
             )
+            val scope = androidx.compose.runtime.rememberCoroutineScope()
             ComicDetailScreen(
                 viewModel = viewModel,
                 item = item,
@@ -370,6 +371,19 @@ fun AppNavHost(container: AppContainer) {
                     val chapters = viewModel.chapters.value
                     NavCache.putChapters(item, chapters)
                     navController.navigate(Routes.comicReader(item, chapter.index))
+                },
+                onRead = {
+                    // 继续阅读：有进度直达历史章节，无进度进第一章
+                    scope.launch {
+                        val progress = runCatching {
+                            container.progressRepository.getProgress(item.sourceId, item.id)
+                        }.getOrNull()
+                        val chapters = viewModel.chapters.value
+                        if (chapters.isEmpty()) return@launch
+                        NavCache.putChapters(item, chapters)
+                        val index = progress?.chapterIndex?.coerceIn(0, chapters.size - 1) ?: 0
+                        navController.navigate(Routes.comicReader(item, index))
+                    }
                 },
                 onBack = { navController.popBackStack() },
             )

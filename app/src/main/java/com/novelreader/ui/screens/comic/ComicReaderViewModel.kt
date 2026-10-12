@@ -65,23 +65,41 @@ class ComicReaderViewModel(
         loadContent(chapter)
     }
 
+    /** 当前已加载的章节，用于失败重试 */
+    private var lastChapter: ChapterItem? = null
+
     fun loadContent(chapter: ChapterItem) {
         currentChapter = chapter
+        lastChapter = chapter
         _chapterTitle.value = chapter.title
         _currentPage.value = 0
+        _images.value = emptyList()
         viewModelScope.launch {
             _loading.value = true
             _error.value = null
             runCatching { contentRepository.content(chapter) }
                 .onSuccess { result ->
-                    _images.value = result.comicImages ?: emptyList()
-                    saveProgress()
+                    val imgs = result.comicImages?.filter { it.isNotBlank() } ?: emptyList()
+                    _images.value = imgs
+                    // 图片列表为空时不进入渲染分支，避免纯黑屏无提示
+                    if (imgs.isEmpty()) {
+                        _error.value = "本章暂无可用图片，可能源已失效或章节待更新"
+                    } else {
+                        saveProgress()
+                    }
                 }
                 .onFailure { e ->
-                    _error.value = e.message ?: "加载失败"
+                    _images.value = emptyList()
+                    _error.value = e.message?.takeIf { it.isNotBlank() }
+                        ?: "加载失败，请检查网络或切换书源"
                 }
             _loading.value = false
         }
+    }
+
+    /** 失败重试：重新加载当前章节 */
+    fun retry() {
+        lastChapter?.let { loadContent(it) }
     }
 
     /** 切换翻页方式 */

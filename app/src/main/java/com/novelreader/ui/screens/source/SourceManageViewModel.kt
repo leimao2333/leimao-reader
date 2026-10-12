@@ -169,6 +169,62 @@ class SourceManageViewModel(
         }
     }
 
+    // ===== 源有效性检测（自动筛选无用源） =====
+
+    /** 正在检测中的源 id 集合（UI 显示转圈） */
+    private val _testing = MutableStateFlow<Set<String>>(emptySet())
+    val testing: StateFlow<Set<String>> = _testing.asStateFlow()
+
+    /** 检测结果：sourceId -> 是否可用 */
+    private val _testResults = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val testResults: StateFlow<Map<String, Boolean>> = _testResults.asStateFlow()
+
+    /**
+     * 批量检测源有效性。
+     *
+     * 逐个调用 [SourceAdapter.test]（内部以「测试」关键词搜索，返回结果非空即视为可用）。
+     * 检测结果写入 [testResults]，UI 据此标记失效源。
+     *
+     * @param sources 待检测的源；默认检测当前全部源
+     */
+    fun testSources(sources: List<SourceInfo> = _sources.value) {
+        if (sources.isEmpty()) return
+        viewModelScope.launch {
+            val results = _testResults.value.toMutableMap()
+            sources.forEach { source ->
+                _testing.value = _testing.value + source.id
+                val ok = runCatching {
+                    sourceRepository.getAdapter(source.id)?.test() ?: true
+                }.getOrDefault(false)
+                results[source.id] = ok
+                _testResults.value = results.toMap()
+                _testing.value = _testing.value - source.id
+            }
+            val failed = results.count { !it.value }
+            _message.value = if (failed == 0) "检测完成：全部源可用"
+            else "检测完成：${results.size} 个源中 $failed 个疑似失效"
+        }
+    }
+
+    /** 一键禁用所有已检出失效的源（自动筛选无用源） */
+    fun disableFailedSources() {
+        val failed = _testResults.value.filterValues { !it }.keys
+        if (failed.isEmpty()) {
+            _message.value = "尚未检测到失效源，请先「检测可用性」"
+            return
+        }
+        viewModelScope.launch {
+            failed.forEach { sourceRepository.setSourceEnabled(it, false) }
+            _message.value = "已禁用 ${failed.size} 个失效源"
+            refresh()
+        }
+    }
+
+    /** 清除检测结果 */
+    fun clearTestResults() {
+        _testResults.value = emptyMap()
+    }
+
     /** 清除提示消息 */
     fun consumeMessage() {
         _message.value = null

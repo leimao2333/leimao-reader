@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -21,6 +22,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -99,13 +102,35 @@ fun ComicReaderScreen(
                 )
             }
             error != null -> {
-                Text(
-                    text = error ?: "加载失败",
-                    color = Color.White,
+                Column(
                     modifier = Modifier
                         .align(Alignment.Center)
-                        .padding(16.dp),
-                )
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.BrokenImage,
+                        contentDescription = null,
+                        tint = Color(0xFF888888),
+                        modifier = Modifier.size(48.dp),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = error ?: "加载失败",
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Row {
+                        TextButton(onClick = { viewModel.retry() }) {
+                            Text("重新加载", color = Color(0xFF6A9BD8))
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        TextButton(onClick = onBack) {
+                            Text("返回", color = Color(0xFF6A9BD8))
+                        }
+                    }
+                }
             }
             pageMode == 0 -> {
                 // 上下滚动模式
@@ -172,6 +197,24 @@ fun ComicReaderScreen(
                         PageModeButton("上下滚动", pageMode == 0) { viewModel.setPageMode(0) }
                         Spacer(Modifier.width(12.dp))
                         PageModeButton("左右翻页", pageMode == 1) { viewModel.setPageMode(1) }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Text("章节", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { viewModel.prevChapter() }) {
+                            Icon(Icons.Filled.SkipPrevious, contentDescription = "上一话", tint = Color.White)
+                        }
+                        Text(
+                            text = chapterTitle.ifBlank { "未知章节" },
+                            color = Color.White,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(onClick = { viewModel.nextChapter() }) {
+                            Icon(Icons.Filled.SkipNext, contentDescription = "下一话", tint = Color.White)
+                        }
                     }
                 }
             }

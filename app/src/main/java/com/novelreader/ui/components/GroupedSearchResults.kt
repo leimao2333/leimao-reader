@@ -84,7 +84,7 @@ fun GroupedSearchResults(
     ) {
         groups.forEachIndexed { groupIndex, group ->
             val head = group.first()
-            val groupKey = "${FuzzyMatch.normalize(head.title)}|${head.author?.let { FuzzyMatch.normalizeAuthor(it) }.orEmpty()}"
+            val groupKey = FuzzyMatch.normalize(head.title)
             val isExpanded = groupKey in expandedKeys
             val hasMulti = group.size > 1
 

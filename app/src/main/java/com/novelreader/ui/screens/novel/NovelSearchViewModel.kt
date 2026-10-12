@@ -7,12 +7,16 @@ import com.novelreader.domain.model.SearchState
 import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.ContentRepository
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /**
  * 小说搜索 ViewModel。
@@ -46,6 +50,9 @@ class NovelSearchViewModel(
     val history: StateFlow<List<String>> = _history.asStateFlow()
 
     private var searchJob: Job? = null
+
+    /** 搜索收尾后验证结果章节数的任务（剔除 0 章失效结果） */
+    private var verifyJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -114,7 +121,41 @@ class NovelSearchViewModel(
                 }
                 .collect { s ->
                     _state.value = s
+                    // 搜索收尾：后台验证结果章节数，剔除 0 章（目录为空）的失效结果
+                    if (!s.isSearching && s.results.isNotEmpty()) {
+                        verifyResults(s.results)
+                    }
                 }
+        }
+    }
+
+    /**
+     * 搜索完成后，后台验证结果的章节数，把「0 章」（目录为空）的失效结果从列表剔除。
+     * 并发 3 路、逐个 item 调 chapterList；验证结果增量回写，不阻塞已展示的列表。
+     */
+    private fun verifyResults(results: List<com.novelreader.domain.model.MediaItem>) {
+        verifyJob?.cancel()
+        verifyJob = viewModelScope.launch {
+            val semaphore = Semaphore(3)
+            coroutineScope {
+                results.map { item ->
+                    async {
+                        semaphore.withPermit {
+                            val chapters = runCatching { contentRepository.chapterList(item) }
+                                .getOrDefault(emptyList())
+                            if (chapters.isEmpty()) {
+                                // 该条目 0 章，从当前结果中剔除
+                                val key = "${item.sourceId}|${item.id}"
+                                _state.value = _state.value.copy(
+                                    results = _state.value.results.filter {
+                                        "${it.sourceId}|${it.id}" != key
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }.forEach { it.await() }
+            }
         }
     }
 }

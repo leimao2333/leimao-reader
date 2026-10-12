@@ -54,7 +54,11 @@ fun AppNavHost(container: AppContainer) {
         composable(Routes.HOME) {
             val homeViewModel: HomeViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
-                    HomeViewModel(it.progressRepository, it.contentRepository)
+                    HomeViewModel(
+                        it.bookRepository,
+                        it.progressRepository,
+                        it.contentRepository,
+                    )
                 }
             )
             HomeScreen(
@@ -62,7 +66,6 @@ fun AppNavHost(container: AppContainer) {
                 onOpenNovelItem = { item -> navController.navigate(Routes.novelDetail(item)) },
                 onOpenComicItem = { item -> navController.navigate(Routes.comicDetail(item)) },
                 onOpenVideoItem = { item -> navController.navigate(Routes.videoDetail(item)) },
-                onOpenBookshelf = { navController.navigate(Routes.BOOKSHELF) },
                 onOpenSources = { navController.navigate(Routes.SOURCE_MANAGE) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
                 onOpenNovelSearch = { navController.navigate(Routes.novelSearch()) },

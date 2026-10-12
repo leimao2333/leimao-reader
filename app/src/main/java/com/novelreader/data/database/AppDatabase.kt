@@ -5,6 +5,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.novelreader.data.model.BookEntity
+import com.novelreader.data.model.BookmarkEntity
 import com.novelreader.data.model.ChapterCacheEntity
 import com.novelreader.data.model.ProgressEntity
 import com.novelreader.data.model.SourceEntity
@@ -12,7 +13,7 @@ import com.novelreader.data.model.SourceEntity
 /**
  * 应用数据库。
  *
- * 四张表：源（sources）、书架（books）、进度（progress）、章节缓存（chapter_cache）。
+ * 五张表：源（sources）、书架（books）、进度（progress）、章节缓存（chapter_cache）、书签（bookmarks）。
  */
 @Database(
     entities = [
@@ -20,8 +21,9 @@ import com.novelreader.data.model.SourceEntity
         BookEntity::class,
         ProgressEntity::class,
         ChapterCacheEntity::class,
+        BookmarkEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -29,6 +31,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun bookDao(): BookDao
     abstract fun progressDao(): ProgressDao
     abstract fun chapterCacheDao(): ChapterCacheDao
+    abstract fun bookmarkDao(): BookmarkDao
 
     companion object {
         /** v1 -> v2：sources 表新增 category 列 */
@@ -138,6 +141,39 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE UNIQUE INDEX IF NOT EXISTS index_chapter_cache_sourceId_itemId_chapterIndex " +
                         "ON chapter_cache (sourceId, itemId, chapterIndex)"
+                )
+            }
+        }
+
+        /**
+         * v7 -> v8：新增 bookmarks 表（阅读书签，v1.1.0）。
+         */
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS bookmarks (
+                        bookmarkId INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        sourceId TEXT NOT NULL,
+                        itemId TEXT NOT NULL,
+                        itemTitle TEXT NOT NULL DEFAULT '',
+                        itemType TEXT NOT NULL DEFAULT '',
+                        chapterIndex INTEGER NOT NULL DEFAULT 0,
+                        chapterUrl TEXT NOT NULL DEFAULT '',
+                        chapterTitle TEXT NOT NULL DEFAULT '',
+                        textPosition INTEGER NOT NULL DEFAULT 0,
+                        snippet TEXT NOT NULL DEFAULT '',
+                        createdAt INTEGER NOT NULL DEFAULT 0
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_bookmarks_sourceId_itemId " +
+                        "ON bookmarks (sourceId, itemId)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_bookmarks_sourceId_itemId_chapterUrl_textPosition " +
+                        "ON bookmarks (sourceId, itemId, chapterUrl, textPosition)"
                 )
             }
         }

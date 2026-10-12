@@ -180,8 +180,6 @@ fun ComicReaderScreen(
                     headers = imageHeaders,
                     scripts = imageScripts,
                     chapterIndex = chapterPosition,
-                    hasPrevChapter = hasPrevChapter,
-                    hasNextChapter = hasNextChapter,
                     onPrevChapter = { viewModel.prevChapter() },
                     onNextChapter = { viewModel.nextChapter() },
                     onTap = toggleMenu,
@@ -370,15 +368,13 @@ private fun ComicChapterBar(
     }
 }
 
-/** 上下滚动阅读（滚动时预加载后续图片；章末给出下一话入口） */
+/** 上下滚动阅读（滚动时预加载后续图片；拖到底 / 顶继续拖切话） */
 @Composable
 private fun VerticalScrollReader(
     images: List<String>,
     headers: Map<String, String>,
     scripts: Map<String, String>,
     chapterIndex: Int,
-    hasPrevChapter: Boolean,
-    hasNextChapter: Boolean,
     onPrevChapter: () -> Unit,
     onNextChapter: () -> Unit,
     onTap: () -> Unit,
@@ -425,9 +421,9 @@ private fun VerticalScrollReader(
         itemsIndexed(images) { _, url ->
             ComicImage(
                 url = url,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 1.dp),
+                // 不再给每张图加 vertical padding：黑底会从缝里透出来，
+                // 在条漫 / 分镜图上表现为一条条横向黑线。图片直接上下相接即为连续的一页。
+                modifier = Modifier.fillMaxWidth(),
                 contentScale = ContentScale.FillWidth,
                 placeholderModifier = Modifier
                     .fillMaxWidth()
@@ -436,81 +432,12 @@ private fun VerticalScrollReader(
                 script = scripts[url],
             )
         }
-        // 章末：本话读完与去向（小说滚动模式同款「下一章 ›」入口）
-        if (images.isNotEmpty()) {
-            item {
-                ChapterEndFooter(
-                    hasPrevChapter = hasPrevChapter,
-                    hasNextChapter = hasNextChapter,
-                    onPrevChapter = onPrevChapter,
-                    onNextChapter = onNextChapter,
-                )
-            }
-        }
     }
 }
 
-/** 章末去向区：上一话 / 下一话（到边界时给出明确提示，不静默无响应） */
-@Composable
-private fun ChapterEndFooter(
-    hasPrevChapter: Boolean,
-    hasNextChapter: Boolean,
-    onPrevChapter: () -> Unit,
-    onNextChapter: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 28.dp, horizontal = 24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(
-            text = if (hasNextChapter) "本话已读完" else "已是最后一话",
-            color = Color(0xFF9E9E9E),
-            style = MaterialTheme.typography.bodyMedium,
-        )
-        Spacer(Modifier.height(14.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            ChapterEndButton(
-                text = "‹ 上一话",
-                enabled = hasPrevChapter,
-                onClick = onPrevChapter,
-            )
-            Spacer(Modifier.width(16.dp))
-            ChapterEndButton(
-                text = "下一话 ›",
-                enabled = hasNextChapter,
-                highlight = true,
-                onClick = onNextChapter,
-            )
-        }
-    }
-}
-
-/** 章末按钮（主按钮高亮，到边界置灰不可点） */
-@Composable
-private fun ChapterEndButton(
-    text: String,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    highlight: Boolean = false,
-) {
-    val bg = when {
-        !enabled -> Color(0xFF2A2A2A)
-        highlight -> Color(0xFF4A6FA5)
-        else -> Color(0xFF333333)
-    }
-    val fg = if (enabled) Color.White else Color(0xFF7A7A7A)
-    Text(
-        text = text,
-        color = fg,
-        style = MaterialTheme.typography.bodyMedium,
-        modifier = Modifier
-            .background(bg, RoundedCornerShape(8.dp))
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 10.dp),
-    )
-}
+// 章末「本话已读完 / 上一话 / 下一话」引导区已移除：
+// 它和「翻到底继续拖 → 下一话」（edgeOverscroll）功能重复，且会占掉一整屏的最后一段，
+// 让读者以为本话只有这些内容。现在读完本话继续往下拖即可切话，入口只保留菜单里的底部章节条。
 
 /** 左右翻页阅读（预加载相邻页；三区点击：左=上一页/上一话，中=设置，右=下一页/下一话） */
 @Composable
@@ -730,10 +657,18 @@ private fun ComicImage(
     val request = remember(url, retry, headers, bands) {
         ImageRequest.Builder(context)
             .data(url)
-            // 防盗链请求头（Referer 等）：漫画 CDN 缺它会 403
-            .apply { headers.forEach { (k, v) -> setHeader(k, v) } }
+            .apply { applyImageDefaults(url, headers) }
             .apply { applyBandUnscramble(this, bands) }
             .memoryCacheKey("$url#$retry")
+            // 失败时把「地址 + 原因」落到日志，便于区分 403 防盗链 / DNS / 解码失败
+            .listener(
+                onError = { _, result ->
+                    android.util.Log.w(
+                        IMAGE_LOG_TAG,
+                        "图片加载失败 url=${result.request.data} err=${result.throwable}",
+                    )
+                },
+            )
             .build()
     }
 
@@ -800,12 +735,38 @@ private fun preloadImage(
     if (url.isBlank()) return
     val request = ImageRequest.Builder(context)
         .data(url)
-        .apply { headers.forEach { (k, v) -> setHeader(k, v) } }
+        .apply { applyImageDefaults(url, headers) }
         .apply { applyBandUnscramble(this, ComicImageScramble.bandCountFromScript(script)) }
         // 与 ComicImage 的缓存键保持同一套（它的 retry 从 0 起），预热才真正命中
         .memoryCacheKey("$url#0")
         .build()
     context.imageLoader.enqueue(request)
+}
+
+/**
+ * 给漫画图片请求补齐「浏览器级」默认头。
+ *
+ * 源自己声明的请求头（legado 的 `header=` / Venera 的 `headers`）优先级最高，一律不覆盖；
+ * 缺失时按下面三条补齐 —— 这是大量漫画 CDN 直接返回 403 / 空体的常见原因：
+ * - `User-Agent`：Coil 默认发 `okhttp/x.y`，不少图床按 UA 判断是否放行；
+ * - `Referer`：源没给时退化为图片自身站点（同站点图床常据此防盗链）；
+ * - `Accept`：声明可接受的图片类型，避免部分 CDN 因 Accept 不匹配返回错误页。
+ */
+private fun ImageRequest.Builder.applyImageDefaults(url: String, headers: Map<String, String>) {
+    headers.forEach { (k, v) -> setHeader(k, v) }
+    val declared = headers.keys.map { it.lowercase() }
+    if ("user-agent" !in declared) setHeader("User-Agent", IMAGE_USER_AGENT)
+    if ("referer" !in declared) {
+        runCatching {
+            val u = java.net.URI(url)
+            val scheme = u.scheme
+            val host = u.host
+            if (scheme != null && host != null) setHeader("Referer", "$scheme://$host/")
+        }
+    }
+    if ("accept" !in declared) {
+        setHeader("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+    }
 }
 
 /** 翻页方式选择按钮 */
@@ -831,6 +792,14 @@ private fun PageModeButton(
 /** 预加载常量 */
 private const val PRELOAD_INITIAL = 4
 private const val PRELOAD_AHEAD = 2
+
+/** 图片加载日志标签（排查「图片加载失败」时用 logcat 过滤它） */
+private const val IMAGE_LOG_TAG = "ComicImage"
+
+/** 图片请求默认 UA（Coil 默认的 okhttp/x.y 会被部分图床拒绝） */
+private const val IMAGE_USER_AGENT =
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
 
 /** 底部章节导航条高度（正文/设置面板都据此让位） */
 private val CHAPTER_BAR_HEIGHT = 48.dp

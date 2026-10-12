@@ -115,12 +115,14 @@ object HttpClient {
      * @param url 下载地址
      * @param target 目标文件
      * @param headers 额外请求头
+     * @param byteTransform 整包字节处理（如加密图床的解密）；非空时改为「先读全量 → 转换 → 一次写盘」
      * @param onProgress 进度回调（已下载字节数, 总字节数，未知时为 -1），运行在下载线程
      */
     fun downloadFile(
         url: String,
         target: File,
         headers: Map<String, String> = emptyMap(),
+        byteTransform: ((ByteArray) -> ByteArray)? = null,
         onProgress: ((downloaded: Long, total: Long) -> Unit)? = null,
     ) {
         val builder = Request.Builder()
@@ -138,6 +140,16 @@ object HttpClient {
             val total = if (contentLength > 0) contentLength else -1L
 
             target.parentFile?.mkdirs()
+
+            if (byteTransform != null) {
+                val raw = body.bytes()
+                onProgress?.invoke(raw.size.toLong(), total)
+                val fixed = byteTransform(raw)
+                target.writeBytes(fixed)
+                onProgress?.invoke(fixed.size.toLong(), fixed.size.toLong())
+                return
+            }
+
             val input = body.byteStream()
             val output = FileOutputStream(target)
             var downloaded = 0L

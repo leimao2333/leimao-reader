@@ -108,6 +108,13 @@ class VeneraSourceAdapter(
                 if (js.isNullOrBlank()) null else k to js
             }?.toMap()
             ?: emptyMap()
+        // 排查「图片加载不了」时用 logcat -s VeneraAdapter 看：地址形态（相对/绝对）、
+        // 数量、以及源是否给了防盗链请求头
+        android.util.Log.d(
+            TAG,
+            "content key=$key images=${images.size} headers=${headers.keys} " +
+                "first=${images.take(2)}",
+        )
         return ContentResult.comic(images, sanitizeHeaders(headers), scripts)
     }
 
@@ -137,6 +144,7 @@ class VeneraSourceAdapter(
     }
 
     companion object {
+        private const val TAG = "VeneraAdapter"
         private const val CHAPTER_SEP = "|"
 
         /** 交由客户端协商的请求头（见 [sanitizeHeaders]） */

@@ -90,7 +90,14 @@ class DownloadManager(private val context: Context) {
         images.forEachIndexed { index, url ->
             val ext = url.substringBefore('?').substringAfterLast('.', "jpg").takeIf { it.length <= 5 } ?: "jpg"
             val file = File(dir, "%03d.$ext".format(index + 1))
-            HttpClient.downloadFile(url, file, content.comicHeaders)
+            // 部分图床（漫蛙吧系列）把图片整包 AES 加密下发，先解密再落盘，
+            // 否则下载到本地的同样是解不开的「坏图」
+            HttpClient.downloadFile(
+                url,
+                file,
+                content.comicHeaders,
+                byteTransform = com.novelreader.core.image.ImageDecryptor::maybeDecrypt,
+            )
             // 部分站点（禁漫 JM 等）把每页按 N 段纵向打乱后下发；落盘前先还原，
             // 否则下载到本地的图片同样是乱序的
             unscrambleDownloaded(file, content.comicImageScripts[url])

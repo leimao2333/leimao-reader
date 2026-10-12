@@ -261,21 +261,33 @@ fun AppNavHost(container: AppContainer) {
             route = Routes.NOVEL_DETAIL,
             arguments = listOf(navArgument("item") { type = NavType.StringType }),
         ) { backStackEntry ->
-            val item = NavArgs.decodeItem(backStackEntry.arguments?.getString("item") ?: "")
+            val routeItem = NavArgs.decodeItem(backStackEntry.arguments?.getString("item") ?: "")
+            // 原地换源后当前书会变，用本地状态跟踪，保证「目录 / 阅读」都指向新的源
+            val currentItemState = androidx.compose.runtime.remember(routeItem) {
+                androidx.compose.runtime.mutableStateOf(routeItem)
+            }
+            val currentItem = currentItemState.value
             val viewModel: NovelDetailViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
-                    NovelDetailViewModel(it.contentRepository, it.bookRepository, it.downloadManager)
+                    NovelDetailViewModel(
+                        it.contentRepository,
+                        it.bookRepository,
+                        it.downloadManager,
+                        it.progressRepository,
+                    )
                 }
             )
             val scope = androidx.compose.runtime.rememberCoroutineScope()
             NovelDetailScreen(
                 viewModel = viewModel,
-                item = item,
+                item = currentItem,
                 onChapterClick = { chapter ->
                     // 章节列表走内存缓存（3461 章编码进路由会 ANR）
                     val chapters = viewModel.chapters.value
-                    NavCache.putChapters(item, chapters)
-                    navController.navigate(Routes.novelReader(item, chapter.index))
+                    NavCache.putChapters(currentItem, chapters)
+                    // 用章节在列表中的真实下标（源返回的 index 可能与下标不一致，会跳错章）
+                    val pos = chapters.indexOf(chapter).let { if (it >= 0) it else chapter.index }
+                    navController.navigate(Routes.novelReader(currentItem, pos.coerceAtLeast(0)))
                 },
                 onRead = { target ->
                     // 阅读：有进度直达历史章节，无进度进第一章（与搜索页 onRead 一致）
@@ -293,8 +305,9 @@ fun AppNavHost(container: AppContainer) {
                     }
                 },
                 onSwitchSource = { candidate ->
-                    // 换源：跳转到目标源的详情页（新的 item 参数）
-                    navController.navigate(Routes.novelDetail(candidate))
+                    // 换源改为「原地切换」：不再 navigate 新详情页（避免返回栈无限堆叠）
+                    currentItemState.value = candidate
+                    viewModel.switchTo(candidate)
                 },
                 onBack = { navController.popBackStack() },
                 onSearchAuthor = { author ->
@@ -324,6 +337,7 @@ fun AppNavHost(container: AppContainer) {
                         it.progressRepository,
                         it.preferencesManager,
                         it.chapterCacheRepository,
+                        it.bookRepository,
                     )
                 }
             )

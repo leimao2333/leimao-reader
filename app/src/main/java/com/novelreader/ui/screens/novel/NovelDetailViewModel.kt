@@ -24,6 +24,7 @@ class NovelDetailViewModel(
     private val contentRepository: ContentRepository,
     private val bookRepository: BookRepository,
     private val downloadManager: DownloadManager? = null,
+    private val progressRepository: com.novelreader.domain.repository.ProgressRepository? = null,
 ) : ViewModel() {
 
     /** 详情信息 */
@@ -41,6 +42,18 @@ class NovelDetailViewModel(
     /** 是否已收藏 */
     private val _collected = MutableStateFlow(false)
     val collected: StateFlow<Boolean> = _collected.asStateFlow()
+
+    /** 是否有阅读进度（决定按钮文案：开始阅读 / 继续阅读） */
+    private val _hasProgress = MutableStateFlow(false)
+    val hasProgress: StateFlow<Boolean> = _hasProgress.asStateFlow()
+
+    /** 轻量提示（原地换源后展示） */
+    private val _notice = MutableStateFlow<String?>(null)
+    val notice: StateFlow<String?> = _notice.asStateFlow()
+
+    fun dismissNotice() {
+        _notice.value = null
+    }
 
     /** 下载状态 */
     private val _download = MutableStateFlow<DownloadState?>(null)
@@ -71,10 +84,31 @@ class NovelDetailViewModel(
             val detailDeferred = launch { loadDetail(item) }
             val chapterDeferred = launch { loadChapters(item) }
             loadCollected(item)
+            loadProgressFlag(item)
             detailDeferred.join()
             chapterDeferred.join()
             _loading.value = false
         }
+    }
+
+    /** 是否有阅读进度（按钮文案用） */
+    private suspend fun loadProgressFlag(item: MediaItem) {
+        val repo = progressRepository ?: return
+        _hasProgress.value = runCatching {
+            repo.getProgress(item.sourceId, item.id)
+        }.getOrNull()?.let { it.chapterUrl.isNotBlank() } == true
+    }
+
+    /**
+     * 原地换源：不新开页面、不叠加返回栈，直接在当前详情页载入目标源的同名书。
+     *
+     * 旧实现是 navigate 到目标源的详情页（`Routes.novelDetail(candidate)`），
+     * 用户连点几次换源后返回栈里堆一串详情页，返回要按很多次才能退出。
+     */
+    fun switchTo(target: MediaItem) {
+        _changeSourceOpen.value = false
+        _notice.value = "已切换到「${target.sourceName.ifBlank { target.title }}」"
+        load(target)
     }
 
     private suspend fun loadDetail(item: MediaItem) {

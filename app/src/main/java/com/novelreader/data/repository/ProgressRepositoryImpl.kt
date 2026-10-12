@@ -27,6 +27,7 @@ class ProgressRepositoryImpl(
         itemCover: String?,
         itemAuthor: String?,
         pageIndex: Int,
+        totalChapter: Int,
     ) {
         progressDao.insert(
             ProgressEntity(
@@ -39,6 +40,7 @@ class ProgressRepositoryImpl(
                 chapterUrl = chapterUrl,
                 chapterTitle = chapterTitle,
                 chapterIndex = chapterIndex,
+                totalChapter = totalChapter,
                 textPosition = textPosition,
                 pageIndex = pageIndex,
                 playPositionMs = playPositionMs,
@@ -56,6 +58,7 @@ class ProgressRepositoryImpl(
             playPositionMs = entity.playPositionMs,
             pageIndex = entity.pageIndex,
             updatedAt = entity.updatedAt,
+            totalChapter = entity.totalChapter,
         )
     }
 
@@ -81,6 +84,7 @@ class ProgressRepositoryImpl(
                 detailUrl = row.detailUrl ?: row.itemId,
                 chapterTitle = row.chapterTitle,
                 chapterIndex = row.chapterIndex,
+                totalChapter = row.totalChapter,
                 updatedAt = row.updatedAt,
             )
         }

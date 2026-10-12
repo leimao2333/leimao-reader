@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.0.1.0"
+    const val CURRENT_VERSION = "1.0.1.1"
 
     /**
      * 更新日志。
@@ -19,6 +19,18 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.0.1.1",
+            date = "2026-10-12",
+            changes = listOf(
+                "阅读手势增强：双击屏幕呼出菜单、长按弹出选择/复制面板（可复制本章或标题+正文）",
+                "新增「音量键翻页」开关：开启后音量上键=上一页/上一章、下键=下一页/下一章，滚动与翻页模式均支持",
+                "新增单章缓存：阅读时自动缓存本章到本地，源失效或离线时仍可继续阅读（顶栏显示「缓存」标记）",
+                "新增缓存管理页（设置 → 存储 → 缓存管理）：按书查看已缓存章节数与占用空间，支持清理单本/全部缓存",
+                "阅读设置面板新增「缓存本章」按钮，可手动缓存当前章节",
+                "源管理逻辑链优化：更贴合实际使用（搜索筛选、多选批量启用/禁用/删除、全部启用/禁用）",
+            ),
+        ),
         VersionEntry(
             version = "1.0.1.0",
             date = "2026-10-11",

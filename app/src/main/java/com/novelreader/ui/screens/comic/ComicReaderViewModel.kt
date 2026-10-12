@@ -154,6 +154,7 @@ class ComicReaderViewModel(
                 itemTitle = item.title,
                 itemCover = item.cover,
                 itemAuthor = item.author,
+                totalChapter = _chapters.value.size,
             )
         }
     }

@@ -177,6 +177,7 @@ class VideoPlayerViewModel(
                 itemTitle = item.title,
                 itemCover = item.cover,
                 itemAuthor = item.author,
+                totalChapter = _episodes.value.size,
             )
         }
     }

@@ -35,6 +35,8 @@ data class ProgressEntity(
     val chapterTitle: String,
     /** 章节索引 */
     val chapterIndex: Int = 0,
+    /** 章节总数（用于计算阅读进度百分比） */
+    val totalChapter: Int = 0,
     /** 小说：正文内滚动位置（字符偏移） */
     val textPosition: Int = 0,
     /** 小说翻页模式：当前页码（0 起）——退出重进恢复到对应页 */

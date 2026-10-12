@@ -51,6 +51,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel,
     onBack: () -> Unit,
     onOpenChangelog: () -> Unit = {},
+    onOpenCacheManage: () -> Unit = {},
 ) {
     val darkTheme by viewModel.darkTheme.collectAsState()
     val darkThemeMode by viewModel.darkThemeMode.collectAsState()
@@ -173,6 +174,17 @@ fun SettingsScreen(
                 valueRange = 1f..16f,
                 steps = 15,
             )
+
+            Spacer(Modifier.height(24.dp))
+
+            // ===== 存储 =====
+            SectionTitle("存储")
+            SettingRow(
+                title = "缓存管理",
+                subtitle = "查看与清理本地已缓存章节",
+            ) {
+                TextButton(onClick = onOpenCacheManage) { Text("管理") }
+            }
 
             Spacer(Modifier.height(24.dp))
 

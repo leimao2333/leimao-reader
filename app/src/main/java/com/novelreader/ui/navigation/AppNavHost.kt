@@ -182,6 +182,23 @@ fun AppNavHost(container: AppContainer) {
                 viewModel = viewModel,
                 onBack = { navController.popBackStack() },
                 onOpenChangelog = { navController.navigate(Routes.CHANGELOG) },
+                onOpenCacheManage = { navController.navigate(Routes.CACHE_MANAGE) },
+            )
+        }
+
+        // ===== 缓存管理（#30）=====
+        composable(Routes.CACHE_MANAGE) {
+            val viewModel: com.novelreader.ui.screens.cache.CacheManageViewModel = viewModel(
+                factory = NovelViewModelFactory(container) {
+                    com.novelreader.ui.screens.cache.CacheManageViewModel(
+                        it.chapterCacheRepository,
+                        it.preferencesManager,
+                    )
+                }
+            )
+            com.novelreader.ui.screens.cache.CacheManageScreen(
+                viewModel = viewModel,
+                onBack = { navController.popBackStack() },
             )
         }
 
@@ -306,6 +323,7 @@ fun AppNavHost(container: AppContainer) {
                         it.contentRepository,
                         it.progressRepository,
                         it.preferencesManager,
+                        it.chapterCacheRepository,
                     )
                 }
             )

@@ -1,6 +1,8 @@
 package com.novelreader.ui.screens.source
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,7 +19,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
@@ -67,6 +71,8 @@ fun SourceManageScreen(
     val sources by viewModel.sources.collectAsState()
     val message by viewModel.message.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    // 源名称搜索关键词
+    var searchKeyword by remember { mutableStateOf("") }
     // 类型筛选：null = 全部类型
     var selectedType by remember { mutableStateOf<SourceType?>(null) }
     // 内容分类筛选：null = 全部分类
@@ -77,6 +83,9 @@ fun SourceManageScreen(
     var tableView by remember { mutableStateOf(false) }
     // 排序菜单展开
     var sortMenuOpen by remember { mutableStateOf(false) }
+    // 批量选择模式
+    var selectionMode by remember { mutableStateOf(false) }
+    val selectedIds = remember { androidx.compose.runtime.mutableStateListOf<String>() }
 
     LaunchedEffect(Unit) { viewModel.observe() }
 
@@ -88,10 +97,19 @@ fun SourceManageScreen(
         }
     }
 
-    // 先按类型过滤，再按内容分类过滤，最后排序
-    val typeFiltered = remember(sources, selectedType) {
-        if (selectedType == null) sources
-        else sources.filter { it.type == selectedType }
+    // 先按关键词搜索，再按类型过滤，再按内容分类过滤，最后排序
+    val keywordFiltered = remember(sources, searchKeyword) {
+        val kw = searchKeyword.trim()
+        if (kw.isEmpty()) sources
+        else sources.filter {
+            it.name.contains(kw, ignoreCase = true) ||
+                it.author.contains(kw, ignoreCase = true) ||
+                it.desc.contains(kw, ignoreCase = true)
+        }
+    }
+    val typeFiltered = remember(keywordFiltered, selectedType) {
+        if (selectedType == null) keywordFiltered
+        else keywordFiltered.filter { it.type == selectedType }
     }
     val grouped = remember(typeFiltered) { viewModel.groupByCategory(typeFiltered) }
     val categories = remember(typeFiltered) { viewModel.sortedCategories(typeFiltered) }
@@ -106,53 +124,106 @@ fun SourceManageScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("源管理") },
+                title = {
+                    if (selectionMode) Text("已选 ${selectedIds.size} 个")
+                    else Text("源管理（${sources.size}）")
+                },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "返回")
+                    IconButton(onClick = {
+                        if (selectionMode) {
+                            selectionMode = false
+                            selectedIds.clear()
+                        } else onBack()
+                    }) {
+                        Icon(
+                            imageVector = if (selectionMode) Icons.Default.Close else Icons.Default.ArrowBack,
+                            contentDescription = if (selectionMode) "退出多选" else "返回",
+                        )
                     }
                 },
                 actions = {
-                    // 排序菜单
-                    Box {
-                        TextButton(onClick = { sortMenuOpen = true }) { Text("排序") }
-                        DropdownMenu(
-                            expanded = sortMenuOpen,
-                            onDismissRequest = { sortMenuOpen = false },
-                        ) {
-                            SourceSortOrder.entries.forEach { order ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            text = if (sortOrder == order) "✓ ${order.label}" else order.label,
-                                            fontWeight = if (sortOrder == order) FontWeight.Bold else FontWeight.Normal,
-                                        )
-                                    },
-                                    onClick = {
-                                        sortOrder = order
-                                        sortMenuOpen = false
-                                    },
-                                )
+                    if (selectionMode) {
+                        // 批量操作：全选 / 全启用 / 全禁用 / 删除
+                        TextButton(onClick = {
+                            if (selectedIds.size == displayedSources.size) selectedIds.clear()
+                            else {
+                                selectedIds.clear()
+                                selectedIds.addAll(displayedSources.map { it.id })
+                            }
+                        }) { Text(if (selectedIds.size == displayedSources.size && displayedSources.isNotEmpty()) "取消全选" else "全选") }
+                        TextButton(
+                            enabled = selectedIds.isNotEmpty(),
+                            onClick = {
+                                val sel = displayedSources.filter { it.id in selectedIds }
+                                viewModel.setEnabledBatch(sel, true)
+                                selectionMode = false
+                                selectedIds.clear()
+                            },
+                        ) { Text("启用") }
+                        TextButton(
+                            enabled = selectedIds.isNotEmpty(),
+                            onClick = {
+                                val sel = displayedSources.filter { it.id in selectedIds }
+                                viewModel.setEnabledBatch(sel, false)
+                                selectionMode = false
+                                selectedIds.clear()
+                            },
+                        ) { Text("禁用") }
+                        TextButton(
+                            enabled = selectedIds.isNotEmpty(),
+                            onClick = {
+                                val sel = displayedSources.filter { it.id in selectedIds }
+                                viewModel.deleteBatch(sel)
+                                selectionMode = false
+                                selectedIds.clear()
+                            },
+                        ) { Text("删除") }
+                    } else {
+                        // 排序菜单
+                        Box {
+                            TextButton(onClick = { sortMenuOpen = true }) { Text("排序") }
+                            DropdownMenu(
+                                expanded = sortMenuOpen,
+                                onDismissRequest = { sortMenuOpen = false },
+                            ) {
+                                SourceSortOrder.entries.forEach { order ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = if (sortOrder == order) "✓ ${order.label}" else order.label,
+                                                fontWeight = if (sortOrder == order) FontWeight.Bold else FontWeight.Normal,
+                                            )
+                                        },
+                                        onClick = {
+                                            sortOrder = order
+                                            sortMenuOpen = false
+                                        },
+                                    )
+                                }
                             }
                         }
-                    }
-                    // 视图切换
-                    IconButton(onClick = { tableView = !tableView }) {
-                        Icon(
-                            imageVector = if (tableView) Icons.Default.ViewList else Icons.Default.GridView,
-                            contentDescription = if (tableView) "列表视图" else "表格视图",
-                        )
+                        // 批量管理入口
+                        TextButton(onClick = { selectionMode = true }) { Text("批量") }
+                        // 视图切换
+                        IconButton(onClick = { tableView = !tableView }) {
+                            Icon(
+                                imageVector = if (tableView) Icons.Default.ViewList else Icons.Default.GridView,
+                                contentDescription = if (tableView) "列表视图" else "表格视图",
+                            )
+                        }
                     }
                 },
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = onImport,
-                icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                text = { Text("导入源") },
-            )
+            if (!selectionMode) {
+                ExtendedFloatingActionButton(
+                    onClick = onImport,
+                    icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                    text = { Text("导入源") },
+                )
+            }
         },
     ) { padding ->
         if (sources.isEmpty()) {
@@ -181,6 +252,24 @@ fun SourceManageScreen(
                     .fillMaxSize()
                     .padding(padding),
             ) {
+                // 搜索框：按名称/作者/描述过滤
+                androidx.compose.material3.OutlinedTextField(
+                    value = searchKeyword,
+                    onValueChange = { searchKeyword = it },
+                    placeholder = { Text("搜索源名称 / 作者") },
+                    singleLine = true,
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (searchKeyword.isNotEmpty()) {
+                            IconButton(onClick = { searchKeyword = "" }) {
+                                Icon(Icons.Default.Close, contentDescription = "清空")
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                )
                 // 类型筛选栏（小说 / 漫画 / 视频）
                 TypeFilterBar(
                     selected = selectedType,
@@ -193,6 +282,27 @@ fun SourceManageScreen(
                     selected = selectedCategory,
                     onSelect = { selectedCategory = it },
                 )
+                // 一键全启用 / 全禁用 + 启用统计
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val enabledCount = displayedSources.count { it.enabled }
+                    Text(
+                        text = "启用 $enabledCount / ${displayedSources.size}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = {
+                        viewModel.setAllEnabled(displayedSources, true)
+                    }) { Text("全部启用") }
+                    TextButton(onClick = {
+                        viewModel.setAllEnabled(displayedSources, false)
+                    }) { Text("全部禁用") }
+                }
 
                 if (tableView) {
                     SourceTableView(
@@ -209,8 +319,18 @@ fun SourceManageScreen(
                         items(displayedSources, key = { it.id }) { source ->
                             SourceCard(
                                 source = source,
+                                selectionMode = selectionMode,
+                                selected = source.id in selectedIds,
                                 onToggle = { viewModel.toggleEnabled(source) },
                                 onDelete = { viewModel.deleteSource(source) },
+                                onLongClick = {
+                                    selectionMode = true
+                                    if (source.id !in selectedIds) selectedIds.add(source.id)
+                                },
+                                onSelectToggle = {
+                                    if (source.id in selectedIds) selectedIds.remove(source.id)
+                                    else selectedIds.add(source.id)
+                                },
                             )
                         }
                     }
@@ -353,19 +473,49 @@ private fun CategoryFilterBar(
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun SourceCard(
     source: SourceInfo,
     onToggle: () -> Unit,
     onDelete: () -> Unit,
+    selectionMode: Boolean = false,
+    selected: Boolean = false,
+    onLongClick: () -> Unit = {},
+    onSelectToggle: () -> Unit = {},
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    val cardModifier = Modifier
+        .fillMaxWidth()
+        .then(
+            if (selectionMode) {
+                Modifier.clickable(onClick = onSelectToggle)
+            } else {
+                Modifier.combinedClickable(onClick = {}, onLongClick = onLongClick)
+            }
+        )
+    Card(
+        modifier = cardModifier,
+        colors = if (selected) {
+            androidx.compose.material3.CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+            )
+        } else {
+            androidx.compose.material3.CardDefaults.cardColors()
+        },
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (selectionMode) {
+                androidx.compose.material3.Checkbox(
+                    checked = selected,
+                    onCheckedChange = { onSelectToggle() },
+                )
+                Spacer(Modifier.width(4.dp))
+            }
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -401,8 +551,10 @@ private fun SourceCard(
                     )
                 }
             }
-            Switch(checked = source.enabled, onCheckedChange = { onToggle() })
-            TextButton(onClick = onDelete) { Text("删除") }
+            if (!selectionMode) {
+                Switch(checked = source.enabled, onCheckedChange = { onToggle() })
+                TextButton(onClick = onDelete) { Text("删除") }
+            }
         }
     }
 }

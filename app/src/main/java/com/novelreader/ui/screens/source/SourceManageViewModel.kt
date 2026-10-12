@@ -147,6 +147,28 @@ class SourceManageViewModel(
         }
     }
 
+    /** 批量设置启用状态 */
+    fun setEnabledBatch(sources: List<SourceInfo>, enabled: Boolean) {
+        viewModelScope.launch {
+            sources.forEach { sourceRepository.setSourceEnabled(it.id, enabled) }
+            refresh()
+        }
+    }
+
+    /** 一键启用 / 禁用全部（可按当前筛选结果） */
+    fun setAllEnabled(list: List<SourceInfo>, enabled: Boolean) {
+        setEnabledBatch(list, enabled)
+    }
+
+    /** 批量删除源 */
+    fun deleteBatch(sources: List<SourceInfo>) {
+        viewModelScope.launch {
+            sources.forEach { sourceRepository.deleteSource(it.id) }
+            _message.value = "已删除 ${sources.size} 个源"
+            refresh()
+        }
+    }
+
     /** 清除提示消息 */
     fun consumeMessage() {
         _message.value = null

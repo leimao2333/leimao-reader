@@ -14,6 +14,7 @@ object Routes {
     const val HOME = "home"                    // 首页（书架/发现/源管理入口）
     const val SETTINGS = "settings"            // 设置中心
     const val CHANGELOG = "changelog"          // 更新日志
+    const val CACHE_MANAGE = "cache_manage"    // 缓存管理（单章缓存 #30）
 
     // ===== 源管理 =====
     const val SOURCE_MANAGE = "source_manage"  // 源列表管理

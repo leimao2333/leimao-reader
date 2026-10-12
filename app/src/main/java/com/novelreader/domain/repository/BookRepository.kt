@@ -43,6 +43,7 @@ interface ProgressRepository {
         itemCover: String? = null,
         itemAuthor: String? = null,
         pageIndex: Int = 0,
+        totalChapter: Int = 0,
     )
 
     /** 读取进度 */
@@ -73,4 +74,6 @@ data class ReadingProgress(
     val pageIndex: Int = 0,
     /** 最后更新时间戳（书架按最近阅读排序用） */
     val updatedAt: Long = 0L,
+    /** 章节总数（0 = 未知） */
+    val totalChapter: Int = 0,
 )

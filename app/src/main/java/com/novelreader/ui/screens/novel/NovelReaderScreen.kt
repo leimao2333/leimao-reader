@@ -781,9 +781,13 @@ private fun HorizontalPagerNovel(
         val textMeasurer = rememberTextMeasurer()
         val density = LocalDensity.current.density
         val availWidthPx = (maxWidthDp - sidePadding * 2f).coerceAtLeast(1f) * density
-        val textHeightPx = (maxHeightDp - 96f).coerceAtLeast(1f) * density
+        // 底部预留页码行高度，且分页测量与渲染同用 buildReaderText（段距占位行/首行缩进参与测量），
+        // 否则渲染比测量高，末行会被裁掉一半
+        val fontPx = fontSize * density * androidx.compose.ui.platform.LocalDensity.current.fontScale
+        val textHeightPx = ((maxHeightDp - 96f).coerceAtLeast(1f) * density - fontPx * 1.8f).coerceAtLeast(1f)
         val style = readerTextStyle(fontSize, lineHeightMultiplier, fontFamily, bold, letterSpacing)
         val paraSpacingPx = paragraphSpacing * density
+        val titleSpacerPx = 16f * density
 
         val pages = remember(
             content, chapterTitle, hideChapterTitle, availWidthPx, textHeightPx,
@@ -798,6 +802,8 @@ private fun HorizontalPagerNovel(
                 heightPx = textHeightPx,
                 style = style,
                 paragraphSpacingPx = paraSpacingPx,
+                render = { buildReaderText(it, fontSize, paragraphSpacing, indent) },
+                titleSpacerPx = titleSpacerPx,
             )
         }
         val hasNextGate = content.isNotBlank() && hasNextChapter
@@ -967,9 +973,13 @@ private fun VerticalPagerNovel(
         val textMeasurer = rememberTextMeasurer()
         val density = LocalDensity.current.density
         val availWidthPx = (maxWidthDp - sidePadding * 2f).coerceAtLeast(1f) * density
-        val textHeightPx = (maxHeightDp - 96f).coerceAtLeast(1f) * density
+        // 底部预留页码行高度，且分页测量与渲染同用 buildReaderText（段距占位行/首行缩进参与测量），
+        // 否则渲染比测量高，末行会被裁掉一半
+        val fontPx = fontSize * density * androidx.compose.ui.platform.LocalDensity.current.fontScale
+        val textHeightPx = ((maxHeightDp - 96f).coerceAtLeast(1f) * density - fontPx * 1.8f).coerceAtLeast(1f)
         val style = readerTextStyle(fontSize, lineHeightMultiplier, fontFamily, bold, letterSpacing)
         val paraSpacingPx = paragraphSpacing * density
+        val titleSpacerPx = 16f * density
 
         val pages = remember(
             content, chapterTitle, hideChapterTitle, availWidthPx, textHeightPx,
@@ -984,6 +994,8 @@ private fun VerticalPagerNovel(
                 heightPx = textHeightPx,
                 style = style,
                 paragraphSpacingPx = paraSpacingPx,
+                render = { buildReaderText(it, fontSize, paragraphSpacing, indent) },
+                titleSpacerPx = titleSpacerPx,
             )
         }
         val hasNextGate = content.isNotBlank() && hasNextChapter
@@ -1253,6 +1265,10 @@ private fun paginateByMeasurement(
     heightPx: Float,
     style: TextStyle,
     paragraphSpacingPx: Float,
+    /** 与渲染一致的字串构造（含段距占位行与首行缩进），保证测量=渲染 */
+    render: (String) -> AnnotatedString,
+    /** 标题下方 Spacer(16.dp) 的真实像素高度 */
+    titleSpacerPx: Float = 41.6f,
 ): List<String> {
     if (content.isBlank()) return listOf("")
     val constraints = Constraints(maxWidth = widthPx.toInt().coerceAtLeast(1), maxHeight = Constraints.Infinity)
@@ -1266,16 +1282,16 @@ private fun paginateByMeasurement(
                 text = AnnotatedString(chapterTitle),
                 style = style.copy(fontSize = (style.fontSize.value + 2).sp, fontWeight = FontWeight.Bold),
                 constraints = constraints,
-            ).size.height.toFloat() + 16 * 2.6f
+            ).size.height.toFloat() + titleSpacerPx
         }.getOrDefault(0f)
     } else 0f
 
     fun measureHeight(text: String): Int = measurer.measure(
-        text = AnnotatedString(text), style = style, constraints = constraints,
+        text = render(text), style = style, constraints = constraints,
     ).size.height
 
     fun fits(text: String, limitPx: Float): Boolean {
-        val m = measurer.measure(text = AnnotatedString(text), style = style, constraints = constraints)
+        val m = measurer.measure(text = render(text), style = style, constraints = constraints)
         return !m.didOverflowHeight && m.size.height <= limitPx
     }
 

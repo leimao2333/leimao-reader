@@ -34,27 +34,48 @@ class LegadoSourceAdapter(
     override suspend fun search(keyword: String, page: Int): List<MediaItem> {
         if (source.searchUrl.isBlank()) return emptyList()
 
-        // searchUrl 可能形如 "url,{请求配置JSON}"（含 method/body/charset）
-        val (urlTemplate, requestConfig) = splitRequestConfig(source.searchUrl)
-        var url = renderUrl(urlTemplate, keyword, page)
+        // searchUrl 可能形如 "url,{请求配置JSON}"（含 method/body/charset/headers），
+        // 或以 @js: 开头（执行 JS 得到 URL，可再带 ,{配置}）
+        val (urlTemplate, requestConfig) = if (source.searchUrl.trimStart().startsWith("@js:")) {
+            val js = source.searchUrl.trimStart().substringAfter("@js:")
+            val jsResult = evalSearchUrlJs(js, keyword, page) ?: return emptyList()
+            splitRequestConfig(jsResult)
+        } else {
+            splitRequestConfig(source.searchUrl)
+        }
+
+        val charset = requestConfig?.get("charset")?.asString?.takeIf { it.isNotBlank() }
+        var url = renderUrl(urlTemplate, keyword, page, charset)
         if (!url.startsWith("http")) {
             url = LegadoRuleEngine.toAbsoluteUrl(baseUrl, url) ?: url
         }
 
+        // 合并请求头：源级 headers + 请求配置中的 headers（UA/Referer 等，防盗链）
+        val reqHeaders = buildMap {
+            putAll(headers)
+            requestConfig?.get("headers")?.let { h ->
+                if (h.isJsonObject) {
+                    h.asJsonObject.entrySet().forEach { (k, v) ->
+                        if (v.isJsonPrimitive) put(k, v.asString)
+                    }
+                }
+            }
+        }
+
         val content = runCatching {
             val method = requestConfig?.get("method")?.asString?.uppercase() ?: "GET"
-            val charset = requestConfig?.get("charset")?.asString?.takeIf { it.isNotBlank() }
             if (method == "POST") {
                 val bodyTemplate = requestConfig?.get("body")?.asString ?: ""
-                val body = renderUrl(bodyTemplate, keyword, page)
+                // body 中的 {{key}} 按请求字符集编码（GBK 源语义，与 legado 一致）
+                val body = renderUrl(bodyTemplate, keyword, page, charset)
                 val contentType = if (bodyTemplate.trimStart().startsWith("{")) {
                     "application/json; charset=utf-8"
                 } else {
                     "application/x-www-form-urlencoded"
                 }
-                HttpClient.post(url, body, headers, charset, contentType)
+                HttpClient.post(url, body, reqHeaders, charset, contentType)
             } else {
-                HttpClient.get(url, headers, charset)
+                HttpClient.get(url, reqHeaders, charset)
             }
         }.getOrNull()
         if (content.isNullOrBlank()) return emptyList()
@@ -322,9 +343,8 @@ class LegadoSourceAdapter(
             ?: source.ruleBookInfo["tocUrl"]?.takeIf { it.isNotBlank() }
         val tocUrl = tocUrlRaw?.let { resolveTocUrl(it, content, detailUrl) }
             ?.let { LegadoRuleEngine.toAbsoluteUrl(detailUrl, it) }
-        val listContent = if (tocUrl != null && tocUrl.isNotBlank() && tocUrl != detailUrl) {
-            fetch(tocUrl) ?: content
-        } else content
+        val firstPageUrl = tocUrl?.takeIf { it.isNotBlank() && it != detailUrl } ?: detailUrl
+        val listContent = if (firstPageUrl != detailUrl) fetch(firstPageUrl) ?: content else content
 
         val listRule = rule["chapterList"] ?: rule["list"] ?: return emptyList()
         val fieldRules = rule
@@ -335,26 +355,50 @@ class LegadoSourceAdapter(
         // JSON 目录时，{{baseUrl}} 指代目录实际请求 URL（tocUrl），供 chapterUrl 模板使用
         val jsonContextUrl = tocUrl ?: detailUrl
 
-        val list = if (isJson) {
-            extractJsonResults(listContent, rule, jsonContextUrl)
-        } else {
-            LegadoRuleEngine.extractList(listContent, listRule, fieldRules, baseUrl)
+        if (isJson) {
+            val list = extractJsonResults(listContent, rule, jsonContextUrl)
+            return list.mapIndexed { index, fields ->
+                fieldsToChapter(fields, index, jsonContextUrl)
+            }
         }
 
-        return list.mapIndexed { index, fields ->
-            val name = fields["chapterName"] ?: fields["name"] ?: fields["title"] ?: "第${index + 1}章"
-            val chapterUrlRaw = fields["chapterUrl"] ?: fields["url"] ?: ""
-            // 章节相对地址以「目录页」为基准解析（legado 语义：相对当前页面）
-            val pageBase = tocUrl ?: detailUrl
-            val chapterUrl = LegadoRuleEngine.toAbsoluteUrl(pageBase, chapterUrlRaw) ?: chapterUrlRaw
-            ChapterItem(
-                id = chapterUrl.ifBlank { "$index" },
-                title = name,
-                url = chapterUrl,
-                index = index,
-                sourceId = info.id,
-            )
+        // HTML 目录：支持 nextTocUrl 翻页（legado 语义），循环抓取下一页并追加章节
+        data class TocPage(val url: String, val content: String)
+        val pages = mutableListOf(TocPage(firstPageUrl, listContent))
+        val nextRule = rule["nextTocUrl"]?.takeIf { it.isNotBlank() }
+        if (nextRule != null) {
+            val visited = mutableSetOf(firstPageUrl)
+            var guard = 0
+            while (guard++ < 50) {
+                val last = pages.last()
+                val nextRaw = LegadoRuleEngine.extractString(last.content, nextRule, last.url) ?: break
+                val nextUrl = LegadoRuleEngine.toAbsoluteUrl(last.url, nextRaw) ?: break
+                if (!visited.add(nextUrl)) break
+                val nextContent = fetch(nextUrl) ?: break
+                pages.add(TocPage(nextUrl, nextContent))
+            }
         }
+
+        var index = 0
+        return pages.flatMap { page ->
+            LegadoRuleEngine.extractList(page.content, listRule, fieldRules, baseUrl).map { fields ->
+                fieldsToChapter(fields, index++, page.url)
+            }
+        }
+    }
+
+    /** 目录字段 -> ChapterItem（pageBase 为章节锚点所在页面 URL，相对地址按其解析） */
+    private fun fieldsToChapter(fields: Map<String, String>, index: Int, pageBase: String): ChapterItem {
+        val name = fields["chapterName"] ?: fields["name"] ?: fields["title"] ?: "第${index + 1}章"
+        val chapterUrlRaw = fields["chapterUrl"] ?: fields["url"] ?: ""
+        val chapterUrl = LegadoRuleEngine.toAbsoluteUrl(pageBase, chapterUrlRaw) ?: chapterUrlRaw
+        return ChapterItem(
+            id = chapterUrl.ifBlank { "$index" },
+            title = name,
+            url = chapterUrl,
+            index = index,
+            sourceId = info.id,
+        )
     }
 
     /** 渲染仅含 {{baseUrl}} 等简单占位符的 URL 模板（baseUrl 用给定上下文替换） */
@@ -396,13 +440,13 @@ class LegadoSourceAdapter(
                 extractVideoUrl(content, rule)
             }
             else -> {
-                extractNovelText(content, rule)
+                extractNovelText(content, rule, url)
             }
         }
     }
 
     /** 提取小说正文 */
-    private fun extractNovelText(content: String, rule: Map<String, String>): ContentResult {
+    private suspend fun extractNovelText(content: String, rule: Map<String, String>, pageUrl: String): ContentResult {
         val contentRule = rule["content"] ?: rule["text"] ?: ""
         if (contentRule.isBlank()) {
             // 无规则时取 body 文本
@@ -412,20 +456,40 @@ class LegadoSourceAdapter(
         // JSON 正文（如 {"code":200,"data":{"content":"..."}}）
         // 注意：content 规则通常自带 data 前缀（如 "data.content"），相对根节点解析
         val isJson = content.trimStart().startsWith("{") || content.trimStart().startsWith("[")
-        val text = if (isJson) {
+
+        // 单页正文提取（原始 HTML 片段或纯文本）
+        fun extractPage(c: String): String = if (isJson) {
             runCatching {
-                val root = com.google.gson.JsonParser.parseString(content)
+                val root = com.google.gson.JsonParser.parseString(c)
                 renderJsonRule(contentRule, root)
             }.getOrNull() ?: ""
         } else {
-            // 正文规则可能是 @css:xxx 或常规选择器
-            LegadoRuleEngine.extractString(content, contentRule, baseUrl) ?: ""
+            LegadoRuleEngine.extractString(c, contentRule, baseUrl) ?: ""
         }
+
+        var text = extractPage(content)
+
+        // 正文翻页：nextContentUrl（legado 语义），循环抓取下一页正文并拼接
+        val nextRule = rule["nextContentUrl"]?.takeIf { it.isNotBlank() }
+        if (nextRule != null && !isJson) {
+            val visited = mutableSetOf(pageUrl)
+            var curUrl = pageUrl
+            var curContent = content
+            var guard = 0
+            while (guard++ < 30) {
+                val nextRaw = LegadoRuleEngine.extractString(curContent, nextRule, curUrl) ?: break
+                val nextUrl = LegadoRuleEngine.toAbsoluteUrl(curUrl, nextRaw) ?: break
+                if (!visited.add(nextUrl)) break
+                val nextContent = fetch(nextUrl) ?: break
+                text += "\n" + extractPage(nextContent)
+                curContent = nextContent
+                curUrl = nextUrl
+            }
+        }
+
         // ## 正则净化（非 JSON 路径下已由 renderJsonRule 处理；此处兜底 HTML 路径）
         val cleaned = if (!isJson) {
-            val afterRegex = rule["replaceRegex"]?.let { regex ->
-                runCatching { text.replace(Regex(regex), "") }.getOrDefault(text)
-            } ?: text
+            val afterRegex = applySourceReplaceRegex(text, rule["replaceRegex"])
             // 正文规则常带 @html 提取（如 xxx@html），结果是 HTML 片段，
             // 必须转成纯文本（按块级标签保留段落换行），否则 div/br/&nbsp; 直接显示给用户
             htmlToPlainText(afterRegex)
@@ -434,6 +498,21 @@ class LegadoSourceAdapter(
             normalizePlainText(applyHtmlEntities(text))
         }
         return ContentResult.novel(cleaned)
+    }
+
+    /**
+     * 应用书源级 replaceRegex 净化规则（legado 语义）：
+     * - `##正则` → 删除匹配
+     * - `##正则##替换` → 替换（支持 $1 分组）
+     * - 无 ## 前缀 → 整串视为正则删除
+     */
+    private fun applySourceReplaceRegex(text: String, raw: String?): String {
+        if (raw.isNullOrBlank()) return text
+        val body = if (raw.startsWith("##")) raw.substring(2) else raw
+        if (body.isBlank()) return text
+        val regex = body.substringBefore("##")
+        val replacement = body.substringAfter("##", "")
+        return runCatching { text.replace(Regex(regex), replacement) }.getOrDefault(text)
     }
 
     /** 解码 JSON 正文里常见的 HTML 实体与 <br> 标签（保留段落与缩进） */
@@ -593,20 +672,88 @@ class LegadoSourceAdapter(
         } ?: false
     }
 
-    /** 渲染 URL（处理 {{key}}/{{keyword}}/{{page}} 占位） */
-    private fun renderUrl(template: String, keyword: String, page: Int): String {
-        val values = mapOf(
-            "key" to keyword,
-            "keyword" to keyword,
+    /** 渲染 URL（处理 {{key}}/{{keyword}}/{{page}} 占位；关键词按 charset 编码，其余 {{表达式}} 用 Rhino 求值） */
+    private fun renderUrl(template: String, keyword: String, page: Int, charset: String? = null): String {
+        val enc = charset?.let { runCatching { java.nio.charset.Charset.forName(it) }.getOrNull() } ?: Charsets.UTF_8
+        val simple = mapOf(
+            "key" to java.net.URLEncoder.encode(keyword, enc.name()),
+            "keyword" to java.net.URLEncoder.encode(keyword, enc.name()),
+            "searchKey" to java.net.URLEncoder.encode(keyword, enc.name()),
+            "searchPage" to page.toString(),
             "page" to page.toString(),
-            "searchKey" to keyword,
         )
         var result = template
-        values.forEach { (k, v) ->
-            result = result.replace("{{$k}}", java.net.URLEncoder.encode(v, "UTF-8"))
+        simple.forEach { (k, v) -> result = result.replace("{{$k}}", v) }
+        // 其余 {{表达式}}（如 {{(page-1)*50}}）→ Rhino 求值
+        if (result.contains("{{")) {
+            result = Regex("\\{\\{(.*?)\\}\\}").replace(result) { m ->
+                evalUrlExpr(m.groupValues[1], keyword, page).orEmpty()
+            }
         }
         return result
     }
+
+    /** 求值 URL 中的 {{表达式}}：注入 key/searchKey/page/searchPage/baseUrl */
+    private fun evalUrlExpr(expr: String, keyword: String, page: Int): String? = runCatching {
+        val ctx = org.mozilla.javascript.Context.enter()
+        try {
+            ctx.optimizationLevel = -1
+            val scope = ctx.initSafeStandardObjects()
+            scope.put("key", scope, keyword)
+            scope.put("searchKey", scope, keyword)
+            scope.put("page", scope, page)
+            scope.put("searchPage", scope, page)
+            scope.put("baseUrl", scope, baseUrl)
+            val v = ctx.evaluateString(scope, expr, "<url-expr>", 1, null)
+            org.mozilla.javascript.Context.toString(v)
+        } finally {
+            org.mozilla.javascript.Context.exit()
+        }
+    }.getOrNull()
+
+    /**
+     * 执行 @js: 搜索地址脚本，返回 URL 字符串（可含 `,{配置}` 尾巴）。
+     * 注入变量：key / searchKey / page / searchPage / baseUrl / bookSourceUrl，
+     * 并提供 java 桩（put/get/toast 等常用方法 no-op，避免脚本直接失败）。
+     * 取值优先级：脚本返回值 > result 变量。
+     */
+    private fun evalSearchUrlJs(js: String, keyword: String, page: Int): String? = runCatching {
+        val ctx = org.mozilla.javascript.Context.enter()
+        try {
+            ctx.optimizationLevel = -1
+            val scope = ctx.initSafeStandardObjects()
+            scope.put("key", scope, keyword)
+            scope.put("searchKey", scope, keyword)
+            scope.put("page", scope, page)
+            scope.put("searchPage", scope, page)
+            scope.put("baseUrl", scope, baseUrl)
+            scope.put("bookSourceUrl", scope, baseUrl)
+            // java 桩：脚本里常见的 java.put / java.toast 等在这里只做记录，不产生副作用
+            ctx.evaluateString(
+                scope,
+                "var java = { put: function(k,v){ this['_p_'+k]=v; }, " +
+                    "get: function(k){ return this['_p_'+k] || ''; }, " +
+                    "toast: function(){}, ajax: function(){ return ''; }, " +
+                    "startBrowserAwait: function(){ return null; }, " +
+                    "getElement: function(){ return null; } };",
+                "<java-stub>", 1, null,
+            )
+            // 先渲染脚本里的 {{key}}/{{page}} 占位（legado 语义：先替换再执行）
+            val script = renderUrl(js, keyword, page)
+            val out = ctx.evaluateString(scope, script, "<search-url>", 1, null)
+            val s = org.mozilla.javascript.Context.toString(out)
+            if (s.isNotBlank() && s != "undefined" && s != "null") {
+                s
+            } else {
+                val rv = scope.get("result", scope)
+                if (rv != null && rv != org.mozilla.javascript.Scriptable.NOT_FOUND) {
+                    org.mozilla.javascript.Context.toString(rv)
+                } else null
+            }
+        } finally {
+            org.mozilla.javascript.Context.exit()
+        }
+    }.getOrNull()?.takeIf { it.isNotBlank() }
 
     /**
      * 拆分 `"url,{请求配置JSON}"` 形式的 searchUrl。

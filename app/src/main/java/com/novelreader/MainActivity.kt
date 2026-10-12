@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.remember
 import com.novelreader.ui.navigation.AppNavHost
 import com.novelreader.ui.theme.NovelReaderTheme
 
@@ -31,7 +32,14 @@ class MainActivity : ComponentActivity() {
                 else -> false
             }
             NovelReaderTheme(darkTheme = darkTheme) {
-                AppNavHost(container = app.container)
+                // 深链支持：novelreader://search?keyword=xxx 直达小说搜索（自动化测试/外部调用）
+                val deepLinkKeyword = remember(intent?.data) {
+                    val data = intent?.data
+                    if (data?.scheme == "novelreader" && data.host == "search") {
+                        data.getQueryParameter("keyword")
+                    } else null
+                }
+                AppNavHost(container = app.container, initialNovelSearchKeyword = deepLinkKeyword)
             }
         }
     }

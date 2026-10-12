@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.1.8"
+    const val CURRENT_VERSION = "1.1.9"
 
     /**
      * 更新日志。
@@ -19,6 +19,24 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.1.9",
+            date = "2026-10-12",
+            changes = listOf(
+                "目录翻页支持（对标 legado nextTocUrl）：分页目录自动抓取后续页并合并章节，修复大量站点目录只有第一页（章节不全）的问题",
+                "正文翻页支持（对标 legado nextContentUrl）：分页正文自动抓取下一页并拼接，修复「本章未完，点击下一页继续阅读」类源正文截断",
+                "规则引擎支持任意属性名提取（@onclick/@data-lazyload 等，对齐 legado 语义），此前仅支持固定白名单属性",
+                "规则尾部 JS 支持（@js: / <js>）：前段取值注入 result 变量执行 JS，修复阅友等源 bookUrl 提取失败",
+                "@css: 选择器支持取属性（@css:img@src），此前只能取文本",
+                "标签+区间写法支持（tag.span[0:1]），修复分类/标签类规则解析失败",
+                "多元素文本拼接（legado 语义）：文本类规则匹配多个元素时逐个拼接，正文段落不再丢失",
+                "搜索地址 @js: 支持：执行 JS 生成搜索 URL（注入 key/page/baseUrl，含 {{表达式}} 求值），解锁 JS 型搜索源",
+                "搜索请求配置 headers 合并（UA/Referer 防盗链）与关键词按 charset 编码：修复 GBK 源 POST 搜索乱码无结果",
+                "replaceRegex 净化规则修正：支持 ##正则##替换 格式，此前误把 ## 当正则一部分",
+                "新增 deep link novelreader://search?keyword=xxx：直达小说搜索并自动搜索（调试/自动化用）",
+                "新增 LegadoRealSourceTest：离线规则语义 5 条 + 真实书源联网验证 3 条（得奇目录翻页/正文翻页、手机小说 GBK、阅友 onclick 提取）",
+            ),
+        ),
         VersionEntry(
             version = "1.1.8",
             date = "2026-10-12",

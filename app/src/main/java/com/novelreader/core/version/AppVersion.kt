@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.1.4"
+    const val CURRENT_VERSION = "1.1.5"
 
     /**
      * 更新日志。
@@ -19,6 +19,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.1.5",
+            date = "2026-10-12",
+            changes = listOf(
+                "修复搜索结果与关键词无关的回归：v1.1.4 优化把过滤推迟到搜索收尾，导致搜索过程中显示源返回的全部原始结果（如搜「千面之龙」出现大量仅含「千面」的无关书）",
+                "现改为每批结果到达时即做批内过滤（批小开销低）：精确模式只显示书名一致的结果，模糊模式按相似度过滤；全局排序仍在收尾执行一次，不影响流畅度",
+                "新增回归单测：精确/模糊模式搜「千面之龙」必须过滤「千面妈咪送上门」等无关书",
+            ),
+        ),
         VersionEntry(
             version = "1.1.4",
             date = "2026-10-12",

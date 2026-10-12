@@ -156,4 +156,33 @@ class FuzzyMatchTest {
     fun `归一化忽略书名号与空白`() {
         assertEquals(FuzzyMatch.normalize("剑来"), FuzzyMatch.normalize("《剑 来》"))
     }
+
+    @Test
+    fun `精确模式搜索千面之龙过滤含千面的无关书`() {
+        // 回归：源对「千面之龙」会返回大量仅含「千面」的无关书，精准模式必须全部过滤
+        val items = listOf(
+            item("1", "千面之龙"),
+            item("2", "萌宝无敌：千面妈咪送上门"),
+            item("3", "摄政王的千面宠妃"),
+            item("4", "重生之千面影帝"),
+            item("5", "综影视：与你终错终点"),
+            item("6", "《千面之龙》"),   // 归一化后同名，应保留
+        )
+        val out = FuzzyMatch.exactRank(items, "千面之龙")
+        assertEquals(2, out.size)
+        assertTrue(out.all { FuzzyMatch.normalize(it.title) == "千面之龙" })
+    }
+
+    @Test
+    fun `模糊模式搜索千面之龙过滤仅含千面的无关书`() {
+        val items = listOf(
+            item("1", "千面之龙"),
+            item("2", "萌宝无敌：千面妈咪送上门"),
+            item("3", "摄政王的千面宠妃"),
+            item("4", "重生之千面影帝"),
+        )
+        val out = FuzzyMatch.rank(items, "千面之龙")
+        assertEquals("模糊模式不应把仅含「千面」的无关书放进结果", 1, out.size)
+        assertEquals("千面之龙", out[0].title)
+    }
 }

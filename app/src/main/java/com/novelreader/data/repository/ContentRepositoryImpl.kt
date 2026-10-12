@@ -112,12 +112,20 @@ class ContentRepositoryImpl(
             }
 
             // 串行收集：每收到一个源的结果就 emit 一次进度。
-            // 搜索过程中结果直接追加（已按源返回顺序），避免每批全量 rank 卡顿；
+            // 每批先做「批内过滤」（批小开销低）：模糊=相似度过滤，精准=书名一致过滤，
+            // 保证边搜边显示的每条结果都与关键词相关（v1.1.4 回归修复）；
+            // 全局排序仍在收尾统一做一次，避免每批全量重排卡顿。
             // 增量去重保证不出现同一源同一本书重复条目。
+            val preFilter: (List<MediaItem>) -> List<MediaItem> =
+                if (fuzzyEnabled) {
+                    { batch -> FuzzyMatch.rank(batch, keyword) }
+                } else {
+                    { batch -> FuzzyMatch.exactRank(batch, keyword) }
+                }
             var received = 0
             for (msg in channel) {
                 val (sourceName, batch) = msg
-                for (item in batch) {
+                for (item in preFilter(batch)) {
                     val key = buildString {
                         append(item.sourceId)
                         append('|')

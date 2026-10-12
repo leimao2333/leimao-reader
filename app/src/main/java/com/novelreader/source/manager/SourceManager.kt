@@ -180,6 +180,65 @@ class SourceManager {
 
     fun getAdapter(sourceId: String): SourceAdapter? = adapterCache[sourceId]
 
+    /** 获取源原始内容（供编辑） */
+    fun getRawContent(sourceId: String): String? = rawContentCache[sourceId]
+
+    /**
+     * 更新源的规则内容：用新原始内容重新解析、重建适配器并注册。
+     *
+     * 采用「先解析成功再替换」策略：新内容解析/构建失败会抛异常，
+     * 原源保持不变，不会因编辑错误把源改坏。
+     *
+     * @return 更新后的 SourceInfo
+     */
+    fun updateSource(sourceId: String, rawContent: String): SourceInfo {
+        // 关键：保留原源的 id 与启停状态，只替换规则。
+        // 新内容解析出的 info 可能有新的 id，需要强制沿用原 id。
+        val oldInfo = sourceMap[sourceId]
+            ?: throw IllegalArgumentException("源不存在：$sourceId")
+
+        val validateResult = SourceValidator.validate(rawContent)
+        if (!validateResult.valid) {
+            throw IllegalArgumentException(validateResult.message)
+        }
+        val format = validateResult.format
+            ?: throw IllegalArgumentException("无法识别源格式")
+
+        // 先解析构建新适配器（失败则抛异常，原源不动）
+        val newAdapter: SourceAdapter = when (format) {
+            SourceFormat.LEGADO -> {
+                val pairs = LegadoBookSource.parseListWithRaw(rawContent)
+                if (pairs.isEmpty()) throw IllegalArgumentException("未解析到有效书源")
+                // legado 源：取第一个书源对象（编辑场景按单源处理）
+                val (src, singleJson) = pairs.first()
+                val info = toSourceInfo(src, null, 0)
+                LegadoSourceAdapter(info.copy(id = oldInfo.id), src)
+            }
+            else -> {
+                val loader = loaders[format]
+                    ?: throw IllegalArgumentException("不支持的源格式：$format")
+                val parser = parsers[format]
+                    ?: throw IllegalArgumentException("不支持的源格式：$format")
+                val info = loader.load(rawContent, null)
+                parser.createAdapter(info.copy(id = oldInfo.id), rawContent)
+            }
+        }
+
+        // 构建新的 info：沿用原 id、启停状态与分类
+        val newInfo = (newAdapter.info).copy(
+            id = oldInfo.id,
+            enabled = oldInfo.enabled,
+            category = oldInfo.category.ifBlank {
+                com.novelreader.source.category.SourceCategory.classify(newAdapter.info)
+            },
+        )
+
+        // 替换注册（先注销旧，再注册新，保证 adapter 与 info 一致）
+        unregisterSource(sourceId)
+        registerSource(newInfo, newAdapter, rawContent)
+        return newInfo
+    }
+
     fun clear() {
         sourceMap.clear()
         adapterCache.clear()

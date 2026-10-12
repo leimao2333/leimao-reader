@@ -582,11 +582,15 @@ class LegadoSourceAdapter(
 
     // ===== 有效性自检 =====
     override suspend fun test(): Boolean {
-        return runCatching {
-            if (source.searchUrl.isNotBlank()) {
+        // 无搜索规则时无法联网自检，直接视为可用（避免误判）
+        if (source.searchUrl.isBlank()) return true
+        // 超时保护：个别源网络极慢，避免测试卡死；
+        // 捕获 Throwable（含 Rhino/正则可能抛出的 Error），runCatching 只拦 Exception 拦不住 Error。
+        return kotlinx.coroutines.withTimeoutOrNull(15_000L) {
+            runCatching {
                 search("测试", 1).isNotEmpty()
-            } else true
-        }.getOrDefault(true)
+            }.getOrDefault(false)
+        } ?: false
     }
 
     /** 渲染 URL（处理 {{key}}/{{keyword}}/{{page}} 占位） */

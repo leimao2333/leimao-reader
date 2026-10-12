@@ -193,9 +193,14 @@ class SourceManageViewModel(
             val results = _testResults.value.toMutableMap()
             sources.forEach { source ->
                 _testing.value = _testing.value + source.id
-                val ok = runCatching {
-                    sourceRepository.getAdapter(source.id)?.test() ?: true
-                }.getOrDefault(false)
+                // 用 withTimeoutOrNull 包住整个 test()，防止单个慢源卡死整轮检测；
+                // 用 runCatching 捕获 Throwable（Rhino 等可能抛 Error，非 Exception），
+                // 任何异常都视为「不可用」，绝不因此崩溃。
+                val ok = kotlinx.coroutines.withTimeoutOrNull(20_000L) {
+                    runCatching {
+                        sourceRepository.getAdapter(source.id)?.test() ?: true
+                    }.getOrDefault(false)
+                } ?: false
                 results[source.id] = ok
                 _testResults.value = results.toMap()
                 _testing.value = _testing.value - source.id
@@ -228,6 +233,69 @@ class SourceManageViewModel(
     /** 清除提示消息 */
     fun consumeMessage() {
         _message.value = null
+    }
+
+    // ===== 源规则编辑 =====
+
+    /** 正在编辑的源（非空即弹出编辑面板） */
+    private val _editingSource = MutableStateFlow<SourceInfo?>(null)
+    val editingSource: StateFlow<SourceInfo?> = _editingSource.asStateFlow()
+
+    /** 编辑框里的原始规则文本 */
+    private val _editingContent = MutableStateFlow("")
+    val editingContent: StateFlow<String> = _editingContent.asStateFlow()
+
+    /** 编辑框文本是否正在加载 */
+    private val _editingLoading = MutableStateFlow(false)
+    val editingLoading: StateFlow<Boolean> = _editingLoading.asStateFlow()
+
+    /** 编辑保存状态 */
+    private val _editingSaving = MutableStateFlow(false)
+    val editingSaving: StateFlow<Boolean> = _editingSaving.asStateFlow()
+
+    /** 打开编辑面板：加载源的原始规则 */
+    fun openEditSource(source: SourceInfo) {
+        viewModelScope.launch {
+            _editingSource.value = source
+            _editingLoading.value = true
+            _editingContent.value = sourceRepository.getRawContent(source.id) ?: ""
+            _editingLoading.value = false
+        }
+    }
+
+    /** 关闭编辑面板 */
+    fun closeEditSource() {
+        _editingSource.value = null
+        _editingContent.value = ""
+        _editingLoading.value = false
+    }
+
+    /** 编辑框内容变化 */
+    fun setEditingContent(value: String) {
+        _editingContent.value = value
+    }
+
+    /** 保存编辑：重新解析并注册，成功后刷新列表 */
+    fun saveEditingSource() {
+        val source = _editingSource.value ?: return
+        val content = _editingContent.value
+        if (content.isBlank()) {
+            _message.value = "规则内容不能为空"
+            return
+        }
+        viewModelScope.launch {
+            _editingSaving.value = true
+            try {
+                sourceRepository.updateSource(source.id, content)
+                _message.value = "已保存「${source.name}」的规则修改"
+                closeEditSource()
+                refresh()
+            } catch (e: Exception) {
+                _message.value = "保存失败：${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                _editingSaving.value = false
+            }
+        }
     }
 
     /** 按类型分组计数 */

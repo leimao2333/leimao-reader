@@ -341,6 +341,7 @@ fun SourceManageScreen(
                         testResults = testResults,
                         testing = testing,
                         onToggle = { viewModel.toggleEnabled(it) },
+                        onEdit = { viewModel.openEditSource(it) },
                         onDelete = { viewModel.deleteSource(it) },
                     )
                 } else {
@@ -361,6 +362,7 @@ fun SourceManageScreen(
                                     else -> SourceTestStatus.UNKNOWN
                                 },
                                 onToggle = { viewModel.toggleEnabled(source) },
+                                onEdit = { viewModel.openEditSource(source) },
                                 onDelete = { viewModel.deleteSource(source) },
                                 onLongClick = {
                                     selectionMode = true
@@ -377,6 +379,76 @@ fun SourceManageScreen(
             }
         }
     }
+
+    // ===== 源规则编辑对话框 =====
+    SourceEditDialog(viewModel = viewModel)
+}
+
+/**
+ * 源规则编辑对话框。
+ *
+ * 展示并允许修改源的原始规则（JSON/JS/legado 文本），保存后重新解析并生效。
+ */
+@Composable
+private fun SourceEditDialog(viewModel: SourceManageViewModel) {
+    val editingSource by viewModel.editingSource.collectAsState()
+    val editingContent by viewModel.editingContent.collectAsState()
+    val editingLoading by viewModel.editingLoading.collectAsState()
+    val editingSaving by viewModel.editingSaving.collectAsState()
+
+    val source = editingSource ?: return
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { if (!editingSaving) viewModel.closeEditSource() },
+        title = { Text("编辑源规则") },
+        text = {
+            Column {
+                Text(
+                    text = source.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    text = "${source.format.name} · ${source.type.label()} · v${source.version}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                if (editingLoading) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().height(200.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        androidx.compose.material3.CircularProgressIndicator()
+                    }
+                } else {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = editingContent,
+                        onValueChange = viewModel::setEditingContent,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(280.dp),
+                        textStyle = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        ),
+                        placeholder = { Text("在此编辑源规则（JSON / JS / legado）…") },
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !editingLoading && !editingSaving,
+                onClick = { viewModel.saveEditingSource() },
+            ) { Text(if (editingSaving) "保存中…" else "保存") }
+        },
+        dismissButton = {
+            TextButton(
+                enabled = !editingSaving,
+                onClick = { viewModel.closeEditSource() },
+            ) { Text("取消") }
+        },
+    )
 }
 
 /**
@@ -388,6 +460,7 @@ private fun SourceTableView(
     testResults: Map<String, Boolean> = emptyMap(),
     testing: Set<String> = emptySet(),
     onToggle: (SourceInfo) -> Unit,
+    onEdit: (SourceInfo) -> Unit,
     onDelete: (SourceInfo) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -402,7 +475,7 @@ private fun SourceTableView(
             TableCell("类型", 0.8f)
             TableCell("状态", 1f)
             TableCell("启用", 0.9f)
-            TableCell("操作", 0.8f)
+            TableCell("操作", 1.4f)
         }
         HorizontalDivider()
 
@@ -431,7 +504,10 @@ private fun SourceTableView(
                             onCheckedChange = { onToggle(source) },
                         )
                     }
-                    TextButton(onClick = { onDelete(source) }) { Text("删除") }
+                    Row(modifier = Modifier.weight(1.4f)) {
+                        TextButton(onClick = { onEdit(source) }) { Text("编辑") }
+                        TextButton(onClick = { onDelete(source) }) { Text("删除") }
+                    }
                 }
                 HorizontalDivider()
             }
@@ -527,6 +603,7 @@ private fun CategoryFilterBar(
 private fun SourceCard(
     source: SourceInfo,
     onToggle: () -> Unit,
+    onEdit: () -> Unit = {},
     onDelete: () -> Unit,
     selectionMode: Boolean = false,
     selected: Boolean = false,
@@ -607,6 +684,7 @@ private fun SourceCard(
             }
             if (!selectionMode) {
                 Switch(checked = source.enabled, onCheckedChange = { onToggle() })
+                TextButton(onClick = onEdit) { Text("编辑") }
                 TextButton(onClick = onDelete) { Text("删除") }
             }
         }

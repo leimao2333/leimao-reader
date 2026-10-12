@@ -31,6 +31,20 @@ interface SourceRepository {
 
     /** 获取源对应的适配器（供后续调用 search/detail 等）；源不存在时返回 null */
     suspend fun getAdapter(sourceId: String): com.novelreader.domain.model.SourceAdapter?
+
+    /**
+     * 获取源的原始规则内容（用于编辑）。
+     * @return 原始文本；源不存在或未保存原始内容时返回 null
+     */
+    suspend fun getRawContent(sourceId: String): String?
+
+    /**
+     * 更新源的规则内容（覆盖原始内容并重新解析注册）。
+     *
+     * 编辑保存后，源适配器会按新规则重建，立即生效。
+     * @return 更新后的 [SourceInfo]；解析失败时抛异常（保留原源不变）
+     */
+    suspend fun updateSource(sourceId: String, rawContent: String): SourceInfo
 }
 
 /**

@@ -38,9 +38,6 @@ object LegadoRuleEngine {
         "href", "src", "data-src", "data-original", "content", "value", "title", "alt", "data",
     )
 
-    /** 文本类提取符：多元素匹配时逐个拼接 */
-    private val TEXT_KEYS = setOf("text", "textnodes", "html", "all", "ownhtml", "owntext")
-
     /** legado 索引区间语法（如 `1:6`、`-3:-1`） */
     private val RANGE_REGEX = Regex("-?\\d+:-?\\d+")
 
@@ -77,8 +74,8 @@ object LegadoRuleEngine {
     /** 从完整 HTML/JSON 文档按规则提取单个字符串 */
     private fun extractFromDocument(content: String, rule: String, baseUrl: String): String? {
         // 顶层 @json: 规则：从 JSON 内容提取（内容本身可能不是 JSON，先尝试）
-        if (rule.trimStart().startsWith("@json:")) {
-            val path = rule.trimStart().substringAfter("@json:")
+        if (rule.trimStart().startsWith("@json:", ignoreCase = true)) {
+            val path = rule.trimStart().replaceFirst(Regex("^@json:", RegexOption.IGNORE_CASE), "")
             return runCatching {
                 extractJsonPath(com.google.gson.JsonParser.parseString(content), path)
             }.getOrNull()
@@ -144,8 +141,8 @@ object LegadoRuleEngine {
             return if (attr != null) extractTextOrAttr(el, attr, baseUrl) else el.text()
         }
         // @json: 元素文本中解析 JSON
-        if (expr.startsWith("@json:")) {
-            val path = expr.substringAfter("@json:")
+        if (expr.startsWith("@json:", ignoreCase = true)) {
+            val path = expr.replaceFirst(Regex("^@json:", RegexOption.IGNORE_CASE), "")
             return runCatching {
                 extractJsonPath(com.google.gson.JsonParser.parseString(root.text()), path)
             }.getOrNull()
@@ -164,18 +161,24 @@ object LegadoRuleEngine {
         val first = cur.firstOrNull()
         // 最后一段是属性关键字，或元素确有该属性（legado 语义：@后跟任意属性名，如 @onclick/@data-lazyload）
         if (first != null && (isAttrKey(last) || first.hasAttr(last))) {
-            // 文本类提取：多元素时逐个拼接（legado 语义，如 tag.span[0:1]@text）；
-            // URL 类属性（href/src 等）只取第一个，避免多地址拼接
-            val key = last.trim().lowercase()
-            return if (key in TEXT_KEYS && cur.size > 1) {
-                cur.joinToString("\n") { extractTextOrAttr(it, last, baseUrl) }.trim()
+            // legado 语义：「如不加位置会获取所有」——匹配到多个元素时逐个取值并用换行拼接。
+            // 漫画正文规则强依赖此行为（如 `.list@img@data-src@js:result.split("\n")`：
+            // 只有把每个 img 的地址都取出来，JS 才能拼出完整的图片列表）。
+            return if (cur.size > 1) {
+                cur.mapNotNull { el -> extractTextOrAttr(el, last, baseUrl)?.takeIf { it.isNotBlank() } }
+                    .joinToString("\n")
+                    .trim()
             } else {
                 extractTextOrAttr(first, last, baseUrl)
             }
         }
-        // 否则最后一段是选择器 → 取第一个匹配元素的文本
+        // 否则最后一段是选择器 → 取所有匹配元素的文本（legado 语义：不写位置即获取全部）
         val els = walkSteps(cur, last)
-        return els.firstOrNull()?.text()
+        return when {
+            els.isEmpty() -> null
+            els.size == 1 -> els.first().text()
+            else -> els.mapNotNull { it.text()?.takeIf { t -> t.isNotBlank() } }.joinToString("\n")
+        }
     }
 
     /**
@@ -197,8 +200,37 @@ object LegadoRuleEngine {
         return null
     }
 
-    /** 用 Rhino 求值字段 JS：注入 result（前段取值）与 baseUrl */
-    private fun evalFieldJs(code: String, result: String?, baseUrl: String): String? {
+    /** 用 Rhino 求值字段 JS：注入 result（前段取值）、baseUrl 与 legado 风格 java.* */
+    private fun evalFieldJs(code: String, result: String?, baseUrl: String): String? =
+        evalJsRich(code, result, src = null, baseUrl = baseUrl).first
+
+    /**
+     * 求值正文类规则（支持尾部 `@js:` / `<js>`），返回 (取值, JS 设置的 headers JSON)。
+     *
+     * 与字段规则相比，正文类 JS 额外可用 `src`（原始页面文本，legado 中很多正文规则
+     * 直接对 `src` 做正则/JSON 解析），并会读取 JS 中赋值的 `headers` / `header` 变量——
+     * legado 语义：作为后续资源请求头，漫画源常用它设置防盗链 Referer。
+     */
+    fun evalContentRule(content: String, rule: String, pageUrl: String): Pair<String?, String?> {
+        extractJsSuffix(rule)?.let { (pre, js) ->
+            val preValue = if (pre.isBlank()) content
+            else (runCatching { extractFromDocument(content, pre, pageUrl) }.getOrNull() ?: "")
+            return evalJsRich(js, preValue, content, pageUrl)
+        }
+        val v = runCatching { extractFromDocument(content, rule, pageUrl) }.getOrNull()
+        return v to null
+    }
+
+    /**
+     * Rhino 求值：注入 `result` / `src` / `baseUrl` / `java.*`，
+     * 返回 (字符串结果, JS 设置的 headers JSON)。任何异常都不得抛出，避免中断整条书源解析。
+     */
+    private fun evalJsRich(
+        code: String,
+        result: String?,
+        src: String?,
+        baseUrl: String,
+    ): Pair<String?, String?> {
         return runCatching {
             val ctx = org.mozilla.javascript.Context.enter()
             try {
@@ -206,12 +238,41 @@ object LegadoRuleEngine {
                 val scope = ctx.initSafeStandardObjects()
                 scope.put("result", scope, result ?: "")
                 scope.put("baseUrl", scope, baseUrl)
+                if (src != null) scope.put("src", scope, src)
+                scope.put(
+                    "java",
+                    scope,
+                    org.mozilla.javascript.Context.javaToJS(LegadoJavaBridge(result, src, baseUrl), scope),
+                )
                 val v = ctx.evaluateString(scope, code, "<rule-js>", 1, null)
-                org.mozilla.javascript.Context.toString(v)
+                val value = org.mozilla.javascript.Context.toString(v).takeIf { it.isNotBlank() }
+                value to readJsHeaders(scope)
             } finally {
                 org.mozilla.javascript.Context.exit()
             }
-        }.getOrNull()?.takeIf { it.isNotBlank() }
+        }.getOrNull() ?: (null to null)
+    }
+
+    /** 读取 JS 作用域中 `headers` / `header` 变量（JSON 对象）为 JSON 字符串 */
+    private fun readJsHeaders(scope: org.mozilla.javascript.Scriptable): String? {
+        val cx = org.mozilla.javascript.Context.getCurrentContext() ?: return null
+        for (name in listOf("headers", "header")) {
+            val raw = runCatching { scope.get(name, scope) }.getOrNull() ?: continue
+            if (raw === org.mozilla.javascript.Scriptable.NOT_FOUND ||
+                raw is org.mozilla.javascript.Undefined
+            ) continue
+            val json = runCatching {
+                org.mozilla.javascript.NativeJSON.stringify(cx, scope, raw, null, null)?.toString()
+            }.getOrNull()
+            if (!json.isNullOrBlank() && json.trimStart().startsWith("{")) return json
+        }
+        return null
+    }
+
+    /** 供 JS 桥接使用：按规则选取元素列表（支持 @ 链、@css:、- 倒置） */
+    fun selectElements(content: String, rule: String): List<Element> {
+        val doc = Jsoup.parse(content)
+        return selectListElements(doc, rule).toList()
     }
 
     private fun isAttrKey(s: String): Boolean {
@@ -425,20 +486,42 @@ object LegadoRuleEngine {
     ): List<Map<String, String>> {
         if (listRule.isBlank()) return emptyList()
 
-        // 处理 @json: 列表
-        if (listRule.trimStart().startsWith("@json:")) {
-            return extractJsonList(content, listRule.trim(), fieldRules)
+        // legado 语义：列表规则最前面的 `-` 表示「结果倒置」（很多站点目录是倒序的）。
+        // 注意与负索引（-1 取最后一个）区分：`-` 后紧跟数字时不视为倒置标记。
+        val (rule, reverse) = stripListReverse(listRule)
+
+        // 处理 @json: 列表（大小写不敏感：@json: / @JSon: 都有源在用）
+        if (rule.startsWith("@json:", ignoreCase = true)) {
+            val list = extractJsonList(content, rule, fieldRules)
+            return if (reverse) list.reversed() else list
         }
 
         val doc = Jsoup.parse(content)
-        val items = selectListElements(doc, listRule)
+        val items = selectListElements(doc, rule)
         if (items.isEmpty()) return emptyList()
 
-        return items.map { el ->
-            fieldRules.mapValues { (_, rule) ->
-                runCatching { extractFromElement(el, rule, baseUrl) }.getOrNull() ?: ""
+        val out = items.map { el ->
+            fieldRules.mapValues { (_, r) ->
+                runCatching { extractFromElement(el, r, baseUrl) }.getOrNull() ?: ""
             }
         }
+        return if (reverse) out.reversed() else out
+    }
+
+    /**
+     * 解析列表规则的前置 `-` 倒置标记。
+     *
+     * legado 规则说明：「获取列表的最前面加上负号 `-` 可以使列表倒置」。
+     * 仅当 `-` 之后不是数字时才视为倒置（否则是 `-1` 这类负索引）。
+     *
+     * @return (去掉标记后的规则, 是否需要倒置)
+     */
+    private fun stripListReverse(rule: String): Pair<String, Boolean> {
+        val t = rule.trim()
+        if (t.length > 1 && t.startsWith("-") && !t[1].isDigit()) {
+            return t.substring(1).trim() to true
+        }
+        return t to false
     }
 
     /** 在一段规则上选取列表元素（支持 || 备选） */
@@ -452,14 +535,48 @@ object LegadoRuleEngine {
         return Elements()
     }
 
+    /**
+     * 解析 legado 位置排除标记：`!idx` 或 `!a:b`（负数为倒数序号）。
+     * 文档：「! 是排除，后面的序号用 : 隔开，0 是第 1 个，负数为倒数序号」。
+     */
+    private fun parseExcludedIndices(rule: String): Set<Int> {
+        if (!rule.contains('!')) return emptySet()
+        val out = mutableSetOf<Int>()
+        Regex("!(-?\\d+)(?::(-?\\d+))?").findAll(rule).forEach { m ->
+            val a = m.groupValues[1].toIntOrNull() ?: return@forEach
+            val b = m.groupValues[2].takeIf { it.isNotEmpty() }?.toIntOrNull()
+            if (b == null) {
+                out.add(a)
+            } else if (a >= 0 && b >= 0) {
+                for (i in minOf(a, b)..maxOf(a, b)) out.add(i)
+            } else {
+                out.add(a); out.add(b)
+            }
+        }
+        return out
+    }
+
+    /** 按排除索引集合过滤（同时按正索引与负索引匹配） */
+    private fun filterExcluded(els: Elements, excluded: Set<Int>): Elements {
+        if (excluded.isEmpty()) return els
+        val out = Elements()
+        els.forEachIndexed { i, el ->
+            if (i !in excluded && (i - els.size) !in excluded) out.add(el)
+        }
+        return out
+    }
+
     /** 选取单个列表规则的元素：`容器1@容器2@...@子选择器`（多段 @ 逐级向下） */
     private fun selectListElementsSingle(doc: Document, rule: String): Elements {
+        val excluded = parseExcludedIndices(rule)
+
         if (rule.startsWith("@css:")) {
-            return runCatching { doc.select(rule.substringAfter("@css:").trim()) }.getOrDefault(Elements())
+            val els = runCatching { doc.select(rule.substringAfter("@css:").trim()) }.getOrDefault(Elements())
+            return filterExcluded(els, excluded)
         }
 
-        // 去掉非标准索引标记（如 `li!0` 中的 `!0`）
-        val sanitized = rule.replace(Regex("![0-9]+"), "")
+        // 去掉位置排除标记（如 `li!0`、`class.item!0:1`），排除在结果上统一生效
+        val sanitized = rule.replace(Regex("!-?\\d+(?::-?\\d+)?"), "")
         val segs = sanitized.split('@').map { it.trim() }.filter { it.isNotEmpty() }
         if (segs.isEmpty()) return Elements()
 
@@ -486,12 +603,13 @@ object LegadoRuleEngine {
                 }
             }
         }
-        return out
+        return filterExcluded(out, excluded)
     }
 
     /** 从 JSON 内容按 @json: 规则提取列表 */
     private fun extractJsonList(json: String, listRule: String, fieldRules: Map<String, String>): List<Map<String, String>> {
-        val jsonPath = listRule.substringAfter("@json:").trim()
+        // 前缀大小写不敏感（@json: / @JSon:）
+        val jsonPath = listRule.replaceFirst(Regex("^@json:", RegexOption.IGNORE_CASE), "").trim()
         return runCatching {
             val root = com.google.gson.JsonParser.parseString(json)
             val arr = selectJsonArray(root, jsonPath)
@@ -621,4 +739,81 @@ object LegadoRuleEngine {
         if (url.isNullOrBlank()) return null
         return absUrl(baseUrl, url)
     }
+}
+
+/**
+ * legado 书源 `@js:` 规则中的 `java.*` 兼容桥。
+ *
+ * 开源阅读把一批 Java 能力暴露给 JS 规则，漫画源尤其依赖它（`java.getString`、
+ * `java.ajax`、`java.t2s` 等）。这里实现最常用的一批；未实现的成员调用时抛错，
+ * 由上层 `runCatching` 兜住（与「不支持」等效，不会中断整条书源解析）。
+ *
+ * 说明：本类实例通过 `Context.javaToJS` 注入，方法经反射调用。
+ */
+class LegadoJavaBridge(
+    private val currentHtml: String?,
+    private val src: String?,
+    private val baseUrl: String,
+) {
+    /** 会话变量（java.get / java.put 共用；同一 JS 调用内有效） */
+    private val vars = mutableMapOf<String, Any?>()
+
+    fun log(msg: Any?) {
+        android.util.Log.d("LegadoJs", msg?.toString() ?: "null")
+    }
+
+    fun get(key: String): Any? = vars[key]
+
+    fun put(key: String, value: Any?) {
+        vars[key] = value
+    }
+
+    /** 同步 HTTP GET；legado 中 java.ajax 亦支持带 headers 的重载 */
+    fun ajax(url: String): String =
+        runCatching { com.novelreader.core.network.HttpClient.get(url) }.getOrDefault("")
+
+    fun ajax(url: String, headers: Map<*, *>?): String {
+        val h = headers?.entries
+            ?.mapNotNull { (k, v) -> if (k != null && v != null) k.toString() to v.toString() else null }
+            ?.toMap()
+            .orEmpty()
+        return runCatching { com.novelreader.core.network.HttpClient.get(url, h) }.getOrDefault("")
+    }
+
+    /** 无参：当前规则结果原文；带规则：对结果再套一层 legado 规则 */
+    fun getString(): String = currentHtml.orEmpty()
+
+    fun getString(rule: String): String {
+        val html = currentHtml ?: return ""
+        return LegadoRuleEngine.extractString(html, rule, baseUrl).orEmpty()
+    }
+
+    /** 按规则取元素列表（返回 jsoup Element，供 JS 侧继续 .text()/.attr()） */
+    fun getElements(rule: String): List<Element> {
+        val html = currentHtml ?: return emptyList()
+        return LegadoRuleEngine.selectElements(html, rule)
+    }
+
+    /** 原始页面文本（等价 legado 的 src 变量） */
+    fun getSource(): String = src.orEmpty()
+
+    fun t2s(text: String): String = com.novelreader.core.text.ChineseConverter.toSimplified(text)
+
+    fun s2t(text: String): String = com.novelreader.core.text.ChineseConverter.toTraditional(text)
+
+    fun base64Decode(text: String): String = runCatching {
+        String(android.util.Base64.decode(text, android.util.Base64.DEFAULT), Charsets.UTF_8)
+    }.getOrDefault("")
+
+    fun base64Encode(text: String): String = runCatching {
+        android.util.Base64.encodeToString(text.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
+    }.getOrDefault("")
+
+    fun hexDecodeToString(hex: String): String = runCatching {
+        val bytes = hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        String(bytes, Charsets.UTF_8)
+    }.getOrDefault("")
+
+    fun urlEncode(text: String): String =
+        runCatching { java.net.URLEncoder.encode(text, "UTF-8") }.getOrDefault(text)
 }

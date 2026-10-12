@@ -63,6 +63,8 @@ data class ContentResult(
     val novelText: String? = null,
     /** 漫画图片地址列表 */
     val comicImages: List<String>? = null,
+    /** 漫画图片加载所需的请求头（防盗链 Referer 等） */
+    val comicHeaders: Map<String, String> = emptyMap(),
     /** 视频播放地址 */
     val videoUrl: String? = null,
     /** 视频播放所需的额外请求头（防盗链等） */
@@ -70,7 +72,8 @@ data class ContentResult(
 ) {
     companion object {
         fun novel(text: String) = ContentResult(novelText = text)
-        fun comic(images: List<String>) = ContentResult(comicImages = images)
+        fun comic(images: List<String>, headers: Map<String, String> = emptyMap()) =
+            ContentResult(comicImages = images, comicHeaders = headers)
         fun video(url: String, headers: Map<String, String> = emptyMap()) =
             ContentResult(videoUrl = url, videoHeaders = headers)
     }

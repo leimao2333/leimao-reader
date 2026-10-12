@@ -450,6 +450,15 @@ fun NovelReaderScreen(
             }
         }
 
+        // ===== 常驻顶部状态条：显示本章名（菜单收起时；菜单展开时由顶部栏显示更完整信息） =====
+        if (!showMenu && !hideTopBar) {
+            ReaderChapterStatusBar(
+                bookTitle = displayItem.title,
+                chapterTitle = chapterTitle,
+                textColor = textColor,
+            )
+        }
+
         // ===== 菜单层 =====
         if (showMenu) {
             if (!hideTopBar) {

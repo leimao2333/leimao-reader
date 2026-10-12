@@ -75,6 +75,7 @@ fun ComicReaderScreen(
     val pageMode by viewModel.pageMode.collectAsState()
     val currentPage by viewModel.currentPage.collectAsState()
     val chapterTitle by viewModel.chapterTitle.collectAsState()
+    val imageHeaders by viewModel.imageHeaders.collectAsState()
 
     LaunchedEffect(item, chapter) {
         viewModel.init(item, chapters, chapter)
@@ -82,8 +83,8 @@ fun ComicReaderScreen(
 
     // 进入/切换章节后，先预热前几张图片
     val context = LocalContext.current
-    LaunchedEffect(images) {
-        images.take(PRELOAD_INITIAL).forEach { preloadImage(context, it) }
+    LaunchedEffect(images, imageHeaders) {
+        images.take(PRELOAD_INITIAL).forEach { preloadImage(context, it, imageHeaders) }
     }
 
     // 是否显示设置面板
@@ -136,6 +137,7 @@ fun ComicReaderScreen(
                 // 上下滚动模式
                 VerticalScrollReader(
                     images = images,
+                    headers = imageHeaders,
                     onTap = { showSettings.value = !showSettings.value },
                 )
             }
@@ -143,6 +145,7 @@ fun ComicReaderScreen(
                 // 左右翻页模式
                 HorizontalPagerReader(
                     images = images,
+                    headers = imageHeaders,
                     currentPage = currentPage,
                     onPageChange = viewModel::goToPage,
                     onTap = { showSettings.value = !showSettings.value },
@@ -226,16 +229,17 @@ fun ComicReaderScreen(
 @Composable
 private fun VerticalScrollReader(
     images: List<String>,
+    headers: Map<String, String>,
     onTap: () -> Unit,
 ) {
     val listState = rememberLazyListState()
     val context = LocalContext.current
 
     // 预加载：当前可见项之后的 [PRELOAD_AHEAD] 张
-    LaunchedEffect(listState.firstVisibleItemIndex, images) {
+    LaunchedEffect(listState.firstVisibleItemIndex, images, headers) {
         val start = listState.firstVisibleItemIndex + 1
         for (i in start until (start + PRELOAD_AHEAD).coerceAtMost(images.size)) {
-            if (i >= 0) preloadImage(context, images[i])
+            if (i >= 0) preloadImage(context, images[i], headers)
         }
     }
 
@@ -260,6 +264,7 @@ private fun VerticalScrollReader(
                 placeholderModifier = Modifier
                     .fillMaxWidth()
                     .height(240.dp),
+                headers = headers,
             )
         }
     }
@@ -269,6 +274,7 @@ private fun VerticalScrollReader(
 @Composable
 private fun HorizontalPagerReader(
     images: List<String>,
+    headers: Map<String, String>,
     currentPage: Int,
     onPageChange: (Int) -> Unit,
     onTap: () -> Unit,
@@ -306,10 +312,10 @@ private fun HorizontalPagerReader(
     }
 
     // 预加载相邻页
-    LaunchedEffect(pagerState.currentPage, images) {
+    LaunchedEffect(pagerState.currentPage, images, headers) {
         val cur = pagerState.currentPage
         for (i in (cur - 1)..(cur + 1)) {
-            if (i in images.indices) preloadImage(context, images[i])
+            if (i in images.indices) preloadImage(context, images[i], headers)
         }
     }
 
@@ -339,6 +345,7 @@ private fun HorizontalPagerReader(
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.FillWidth,
                 placeholderModifier = Modifier.fillMaxSize(),
+                headers = headers,
             )
         }
     }
@@ -356,13 +363,16 @@ private fun ComicImage(
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.FillWidth,
     placeholderModifier: Modifier = Modifier,
+    headers: Map<String, String> = emptyMap(),
 ) {
     val context = LocalContext.current
     // 重试计数：并入缓存键，点击重试时产生全新请求
     var retry by remember(url) { mutableIntStateOf(0) }
-    val request = remember(url, retry) {
+    val request = remember(url, retry, headers) {
         ImageRequest.Builder(context)
             .data(url)
+            // 防盗链请求头（Referer 等）：漫画 CDN 缺它会 403
+            .apply { headers.forEach { (k, v) -> setHeader(k, v) } }
             .memoryCacheKey("$url#$retry")
             .build()
     }
@@ -410,10 +420,11 @@ private fun ComicError(
 }
 
 /** 预加载单张图片（异步入队，失败静默） */
-private fun preloadImage(context: Context, url: String) {
+private fun preloadImage(context: Context, url: String, headers: Map<String, String> = emptyMap()) {
     if (url.isBlank()) return
     val request = ImageRequest.Builder(context)
         .data(url)
+        .apply { headers.forEach { (k, v) -> setHeader(k, v) } }
         .build()
     context.imageLoader.enqueue(request)
 }

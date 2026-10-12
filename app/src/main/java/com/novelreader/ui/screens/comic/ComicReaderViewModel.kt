@@ -29,6 +29,10 @@ class ComicReaderViewModel(
     private val _images = MutableStateFlow<List<String>>(emptyList())
     val images: StateFlow<List<String>> = _images.asStateFlow()
 
+    /** 图片加载所需的请求头（防盗链 Referer 等，来自源规则） */
+    private val _imageHeaders = MutableStateFlow<Map<String, String>>(emptyMap())
+    val imageHeaders: StateFlow<Map<String, String>> = _imageHeaders.asStateFlow()
+
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
@@ -81,6 +85,7 @@ class ComicReaderViewModel(
                 .onSuccess { result ->
                     val imgs = result.comicImages?.filter { it.isNotBlank() } ?: emptyList()
                     _images.value = imgs
+                    _imageHeaders.value = result.comicHeaders
                     // 图片列表为空时不进入渲染分支，避免纯黑屏无提示
                     if (imgs.isEmpty()) {
                         _error.value = "本章暂无可用图片，可能源已失效或章节待更新"

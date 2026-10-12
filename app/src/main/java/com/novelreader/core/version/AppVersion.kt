@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.2.2"
+    const val CURRENT_VERSION = "1.2.3"
 
     /**
      * 更新日志。
@@ -19,6 +19,19 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.2.3",
+            date = "2026-10-12",
+            changes = listOf(
+                "修复部分书源加载后「目录为空」：legado 规则支持在列表规则最前面加负号 - 表示列表倒置（很多站点目录本身就是倒序），此前引擎把 - 当成选择器的一部分（如 -.detail-list-item 解析成类名 .-）导致选不到任何章节；现按 legado 语义识别并倒置列表，同时修正 @json:/@JSon: 前缀大小写、! 位置排除（含 !a:b 区间与负索引）",
+                "修复漫画图片无法加载（多因叠加）：① 图片地址改为按「章节页地址」解析（此前误用书源根地址，相对路径与 {{baseUrl}} 全部指错）；② 补齐防盗链请求头，支持源规则里的 header={\"Referer\":baseUrl} 与逐图 url,{\"headers\":{...}} 后缀，缺省时自动以章节页 scheme://host/ 作 Referer（此前不带 Referer，CDN 返回 403）",
+                "修复一章只解析出 1 张漫画图：引擎在一段规则匹配到多个元素时只取第一个，与 legado「不写位置即获取全部」语义不符；现按换行拼接全部结果。同时修正 <img src=\"url,{请求头}\"> 因内嵌引号被 HTML 解析截断而丢失请求头的问题",
+                "修复漫画图片解析中「非 JSON 数组」分支为死代码（else 正常返回导致回退永不执行），且会丢弃不带 / 前缀的相对地址（如 2.jpg）",
+                "正文 JS 规则能力补齐（@js: / <js>）：注入 src 与 legado 的 java.* 桥（java.ajax/getString/getElements/t2s/s2t/base64 等），并可读取 JS 中赋值的 headers 变量，解锁大量依赖该写法的漫画源",
+                "新增小说阅读页常驻本章名：菜单收起时在顶部居中淡显「书名 · 本章名」（单行省略），随时可见当前读到哪一章",
+                "新增 8 条离线单测：5 条 legado 规则语义（- 倒置、负索引不误判、! 排除、@json: 大小写）+ 3 条漫画正文（JS 内嵌 headers、相对地址按章节页解析、单图 headers 覆盖默认 Referer）；离线用例修复前全部失败、修复后全部通过",
+            ),
+        ),
         VersionEntry(
             version = "1.2.2",
             date = "2026-10-12",

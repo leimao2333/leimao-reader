@@ -173,6 +173,38 @@ internal fun BoxScope.ReaderTopBar(
     }
 }
 
+/**
+ * 阅读页常驻顶部状态条：显示当前章节名。
+ *
+ * 阅读时（菜单收起）常驻于正文上方，随时可确认「本章名」；
+ * 菜单展开时顶部栏已显示更完整的信息（书名 + 章节 + 来源 + 进度），
+ * 此时本状态条由调用方隐藏，避免重复。
+ */
+@Composable
+internal fun BoxScope.ReaderChapterStatusBar(
+    bookTitle: String,
+    chapterTitle: String,
+    textColor: Color,
+) {
+    if (chapterTitle.isBlank()) return
+    val line = buildString {
+        if (bookTitle.isNotBlank()) append(bookTitle).append(" · ")
+        append(chapterTitle)
+    }
+    Text(
+        text = line,
+        color = textColor.copy(alpha = 0.5f),
+        style = MaterialTheme.typography.labelSmall,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+            .align(Alignment.TopCenter)
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+    )
+}
+
 /** 底部菜单：进度条 + 章节导航 + 工具行 + 页签面板 */
 @Composable
 internal fun BoxScope.ReaderBottomMenu(

@@ -381,7 +381,9 @@ class LegadoSourceAdapter(
 
         var index = 0
         return pages.flatMap { page ->
-            LegadoRuleEngine.extractList(page.content, listRule, fieldRules, baseUrl).map { fields ->
+            // {{baseUrl}} 在目录规则中指「目录页自身地址」（legado 语义），
+            // 传 page.url 而非源根地址，否则相对章节链接会被拼错
+            LegadoRuleEngine.extractList(page.content, listRule, fieldRules, page.url).map { fields ->
                 fieldsToChapter(fields, index++, page.url)
             }
         }
@@ -434,7 +436,7 @@ class LegadoSourceAdapter(
 
         return when (info.type) {
             com.novelreader.domain.model.SourceType.COMIC -> {
-                extractComicImages(content, rule)
+                extractComicImages(content, rule, url)
             }
             com.novelreader.domain.model.SourceType.VIDEO -> {
                 extractVideoUrl(content, rule)
@@ -464,7 +466,8 @@ class LegadoSourceAdapter(
                 renderJsonRule(contentRule, root)
             }.getOrNull() ?: ""
         } else {
-            LegadoRuleEngine.extractString(c, contentRule, baseUrl) ?: ""
+            // 用 pageUrl（当前正文页地址）作上下文：相对链接与 {{baseUrl}} 语义与 legado 一致
+            LegadoRuleEngine.extractString(c, contentRule, pageUrl) ?: ""
         }
 
         var text = extractPage(content)
@@ -580,67 +583,243 @@ class LegadoSourceAdapter(
             .trim('\n')
     }
 
-    /** 提取漫画图片列表 */
-    private fun extractComicImages(content: String, rule: Map<String, String>): ContentResult {
+    /**
+     * 提取漫画图片列表。
+     *
+     * 与小说正文不同，漫画图片有两点关键差异：
+     * 1. 图片地址必须相对**章节页 URL**解析（源里大量使用相对路径 / `{{baseUrl}}`）；
+     * 2. 多数漫画站有防盗链，必须带 `Referer`（源规则里常写 `header={"Referer":baseUrl}`），
+     *    否则 CDN 返回 403 → 页面「无法加载」。这里把请求头一并带给图片加载器。
+     *
+     * 可见性为 internal：供单元测试直接注入 HTML + 规则做离线验证（无需联网）。
+     */
+    internal fun extractComicImages(content: String, rule: Map<String, String>, pageUrl: String): ContentResult {
         val contentRule = rule["content"] ?: rule["images"] ?: ""
-        if (contentRule.isBlank()) return ContentResult.comic(emptyList())
+        val baseHeaders = imageHeaders(pageUrl)
+        if (contentRule.isBlank()) return ContentResult.comic(emptyList(), baseHeaders)
+
+        // 单张图片地址可能带「按图请求头」后缀：`url,{"headers":{...}}`（legado 约定）
+        val perImageHeaders = LinkedHashMap<String, String>()
 
         // JSON 正文（如 {"data":{"images":[...]}}）：规则相对根节点解析
         val isJson = content.trimStart().startsWith("{") || content.trimStart().startsWith("[")
-        if (isJson) {
+        if (isJson && !contentRule.contains("@js:") && !contentRule.contains("<js>")) {
             return runCatching {
                 val root = com.google.gson.JsonParser.parseString(content)
                 val rendered = renderJsonRule(contentRule, root)
-                // 渲染结果可能是 JSON 数组字符串或逗号分隔的 URL 列表
-                val urls = parseImageList(rendered)
-                ContentResult.comic(urls)
-            }.getOrDefault(ContentResult.comic(emptyList()))
+                val urls = parseImageList(rendered, pageUrl, perImageHeaders)
+                ContentResult.comic(urls, baseHeaders + perImageHeaders)
+            }.getOrDefault(ContentResult.comic(emptyList(), baseHeaders))
         }
+
+        // 尾部 @js:/<js> 规则：走兼容 legado 的求值（额外提供 src 与 java.*，并可读取 headers 变量）
+        val (value, jsHeadersJson) = LegadoRuleEngine.evalContentRule(content, contentRule, pageUrl)
+        val jsHeaders = parseHeaderJson(jsHeadersJson)
 
         val doc = Jsoup.parse(content)
         val images = mutableListOf<String>()
 
+        fun addImage(rawSrc: String) {
+            if (rawSrc.isBlank()) return
+            val (url, hdr) = splitUrlAndHeaders(rawSrc)
+            if (hdr.isNotEmpty()) perImageHeaders.putAll(hdr)
+            LegadoRuleEngine.toAbsoluteUrl(pageUrl, url)?.let { images.add(it) }
+        }
+
         // 支持 @css: 选择器提取多图
         if (contentRule.startsWith("@css:")) {
-            val selector = contentRule.substringAfter("@css:")
+            val selector = contentRule.substringAfter("@css:").trim()
             val imgAttr = rule["imageStyle"] ?: "src"
             doc.select(selector).forEach { el ->
                 val src = when (imgAttr.uppercase()) {
                     "FULL" -> el.attr("src").ifEmpty { el.attr("data-src").ifEmpty { el.attr("data-original") } }
                     else -> el.attr(imgAttr.lowercase()).ifEmpty { el.attr("src") }
                 }
-                LegadoRuleEngine.toAbsoluteUrl(baseUrl, src)?.let { images.add(it) }
+                addImage(src)
             }
         } else {
-            // 常规选择器（如 class.xx@tag.img@html 或直接 html 内含 img）
-            val html = LegadoRuleEngine.extractString(content, contentRule, baseUrl)
-            if (html != null) {
-                val subDoc = Jsoup.parse(html)
-                subDoc.select("img").forEach { img ->
-                    val src = img.attr("src").ifEmpty { img.attr("data-src").ifEmpty { img.attr("data-original") } }
-                    LegadoRuleEngine.toAbsoluteUrl(baseUrl, src)?.let { images.add(it) }
+            // 常规选择器（如 class.xx@tag.img@html）或 JS 结果（可能是 HTML 片段 / 地址列表）
+            val html = value ?: LegadoRuleEngine.extractString(content, contentRule, pageUrl)
+            if (!html.isNullOrBlank()) {
+                // (1) JS 拼出的 `<img src="url,{"headers":{...}}">`：src 内部含有引号，
+                //     HTML 解析会在第一个引号处截断，导致请求头后缀丢失。
+                //     这里按「一直取到 `">`」的方式抓 img 的 src/data-src，保住地址与请求头。
+                //     （限定在 <img> 标签内，避免误抓 <script src> 之类的地址）
+                if (html.contains("<img", ignoreCase = true)) {
+                    Regex(
+                        """<img\b[^>]*?\s(?:data-)?src\s*=\s*"([\s\S]*?)"(?=\s*/?>)""",
+                        RegexOption.IGNORE_CASE,
+                    ).findAll(html).forEach { m -> addImage(m.groupValues[1]) }
+                }
+                // (2) 结果可能本身就是图片地址列表（换行/逗号分隔，或 JSON 数组）
+                if (images.isEmpty()) {
+                    val direct = parseImageList(html, pageUrl, perImageHeaders)
+                    if (direct.isNotEmpty()) images.addAll(direct)
+                }
+                // (3) 退化为「结果是 HTML 片段」
+                if (images.isEmpty()) {
+                    val subDoc = Jsoup.parse(html)
+                    subDoc.select("img").forEach { img ->
+                        addImage(
+                            img.attr("src").ifEmpty {
+                                img.attr("data-src").ifEmpty { img.attr("data-original") }
+                            }
+                        )
+                    }
+                }
+                // (4) 兜底：结果里直接出现裸图片地址（如 JS 拼接的数组字符串）
+                if (images.isEmpty()) {
+                    Regex("https?://[^\\s\"'<>,\\[\\]{}]+").findAll(html).forEach { m ->
+                        val u = m.value
+                        if (Regex("\\.(jpg|jpeg|png|webp|gif|bmp|avif)(\\?|$)", RegexOption.IGNORE_CASE)
+                                .containsMatchIn(u)
+                        ) images.add(u)
+                    }
                 }
             }
         }
-        return ContentResult.comic(images)
+        return ContentResult.comic(images.distinct(), baseHeaders + jsHeaders + perImageHeaders)
     }
 
-    /** 解析渲染后的图片列表（JSON 数组字符串 / 换行或逗号分隔的 URL） */
-    private fun parseImageList(rendered: String?): List<String> {
+    /**
+     * 判断一个片段是否「像图片地址」。
+     *
+     * 需要接受相对地址（如 `2.jpg`、`../img/3.png`）——它们要按章节页 URL 解析；
+     * 同时排除规则结果里混进来的 HTML/JSON 残片。
+     */
+    private fun String.isUrlLike(): Boolean {
+        if (isBlank()) return false
+        if (startsWith("__HDR__")) return true
+        if (any { it == '<' || it == '>' || it == '"' || it == '\'' || it == ' ' || it == '\t' }) return false
+        if (startsWith("http://") || startsWith("https://") || startsWith("//") ||
+            startsWith("/") || startsWith("data:image")
+        ) return true
+        // 相对路径：带扩展名（2.jpg / ../img/3.png?x=1）
+        return contains('.') && !endsWith(".")
+    }
+
+    /** 拆分单图地址的「按图请求头」后缀：`url,{"headers":{...}}` → (url, headers) */
+    private fun splitUrlAndHeaders(raw: String): Pair<String, Map<String, String>> {
+        val idx = raw.indexOf(",{")
+        if (idx <= 0) return raw.trim() to emptyMap()
+        val url = raw.substring(0, idx).trim()
+        val json = extractJsonObject(raw.substring(idx + 1)) ?: raw.substring(idx + 1).trim()
+        return url to parseHeaderJson(json)
+    }
+
+    /**
+     * 从一段文本中截出第一个「括号配对」的 JSON 对象。
+     *
+     * 漫画源的 JS 常把 `,{"headers":{...}}` 后缀拼在 `<img src="...">` 里，
+     * 抓出来的串尾部会带 `">` 之类的残留，直接用 Gson 解析会失败——这里按括号配对截断。
+     */
+    private fun extractJsonObject(text: String): String? {
+        val start = text.indexOf('{')
+        if (start < 0) return null
+        var depth = 0
+        var inStr = false
+        var escaped = false
+        for (i in start until text.length) {
+            val c = text[i]
+            if (inStr) {
+                when {
+                    escaped -> escaped = false
+                    c == '\\' -> escaped = true
+                    c == '"' -> inStr = false
+                }
+            } else {
+                when (c) {
+                    '"' -> inStr = true
+                    '{' -> depth++
+                    '}' -> {
+                        depth--
+                        if (depth == 0) return text.substring(start, i + 1)
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * 组装图片请求头：源自带 header + 默认 `Referer`（章节页，满足多数站防盗链）+ 规则内声明的头。
+     */
+    private fun imageHeaders(pageUrl: String, extra: Map<String, String> = emptyMap()): Map<String, String> {
+        val h = LinkedHashMap<String, String>()
+        h.putAll(headers)
+        if (h.keys.none { it.equals("Referer", ignoreCase = true) }) {
+            h["Referer"] = runCatching {
+                val u = java.net.URI(pageUrl)
+                "${u.scheme}://${u.host}${if (u.port > 0) ":${u.port}" else ""}/"
+            }.getOrDefault(pageUrl)
+        }
+        h.putAll(extra)
+        return h
+    }
+
+    /** 解析 JS 中设置的 headers JSON（兼容 `{"Referer":x}`、`{"headers":{...}}`、`{"headers":"{...}"}` 三种写法） */
+    private fun parseHeaderJson(json: String?): Map<String, String> {
+        if (json.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            var obj = com.google.gson.JsonParser.parseString(json).asJsonObject
+            val h = obj.get("headers")
+            if (h != null) {
+                obj = when {
+                    h.isJsonObject -> h.asJsonObject
+                    h.isJsonPrimitive && h.asJsonPrimitive.isString ->
+                        com.google.gson.JsonParser.parseString(h.asString).asJsonObject
+                    else -> obj
+                }
+            }
+            obj.entrySet()
+                .filter { it.value.isJsonPrimitive }
+                .associate { it.key to it.value.asString }
+        }.getOrDefault(emptyMap())
+    }
+
+    /** 解析渲染后的图片列表（JSON 数组字符串 / 换行、逗号分隔的 URL），相对地址按 pageUrl 解析 */
+    private fun parseImageList(
+        rendered: String?,
+        pageUrl: String,
+        headersOut: MutableMap<String, String> = mutableMapOf(),
+    ): List<String> {
         if (rendered.isNullOrBlank()) return emptyList()
         val trimmed = rendered.trim()
-        return runCatching {
-            // 尝试作为 JSON 数组解析
-            if (trimmed.startsWith("[")) {
-                com.google.gson.JsonParser.parseString(trimmed).asJsonArray
-                    .map { it.asString }
-            } else emptyList()
-        }.getOrElse {
-            // 退化为按换行/逗号分隔
-            trimmed.split("\n", ",")
-                .map { it.trim() }
-                .filter { it.startsWith("http") }
-        }.map { LegadoRuleEngine.toAbsoluteUrl(baseUrl, it) ?: it }
+
+        // 按换行/逗号切分（注意：地址可能带 `,{headers}` 后缀，按 ",{" 断开而不是按逗号断）
+        fun splitPlain(text: String): List<String> = text.split("\n").flatMap { line ->
+            val cut = line.indexOf(",{")
+            if (cut > 0) {
+                val rest = line.substring(cut)
+                // 后缀本身可能还含有逗号（JSON 内部），这里不做二次切分
+                listOf(line.substring(0, cut), "__HDR__$rest")
+            } else {
+                line.split(",")
+            }
+        }.map { it.trim() }
+            .filter { it.isUrlLike() }
+
+        // JSON 数组优先；不是 JSON 数组时走通用切分（此前 getOrElse 分支永远进不去，已修正）
+        val raw: List<String> = if (trimmed.startsWith("[")) {
+            runCatching { com.google.gson.JsonParser.parseString(trimmed).asJsonArray.map { it.asString } }
+                .getOrElse { splitPlain(trimmed) }
+        } else {
+            splitPlain(trimmed)
+        }
+
+        // 收集按图请求头后缀，并返回清洗后的地址
+        val urls = mutableListOf<String>()
+        raw.forEach { item ->
+            if (item.startsWith("__HDR__")) {
+                val body = item.removePrefix("__HDR__").removePrefix(",")
+                headersOut.putAll(parseHeaderJson(extractJsonObject(body) ?: body))
+            } else {
+                val (u, hdr) = splitUrlAndHeaders(item)
+                if (hdr.isNotEmpty()) headersOut.putAll(hdr)
+                urls.add(u)
+            }
+        }
+        return urls.mapNotNull { LegadoRuleEngine.toAbsoluteUrl(pageUrl, it) ?: it }
     }
 
     /** 提取视频播放地址 */

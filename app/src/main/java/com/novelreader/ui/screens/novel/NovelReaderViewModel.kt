@@ -6,8 +6,10 @@ import com.novelreader.core.preferences.PreferencesManager
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
+import com.novelreader.domain.repository.BookRepository
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.ProgressRepository
+import com.novelreader.source.search.ChapterLocator
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,6 +28,7 @@ class NovelReaderViewModel(
     private val progressRepository: ProgressRepository,
     private val preferences: PreferencesManager,
     private val chapterCacheRepository: com.novelreader.domain.repository.ChapterCacheRepository? = null,
+    private val bookRepository: BookRepository? = null,
 ) : ViewModel() {
 
     // ===== 正文 =====
@@ -37,6 +40,26 @@ class NovelReaderViewModel(
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
+
+    /** 轻量提示条（换源成功 / 翻页反馈 / 章节边界提示），由 UI 展示后自动消失 */
+    private val _toast = MutableStateFlow<String?>(null)
+    val toast: StateFlow<String?> = _toast.asStateFlow()
+
+    /** 是否已收藏（顶栏收藏按钮用） */
+    private val _collected = MutableStateFlow(false)
+    val collected: StateFlow<Boolean> = _collected.asStateFlow()
+
+    /** 当前书是否有下一章（末章文案 / 是否显示「下一章」入口） */
+    private val _hasNextChapter = MutableStateFlow(false)
+    val hasNextChapter: StateFlow<Boolean> = _hasNextChapter.asStateFlow()
+
+    /** 当前书是否有上一章 */
+    private val _hasPrevChapter = MutableStateFlow(false)
+    val hasPrevChapter: StateFlow<Boolean> = _hasPrevChapter.asStateFlow()
+
+    /** 当前书籍信息（换源后会更新，供顶栏书名 / 来源实时刷新） */
+    private val _currentItem = MutableStateFlow<MediaItem?>(null)
+    val currentItemState: StateFlow<MediaItem?> = _currentItem.asStateFlow()
 
     /** 当前正文是否来自本地缓存（#30：UI 可提示「离线缓存」） */
     private val _fromCache = MutableStateFlow(false)
@@ -223,6 +246,17 @@ class NovelReaderViewModel(
     private val _changeSourceError = MutableStateFlow<String?>(null)
     val changeSourceError: StateFlow<String?> = _changeSourceError.asStateFlow()
 
+    /** 换源候选是否还有下一页（分页搜索） */
+    private val _changeSourceHasMore = MutableStateFlow(false)
+    val changeSourceHasMore: StateFlow<Boolean> = _changeSourceHasMore.asStateFlow()
+
+    /** 正在加载换源候选下一页 */
+    private val _changeSourceLoadingMore = MutableStateFlow(false)
+    val changeSourceLoadingMore: StateFlow<Boolean> = _changeSourceLoadingMore.asStateFlow()
+
+    /** 已搜索到的换源页码（从 1 开始） */
+    private var changeSourcePage: Int = 1
+
     /** 当前阅读的书籍名（换源搜索用） */
     private val _currentTitle = MutableStateFlow("")
     val currentTitle: StateFlow<String> = _currentTitle.asStateFlow()
@@ -240,12 +274,17 @@ class NovelReaderViewModel(
      */
     fun init(item: MediaItem, chapters: List<ChapterItem>, chapter: ChapterItem) {
         currentItem = item
+        _currentItem.value = item
         _chapters.value = chapters
         currentChapter = chapter
         _chapterTitle.value = chapter.title
         _currentTitle.value = item.title
         _currentAuthor.value = item.author
+        refreshNavFlags()
         viewModelScope.launch {
+            // 收藏状态（顶栏收藏按钮）
+            runCatching { bookRepository?.isCollected(item) == true }
+                .onSuccess { _collected.value = it }
             // 读取历史进度：若进度所属章节正是本次进入的章节，则恢复其正文位置比例
             val saved = runCatching {
                 progressRepository.getProgress(item.sourceId, item.id)
@@ -300,6 +339,44 @@ class NovelReaderViewModel(
         }
     }
 
+    /** 刷新「是否有上一章 / 下一章」标记（末章文案、章节边界提示用） */
+    private fun refreshNavFlags() {
+        val idx = currentIndex()
+        val size = _chapters.value.size
+        _hasPrevChapter.value = idx > 0
+        _hasNextChapter.value = idx >= 0 && idx < size - 1
+    }
+
+    /** 轻量提示（自动消失由 UI 控制） */
+    fun showToast(message: String) {
+        _toast.value = message
+    }
+
+    /** 关闭提示条 */
+    fun dismissToast() {
+        _toast.value = null
+    }
+
+    /** 收藏 / 取消收藏当前书（顶栏收藏按钮） */
+    fun toggleCollect() {
+        val repo = bookRepository ?: return
+        val item = currentItem ?: return
+        viewModelScope.launch {
+            if (_collected.value) {
+                runCatching { repo.removeFromBookshelf(item) }
+                    .onSuccess { _collected.value = false; showToast("已移出书架") }
+            } else {
+                runCatching { repo.addToBookshelf(item) }
+                    .onSuccess { _collected.value = true; showToast("已加入书架") }
+            }
+        }
+    }
+
+    /** 正文加载失败后重试本章 */
+    fun retry() {
+        currentChapter?.let { loadChapter(it) }
+    }
+
     /** 切换章节（会重置正文位置，回到该章顶部 / 第一页） */
     fun loadContent(chapter: ChapterItem) {
         lastTextPosition = 0
@@ -314,6 +391,7 @@ class NovelReaderViewModel(
         currentChapter = chapter
         _chapterTitle.value = chapter.title
         _currentChapterIndex.value = chapter.index
+        refreshNavFlags()
         val item = currentItem
         viewModelScope.launch {
             _loading.value = true
@@ -392,6 +470,8 @@ class NovelReaderViewModel(
         val chapters = _chapters.value
         if (idx >= 0 && idx + 1 < chapters.size) {
             loadContent(chapters[idx + 1])
+        } else {
+            showToast("已是最后一章")
         }
     }
 
@@ -399,6 +479,8 @@ class NovelReaderViewModel(
         val idx = currentIndex()
         if (idx > 0) {
             loadContent(_chapters.value[idx - 1])
+        } else {
+            showToast("已是第一章")
         }
     }
 
@@ -481,17 +563,27 @@ class NovelReaderViewModel(
     /** 音量键上一页 */
     fun volumePrevPage() {
         _pageTurn.tryEmit(-1)
+        showToast("↑ 上一页")
     }
 
     /** 音量键下一页 */
     fun volumeNextPage() {
         _pageTurn.tryEmit(1)
+        showToast("↓ 下一页")
     }
 
     /** 单击屏幕中央：弹出/收起菜单 */
     fun toggleMenu() {
+        // 连击去抖：单击已开关菜单、紧随其后的双击判定会再触发一次，
+        // 200ms 内的第二次调用直接忽略，避免菜单「闪一下就不见」。
+        val now = System.currentTimeMillis()
+        if (now - lastMenuToggleAt < 200L) return
+        lastMenuToggleAt = now
         _showMenu.value = !_showMenu.value
     }
+
+    /** 上次切换菜单的时间戳（连击去抖用） */
+    private var lastMenuToggleAt: Long = 0L
 
     /** 切换菜单页签（目录/界面/设置） */
     fun setMenuTab(tab: Int) {
@@ -516,10 +608,12 @@ class NovelReaderViewModel(
         filterCandidates()
     }
 
-    /** 搜索当前书名的候选源 */
+    /** 搜索当前书名的候选源（第 1 页） */
     private fun searchSameTitle() {
         val title = _currentTitle.value
         if (title.isBlank()) return
+        changeSourcePage = 1
+        _changeSourceHasMore.value = false
         viewModelScope.launch {
             _changeSourceLoading.value = true
             _changeSourceError.value = null
@@ -527,13 +621,47 @@ class NovelReaderViewModel(
                 contentRepository.search(SourceType.NOVEL, title, 1)
             }.onSuccess { results ->
                 _allCandidates = results
+                _changeSourceHasMore.value = results.isNotEmpty()
                 filterCandidates()
             }.onFailure { e ->
                 _changeSourceError.value = e.message ?: "换源搜索失败"
                 _allCandidates = emptyList()
                 _changeSourceCandidates.value = emptyList()
+                _changeSourceHasMore.value = false
             }
             _changeSourceLoading.value = false
+        }
+    }
+
+    /**
+     * 加载换源候选的下一页。
+     *
+     * 旧实现只搜第 1 页，热门书在前几页之外的其他源永远搜不到（「换源形同虚设」之一）。
+     * 这里支持翻页追加，并做去重，保证候选池够用。
+     */
+    fun loadMoreChangeSource() {
+        val title = _currentTitle.value
+        if (title.isBlank() || _changeSourceLoadingMore.value) return
+        if (!_changeSourceHasMore.value) return
+        val next = changeSourcePage + 1
+        viewModelScope.launch {
+            _changeSourceLoadingMore.value = true
+            runCatching { contentRepository.search(SourceType.NOVEL, title, next) }
+                .onSuccess { more ->
+                    if (more.isEmpty()) {
+                        _changeSourceHasMore.value = false
+                    } else {
+                        changeSourcePage = next
+                        val existed = _allCandidates.map { it.sourceId + "|" + it.id }.toHashSet()
+                        val merged = _allCandidates + more.filter { (it.sourceId + "|" + it.id) !in existed }
+                        _allCandidates = merged
+                        filterCandidates()
+                    }
+                }
+                .onFailure { e ->
+                    _changeSourceError.value = e.message ?: "加载更多失败"
+                }
+            _changeSourceLoadingMore.value = false
         }
     }
 
@@ -570,33 +698,46 @@ class NovelReaderViewModel(
 
     /**
      * 切换到候选源。
-     * 拉取目标源目录，按当前章节标题匹配定位；匹配不到则从第一章开始。
+     *
+     * 定位策略（三级，避免「一律回退第一章」）：
+     * 1. 章节标题完全相等
+     * 2. 标题归一化后相等（忽略空格/标点/繁简差异）
+     * 3. 标题互相包含
+     * 4. 以上都失败 → 按当前阅读进度比例映射到目标目录（近似续读位置）
+     *
+     * 成功后：更新当前书信息、章节列表，关闭面板并给出提示；失败保留错误信息。
      */
     fun switchSource(target: MediaItem) {
-        val currentTitleText = currentChapter?.title ?: ""
+        val curTitle = currentChapter?.title ?: ""
+        val curPos = currentIndex()
+        val oldTotal = _chapters.value.size
         viewModelScope.launch {
             _changeSourceLoading.value = true
             _changeSourceError.value = null
             runCatching { contentRepository.chapterList(target) }
                 .onSuccess { newChapters ->
                     if (newChapters.isEmpty()) {
-                        _changeSourceError.value = "该源无章节"
+                        _changeSourceError.value = "该源目录为空，换源失败"
                         _changeSourceLoading.value = false
                         return@launch
                     }
-                    // 按章节标题匹配定位
-                    var index = newChapters.indexOfFirst { it.title.trim() == currentTitleText.trim() }
-                    if (index < 0) {
-                        index = newChapters.indexOfFirst { it.title.contains(currentTitleText, ignoreCase = true) }
-                    }
-                    if (index < 0) index = 0
+                    val index = locateChapter(newChapters, curTitle, curPos, oldTotal)
                     // 切换：更新当前书、章节列表、书名作者，加载对应章节
                     currentItem = target
+                    _currentItem.value = target
                     _chapters.value = newChapters
                     _currentTitle.value = target.title
                     _currentAuthor.value = target.author
-                    loadContent(newChapters[index])
+                    // 重置换源面板状态
                     _changeSourceOpen.value = false
+                    _allCandidates = emptyList()
+                    _changeSourceCandidates.value = emptyList()
+                    _changeSourceHasMore.value = false
+                    changeSourcePage = 1
+                    loadContent(newChapters[index])
+                    // 换源成功反馈（旧实现切换后无任何提示，用户不知道是否生效）
+                    val srcLabel = target.sourceName.ifBlank { target.title }
+                    showToast("已切换到「$srcLabel」，定位到第 ${index + 1}/${newChapters.size} 章")
                 }
                 .onFailure { e ->
                     _changeSourceError.value = e.message ?: "切换源失败"
@@ -604,6 +745,14 @@ class NovelReaderViewModel(
             _changeSourceLoading.value = false
         }
     }
+
+    /** 在目标目录中定位对应的阅读位置（见 [ChapterLocator.locate]） */
+    private fun locateChapter(
+        newChapters: List<ChapterItem>,
+        curTitle: String,
+        curPos: Int,
+        oldTotal: Int,
+    ): Int = ChapterLocator.locate(newChapters, curTitle, curPos, oldTotal)
 
     // ===== 进度保存 =====
 

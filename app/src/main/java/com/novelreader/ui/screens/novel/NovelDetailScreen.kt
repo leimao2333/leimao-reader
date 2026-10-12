@@ -71,9 +71,19 @@ fun NovelDetailScreen(
     val changeSourceCandidates by viewModel.changeSourceCandidates.collectAsState()
     val changeSourceLoading by viewModel.changeSourceLoading.collectAsState()
     val changeSourceError by viewModel.changeSourceError.collectAsState()
+    val hasProgress by viewModel.hasProgress.collectAsState()
+    val notice by viewModel.notice.collectAsState()
 
     LaunchedEffect(item) {
         viewModel.load(item)
+    }
+
+    // 换源提示自动消失
+    LaunchedEffect(notice) {
+        if (notice != null) {
+            kotlinx.coroutines.delay(1800)
+            viewModel.dismissNotice()
+        }
     }
 
     val display = detail ?: item
@@ -124,6 +134,16 @@ fun NovelDetailScreen(
                         download = download,
                         onDownload = viewModel::downloadBook,
                         onAuthorClick = onSearchAuthor,
+                        hasProgress = hasProgress,
+                        onReadLatest = {
+                            // 点「最新章节」直达该章阅读；目录里匹配不到则退回「阅读」按钮逻辑
+                            val last = BookMeta.lastChapter(display)
+                            val target = if (last.isNullOrBlank()) null else chapters.firstOrNull {
+                                it.title.trim() == last.trim() ||
+                                    it.title.contains(last.trim(), ignoreCase = true)
+                            }
+                            if (target != null) onChapterClick(target) else onRead(display)
+                        },
                     )
                 }
 
@@ -178,6 +198,24 @@ fun NovelDetailScreen(
                 },
                 onClose = viewModel::closeChangeSource,
             )
+        }
+
+        // ===== 换源成功提示 =====
+        notice?.let { msg ->
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 48.dp, start = 24.dp, end = 24.dp),
+                color = MaterialTheme.colorScheme.inverseSurface,
+                shape = RoundedCornerShape(20.dp),
+            ) {
+                Text(
+                    text = msg,
+                    color = MaterialTheme.colorScheme.inverseOnSurface,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                )
+            }
         }
     }
 }
@@ -298,6 +336,8 @@ private fun DetailHeader(
     download: com.novelreader.core.download.DownloadState? = null,
     onDownload: () -> Unit = {},
     onAuthorClick: ((String) -> Unit)? = null,
+    hasProgress: Boolean = false,
+    onReadLatest: () -> Unit = {},
 ) {
     Column {
         Row(
@@ -349,8 +389,8 @@ private fun DetailHeader(
                         },
                     )
                 }
-                // 元信息：字数 · 最新章节 · 更新时间（#27）
-                val meta = BookMeta.summaryLine(item, showLastChapter = true, showUpdateTime = true)
+                // 元信息：字数 · 更新时间（「最新章节」拆成独立可点行，见下）
+                val meta = BookMeta.summaryLine(item, showLastChapter = false, showUpdateTime = true)
                 if (meta.isNotEmpty()) {
                     Spacer(Modifier.height(4.dp))
                     Text(
@@ -360,6 +400,36 @@ private fun DetailHeader(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
+                }
+                // 最新章节：独立一行，点击直达该章（旧实现仅作为元信息文本，不可点）
+                BookMeta.lastChapter(item)?.let { last ->
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onReadLatest)
+                            .padding(vertical = 4.dp),
+                    ) {
+                        Text(
+                            text = "最新章节：",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = last,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "去阅读 ›",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                 }
                 // 来源名
                 if (item.sourceName.isNotBlank()) {
@@ -372,7 +442,7 @@ private fun DetailHeader(
                 Spacer(Modifier.height(12.dp))
                 // 主操作行：阅读 / 加入书架 / 换源
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Button(onClick = onRead) { Text("阅读") }
+                    Button(onClick = onRead) { Text(if (hasProgress) "继续阅读" else "开始阅读") }
                     Spacer(Modifier.width(8.dp))
                     OutlinedButton(onClick = onToggleCollect) {
                         Text(if (collected) "已收藏" else "加入书架")

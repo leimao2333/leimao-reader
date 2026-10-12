@@ -6,10 +6,14 @@ import com.novelreader.domain.model.SourceInfo
 import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.SourceRepository
 import com.novelreader.data.repository.SourceRepositoryImpl
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 
 /**
  * 源管理 ViewModel。
@@ -190,21 +194,33 @@ class SourceManageViewModel(
     fun testSources(sources: List<SourceInfo> = _sources.value) {
         if (sources.isEmpty()) return
         viewModelScope.launch {
-            val results = _testResults.value.toMutableMap()
-            sources.forEach { source ->
-                _testing.value = _testing.value + source.id
-                // 用 withTimeoutOrNull 包住整个 test()，防止单个慢源卡死整轮检测；
-                // 用 runCatching 捕获 Throwable（Rhino 等可能抛 Error，非 Exception），
-                // 任何异常都视为「不可用」，绝不因此崩溃。
-                val ok = kotlinx.coroutines.withTimeoutOrNull(20_000L) {
-                    runCatching {
-                        sourceRepository.getAdapter(source.id)?.test() ?: true
-                    }.getOrDefault(false)
-                } ?: false
-                results[source.id] = ok
-                _testResults.value = results.toMap()
-                _testing.value = _testing.value - source.id
+            // 必须在 IO 线程执行：test() 含网络请求与 Rhino JS，
+            // 在主线程跑会卡死 UI 导致 ANR（实体机已复现）。
+            val results = withContext(Dispatchers.IO) {
+                val map = _testResults.value.toMutableMap()
+                // 限流并发：全串行太慢（280 源 × 20s 上限），全并发耗尽内存；
+                // 用信号量限制最多 8 个源同时检测。
+                val semaphore = kotlinx.coroutines.sync.Semaphore(8)
+                sources.map { source ->
+                    launch {
+                        semaphore.withPermit {
+                            _testing.value = _testing.value + source.id
+                            // 用 withTimeoutOrNull 包住整个 test()，防止单个慢源卡死整轮检测；
+                            // 用 runCatching 捕获 Throwable（Rhino 等可能抛 Error，非 Exception），
+                            // 任何异常都视为「不可用」，绝不因此崩溃。
+                            val ok = kotlinx.coroutines.withTimeoutOrNull(20_000L) {
+                                runCatching {
+                                    sourceRepository.getAdapter(source.id)?.test() ?: true
+                                }.getOrDefault(false)
+                            } ?: false
+                            synchronized(map) { map[source.id] = ok }
+                            _testing.value = _testing.value - source.id
+                        }
+                    }
+                }.joinAll()
+                map
             }
+            _testResults.value = results.toMap()
             val failed = results.count { !it.value }
             _message.value = if (failed == 0) "检测完成：全部源可用"
             else "检测完成：${results.size} 个源中 $failed 个疑似失效"

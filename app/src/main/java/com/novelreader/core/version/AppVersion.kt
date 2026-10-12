@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.1.1"
+    const val CURRENT_VERSION = "1.1.2"
 
     /**
      * 更新日志。
@@ -19,6 +19,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.1.2",
+            date = "2026-10-12",
+            changes = listOf(
+                "修复源检测 ANR：检测在主线程串行执行 280 个源的网络请求 + JS，卡死 UI 被系统判定无响应（实体机复现）",
+                "检测迁移至 IO 线程池，并用信号量限流 8 路并发：主线程零阻塞，280 源全量检测约 8 分钟跑完",
+                "实体机验证：280 个源全量检测全程 0 ANR、UI 可正常操作",
+            ),
+        ),
         VersionEntry(
             version = "1.1.1",
             date = "2026-10-12",

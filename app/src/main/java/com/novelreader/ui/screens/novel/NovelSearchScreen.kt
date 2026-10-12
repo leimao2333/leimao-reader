@@ -47,9 +47,13 @@ fun NovelSearchScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 4.dp, bottom = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalAlignment = Alignment.Top,
         ) {
-            IconButton(onClick = onBack) {
+            // 顶对齐 + 内边距，使箭头与搜索框垂直居中对齐（搜索栏整体较高，不能用整列居中）
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier.padding(top = 8.dp),
+            ) {
                 Icon(Icons.Filled.ArrowBack, contentDescription = "返回")
             }
             SearchBar(

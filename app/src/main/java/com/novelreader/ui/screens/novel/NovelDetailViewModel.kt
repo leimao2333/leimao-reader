@@ -76,6 +76,10 @@ class NovelDetailViewModel(
     private val _changeSourceError = MutableStateFlow<String?>(null)
     val changeSourceError: StateFlow<String?> = _changeSourceError.asStateFlow()
 
+    /** 换源搜索进度：已搜源数 / 总源数 */
+    private val _changeSourceProgress = MutableStateFlow<String?>(null)
+    val changeSourceProgress: StateFlow<String?> = _changeSourceProgress.asStateFlow()
+
     fun load(item: MediaItem) {
         _detail.value = item
         viewModelScope.launch {
@@ -180,7 +184,16 @@ class NovelDetailViewModel(
         _changeSourceOpen.value = false
     }
 
-    /** 搜索同名书：按「书名 + 作者」匹配（与阅读页换源同一套判定），排除当前源 */
+    /**
+     * 搜索同名书：按「书名 + 作者」匹配（与阅读页换源同一套判定），排除当前源。
+     *
+     * 用并发带进度的 [ContentRepository.searchWithProgress]（8 路并发 + 模糊匹配），
+     * 旧实现是串行 [ContentRepository.search]——22 个源逐个抓，死源要等满超时，
+     * 总耗时可达数分钟，面板看起来像「永远没有结果」。
+     *
+     * 候选**增量刷新**：每完成一个源就刷新一次候选，不等全部搜完；
+     * 整体限时 60 秒——个别死源的挂起时间会超过单次读超时，不能陪它耗到底。
+     */
     private fun searchSameTitle() {
         val current = _detail.value ?: return
         val title = current.title.trim()
@@ -188,29 +201,56 @@ class NovelDetailViewModel(
         viewModelScope.launch {
             _changeSourceLoading.value = true
             _changeSourceError.value = null
-            runCatching { contentRepository.search(SourceType.NOVEL, title, 1) }
-                .onSuccess { results ->
-                    val curAuthor = current.author?.trim()?.lowercase()
-                    val candidates = results.filter { cand ->
-                        // 排除当前这本书
-                        if (cand.sourceId == current.sourceId && cand.id == current.id) return@filter false
-                        // 书名匹配（归一化后互相包含或相等）
-                        val t = com.novelreader.source.search.FuzzyMatch.normalize(cand.title)
-                        val k = com.novelreader.source.search.FuzzyMatch.normalize(title)
-                        val titleMatch = t == k || t.contains(k) || k.contains(t)
-                        if (!titleMatch) return@filter false
-                        // 作者一致（任一为空视为通过）
-                        val candAuthor = cand.author?.trim()?.lowercase()
-                        if (curAuthor.isNullOrBlank() || candAuthor.isNullOrBlank()) true
-                        else candAuthor == curAuthor
+            _changeSourceProgress.value = null
+            runCatching {
+                kotlinx.coroutines.withTimeoutOrNull(60_000) {
+                    contentRepository.searchWithProgress(
+                        type = SourceType.NOVEL,
+                        keyword = title,
+                        page = 1,
+                        concurrency = 8,
+                        fuzzyEnabled = true,
+                    ).collect { state ->
+                        _changeSourceProgress.value =
+                            if (state.isSearching) "正在搜索书源 ${state.searchedCount}/${state.totalCount}"
+                            else null
+                        _changeSourceCandidates.value = filterCandidates(state.results, current, title)
                     }
-                    _changeSourceCandidates.value = candidates
                 }
-                .onFailure { e ->
-                    _changeSourceError.value = e.message ?: "换源搜索失败"
-                    _changeSourceCandidates.value = emptyList()
-                }
+            }.onFailure { e ->
+                _changeSourceError.value = e.message ?: "换源搜索失败"
+                _changeSourceCandidates.value = emptyList()
+            }
             _changeSourceLoading.value = false
+        }
+    }
+
+    /** 换源候选过滤：书名归一化互相包含 + 作者归一化一致（与阅读页同一套判定） */
+    private fun filterCandidates(
+        results: List<com.novelreader.domain.model.MediaItem>,
+        current: com.novelreader.domain.model.MediaItem,
+        title: String,
+    ): List<com.novelreader.domain.model.MediaItem> {
+        val curTitleNorm = com.novelreader.source.search.FuzzyMatch.normalize(title)
+        val curAuthor = current.author?.trim()?.let {
+            com.novelreader.source.search.FuzzyMatch.normalizeAuthor(it)
+        }
+        return results.filter { cand ->
+            // 排除当前这本书（id 或详情 URL 一致都算同一本）
+            if (cand.sourceId == current.sourceId &&
+                (cand.id == current.id || (cand.id.isBlank() && cand.detailUrl == current.detailUrl))
+            ) return@filter false
+            val t = com.novelreader.source.search.FuzzyMatch.normalize(cand.title)
+            // 同源 + 同名（归一化后）视为当前书换了个 id，同样排除
+            if (cand.sourceId == current.sourceId && t == curTitleNorm) return@filter false
+            val titleMatch = t == curTitleNorm || t.contains(curTitleNorm) || curTitleNorm.contains(t)
+            if (!titleMatch) return@filter false
+            // 作者一致（归一化去站点前缀；任一为空视为通过）
+            val candAuthor = cand.author?.trim()?.let {
+                com.novelreader.source.search.FuzzyMatch.normalizeAuthor(it)
+            }
+            if (curAuthor.isNullOrBlank() || candAuthor.isNullOrBlank()) true
+            else candAuthor == curAuthor
         }
     }
 }

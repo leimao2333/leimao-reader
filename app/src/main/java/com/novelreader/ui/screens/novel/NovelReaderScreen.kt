@@ -698,46 +698,50 @@ private fun ScrollNovel(
             .verticalScroll(scrollState)
             .padding(horizontal = sidePadding.dp, vertical = 48.dp),
     ) {
-        if (!hideChapterTitle) {
-            Text(
-                text = chapterTitle,
-                fontSize = (fontSize + 2).sp,
-                fontFamily = fontFamily,
-                fontWeight = FontWeight.Bold,
-                color = textColor,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(16.dp))
-        }
-        Text(
-            text = buildReaderText(content, fontSize, paragraphSpacing, indent),
-            fontSize = fontSize.sp,
-            fontFamily = fontFamily,
-            fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
-            color = textColor,
-            lineHeight = (fontSize * lineHeightMultiplier).sp,
-            letterSpacing = letterSpacing.sp,
-            textAlign = TextAlign.Justify,
-        )
-
-        if (content.isNotBlank()) {
-            Spacer(Modifier.height(32.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .then(if (hasNextChapter) Modifier.clickable(onClick = onNextChapter) else Modifier)
-                    .padding(vertical = 16.dp),
-                contentAlignment = Alignment.Center,
-            ) {
+        // 注意：Box 的子项会全部叠在同一位置，标题/下一章会压在正文上。
+        // 必须用 Column 纵向排列，Box 只承担滚动与内边距。
+        Column(modifier = Modifier.fillMaxWidth()) {
+            if (!hideChapterTitle) {
                 Text(
-                    text = if (hasNextChapter) "下一章 ›" else "已是最后一章",
+                    text = chapterTitle,
                     fontSize = (fontSize + 2).sp,
+                    fontFamily = fontFamily,
                     fontWeight = FontWeight.Bold,
-                    color = if (hasNextChapter) MaterialTheme.colorScheme.primary else textColor.copy(alpha = 0.5f),
+                    color = textColor,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
                 )
+                Spacer(Modifier.height(16.dp))
             }
-            Spacer(Modifier.height(24.dp))
+            Text(
+                text = buildReaderText(content, fontSize, paragraphSpacing, indent),
+                fontSize = fontSize.sp,
+                fontFamily = fontFamily,
+                fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
+                color = textColor,
+                lineHeight = (fontSize * lineHeightMultiplier).sp,
+                letterSpacing = letterSpacing.sp,
+                textAlign = TextAlign.Justify,
+            )
+
+            if (content.isNotBlank()) {
+                Spacer(Modifier.height(32.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(if (hasNextChapter) Modifier.clickable(onClick = onNextChapter) else Modifier)
+                        .padding(vertical = 16.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = if (hasNextChapter) "下一章 ›" else "已是最后一章",
+                        fontSize = (fontSize + 2).sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (hasNextChapter) MaterialTheme.colorScheme.primary else textColor.copy(alpha = 0.5f),
+                    )
+                }
+                Spacer(Modifier.height(24.dp))
+            }
         }
     }
 }

@@ -436,7 +436,7 @@ object LegadoRuleEngine {
      * 拆出规则**前置**的 `<js>...</js>` 块。
      *
      * legado 里列表 / 取值规则允许「先跑一段 JS 得到新内容，再对结果套用后续规则」，
-     * 例如 `<js>整体解密</js>\n$.chapters[*]`（全免漫画、部分漫画 App 接口源都用它）。
+     * 例如 `<js>整体解密</js>\n$.chapters[*]`（部分漫画 App 接口源都用它）。
      * 返回 (JS 代码, 剩余规则)；没有前置 JS 块时返回 null。
      */
     fun splitLeadingJs(rule: String?): Pair<String, String>? {
@@ -998,7 +998,8 @@ class LegadoJavaBridge(
     private val vars = mutableMapOf<String, Any?>()
 
     fun log(msg: Any?) {
-        android.util.Log.d("LegadoJs", msg?.toString() ?: "null")
+        // 源自己打出的日志内容不可控（常直接带站点名 / 接口地址），只记录长度
+        android.util.Log.d("LegadoJs", "(log ${msg?.toString()?.length ?: 0} chars)")
     }
 
     fun get(key: String): Any? = vars[key]
@@ -1136,7 +1137,8 @@ class LegadoJavaBridge(
 
     /** 与 legado 一致的空实现，避免源里的提示调用直接报错中断 JS */
     fun toast(msg: Any?) {
-        android.util.Log.d("LegadoJs", "toast: ${msg?.toString() ?: ""}")
+        // 源 toast 文本与日志同源，内容不可控（常带站点名），只记录长度
+        android.util.Log.d("LegadoJs", "toast: ${com.novelreader.core.util.LogSanitizer.lengthOnly(msg?.toString())}")
     }
 
     fun longToast(msg: Any?) = toast(msg)

@@ -143,7 +143,7 @@ class LegadoSourceAdapter(
     ): List<Map<String, String>> {
         return runCatching {
             // 列表规则可能是「前置 <js> 块 + 后续 JSONPath」的链式写法：
-            // 如目录规则 `<js>整体解密</js>\n$.chapters[*]`（全免漫画 / 彩绘漫画等 App 接口源）。
+            // 如目录规则 `<js>整体解密</js>\n$.chapters[*]`（部分 App 接口源）。
             // 先执行 JS 得到新的内容，再按剩余路径取数组。
             var json = content
             var effectiveRule = listRule
@@ -499,7 +499,7 @@ class LegadoSourceAdapter(
             fieldValue("lastChapter")?.takeIf { it.isNotBlank() }?.let { extras["lastChapter"] = it }
             // `@put:{k:取值规则}` 是「渲染字段时的副作用」，legado 只要渲染过该字段就会写入变量表。
             // 上面只渲染了 UI 用得到的字段，但变量可能挂在别的字段上：
-            // 全免漫画把 `@put:{cid:$.comic_id}` 挂在 `ruleBookInfo.name` 上，
+            // 某源把 `@put:{cid:$.comic_id}` 挂在 `ruleBookInfo.name` 上，
             // 而详情页书名直接用搜索/书架的值（不渲染 name）→ cid 永远写不进变量表 →
             // 章节地址里 `@get:{cid}` 变成空 → 图片接口签名错误 → 正文空白。
             // 因此把所有带 `@put:` 的字段补渲染一遍，保证副作用完整。
@@ -526,7 +526,7 @@ class LegadoSourceAdapter(
 
         val rawContent = fetch(detailUrl, detailOptions) ?: return emptyList()
         // 注意：只应用 **目录规则自己的** init。ruleBookInfo.init 不能套到目录响应上——
-        // 很多源的目录列表规则自身就带 `<js>` 解密（如全免漫画），
+        // 很多源的目录列表规则自身就带 `<js>` 解密（如某些 App 接口源），
         // 若先把响应体整体解密，规则里的 `java.getString("$.data")` 就取不到原文了。
         val content = applyInitRule(rawContent, rule["init"], detailUrl)
 
@@ -665,7 +665,7 @@ class LegadoSourceAdapter(
         // 章节地址后可能跟请求配置（access-token / m-request-id 等签名），先拆出来再发请求。
         // 注意：目录阶段（fieldsToChapter）已把这段配置剥离并存进 ChapterItem.requestOptions，
         // 因此这里必须优先用 requestOptions，否则 `url` 已是干净地址 → 后缀为空 →
-        // 签名请求头全部丢失 → 全免漫画等 App 接口源返回错误数据 → 正文空白。
+        // 签名请求头全部丢失 → 部分 App 接口源返回错误数据 → 正文空白。
         val (chapterUrlClean, urlOptions) = splitUrlOptions(chapter.url)
         val reqOptions = chapter.requestOptions.ifBlank { urlOptions }
         val url = if (chapterUrlClean.startsWith("http")) chapterUrlClean

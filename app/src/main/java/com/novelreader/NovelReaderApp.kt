@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit
  * 初始化依赖注入容器，并在后台恢复已持久化的源。
  *
  * 同时通过 [ImageLoaderFactory] 提供全局图片加载器：给 Coil 的 OkHttpClient 挂上
- * [ImageDecryptInterceptor]，「整包 AES 加密」的图床（漫蛙吧系列）才能正常出图。
+ * [ImageDecryptInterceptor]，「整包 AES 加密」的图床才能正常出图。
  */
 class NovelReaderApp : Application(), ImageLoaderFactory {
 
@@ -48,7 +48,7 @@ class NovelReaderApp : Application(), ImageLoaderFactory {
      * 关键差异是加了 [ImageDecryptInterceptor]：部分漫画图床把图片整包 AES-CBC 加密后
      * 下发（见 ImageDecryptor 注释），必须在「拿到字节」和「解码」之间还原，
      * 所以放在 OkHttp 响应层最合适——后续的磁盘缓存、采样缩放、Coil Transformation
-     * （禁漫的分段乱序还原）都还能照常工作。
+     * （分段乱序还原）都还能照常工作。
      */
     override fun newImageLoader(): ImageLoader =
         ImageLoader.Builder(this)

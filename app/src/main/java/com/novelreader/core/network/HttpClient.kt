@@ -42,7 +42,7 @@ object HttpClient {
 
     /** 默认 UA（模拟主流浏览器） */
     const val DEFAULT_USER_AGENT =
-        "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
+        "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
 
     /**

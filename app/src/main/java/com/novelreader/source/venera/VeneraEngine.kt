@@ -121,11 +121,16 @@ class VeneraEngine(private val context: Context) {
         return try {
             withTimeout(CALL_TIMEOUT_MS) { deferred.await() }
         } catch (e: TimeoutCancellationException) {
-            android.util.Log.w(LOG_TAG, "call($sourceKey, $op) 超时", e)
+            // 日志里不出现源标识与地址（见 core/util/LogSanitizer 的说明）
+            android.util.Log.w(LOG_TAG, "call(op=$op) 超时")
             throw IllegalStateException("Venera 源执行超时（${CALL_TIMEOUT_MS / 1000}s）")
         } catch (e: Exception) {
-            // 源内部异常（JS 抛错 / 网络失败）在这里落地，方便排查；消息本身会透给 UI
-            android.util.Log.w(LOG_TAG, "call($sourceKey, $op) 失败：${e.message}")
+            // 源内部异常（JS 抛错 / 网络失败）在这里落地，方便排查；消息本身会透给 UI。
+            // 消息里常常带接口地址，先脱敏再写日志。
+            android.util.Log.w(
+                LOG_TAG,
+                "call(op=$op) 失败：${com.novelreader.core.util.LogSanitizer.sanitize(e.message)}",
+            )
             throw e
         } finally {
             pending.remove(callId)
@@ -219,7 +224,9 @@ class VeneraEngine(private val context: Context) {
 
         @JavascriptInterface
         fun log(level: String, message: String) {
-            android.util.Log.d("VeneraJs", "[$level] $message")
+            // 源自己打出的日志内容不可控（常含站点名 / 图片地址 / 接口参数），
+            // 只保留级别与长度，避免日志里出现具体的源与站点
+            android.util.Log.d("VeneraJs", "[$level] (${message.length} chars)")
         }
 
         @JavascriptInterface
@@ -432,7 +439,7 @@ class VeneraEngine(private val context: Context) {
     companion object {
         private const val LOG_TAG = "VeneraEngine"
         private const val USER_AGENT =
-            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
+            "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         private const val START_TIMEOUT_MS = 20_000L
         private const val CALL_TIMEOUT_MS = 60_000L

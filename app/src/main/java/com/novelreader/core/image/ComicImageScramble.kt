@@ -9,7 +9,7 @@ import android.util.Log
 /**
  * 漫画图片「分段乱序」还原。
  *
- * 部分站点（典型如禁漫 JM/18comic）会把每页图片**先按 N 段横向切开、再打乱顺序**
+ * 部分站点会把每页图片**先按 N 段横向切开、再打乱顺序**
  * 后下发，只有把各段重新按倒序拼回去，才是一张正常的漫画页。
  *
  * 站点规则由源以 JS 片段的形式给出（Venera 的 `comic.onImageLoad → modifyImage`），
@@ -44,7 +44,7 @@ object ComicImageScramble {
 
     private const val TAG = "ComicScramble"
 
-    /** 段数上限：JM 的算法最多产出 20 段（remainder*2+2，remainder ≤ 9）。 */
+    /** 段数上限：该算法最多产出 20 段（remainder*2+2，remainder ≤ 9）。 */
     private const val MAX_BANDS = 64
 
     /**
@@ -144,11 +144,12 @@ object ComicImageScramble {
     private val warned = HashSet<String>()
 
     private fun warnOnce(script: String) {
+        // 去重指纹只在内存里用；脚本原文不写日志（可能带站点特有的地址与参数）
         val fingerprint = script.take(120)
         synchronized(warned) {
             if (!warned.add(fingerprint)) return
         }
-        Log.w(TAG, "无法识别的 modifyImage 脚本，已跳过还原：${fingerprint.replace(Regex("\\s+"), " ")}")
+        Log.w(TAG, "无法识别的 modifyImage 脚本（${script.length} 字符），已跳过还原")
     }
 
     /** 匹配脚本里的字面量段数：`const num = 6` / `num = 10` */

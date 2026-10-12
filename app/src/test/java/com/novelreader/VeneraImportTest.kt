@@ -14,8 +14,8 @@ import org.junit.Test
  * Venera 源导入链路回归测试（纯离线，不依赖 WebView）。
  *
  * 覆盖两个在真机/离线验证台上实测暴露过的问题：
- * 1. **数量**：`index.json` 里存在 key 重复的条目（`copy_manga` 与
- *    `copy_manga_multi_accounts`），id 若取 key 会互相覆盖 → 33 条只进 32 条。
+ * 1. **数量**：`index.json` 里存在共用同一个 `key` 的条目（同一源的普通版与
+ *    多账号版），id 若取 key 会互相覆盖 → 33 条只进 32 条。
  * 2. **识别**：Venera 源也是 `.js`，必须优先于自研 JS 源被识别，否则会被
  *    `validateJs` 判为「缺少必需函数」而导入失败。
  */
@@ -25,28 +25,28 @@ class VeneraImportTest {
 
     @Test
     fun `同 key 不同文件名必须得到不同 id`() {
-        // venera-configs/index.json 的真实形态：两条 key 都是 copy_manga
-        val a = VeneraSourceId.fromFileName("copy_manga.js")
-        val b = VeneraSourceId.fromFileName("copy_manga_multi_accounts.js")
-        assertEquals("venera_copy_manga", a)
-        assertEquals("venera_copy_manga_multi_accounts", b)
+        // 源集合 index.json 的真实形态：两条共用同一个 key
+        val a = VeneraSourceId.fromFileName("alpha.js")
+        val b = VeneraSourceId.fromFileName("alpha_multi_accounts.js")
+        assertEquals("venera_alpha", a)
+        assertEquals("venera_alpha_multi_accounts", b)
         assertNotEquals("key 重复的条目不能落到同一个 id，否则会少导入", a, b)
     }
 
     @Test
     fun `id 由文件名推导且恢复时幂等`() {
         // 导入
-        assertEquals("venera_baozi", VeneraSourceId.fromFileName("baozi.js"))
+        assertEquals("venera_beta", VeneraSourceId.fromFileName("beta.js"))
         // 启动恢复时构造的是 "${id}.${format}"
-        assertEquals("venera_baozi", VeneraSourceId.fromFileName("venera_baozi.venera"))
+        assertEquals("venera_beta", VeneraSourceId.fromFileName("venera_beta.venera"))
         // 不会二次加前缀
-        assertEquals("venera_baozi", VeneraSourceId.fromFileName("venera_baozi"))
+        assertEquals("venera_beta", VeneraSourceId.fromFileName("venera_beta"))
     }
 
     @Test
     fun `id 规则带目录与反斜杠也正确`() {
-        assertEquals("venera_goda", VeneraSourceId.fromFileName("https://x/y/goda.js"))
-        assertEquals("venera_goda", VeneraSourceId.fromFileName("dir\\goda.js"))
+        assertEquals("venera_gamma", VeneraSourceId.fromFileName("https://x/y/gamma.js"))
+        assertEquals("venera_gamma", VeneraSourceId.fromFileName("dir\\gamma.js"))
     }
 
     @Test
@@ -60,12 +60,13 @@ class VeneraImportTest {
     @Test
     fun `真实 index_json 的33条文件名互不冲突`() {
         val files = listOf(
-            "copy_manga.js", "copy_manga_multi_accounts.js", "komiic.js", "baozi.js", "picacg.js",
-            "nhentai.js", "wnacg.js", "ehentai.js", "jm.js", "manga_dex.js", "ikmmh.js",
-            "shonen_jump_plus.js", "hitomi.js", "comick.js", "ykmh.js", "zaimanhua.js",
-            "manhuagui.js", "manwaba.js", "lanraragi.js", "komga.js", "comic_walker.js",
-            "mh1234.js", "ccc.js", "goda.js", "mh18.js", "mxs.js", "manhuaren.js", "hcomic.js",
-            "jcomic.js", "hot_manga.js", "kavita.js", "happy.js", "mycomic.js",
+            "src01.js", "src01_multi_accounts.js", "src02.js", "src03.js", "src04.js",
+            "src05.js", "src06.js", "src07.js", "src08.js", "src09.js",
+            "src10.js", "src11.js", "src12.js", "src13.js", "src14.js",
+            "src15.js", "src16.js", "src17.js", "src18.js", "src19.js",
+            "src20.js", "src21.js", "src22.js", "src23.js", "src24.js",
+            "src25.js", "src26.js", "src27.js", "src28.js", "src29.js",
+            "src30.js", "src31.js", "src32.js",
         )
         val ids = files.map { VeneraSourceId.fromFileName(it)!! }
         assertEquals(33, ids.size)
@@ -75,9 +76,9 @@ class VeneraImportTest {
     // ==================== 格式识别 ====================
 
     private val veneraSource = """
-        class Baozi extends ComicSource {
-            name = "包子漫画"
-            key = "baozi"
+        class Demo extends ComicSource {
+            name = "示例源"
+            key = "demo"
             version = "1.1.6"
             comic = {
                 loadInfo: async (id) => { return new ComicDetails({ title: id }) },
@@ -89,15 +90,15 @@ class VeneraImportTest {
 
     private val veneraIndex = """
         [
-          {"name":"拷贝漫画","fileName":"copy_manga.js","key":"copy_manga","version":"1.4.1"},
-          {"name":"拷贝漫画(多账号)","fileName":"copy_manga_multi_accounts.js","key":"copy_manga","version":"1.4.1"}
+          {"name":"示例源","fileName":"alpha.js","key":"alpha","version":"1.4.1"},
+          {"name":"示例源(多账号)","fileName":"alpha_multi_accounts.js","key":"alpha","version":"1.4.1"}
         ]
     """.trimIndent()
 
     @Test
     fun `Venera 源被识别为 VENERA 而不是自研 JS`() {
         // 自研 JS 源要求 getMeta/search/chapterList/content，Venera 源没有这些，若误判会导入失败
-        val r = SourceValidator.validate(veneraSource, "baozi.js")
+        val r = SourceValidator.validate(veneraSource, "demo.js")
         assertTrue(r.message, r.valid)
         assertEquals(SourceFormat.VENERA, r.format)
         assertFalse(r.isVeneraIndex)
@@ -114,7 +115,7 @@ class VeneraImportTest {
 
     @Test
     fun `dot venera 扩展名也算 Venera 源`() {
-        val r = SourceValidator.validate(veneraSource, "venera_baozi.venera")
+        val r = SourceValidator.validate(veneraSource, "venera_demo.venera")
         assertEquals(SourceFormat.VENERA, r.format)
     }
 

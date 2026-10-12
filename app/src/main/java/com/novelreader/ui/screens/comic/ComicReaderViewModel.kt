@@ -36,7 +36,7 @@ class ComicReaderViewModel(
     /**
      * 逐图后处理脚本（按图片地址索引）。
      *
-     * 部分站点（禁漫 JM）把每页按 N 段纵向打乱后下发，源的 `modifyImage` 脚本
+     * 部分站点把每页按 N 段纵向打乱后下发，源的 `modifyImage` 脚本
      * 描述了还原方式；这里把它带给阅读页，在解码阶段重排（见 ComicImageScramble）。
      */
     private val _imageScripts = MutableStateFlow<Map<String, String>>(emptyMap())

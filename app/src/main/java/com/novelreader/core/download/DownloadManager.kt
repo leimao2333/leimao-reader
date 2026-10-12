@@ -90,7 +90,7 @@ class DownloadManager(private val context: Context) {
         images.forEachIndexed { index, url ->
             val ext = url.substringBefore('?').substringAfterLast('.', "jpg").takeIf { it.length <= 5 } ?: "jpg"
             val file = File(dir, "%03d.$ext".format(index + 1))
-            // 部分图床（漫蛙吧系列）把图片整包 AES 加密下发，先解密再落盘，
+            // 部分图床把图片整包 AES 加密下发，先解密再落盘，
             // 否则下载到本地的同样是解不开的「坏图」
             HttpClient.downloadFile(
                 url,
@@ -98,7 +98,7 @@ class DownloadManager(private val context: Context) {
                 content.comicHeaders,
                 byteTransform = com.novelreader.core.image.ImageDecryptor::maybeDecrypt,
             )
-            // 部分站点（禁漫 JM 等）把每页按 N 段纵向打乱后下发；落盘前先还原，
+            // 部分站点把每页按 N 段纵向打乱后下发；落盘前先还原，
             // 否则下载到本地的图片同样是乱序的
             unscrambleDownloaded(file, content.comicImageScripts[url])
         }
@@ -128,7 +128,7 @@ class DownloadManager(private val context: Context) {
             java.io.FileOutputStream(file).use { out -> fixed.compress(format, 92, out) }
             fixed.recycle()
             src.recycle()
-        }.onFailure { Log.w(TAG, "图片乱序还原失败（${file.name}）：${it.message}") }
+        }.onFailure { Log.w(TAG, "图片乱序还原失败 err=${it.javaClass.simpleName}") }
     }
 
     /** 下载视频（单文件） */

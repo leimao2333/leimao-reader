@@ -19,7 +19,7 @@ import org.junit.Test
  *
  * - 离线 fixture：验证规则语义（任意属性 / 尾部 JS / @css:属性 / 区间）
  * - 联网用例（需设环境变量 LEIMAO_REAL_TESTS=1）：
- *   得奇小说网（目录翻页 + 正文翻页）、手机小说（GBK POST 搜索）
+ *   联网用例验证的书源由环境变量指定（LEIMAO_SRC_NOVEL_A / B / C），未指定时自动跳过
  */
 class LegadoRealSourceTest {
 
@@ -46,7 +46,7 @@ class LegadoRealSourceTest {
 
     @Test
     fun `尾部JS规则 - result 正则提取`() {
-        // 阅友小说的结构：列表项容器带 onclick（含空格），bookUrl 规则 = @onclick@js:正则提取
+        // 部分源的结构：列表项容器带 onclick（含空格），bookUrl 规则 = @onclick@js:正则提取
         val html = """
             <html><body>
               <div class="v-list-item" onclick="showBook('abc123', '', '')"><div class="v-title">书名A</div></div>
@@ -149,7 +149,7 @@ class LegadoRealSourceTest {
     /**
      * 条目级变量表必须**以外层变量为初值**，不能被空表遮蔽。
      *
-     * 这是设备端实测发现的最后一个「目录空白」成因（爱看漫画 / m.kanman.com）：
+     * 这是设备端实测发现的最后一个「目录空白」成因（某源）：
      * 搜索阶段 `$.comic_name@put:{bid:$.comic_id}` 把作品 ID 存进变量、随结果条目带出；
      * 目录阶段外层变量表里本来就有 `bid`，但若每条记录另起一张**空表**，
      * 章节地址里的 `@get:{bid}` 就取到空串 —— 实测地址退化成
@@ -164,7 +164,7 @@ class LegadoRealSourceTest {
         val fields = mapOf(
             "chapterName" to "$.chapter_name",
             "chapterUrl" to
-                "https://m.kanman.com/api/getchapterinfov2?product_id=1&comic_id=@get:{bid}" +
+                "https://api.example.com/api/getchapterinfov2?product_id=1&comic_id=@get:{bid}" +
                 "&chapter_newid={{$.chapter_newid}}&isWebp=1",
         )
 
@@ -177,11 +177,11 @@ class LegadoRealSourceTest {
         assertEquals(listOf("第2话", "第1话"), list.map { it["chapterName"] })
         // 关键：外层变量被继承，地址里绝不出现空 comic_id
         assertEquals(
-            "https://m.kanman.com/api/getchapterinfov2?product_id=1&comic_id=106463&chapter_newid=12&isWebp=1",
+            "https://api.example.com/api/getchapterinfov2?product_id=1&comic_id=106463&chapter_newid=12&isWebp=1",
             list[0]["chapterUrl"],
         )
         assertEquals(
-            "https://m.kanman.com/api/getchapterinfov2?product_id=1&comic_id=106463&chapter_newid=11&isWebp=1",
+            "https://api.example.com/api/getchapterinfov2?product_id=1&comic_id=106463&chapter_newid=11&isWebp=1",
             list[1]["chapterUrl"],
         )
         assertFalse("章节地址不应残留 @get: 字面量", list[0]["chapterUrl"]!!.contains("@get:"))
@@ -205,9 +205,9 @@ class LegadoRealSourceTest {
 
         // 目录地址模板里的 @get:{bid} 被回填
         assertEquals(
-            "https://m.kanman.com/api/getchapterlist?product_id=1&comic_id=106463",
+            "https://api.example.com/api/getchapterlist?product_id=1&comic_id=106463",
             LegadoRuleEngine.resolveGetRules(
-                "https://m.kanman.com/api/getchapterlist?product_id=1&comic_id=@get:{bid}",
+                "https://api.example.com/api/getchapterlist?product_id=1&comic_id=@get:{bid}",
             ),
         )
     }
@@ -276,7 +276,7 @@ class LegadoRealSourceTest {
     /**
      * JSON 目录规则的前置 `-` 必须倒置。
      *
-     * 形如 `-$.data.[*]` 的规则（爱看漫画、看漫画吧等）不走 `@json:` 前缀，
+     * 形如 `-$.data.[*]` 的规则（部分源）不走 `@json:` 前缀，
      * 若只在 HTML 列表里处理倒置，这类源的目录顺序会是倒着的
      * （打开漫画直接停在「最新话」，而非「第 1 话」）。
      */
@@ -325,7 +325,7 @@ class LegadoRealSourceTest {
     /**
      * 取值为纯 JS 的 JSON 字段规则必须执行 JS，而不是当成普通路径。
      *
-     * 全免漫画（api-cdn.kaimanhua.com）的 `ruleSearch.bookUrl` 就是这种写法：
+     * 某 App 接口源的 `ruleSearch.bookUrl` 就是这种写法：
      * 用 `java.md5Encode` 算出接口签名，返回 `地址,{请求配置}`。
      * 此前 `renderJsonRule` 见到 `{{` 就只做模板替换、不执行 JS，
      * 结果 bookUrl 变成一段 JS 源码 → 详情/目录请求地址错乱 → 目录空白。
@@ -399,7 +399,7 @@ b={"method": "GET","headers": {"m-request-id": sign}};
     /**
      * 列表规则「前置 `<js>` 块 + 后续 JSONPath」链式：先整体解密，再取数组。
      *
-     * 全免漫画 `ruleToc.chapterList` 的真实形态：
+     * 某 App 接口源 `ruleToc.chapterList` 的真实形态：
      * `<js>…java.aesBase64DecodeToString($.data)…</js>` 换行 `$.chapters[*]`。
      */
     @Test
@@ -440,7 +440,7 @@ ${'$'}.chapters[*]
     }
 
     /**
-     * 全免漫画 `ruleContent.content` 的真实形态：**整条规则就是一个 `<js>` 块**，
+     * 某 App 接口源 `ruleContent.content` 的真实形态：**整条规则就是一个 `<js>` 块**，
      * 内部用 `java.getString("$.data")` 取密文 → 去 `arsadata` 前缀 → AES 解密 →
      * 正则截出 JSON 数组 → 拼成 `<img src="...">` 多行文本。
      *
@@ -448,13 +448,13 @@ ${'$'}.chapters[*]
      * 整条规则会被当成选择器 → 一张图都取不到 → 阅读页显示「本章暂无可用图片」。
      */
     @Test
-    fun `漫画正文 - 整体 js 块解密后拼图（全免漫画）`() {
+    fun `漫画正文 - 整体 js 块解密后拼图（App 接口源）`() {
         val ad = adapter(minimalComicJson())
         // key=4548ded8c9e02690 / iv=1992360ee9bc4f8f，明文为 URL 的 JSON 数组（离线生成）
-        val cipher = "i3D92OqDuiQWte4Q0lNgdjR4gAy5Ds7hzn7WUogQfSdsYJPv0lfwrtjqxG3Db4c7" +
-            "Vprno0dNmsO+SSYhej7W1T+uxcM2YmHHVzMtIK/4ndcgGHdS0irYiFrRsktjCCxzm" +
-            "KcdHy+g8mITrFB/oEcFLoAxWbI6V7+SbAmAuH0R9EVMaPQvOe7koOovQ7Cf2FPbUw" +
-            "J7KjGMr3q95APK/A/Tq6n7Jk+G6QNGaI7+t5qDru0="
+        val cipher = "i3D92OqDuiQWte4Q0lNgdp1s9Ubol3JFePpQa+ie0L7pp+HYwVxjuICacOJK" +
+            "US8pKpu1z0jqugav6ie/4eBVk78Z/yzMiZ5EeiImj+FlgK8uGQnMEb91S5uZ" +
+            "UtZQUTvUyjXzv6muKvd2aKB5luWtbgs2XKQdjHMNtJvN1rI3BQCBj+dGk2hw" +
+            "wlQrv7oMsgTqKPz8QNnEh+KScE21pWEkqQ=="
         val body = """{"data":"arsadata$cipher","status":1}"""
 
         val contentRule = "<js>" +
@@ -465,35 +465,35 @@ ${'$'}.chapters[*]
             "</js>"
 
         val res = ad.extractComicImages(
-            body, mapOf("content" to contentRule), "https://api-cdn.kaimanhua.com/",
+            body, mapOf("content" to contentRule), "https://api.example.com/",
         )
         assertEquals(
             listOf(
-                "https://hw-chapter2.kaimanhua.com/comic/S/1.jpg-qmmh.middle.webp?auth_key=aaa",
-                "https://hw-chapter2.kaimanhua.com/comic/S/2.jpg-qmmh.middle.webp?auth_key=bbb",
+                "https://hw-chapter2.example.com/comic/S/1.jpg-qmmh.middle.webp?auth_key=aaa",
+                "https://hw-chapter2.example.com/comic/S/2.jpg-qmmh.middle.webp?auth_key=bbb",
             ),
             res.comicImages,
         )
         // 图片地址未带 headers 后缀时，仍应给出默认防盗链 Referer（按被请求接口的站点）
-        assertEquals("https://api-cdn.kaimanhua.com/", res.comicHeaders["Referer"])
+        assertEquals("https://api.example.com/", res.comicHeaders["Referer"])
     }
 
     /**
      * 章节地址 `,{...}` 请求配置的拆分：干净地址用于发请求，配置里带签名请求头。
      *
      * 回归点：曾因只保留干净地址、而正文取配置时去读 `chapter.url`，
-     * 导致签名请求头整体丢失 → 全免漫画接口返回错误数据 → 阅读页空白。
+     * 导致签名请求头整体丢失 → 该接口源返回错误数据 → 阅读页空白。
      */
     @Test
     fun `漫画章节 - 地址携带的请求配置可被拆分且不丢签名`() {
         val ad = adapter(minimalComicJson())
-        val raw = "https://api-cdn.kaimanhua.com/comic-api/v2/comic/getchapterdata" +
+        val raw = "https://api.example.com/comic-api/v2/comic/getchapterdata" +
             "?comic_id=97500&chapter_id=1152731&quality=middle" +
             ",{\"method\":\"GET\",\"headers\":{\"access-token\":\"v1_abc\",\"m-request-id\":\"541bf23\"}}"
 
         val (clean, options) = ad.splitUrlOptions(raw)
         assertEquals(
-            "https://api-cdn.kaimanhua.com/comic-api/v2/comic/getchapterdata" +
+            "https://api.example.com/comic-api/v2/comic/getchapterdata" +
                 "?comic_id=97500&chapter_id=1152731&quality=middle",
             clean,
         )
@@ -536,21 +536,32 @@ ${'$'}.chapters[*]
      * 取指定书源；书源文件里没有该源时**跳过**用例而非失败
      * （书源文件是外部数据，缺源属于环境问题，不是代码回归）。
      */
-    private fun sourceJsonOrSkip(name: String): String {
-        val json = sourceJson(name)
-        assumeTrue("书源文件里没有「$name」，跳过该联网用例", json != null)
+    private fun sourceJsonOrSkip(name: String?): String {
+        val srcName = name?.takeIf { it.isNotBlank() }
+        assumeTrue("未指定该用例的书源名（环境变量），跳过该联网用例", srcName != null)
+        val json = sourceJson(srcName!!)
+        assumeTrue("书源文件里没有该源，跳过该联网用例", json != null)
         return json!!
     }
 
-    /** 得奇小说网：搜索 → 详情 → 完整目录（含翻页）→ 第一章正文（含翻页拼接） */
+    /**
+     * 联网用例验证哪一个源**由环境变量给出**，避免把具体站点名写进仓库：
+     * - `LEIMAO_SRC_NOVEL_A`：目录 / 正文分页齐全的源（章节数 > 50、正文 > 1000 字）
+     * - `LEIMAO_SRC_NOVEL_B`：GBK POST 搜索的源
+     * - `LEIMAO_SRC_NOVEL_C`：CSS 列表 + onclick 提取 bookUrl 的源
+     * 未设置或书源文件里找不到时，用例自动跳过。
+     */
+    private fun envSource(name: String): String? = System.getenv(name)
+
+    /** 真实源 A：搜索 → 详情 → 完整目录（含翻页）→ 第一章正文（含翻页拼接） */
     @Test
-    fun `得奇小说网 - 完整链路`() {
+    fun `真实源 A - 目录与正文分页完整链路`() {
         assumeTrue(realTestsEnabled())
-        val json = sourceJsonOrSkip("得奇小说网")
+        val json = sourceJsonOrSkip(envSource("LEIMAO_SRC_NOVEL_A"))
         val ad = adapter(json)
 
         val results = kotlinx.coroutines.runBlocking { ad.search("斗破苍穹", 1) }
-        assertTrue("得奇搜索无结果", results.isNotEmpty())
+        assertTrue("搜索无结果", results.isNotEmpty())
         val book = results.first()
         assertTrue("书名不应为空", book.title.isNotBlank())
         assertTrue("bookUrl 应为绝对地址", book.detailUrl.startsWith("http"))
@@ -566,11 +577,11 @@ ${'$'}.chapters[*]
         assertTrue("第一章正文过短（正文翻页可能失效）：${text.length}", text.length > 1000)
     }
 
-    /** 手机小说：GBK POST 搜索，关键词需按 GBK 编码，否则返回乱码/无结果 */
+    /** 真实源 B：GBK POST 搜索，关键词需按 GBK 编码，否则返回乱码/无结果 */
     @Test
-    fun `手机小说 - GBK POST 搜索`() {
+    fun `真实源 B - GBK POST 搜索`() {
         assumeTrue(realTestsEnabled())
-        val json = sourceJsonOrSkip("手机小说")
+        val json = sourceJsonOrSkip(envSource("LEIMAO_SRC_NOVEL_B"))
         val ad = adapter(json)
 
         val results = kotlinx.coroutines.runBlocking { ad.search("斗破苍穹", 1) }
@@ -578,15 +589,15 @@ ${'$'}.chapters[*]
         assertTrue("结果应包含关键词相关书名", results.any { it.title.contains("斗破") })
     }
 
-    /** 阅友小说：CSS 列表 + onclick JS bookUrl */
+    /** 真实源 C：CSS 列表 + onclick JS bookUrl */
     @Test
-    fun `阅友小说 - 搜索与bookUrl提取`() {
+    fun `真实源 C - 搜索与bookUrl提取`() {
         assumeTrue(realTestsEnabled())
-        val json = sourceJsonOrSkip("阅友小说")
+        val json = sourceJsonOrSkip(envSource("LEIMAO_SRC_NOVEL_C"))
         val ad = adapter(json)
 
         val results = kotlinx.coroutines.runBlocking { ad.search("斗破苍穹", 1) }
-        assertTrue("阅友搜索无结果", results.isNotEmpty())
+        assertTrue("搜索无结果", results.isNotEmpty())
         // bookUrl 来自 onclick JS 提取，必须是有效绝对链接（而非书名兜底）
         assertTrue(
             "bookUrl 应为 http 绝对地址：${results.first().detailUrl}",
@@ -598,7 +609,7 @@ ${'$'}.chapters[*]
      * 构造一个最小可用的漫画源（用于离线验证漫画正文规则，无需联网）。
      */
     private fun minimalComicJson(
-        baseUrl: String = "https://m.dm5.com",
+        baseUrl: String = "https://example.com",
         header: String? = null,
     ): String = com.google.gson.JsonObject().apply {
         addProperty("bookSourceName", "离线漫画测试源")
@@ -609,7 +620,7 @@ ${'$'}.chapters[*]
     }.toString()
 
     /**
-     * 正文规则写成 `$.路径@js:...`（JSON 接口 + JS 拼多图，如爱看漫画）时，
+     * 正文规则写成 `$.路径@js:...`（JSON 接口 + JS 拼多图，如部分 App 接口源）时，
      * 前缀 JSONPath 必须先解析出 `result`：否则 JS 里 `result.split("\n")` 直接失败，
      * 一张图都取不到 → 页面显示「图片加载失败」。
      *
@@ -623,7 +634,7 @@ ${'$'}.chapters[*]
         val contentRule = "$.data.current_chapter.chapter_img_list@js:" +
             "result.split(\"\\n\").map(x=>'<img src=\"'+x+'\">').join(\"\\n\")"
 
-        val res = ad.extractComicImages(json, mapOf("content" to contentRule), "https://m.kanman.com/123/")
+        val res = ad.extractComicImages(json, mapOf("content" to contentRule), "https://api.example.com/123/")
         assertEquals(
             listOf("https://cdn.x/1.jpg", "https://cdn.x/2.jpg", "https://cdn.x/3.jpg"),
             res.comicImages,
@@ -643,17 +654,17 @@ ${'$'}.chapters[*]
             """<img data-src="/img/1.jpg"><img data-src="/img/2.jpg"></div></body></html>"""
         // 规则里的 Referer 用的是 CDN 域名（不等于章节页域名），以此证明它确实来自规则解析
         val contentRule = ".list@img@data-src@js:" +
-            "headers={\"headers\":{\"Referer\":\"https://cdn.dm5.com/\"}};" +
+            "headers={\"headers\":{\"Referer\":\"https://cdn.example.com/\"}};" +
             "result.split(\"\\n\").map(x=>'<img src=\"'+x+','+JSON.stringify(headers)+'\">').join(\"\\n\")"
 
         val res = ad.extractComicImages(
-            page, mapOf("content" to contentRule), "https://m.dm5.com/manhua-abc/1/",
+            page, mapOf("content" to contentRule), "https://example.com/manhua-abc/1/",
         )
         assertEquals(
-            listOf("https://m.dm5.com/img/1.jpg", "https://m.dm5.com/img/2.jpg"),
+            listOf("https://example.com/img/1.jpg", "https://example.com/img/2.jpg"),
             res.comicImages,
         )
-        assertEquals("https://cdn.dm5.com/", res.comicHeaders["Referer"])
+        assertEquals("https://cdn.example.com/", res.comicHeaders["Referer"])
     }
 
     /** 图片相对地址必须按「章节页 URL」解析（而非源站根地址），并默认补 Referer */
@@ -664,13 +675,13 @@ ${'$'}.chapters[*]
             """<img src="/media/1.jpg"><img src="2.jpg"></div></body></html>"""
 
         val res = ad.extractComicImages(
-            page, mapOf("content" to "#c@img@src"), "https://m.dm5.com/manhua-abc/1/",
+            page, mapOf("content" to "#c@img@src"), "https://example.com/manhua-abc/1/",
         )
         assertEquals(
-            listOf("https://m.dm5.com/media/1.jpg", "https://m.dm5.com/manhua-abc/1/2.jpg"),
+            listOf("https://example.com/media/1.jpg", "https://example.com/manhua-abc/1/2.jpg"),
             res.comicImages,
         )
-        assertEquals("https://m.dm5.com/", res.comicHeaders["Referer"])
+        assertEquals("https://example.com/", res.comicHeaders["Referer"])
     }
 
     /** JSON 正文里的单图 `,{headers}` 后缀：其请求头应覆盖默认 Referer */
@@ -682,7 +693,7 @@ ${'$'}.chapters[*]
             """{"data":{"images":["https://cdn.other.com/a.jpg,{\"headers\":{\"Referer\":\"https://cdn.other.com/\"}}"]}}"""
 
         val res = ad.extractComicImages(
-            json, mapOf("content" to "@json:$.data.images"), "https://m.dm5.com/manhua-abc/1/",
+            json, mapOf("content" to "@json:$.data.images"), "https://example.com/manhua-abc/1/",
         )
         assertEquals(listOf("https://cdn.other.com/a.jpg"), res.comicImages)
         assertEquals("https://cdn.other.com/", res.comicHeaders["Referer"])

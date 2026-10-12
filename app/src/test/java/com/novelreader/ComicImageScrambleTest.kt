@@ -9,7 +9,7 @@ import org.junit.Test
 /**
  * 漫画图片「分段乱序」还原回归测试（纯离线，不依赖 android.graphics）。
  *
- * 背景：禁漫（JM）等站点把每页图片**按 N 段纵向切开再打乱**后下发，
+ * 背景：部分站点把每页图片**按 N 段纵向切开再打乱**后下发，
  * 站点规则以 JS 片段（Venera 的 `comic.onImageLoad → modifyImage`）的形式给出。
  * 真机实测：不还原时读者看到的就是一页页乱序画面（用户反馈「图片是乱序的」）。
  *
@@ -18,8 +18,8 @@ import org.junit.Test
  */
 class ComicImageScrambleTest {
 
-    /** 与 jm.js 里 `onImageLoad` 生成的脚本逐字同源（只把 num 换成变量） */
-    private fun jmScript(num: Int) = """
+    /** 与部分源的 `onImageLoad` 生成的脚本逐字同源（只把 num 换成变量） */
+    private fun scrambleScript(num: Int) = """
         let modifyImage = (image) => {
             const num = $num
             let blockSize = Math.floor(image.height / num)
@@ -48,11 +48,11 @@ class ComicImageScrambleTest {
     // ==================== 脚本识别 ====================
 
     @Test
-    fun `真实禁漫脚本能被识别并取到段数`() {
+    fun `真实站点脚本能被识别并取到段数`() {
         // 真机抓到的这一话，每页段数各不相同（4/14/16/12/8/2 …）
-        assertEquals(4, ComicImageScramble.bandCountFromScript(jmScript(4)))
-        assertEquals(16, ComicImageScramble.bandCountFromScript(jmScript(16)))
-        assertEquals(20, ComicImageScramble.bandCountFromScript(jmScript(20)))
+        assertEquals(4, ComicImageScramble.bandCountFromScript(scrambleScript(4)))
+        assertEquals(16, ComicImageScramble.bandCountFromScript(scrambleScript(16)))
+        assertEquals(20, ComicImageScramble.bandCountFromScript(scrambleScript(20)))
     }
 
     @Test
@@ -64,14 +64,14 @@ class ComicImageScrambleTest {
 
     @Test
     fun `段数为 1 时不还原`() {
-        // jm.js 对 num <= 1 直接返回 {}（gif 与老章节都是这种情况）
-        assertNull(ComicImageScramble.bandCountFromScript(jmScript(1)))
+        // 部分源对 num <= 1 直接返回 {}（gif 与老章节都是这种情况）
+        assertNull(ComicImageScramble.bandCountFromScript(scrambleScript(1)))
     }
 
     @Test
     fun `段数超出合理范围时不还原`() {
-        assertNull(ComicImageScramble.bandCountFromScript(jmScript(0)))
-        assertNull(ComicImageScramble.bandCountFromScript(jmScript(999)))
+        assertNull(ComicImageScramble.bandCountFromScript(scrambleScript(0)))
+        assertNull(ComicImageScramble.bandCountFromScript(scrambleScript(999)))
     }
 
     @Test
@@ -140,7 +140,7 @@ class ComicImageScrambleTest {
 
     @Test
     fun `ContentResult 工厂会把逐图脚本带上`() {
-        val scripts = mapOf("https://a/1.webp" to jmScript(6))
+        val scripts = mapOf("https://a/1.webp" to scrambleScript(6))
         val result = ContentResult.comic(listOf("https://a/1.webp"), emptyMap(), scripts)
         assertEquals(scripts, result.comicImageScripts)
         assertEquals(1, result.comicImages?.size)

@@ -145,7 +145,7 @@ class SourceManageViewModel(
     /**
      * 解析 Venera 源索引（`[{name, fileName, key, version}]`）。
      *
-     * 这是 venera-configs 仓库的 index.json 格式：它不是源本身，
+     * 这是 Venera 源集合的 index.json 格式：它不是源本身，
      * 每个条目对应同目录下的一个 .js 源文件，需要逐个下载后再导入。
      */
     private fun parseVeneraIndex(content: String): com.google.gson.JsonArray? {
@@ -171,7 +171,7 @@ class SourceManageViewModel(
             val fileName = obj.get("fileName")?.asString ?: return@forEachIndexed
             val key = obj.get("key")?.asString ?: fileName.substringBeforeLast(".")
             val name = obj.get("name")?.asString ?: key
-            // 注意：index.json 里存在 key 重复的条目（如 copy_manga 与 copy_manga_multi_accounts），
+            // 注意：index.json 里存在 key 重复的条目（同一站点的普通版与多账号版），
             // 因此 id 必须取文件名而不是 key，否则后者会覆盖前者导致少导入。
             val id = com.novelreader.source.venera.VeneraSourceId.fromFileName(fileName)
                 ?: return@forEachIndexed

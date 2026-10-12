@@ -56,7 +56,7 @@ class ComicDetailViewModel(
         viewModelScope.launch {
             _loading.value = true
             // 目录必须在详情之后取：详情规则可能写入 legado 变量
-            // （全免漫画等源在 ruleBookInfo.name 里 `@put:{cid:$.comic_id}`），
+            // （部分源在 ruleBookInfo.name 里 `@put:{cid:$.comic_id}`），
             // 章节地址里的 `@get:{cid}` 依赖它；并行会导致目录拿到空 ID → 目录空白。
             val collectedDeferred = launch { loadCollected(item) }
             val detailed = loadDetail(item)

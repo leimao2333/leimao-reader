@@ -100,7 +100,7 @@ class VeneraSourceAdapter(
         val headers = obj.getAsJsonObject("headers")?.entrySet()
             ?.associate { (k, v) -> k to (if (v.isJsonPrimitive) v.asString else v.toString()) }
             ?: emptyMap()
-        // 逐图后处理脚本（modifyImage）：禁漫等站的图片是按 N 段纵向打乱的，
+        // 逐图后处理脚本（modifyImage）：部分漫画站的图片是按 N 段纵向打乱的，
         // 解析出段数后在解码阶段重排，否则读者看到的是乱序画面。
         val scripts = obj.getAsJsonObject("scripts")?.entrySet()
             ?.mapNotNull { (k, v) ->
@@ -108,12 +108,11 @@ class VeneraSourceAdapter(
                 if (js.isNullOrBlank()) null else k to js
             }?.toMap()
             ?: emptyMap()
-        // 排查「图片加载不了」时用 logcat -s VeneraAdapter 看：地址形态（相对/绝对）、
-        // 数量、以及源是否给了防盗链请求头
+        // 排查「图片加载不了」时用 logcat -s VeneraAdapter 看：数量与是否带防盗链请求头。
+        // 这里刻意**不打印源标识与图片地址**（见 core/util/LogSanitizer 的说明）。
         android.util.Log.d(
             TAG,
-            "content key=$key images=${images.size} headers=${headers.keys} " +
-                "first=${images.take(2)}",
+            "content images=${images.size} headerCount=${headers.size}",
         )
         return ContentResult.comic(images, sanitizeHeaders(headers), scripts)
     }

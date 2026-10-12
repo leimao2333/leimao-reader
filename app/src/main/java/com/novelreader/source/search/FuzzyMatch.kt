@@ -34,8 +34,8 @@ object FuzzyMatch {
     }
 
     /**
-     * 作者归一化：在 [normalize] 基础上，额外去掉来源前缀（「番茄小说」「笔趣阁」等）
-     * 及连接符，使「番茄小说 · 某某」「某某」判为同一作者，正确合并同名书。
+     * 作者归一化：在 [normalize] 基础上，额外去掉来源前缀（各站点自带的来源名）
+     * 及连接符，使「站点前缀 · 某某」「某某」判为同一作者，正确合并同名书。
      *
      * 策略：归一化后，若以来源前缀开头（后跟分隔符），则截去前缀。
      */
@@ -62,7 +62,7 @@ object FuzzyMatch {
         }
         val normalized = sb.toString()
         if (!stripAuthorPrefix) return normalized
-        // 去掉来源前缀：归一化后标点已去除，形如「番茄小说某某」。
+        // 去掉来源前缀：归一化后标点已去除，形如「站点前缀某某」。
         // 若已知前缀在开头出现，截去前缀，剩余即作者名。
         for (prefix in AUTHOR_PREFIXES) {
             if (normalized.startsWith(prefix)) {

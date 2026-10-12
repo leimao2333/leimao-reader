@@ -33,7 +33,7 @@ data class BookEntity(
      * 详情地址随带的请求配置（legado `url,{...}` 后缀，App 接口源用于携带签名请求头）。
      *
      * 必须持久化：从书架重进详情时要原样带上 `m-request-id` / `access-token`，
-     * 否则签名丢失 → 接口返回错误数据 → 目录空白（#全免漫画）。
+     * 否则签名丢失 → 接口返回错误数据 → 目录空白（#某些 App 接口源）。
      */
     val requestOptions: String = "",
     /** 收藏时间戳 */

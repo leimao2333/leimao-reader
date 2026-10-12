@@ -190,7 +190,7 @@ abstract class AppDatabase : RoomDatabase() {
         /**
          * v9 -> v10：books 表新增 requestOptions 列（详情地址随带的请求配置）。
          *
-         * 漫画 App 接口源（如全免漫画）把接口签名（`m-request-id` / `access-token`）写在
+         * 漫画 App 接口源（如某些 App 接口源）把接口签名（`m-request-id` / `access-token`）写在
          * 地址的 `,{...}` 后缀里。该配置原先只存在于内存中的 MediaItem，收藏进书架后丢失，
          * 导致从书架重进详情时请求无签名 → 目录空白。存量数据无从回填（旧地址已剥离后缀），
          * 默认空串，用户重新收藏或重新搜索即可补上。

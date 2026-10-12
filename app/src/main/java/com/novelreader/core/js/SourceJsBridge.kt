@@ -96,6 +96,7 @@ object BridgeMethods {
 
     @JvmStatic
     fun log(msg: String) {
-        android.util.Log.d("SourceJsEngine", msg)
+        // 源自己打出的日志内容不可控（常直接带站点名 / 接口地址），只记录长度
+        android.util.Log.d("SourceJsEngine", com.novelreader.core.util.LogSanitizer.lengthOnly(msg))
     }
 }

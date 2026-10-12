@@ -8,7 +8,7 @@ import javax.crypto.spec.SecretKeySpec
 /**
  * 图床「整包加密」图片的解密器。
  *
- * 背景：部分中文漫画站（漫蛙吧及其同系列站点）为了防止图片被直接盗链／被阅读器抓取，
+ * 背景：部分漫画站为了防止图片被直接盗链／被阅读器抓取，
  * 把**整张图片用 AES-256-CBC 加密后**再下发给客户端，并用同样的字节长度谎报
  * `Content-Type: image/jpeg`。浏览器的网页端在拿到字节流后由前端 JS 解密
  * （`BaseUtil.getSecureImageUrl`：前 16 字节是 IV，其余是密文，密钥硬编码在前端），
@@ -37,7 +37,7 @@ object ImageDecryptor {
     /**
      * 已知的图床密钥（前端 `BaseUtil.AES_KEY`）。
      *
-     * 同一套前端模板被漫蛙吧系列站点复用，因此这里按列表维护，逐个尝试即可；
+     * 同一套前端模板会在同系列站点间复用，因此这里按列表维护，逐个尝试即可；
      * 以后遇到别的加密图床，把 key 追加进来就行。
      */
     private val KEYS: List<ByteArray> = listOf(

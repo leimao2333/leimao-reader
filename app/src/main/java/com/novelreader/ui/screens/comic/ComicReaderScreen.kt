@@ -638,7 +638,7 @@ private fun Modifier.edgeOverscroll(
  * 宽度撑满、高度按图片原始比例缩放（ContentScale.FillWidth）。
  * 加载中显示占位，加载失败显示占位 + 点击重试。
  *
- * [script] 为源给出的逐图后处理脚本（禁漫等站的「按 N 段纵向打乱」还原），
+ * [script] 为源给出的逐图后处理脚本（「按 N 段纵向打乱」的还原方式），
  * 命中时挂一个 Coil transformation，让**解码后、进缓存前**就把图拼回正常顺序。
  */
 @Composable
@@ -660,12 +660,13 @@ private fun ComicImage(
             .apply { applyImageDefaults(url, headers) }
             .apply { applyBandUnscramble(this, bands) }
             .memoryCacheKey("$url#$retry")
-            // 失败时把「地址 + 原因」落到日志，便于区分 403 防盗链 / DNS / 解码失败
+            // 失败时把「原因」落到日志，便于区分 403 防盗链 / DNS / 解码失败。
+            // 只记异常类名：异常消息里往往带图片地址，日志不出现具体站点。
             .listener(
                 onError = { _, result ->
                     android.util.Log.w(
                         IMAGE_LOG_TAG,
-                        "图片加载失败 url=${result.request.data} err=${result.throwable}",
+                        "图片加载失败 err=${result.throwable?.javaClass?.simpleName}",
                     )
                 },
             )
@@ -798,7 +799,7 @@ private const val IMAGE_LOG_TAG = "ComicImage"
 
 /** 图片请求默认 UA（Coil 默认的 okhttp/x.y 会被部分图床拒绝） */
 private const val IMAGE_USER_AGENT =
-    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
+    "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
 
 /** 底部章节导航条高度（正文/设置面板都据此让位） */

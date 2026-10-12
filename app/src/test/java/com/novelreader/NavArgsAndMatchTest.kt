@@ -188,7 +188,7 @@ class FuzzyMatchTest {
 
     @Test
     fun `作者带来源前缀的同名书应合并为一组`() {
-        // 回归：「番茄小说·某某」与「某某」作者前缀不同，归一化去前缀后应判为同一作者
+        // 回归：「站点前缀·某某」与「某某」作者前缀不同，归一化去前缀后应判为同一作者
         val items = listOf(
             item("1", "剑来", author = "番茄小说·烽火戏诸侯", sourceId = "s1"),
             item("2", "剑来", author = "烽火戏诸侯", sourceId = "s2"),

@@ -557,7 +557,7 @@
 
     class ComicSource {
         // 与官方运行时的 ComicSource 字段严格一致（见 _venera_.js）。
-        // 特别地：官方**没有** settings 字段 —— 少数源（如 wnacg）用 `get settings()`
+        // 特别地：官方**没有** settings 字段 —— 少数源用 `get settings()`
         // 在原型上暴露设置项，基类若也声明同名字段，实例属性会遮蔽该 getter。
         name = '';
         key = '';
@@ -633,9 +633,8 @@
     /**
      * 取（并按需构造 / 初始化）源实例。
      *
-     * 注意：`init()` 在部分源里是 async（jm / kavita / komga / lanraragi / wnacg /
-     * comic_walker / shonen_jump_plus），且会填充后面 getter 依赖的状态
-     * （例如 jm 的 `static apiDomains` 由 init → refreshApiDomains 写入）。
+     * 注意：`init()` 在部分源里是 async，且会填充后面 getter 依赖的状态
+     * （例如某些源的 `static apiDomains` 由 init → refreshApiDomains 写入）。
      * 因此必须 await，否则第一次调用会撞上未完成的初始化。
      */
     var INIT_DONE = {};
@@ -689,7 +688,7 @@
      * `loadEp` 可能返回 `["url", …]`（纯地址）或 `[{url, headers}, …]`（按图请求头）。
      * 之后逐张调用 `onImageLoad(url, comicId, epId)`（18/33 个源实现了它），
      * 其返回值可以「改地址 / 带请求头 / 给出 modifyImage 脚本」：
-     * modifyImage 是**解码后的像素后处理脚本**，禁漫（JM）用它把「按 N 段纵向打乱」
+     * modifyImage 是**解码后的像素后处理脚本**，用于把「按 N 段纵向打乱」
      * 的图片还原回正常顺序。这个脚本必须跟着地址一起交给 app，
      * 否则读者看到的就是一页页乱序的图片。
      */
@@ -726,7 +725,7 @@
                         if (r.headers && Object.keys(r.headers).length && Object.keys(headers).length === 0) {
                             headers = r.headers;
                         }
-                        // modifyImage 多为代码字符串（JM）；函数无法跨桥传递，只能跳过
+                        // modifyImage 多为代码字符串；函数无法跨桥传递，只能跳过
                         if (typeof r.modifyImage === 'string' && r.modifyImage) {
                             scripts[finalUrl] = r.modifyImage;
                         }

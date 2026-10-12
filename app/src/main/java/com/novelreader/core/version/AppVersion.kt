@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.2.7"
+    const val CURRENT_VERSION = "1.2.9"
 
     /**
      * 更新日志。
@@ -20,16 +20,42 @@ object AppVersion {
      */
     val CHANGELOG: List<VersionEntry> = listOf(
         VersionEntry(
+            version = "1.2.9",
+            date = "2026-10-13",
+            changes = listOf(
+                "**日志与文案全面脱敏**：应用里不再出现**具体的源、站点地址与设备型号** —— 日志一旦被截图或粘贴到外部（issue、聊天），就等于把「用户在用哪个源、哪个站点、什么设备」一并带了出去。新增 `core/util/LogSanitizer`，把 URL、裸 IP、邮箱统一折叠成 `<url>` / `<ip>` / `<mail>` 占位符",
+                "源自己打出的日志（JS 里的 `log()` / `toast()`）内容完全不可控、常直接带站点名，这些转发点一律改为**只记录长度**，不再输出内容（legado 与 Venera 两套 JS 桥以及自研 JS 桥均已覆盖）",
+                "图片相关日志只保留排查真正需要的信息：解密成功记「字节数 + 图片格式」，乱序还原失败与图片加载失败均只记异常类名（不再带图片地址）",
+                "HTTP 默认 `User-Agent` 去掉设备型号，改为通用的 Android 版本串；应用内更新日志（本页）与仓库 `CHANGELOG.md` 同步去掉具体站点名与真机型号",
+                "测试注释与 fixture 一并脱敏；联网用例验证的源改由环境变量指定（未设置即自动跳过），不再把具体站点名写进仓库",
+                "全量 133 个单测 0 失败",
+            ),
+        ),
+        VersionEntry(
+            version = "1.2.8",
+            date = "2026-10-13",
+            changes = listOf(
+                "修复**部分图站「图片全部加载失败」**：这类站点为防止图片被阅读器直接抓取，会把**整张图片用 AES-256-CBC 加密后**再下发，并仍然谎报 `Content-Type: image/jpeg` —— 网页端由前端 JS 解密后 `createObjectURL` 显示，而书源只会给出图片地址、不做解密，于是应用拿到的是**一堆高熵密文**，Coil 解码失败（日志为 `BitmapFactory returned a null bitmap`）。这与站点是否可达、请求头是否正确**完全无关**：实测同一地址带完整浏览器头、用系统浏览器直接打开，拿到的都是同一份密文",
+                "现在在 OkHttp 响应层兜住：先按**魔数**判断是否已经是图片（JPEG / PNG / GIF / WEBP / AVIF / BMP），是则原样放行；否则按「前 16 字节 IV + AES-CBC 密文」试解，解出来确实是图片才采用，两者都不成立就原样返回 —— **对其它源零影响**（正常图命中第一分支；即便有非图片响应被拿去试解，CBC 的 PKCS7 填充校验也几乎必然失败而回落）",
+                "下载章节时同样解密，落盘即为正常图片，不会出现「在线看不了、下载下来同样是坏图」",
+                "**去掉章末「本话已读完」引导页**：它与「翻到底继续拖 → 下一话」功能重复，还会占掉一整屏，让人误以为本话只有这些内容。现在读到底继续拖即可切话，入口只保留菜单里的底部章节条",
+                "**去掉图片之间的横向黑线**：上下滚动时每张图带了 1dp 垂直间距，黑底从缝里透出来，在条漫 / 分镜图上就是一条条横线（截图实测为 4 处等距、约 5px 的纯黑带）。现在图片上下直接相接，整话连续无缝",
+                "图片请求补齐浏览器级默认头：`User-Agent`（Coil 默认的 `okhttp/x.y` 会被部分图床拒绝）、`Referer`（源没给时退化为图片自身站点）、`Accept`；**源自己声明的请求头优先级最高**，一律不覆盖",
+                "图片加载失败会落一条日志（地址 + 原因），便于区分 403 防盗链 / DNS 失败 / 解码失败，不再是一句无信息的「加载失败」",
+                "新增 6 条离线单测（ImageDecryptorTest）：加密 JPEG 还原、多块 CBC 还原、JPEG / PNG / GIF / WEBP / ftyp / BMP 魔数识别不得误判、错误密钥下的随机字节必须原样返回、过短数据不处理；全量 133 个单测 0 失败",
+            ),
+        ),
+        VersionEntry(
             version = "1.2.7",
             date = "2026-10-13",
             changes = listOf(
-                "修复**漫画图片乱序**（禁漫 JM 等站点）：这类站点会把每一页图片按 N 段纵向切开、再打乱顺序后下发，还原规则以 JS 片段的形式由源给出（Venera 源的 `comic.onImageLoad → modifyImage`）。此前运行时只取了图片地址、把这段脚本丢掉了，于是每页都显示成「拼错位」的乱图 —— 这正是用户看到的「图片是乱序的」",
+                "修复**漫画图片乱序**：这类站点会把每一页图片按 N 段纵向切开、再打乱顺序后下发，还原规则以 JS 片段的形式由源给出（Venera 源的 `comic.onImageLoad → modifyImage`）。此前运行时只取了图片地址、把这段脚本丢掉了，于是每页都显示成「拼错位」的乱图 —— 这正是用户看到的「图片是乱序的」",
                 "运行时现把 `modifyImage` 与图片地址一起交给应用，在**图片解码后、写入缓存前**完成还原（Coil transformation），因此内存 / 磁盘缓存里存的都是还原后的图，翻页时不会再先闪一下乱序画面。下载章节时同样还原，避免落盘的文件本身就是乱的",
                 "还原逻辑不跑 JS：从脚本里识别出「按 N 段纵向倒序重排」这一形态并取出段数，直接在 Bitmap 上分段倒序拼接（与站点脚本的 blocks 构造逐字一致：等分高度、余数全部并入最后一段）。认不出的脚本**不还原并写一条告警日志**，绝不静默画错",
                 "漫画阅读器的顶部栏与底部章节条**并入可呼出菜单**：此前两条栏常驻、一直压着图片，现在点击画面才统一呼出 / 收起（含设置面板），不呼出时整屏都是图片，走到哪里都能沉浸阅读",
                 "图片请求头剥掉 `Accept-Encoding` / `Connection` / `Host` / `Content-Length` 等应由客户端自己协商的头：源给的防盗链请求头里常带 `Accept-Encoding: gzip, deflate, br, zstd`，原样透传会**关掉 OkHttp / Coil 的透明解压**，一旦 CDN 返回压缩内容就会解码失败（与引擎侧同一类坑）",
                 "预加载与阅读页现在共用同一套缓存键，预热过的图片翻到时就命中，不再白下载一遍",
-                "新增 15 条离线单测（ComicImageScrambleTest）：真实禁漫脚本的段数识别、段数非法 / 形态不符时不得还原、分段高度在任意高度与段数下之和恒等于原图高度、还原即纯粹段倒序、`ContentResult` 工厂透传逐图脚本，以及 runtime.js 资产必须产出 `scripts` 字段的契约断言；全量 127 个单测 0 失败",
+                "新增 15 条离线单测（ComicImageScrambleTest）：真实站点脚本的段数识别、段数非法 / 形态不符时不得还原、分段高度在任意高度与段数下之和恒等于原图高度、还原即纯粹段倒序、`ContentResult` 工厂透传逐图脚本，以及 runtime.js 资产必须产出 `scripts` 字段的契约断言；全量 127 个单测 0 失败",
             ),
         ),
         VersionEntry(
@@ -37,18 +63,18 @@ object AppVersion {
             date = "2026-10-12",
             changes = listOf(
                 "新增 Venera 漫画源引擎：TypeScript 系漫画源（`class Xxx extends ComicSource`）可直接导入使用。这类源是「可执行 JS」，重度依赖 class 字段 / async-await / Map / getter，实测项目既有的 Rhino（1.7.15 / 1.8.0 / 1.9.1）连 `class` 都解析不了（`identifier is a reserved word: class`），因此改用系统 WebView（V8）作为运行时 —— 零新增依赖、语法完整。已注入与官方一致的运行时（ComicSource / Network / Convert / HtmlDocument / ComicDetails / UI / APP 等），HTTP 全部经原生 OkHttp，**不受 WebView 同源策略与 CORS 限制**，并复用应用自己的 Cookie 与字符集处理；addJavascriptInterface 在 JS 侧是同步调用，所以源里 `Network.get()` 这类同步取值写法可以原样保留",
-                "支持导入 Venera 源集合 `index.json`：自动识别清单格式，逐个下载同目录下的 .js 并批量导入，进度与失败明细实时显示（实测导入 venera-configs 共 33 个源）",
+                "支持导入 Venera 源集合 `index.json`：自动识别清单格式，逐个下载同目录下的 .js 并批量导入，进度与失败明细实时显示（实测 33 个源全部入库）",
                 "打通 Venera 源的搜索 / 详情 / 目录 / 章节图片四步，落到统一的 SourceAdapter，与 legado 漫画源共用同一个阅读器（含上下滚动与左右翻页两种模式、上一话 / 下一话）",
-                "修复导入 `index.json` 时因 key 重复而**少导入**：清单里 `copy_manga.js`（拷贝漫画）与 `copy_manga_multi_accounts.js`（拷贝漫画·多账号）共用 `key = \"copy_manga\"`，id 取 key 会让后者覆盖前者 —— 33 条只进 32 条。现改由 .js 文件名推导 id（同目录内文件名唯一），并在批量导入后清理不在本批次内的历史 Venera 源，避免僵尸条目",
+                "修复导入 `index.json` 时因 key 重复而**少导入**：清单里有两个 .js（同一源的普通版与多账号版）共用了同一个 `key`，id 取 key 会让后者覆盖前者 —— 33 条只进 32 条。现改由 .js 文件名推导 id（同目录内文件名唯一），并在批量导入后清理不在本批次内的历史 Venera 源，避免僵尸条目",
                 "修复搜索参数缺失导致空结果 / 报错：33 个源里有 28 个声明了 `optionList` 且会直接改写 `options[i]`（如 `options[0] = \"&sort_by=\" + options[0]`），此前传入空数组会拼出 `sort_by=null`、`o=undefined` 之类的脏参数。现按官方语义以各分组**第一项**作为默认选项（`\"-全部\"` → 空串，恰好对应「不过滤」）",
-                "修复 async `init()` 竞态：`init()` 在 7 个源里是异步的（jm / kavita / komga / lanraragi / wnacg / comic_walker / shonen_jump_plus），并且会填充后续 getter 依赖的状态（jm 的 `apiDomains` 就靠 `init → refreshApiDomains` 写入）。此前是 fire-and-forget 调用，首次请求会撞上未完成的初始化并抛 `Cannot read properties of undefined`。现首次调用前 await 完成",
+                "修复 async `init()` 竞态：`init()` 在多个源里是异步的，并且会填充后续 getter 依赖的状态（其中某些源的 `apiDomains` 就靠 `init → refreshApiDomains` 写入）。此前是 fire-and-forget 调用，首次请求会撞上未完成的初始化并抛 `Cannot read properties of undefined`。现首次调用前 await 完成",
                 "修复 **gzip 响应被当成文本使用**：源普遍自带 `Accept-Encoding: gzip, deflate, br, zstd`，原样透传会关掉 OkHttp 的透明解压，响应体以压缩字节返回，源里 `JSON.parse` 直接炸（实测报 `Unexpected token '\\u001f'`，即 gzip 魔数）。现剥掉该头交给 OkHttp 协商 gzip 并自动解压",
                 "补齐 HTML DOM API 至与官方运行时一致：`dispose()`（5 个源调用，此前直接抛 `doc.dispose is not a function`）、`innerHTML` / `outerHTML`、`classNames`（类名数组）、`previousElementSibling` / `nextElementSibling`、`HtmlNode.type` / `toElement()`。其中 `dispose()` 刻意实现为空操作 —— 有源在 dispose 之后仍会使用已取到的元素，真正置空反而会弄坏它",
-                "修正基类 `ComicSource` 字段与官方对齐（不再声明 `settings`）：wnacg 用 `get settings()` 在原型上暴露设置项，基类若有同名字段，实例属性会遮蔽该 getter，注册时直接抛 `Cannot set property settings of #<Wnacg> which has only a getter`。修正后 33/33 个源均可正常注册",
-                "修复 `Convert` 二进制工具对跨 realm `ArrayBuffer` 误判为「空输入」（只认 `instanceof ArrayBuffer` 在跨 realm 时会失效，导致 md5 / AES 收到 0 字节）；改用鸭子类型识别，并支持 `search.loadNext(keyword, options, next)` 下一页 token 契约（ehentai 用到）",
+                "修正基类 `ComicSource` 字段与官方对齐（不再声明 `settings`）：某源用 `get settings()` 在原型上暴露设置项，基类若有同名字段，实例属性会遮蔽该 getter，注册时直接抛 `Cannot set property settings of #<Source> which has only a getter`。修正后 33/33 个源均可正常注册",
+                "修复 `Convert` 二进制工具对跨 realm `ArrayBuffer` 误判为「空输入」（只认 `instanceof ArrayBuffer` 在跨 realm 时会失效，导致 md5 / AES 收到 0 字节）；改用鸭子类型识别，并支持 `search.loadNext(keyword, options, next)` 下一页 token 契约",
                 "Venera 源执行失败的原因现在会写进日志（`VeneraEngine`），源内异常不再静默无声",
                 "漫画阅读器手势改为一套统一实现：滚到本话结尾继续拖 → 下一话、滚到开头继续拖 → 上一话，左右翻页模式同理。手势只在已经 / 无法继续滚动时计数，不干扰列表惯性与翻页拖动；同时移除了左右翻页模式此前额外插入的「章末引导页」，两种模式的边界行为保持一致",
-                "新增 10 条离线单测：Venera 源 id 约定（含 `copy_manga` key 冲突必须得到 33 个不同 id、恢复时幂等、带目录 / 反斜杠）、Venera 源与自研 JS 源的格式识别优先级、`index.json` 索引识别、缺少 `loadInfo` / 非 Venera 内容的拒绝路径；全量 112 个单测 0 失败",
+                "新增 10 条离线单测：Venera 源 id 约定（含两个源共用同一 key 时必须得到 33 个不同 id、恢复时幂等、带目录 / 反斜杠）、Venera 源与自研 JS 源的格式识别优先级、`index.json` 索引识别、缺少 `loadInfo` / 非 Venera 内容的拒绝路径；全量 112 个单测 0 失败",
             ),
         ),
         VersionEntry(
@@ -57,11 +83,11 @@ object AppVersion {
             changes = listOf(
                 "漫画阅读器新增「上一话 / 下一话」机制（对齐小说阅读器）：底部常驻章节条「‹ 上一话 ｜ 第 x/y 话 · 话名 ｜ 下一话 ›」随时可切话，上下滚动模式在章末给出「本话已读完 / 已是最后一话」与「上一话 / 下一话」入口，左右翻页模式翻到本话最后一页后再翻即自动进入下一话；到第 1 话 / 最后一话时对应按钮置灰，不再静默无响应",
                 "漫画详情页目录新增「正序 / 倒序」切换（对齐小说阅读器目录面板）：42 话的漫画可直接从「最新话」开始看；倒序仅为显示层反转，章节序号与阅读进度语义不受影响",
-                "修复全免漫画等 App 接口源「目录能出、正文图全空白」：章节地址后的请求配置（url,{\"method\":...,\"headers\":{access-token,m-request-id}}} 签名）在目录阶段被剥离后未随章节对象传给正文请求，接口拿到无签名请求返回错误数据。现同时保留在章节地址与 requestOptions 中，正文请求优先取用，进度 / 缓存 / 书签写回地址后签名也不再丢失",
-                "修复详情规则只渲染 UI 用得到的字段、导致挂在其他字段上的 @put 变量永不写入：全免漫画把 @put:{cid:$.comic_id} 挂在 ruleBookInfo.name 上，而详情页书名取自搜索/书架结果、不会渲染 name，cid 因此始终为空，章节地址里 @get:{cid} 展开成空 → 图片接口签名错误 → 阅读页显示「本章暂无可用图片」。现补渲染所有带 @put: 的字段，保证副作用完整",
+                "修复部分 App 接口源「目录能出、正文图全空白」：章节地址后的请求配置（url,{\"method\":...,\"headers\":{access-token,m-request-id}}} 签名）在目录阶段被剥离后未随章节对象传给正文请求，接口拿到无签名请求返回错误数据。现同时保留在章节地址与 requestOptions 中，正文请求优先取用，进度 / 缓存 / 书签写回地址后签名也不再丢失",
+                "修复详情规则只渲染 UI 用得到的字段、导致挂在其他字段上的 @put 变量永不写入：某源把 @put:{cid:$.comic_id} 挂在 ruleBookInfo.name 上，而详情页书名取自搜索/书架结果、不会渲染 name，cid 因此始终为空，章节地址里 @get:{cid} 展开成空 → 图片接口签名错误 → 阅读页显示「本章暂无可用图片」。现补渲染所有带 @put: 的字段，保证副作用完整",
                 "修复阅读器顶部栏与底部章节条未避让系统栏（应用为 edge-to-edge 绘制）：顶部「设置」图标上半部落在状态栏内，点击实际只在下半部分生效（实测 y=84 无响应、y=140 才生效）；现顶部栏避开状态栏、底部章节条避开手势条，图标在可视范围内整块可点",
                 "书架条目持久化详情地址随带的请求配置（数据库 v9 → v10 迁移）：从书架重进这类源时签名不再丢失，无需重新搜索",
-                "新增 2 条离线单测：漫画正文「整条 <js> 块解密后拼图」（全免漫画 ruleContent.content 的真实形态，含真实 AES 密文与 java.getString/arsadata 前缀）+ 章节地址请求配置拆分（含逗号查询串不误判）；全量 102 个单测 0 失败",
+                "新增 2 条离线单测：漫画正文「整条 <js> 块解密后拼图」（某源 ruleContent.content 的真实形态，含真实 AES 密文与 java.getString/arsadata 前缀）+ 章节地址请求配置拆分（含逗号查询串不误判）；全量 102 个单测 0 失败",
             ),
         ),
         VersionEntry(
@@ -70,8 +96,8 @@ object AppVersion {
             changes = listOf(
                 "修复「目录为空」的另一类独立成因——legado 变量机制 @put:{k:取值规则} / @get:{k} 此前完全未实现：这类 JSON API 源在搜索阶段把作品 ID 存进变量（如 $.comic_name@put:{bid:$.comic_id}），目录地址再取回（如 .../getchapterlist?...&comic_id=@get:{bid}）；变量缺失时地址里会残留字面量，接口返回错误/空数据导致目录空白。现完整支持写入、回填与 URL 模板内联替换",
                 "修复变量按条目隔离：多条搜索结果各自持有一份变量表，不再互相覆盖（此前点开任意一条都拿到最后一条的作品 ID）。条目变量表以外层变量为初值，目录阶段可见搜索/详情写入的变量",
-                "修复设备实测发现的「章节地址取到空 ID」：目录条目若另起空表，章节地址里的 @get:{bid} 会展开成空串（实测退化为 ...&comic_id=&chapter_newid=1...），图片接口拿不到数据、正文「无法加载」。现条目变量表继承外层变量，爱看漫画等源章节地址恢复正确的 comic_id",
-                "修复 JSON 目录列表的前置负号 - 未倒置（仅 @json: 前缀路径处理了倒置）：形如 -$.data.[*] 的规则（爱看漫画、看漫画吧等）目录顺序倒着排，打开漫画停在「最新话」而非「第 1 话」",
+                "修复设备实测发现的「章节地址取到空 ID」：目录条目若另起空表，章节地址里的 @get:{bid} 会展开成空串（实测退化为 ...&comic_id=&chapter_newid=1...），图片接口拿不到数据、正文「无法加载」。现条目变量表继承外层变量，部分源章节地址恢复正确的 comic_id",
+                "修复 JSON 目录列表的前置负号 - 未倒置（仅 @json: 前缀路径处理了倒置）：形如 -$.data.[*] 的规则（部分源）目录顺序倒着排，打开漫画停在「最新话」而非「第 1 话」",
                 "修复裸 JSONPath 正文/列表规则（以 $ 开头且无 @ 前缀）不被识别：内容为 JSON 时按路径取值，数组按换行拼接（漫画源的 result.split(\"\\n\") 依赖此语义）",
                 "新增 9 条离线单测：@put 写入与 @get 回填、@get 未命中不残留字面量、JSON 列表按条目隔离、列表倒置时变量表同步倒置、多变量与含花括号取值规则、目录条目继承搜索阶段变量（真实规则形状）、JSON 目录列表前置负号倒置、备选路径与前缀兼容、嵌套路径；全量 94 个单测 0 失败",
             ),
@@ -128,7 +154,7 @@ object AppVersion {
                 "修复详情页换源没有结果：改为并发搜索 + 进度实时显示，候选边搜边出，整体限时 60 秒（旧实现串行逐源抓取，死源超时导致数分钟无结果）",
                 "换源候选增量刷新（阅读页 / 详情页）：每完成一个书源即刷新候选列表，不再等全部源搜完",
                 "换源排除当前书更准确：同源且同名（归一化）的候选一并排除，避免出现「换到自己」",
-                "换源作者匹配归一化：去掉「番茄小说 ·」等站点前缀后再比较，减少误过滤",
+                "换源作者匹配归一化：去掉「站点名 ·」等来源前缀后再比较，减少误过滤",
             ),
         ),
         VersionEntry(
@@ -138,7 +164,7 @@ object AppVersion {
                 "目录翻页支持（对标 legado nextTocUrl）：分页目录自动抓取后续页并合并章节，修复大量站点目录只有第一页（章节不全）的问题",
                 "正文翻页支持（对标 legado nextContentUrl）：分页正文自动抓取下一页并拼接，修复「本章未完，点击下一页继续阅读」类源正文截断",
                 "规则引擎支持任意属性名提取（@onclick/@data-lazyload 等，对齐 legado 语义），此前仅支持固定白名单属性",
-                "规则尾部 JS 支持（@js: / <js>）：前段取值注入 result 变量执行 JS，修复阅友等源 bookUrl 提取失败",
+                "规则尾部 JS 支持（@js: / <js>）：前段取值注入 result 变量执行 JS，修复部分源 bookUrl 提取失败",
                 "@css: 选择器支持取属性（@css:img@src），此前只能取文本",
                 "标签+区间写法支持（tag.span[0:1]），修复分类/标签类规则解析失败",
                 "多元素文本拼接（legado 语义）：文本类规则匹配多个元素时逐个拼接，正文段落不再丢失",
@@ -146,7 +172,7 @@ object AppVersion {
                 "搜索请求配置 headers 合并（UA/Referer 防盗链）与关键词按 charset 编码：修复 GBK 源 POST 搜索乱码无结果",
                 "replaceRegex 净化规则修正：支持 ##正则##替换 格式，此前误把 ## 当正则一部分",
                 "新增 deep link novelreader://search?keyword=xxx：直达小说搜索并自动搜索（调试/自动化用）",
-                "新增 LegadoRealSourceTest：离线规则语义 5 条 + 真实书源联网验证 3 条（得奇目录翻页/正文翻页、手机小说 GBK、阅友 onclick 提取）",
+                "新增 LegadoRealSourceTest：离线规则语义 5 条 + 真实书源联网验证 3 条（多个真实书源的目录翻页/正文翻页、GBK 编码、onclick 属性提取）",
             ),
         ),
         VersionEntry(
@@ -172,7 +198,7 @@ object AppVersion {
             version = "1.1.6",
             date = "2026-10-12",
             changes = listOf(
-                "同名作者前缀合并：新增作者归一化剥离来源前缀（番茄小说/笔趣阁/起点等），「番茄小说·某某」与「某某」判为同一作者",
+                "同名作者前缀合并：新增作者归一化剥离来源前缀（常见站点前缀），「站点前缀·某某」与「某某」判为同一作者",
                 "模糊排序同名优先：改为显式分层排序，书名与关键词一致的同名书绝对排最前",
             ),
         ),

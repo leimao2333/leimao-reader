@@ -36,4 +36,5 @@ enum class SourceFormat {
     JS,        // JS（Rhino）格式
     LEGADO,    // 阅读(legado) 标准书源格式
     LOCAL,     // 本地 TXT 书（v1.2.0）
+    VENERA,    // Venera 漫画源（`class X extends ComicSource`，WebView 运行时，v1.2.6）
 }

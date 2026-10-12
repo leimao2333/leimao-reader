@@ -2,6 +2,37 @@
 
 本项目的所有版本更新记录。初始版本为 `1.0.0.1`。
 
+## v1.2.6（2026-10-12）
+
+本轮新增 **Venera 漫画源引擎**：`class Xxx extends ComicSource` 这类可执行 JS 源现在能直接导入使用，venera-configs 的 `index.json` 源集合可一键批量导入（实测 33 个源全部入库）。同时在实体设备上把「搜索 → 详情 → 目录 → 章节图片」整条链路跑通。
+
+### 新增
+
+- **Venera 源运行时（隐藏 WebView / V8）**。这类源重度依赖 class 字段、async-await、Map、getter —— 实测项目既有的 Rhino（1.7.15 / 1.8.0 / 1.9.1）连 `class` 都不支持（`identifier is a reserved word: class`），`spread` 也要到 1.9.1 才可用，**无法承载**。改用系统 WebView（V8）后零新增依赖、语法完整，并按官方 `_venera_.js` 注入了 `ComicSource` / `Network` / `Convert` / `HtmlDocument` / `ComicDetails` / `Comment` / `UI` / `APP` 等运行时对象。关键设计：**所有 HTTP 都走原生 OkHttp**，因此完全不受 WebView 同源策略与 CORS 限制（否则从 `about:blank` 取 cdn.jsdelivr.net 会被拦），并复用应用自己的 Cookie 与字符集处理；`addJavascriptInterface` 的方法在 JS 侧是**同步**调用，所以源里 `Network.get()` 这类同步取值写法可以原样保留。
+- **`index.json` 源集合批量导入**：自动识别清单格式，逐个下载同目录下的 `.js` 并导入，进度与失败明细实时显示。
+- **四步链路打通**：搜索 / 详情 / 目录 / 章节图片统一落到 `SourceAdapter`，与 legado 漫画源共用同一个阅读器（两种翻页模式、上一话 / 下一话都可用）。
+
+### 修复
+
+- **导入 `index.json` 时因 key 重复而少导入（33 条只进 32 条）**：清单里 `copy_manga.js`（拷贝漫画）与 `copy_manga_multi_accounts.js`（拷贝漫画·多账号）共用 `key = "copy_manga"`，id 取 key 会让后者覆盖前者。现改由 `.js` 文件名推导 id（同目录内文件名唯一），并在批量导入后清理不在本批次内的历史 Venera 源，避免僵尸条目。
+- **搜索参数缺失导致空结果 / 报错**：33 个源里有 **28 个**声明了 `optionList` 且会直接改写 `options[i]`（如 `options[0] = "&sort_by=" + options[0]`），此前传入空数组会拼出 `sort_by=null`、`o=undefined` 之类的脏参数。现按官方语义以各分组**第一项**作为默认选项（`"-全部"` → 空串，恰好对应「不过滤」）。
+- **async `init()` 竞态**：`init()` 在 7 个源里是异步的（jm / kavita / komga / lanraragi / wnacg / comic_walker / shonen_jump_plus），且会填充后续 getter 依赖的状态（jm 的 `apiDomains` 就靠 `init → refreshApiDomains` 写入）。此前是 fire-and-forget 调用，首次请求撞上未完成的初始化并抛 `Cannot read properties of undefined`。现首次调用前 await 完成。
+- **gzip 响应被当成文本使用**：源普遍自带 `Accept-Encoding: gzip, deflate, br, zstd`，原样透传会**关掉 OkHttp 的透明解压**，响应体以压缩字节返回，源里 `JSON.parse` 直接炸（实测报 `Unexpected token '\u001f'`，即 gzip 魔数）。现剥掉该头交给 OkHttp 协商 gzip 并自动解压。
+- **补齐 HTML DOM API 至与官方一致**：`dispose()`（5 个源调用，此前直接抛 `doc.dispose is not a function`）、`innerHTML` / `outerHTML`、`classNames`（类名数组）、`previousElementSibling` / `nextElementSibling`、`HtmlNode.type` / `toElement()`。其中 `dispose()` 刻意实现为**空操作** —— 有源在 dispose 之后仍会使用已取到的元素，真正置空反而会弄坏它。
+- **基类 `ComicSource` 字段与官方对齐（不再声明 `settings`）**：wnacg 用 `get settings()` 在原型上暴露设置项，基类若有同名字段，实例属性会遮蔽该 getter → 注册即抛 `Cannot set property settings of #<Wnacg> which has only a getter`。修正后 **33/33 个源均可正常注册**。
+- **`Convert` 二进制工具对跨 realm `ArrayBuffer` 误判为「空输入」**（只认 `instanceof ArrayBuffer` 在跨 realm 时会失效，md5 / AES 收到 0 字节）；改用鸭子类型识别。同时支持 `search.loadNext(keyword, options, next)` 下一页 token 契约（ehentai 用到）。
+- **Venera 源执行失败的原因现在会写进日志**（`VeneraEngine`），源内异常不再静默无声。
+- **漫画阅读器手势统一为一套实现**：滚到本话结尾继续拖 → 下一话、滚到开头继续拖 → 上一话，左右翻页模式同理；手势只在已经 / 无法继续滚动时计数，不干扰列表惯性与翻页拖动。同时移除了左右翻页模式此前额外插入的「章末引导页」，两种模式的边界行为保持一致。
+
+### 测试
+
+- 新增 10 条离线单测（`VeneraImportTest`）：Venera 源 id 约定（`copy_manga` key 冲突必须得到 33 个不同 id、恢复时幂等、带目录 / 反斜杠路径）、Venera 源与自研 JS 源的**格式识别优先级**（Venera 源没有 `getMeta/search/chapterList/content`，若误判会被 `validateJs` 拒绝）、`index.json` 索引识别、缺少 `loadInfo` 与非 Venera 内容的拒绝路径。**全量 112 个单测 0 失败（4 个联网用例因未开 `LEIMAO_REAL_TESTS` 跳过）。**
+- 另建了一个离线验证台（Node + jsdom + curl，不入库）：直接加载 `assets/venera/runtime.js` 与各个 `.js` 源，用「严格 DOM 模式」把运行时缺的成员暴露成明确报错，并区分「网络不可达」与「JS / 运行时错误」。据此定位了上面绝大部分问题；本机网络可达的源里，`search` 成功 10 个（goda / copy_manga / ykmh / zaimanhua / hot_manga / nhentai / ccc / hitomi / lanraragi / manhuaren），33/33 个源均可正常注册。
+
+### 实体设备验证（realme RMX2202 / Android 14）
+
+隔离为**仅启用一个 Venera 源（GoDa漫画）**后实测：动漫页搜索「龙」→ 结果全部来自该 Venera 源（龙族 / 龙珠 / 龙渊 / 龙刃，封面正常）→ 打开《龙族》→ 详情页标题、封面、来源（GoDa漫画）正常，**章节 44 话**且与离线验证台结果逐条一致 → 开始阅读 → 第 1 话图片完整渲染，底部章节条显示「第 1/44 话 · 第01话 卡塞尔之门」→ 从目录点第 02话 → 第 2/44 话图片正常渲染。`VeneraEngine` 全程无异常日志。
+
 ## v1.2.5（2026-10-12）
 
 本轮补齐漫画侧的两处交互缺口（下一话、目录倒序），并在实体设备上把「全免漫画」这类 App 接口源彻底跑通。

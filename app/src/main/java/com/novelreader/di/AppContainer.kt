@@ -60,8 +60,13 @@ class AppContainer(context: Context) {
     }
 
     // ===== 源引擎 =====
+    /** Venera 源运行时（隐藏 WebView，懒启动：只有真正用到 Venera 源时才创建 WebView） */
+    val veneraEngine: com.novelreader.source.venera.VeneraEngine by lazy {
+        com.novelreader.source.venera.VeneraEngine(appContext)
+    }
+
     val sourceManager: SourceManager by lazy {
-        SourceManager()
+        SourceManager(veneraEngine)
     }
 
     // ===== 仓库 =====

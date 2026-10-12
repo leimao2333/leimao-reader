@@ -3,6 +3,7 @@ package com.novelreader.ui.screens.comic
 import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -46,6 +47,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -178,6 +180,7 @@ fun ComicReaderScreen(
                     images = images,
                     headers = imageHeaders,
                     currentPage = currentPage,
+                    chapterIndex = chapterPosition,
                     onPageChange = viewModel::goToPage,
                     onTap = { showSettings.value = !showSettings.value },
                     onPrevChapter = { viewModel.prevChapter() },
@@ -237,7 +240,7 @@ fun ComicReaderScreen(
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "滚动/翻页到本话结尾即可进入下一话，也可用底部导航条切换",
+                        text = "滚到本话结尾继续拖 → 下一话；滚到开头继续拖 → 上一话（左右翻页同理）",
                         color = Color(0xFF9E9E9E),
                         style = MaterialTheme.typography.labelSmall,
                     )
@@ -365,6 +368,15 @@ private fun VerticalScrollReader(
         state = listState,
         modifier = Modifier
             .fillMaxSize()
+            // 滚到底继续拖 → 下一话；滚到顶继续拖 → 上一话
+            .edgeOverscroll(
+                resetKey = chapterIndex,
+                vertical = true,
+                canScrollBackward = { listState.canScrollBackward },
+                canScrollForward = { listState.canScrollForward },
+                onOverscrollStart = onPrevChapter,
+                onOverscrollEnd = onNextChapter,
+            )
             .clickable(
                 interactionSource = null,
                 indication = null,
@@ -468,16 +480,17 @@ private fun HorizontalPagerReader(
     images: List<String>,
     headers: Map<String, String>,
     currentPage: Int,
+    chapterIndex: Int,
     onPageChange: (Int) -> Unit,
     onTap: () -> Unit,
     onPrevChapter: () -> Unit = {},
     onNextChapter: () -> Unit = {},
 ) {
-    // 章末附加一页引导页：最后一话图片滑完后还能继续翻入下一话
-    val hasNextGate = images.isNotEmpty()
-    val pageCount = images.size + if (hasNextGate) 1 else 0
+    // 不再额外插「章末引导页」：末页继续拖 / 首页往前拖 由 edgeOverscroll 直接切话，
+    // 与滚动模式的边界行为保持一致
+    val pageCount = images.size.coerceAtLeast(1)
     val pagerState = rememberPagerState(
-        initialPage = currentPage.coerceAtMost((pageCount - 1).coerceAtLeast(0)),
+        initialPage = currentPage.coerceIn(0, pageCount - 1),
         pageCount = { pageCount },
     )
     val context = LocalContext.current
@@ -496,15 +509,6 @@ private fun HorizontalPagerReader(
         if (page < images.size) onPageChange(page)
     }
 
-    // 滑到章末引导页时进入下一话（每话只触发一次，防连跳）
-    var gateConsumed by remember { mutableIntStateOf(-1) }
-    LaunchedEffect(pagerState.currentPage, images, currentPage) {
-        if (hasNextGate && pagerState.currentPage == images.size && gateConsumed != currentPage) {
-            gateConsumed = currentPage
-            onNextChapter()
-        }
-    }
-
     // 预加载相邻页
     LaunchedEffect(pagerState.currentPage, images, headers) {
         val cur = pagerState.currentPage
@@ -515,7 +519,17 @@ private fun HorizontalPagerReader(
 
     HorizontalPager(
         state = pagerState,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            // 末页继续拖 → 下一话；首页往前拖 → 上一话
+            .edgeOverscroll(
+                resetKey = chapterIndex,
+                vertical = false,
+                canScrollBackward = { pagerState.currentPage > 0 },
+                canScrollForward = { pagerState.currentPage < pageCount - 1 },
+                onOverscrollStart = onPrevChapter,
+                onOverscrollEnd = onNextChapter,
+            ),
     ) { page ->
         Box(
             modifier = Modifier
@@ -539,14 +553,7 @@ private fun HorizontalPagerReader(
                 ),
             contentAlignment = Alignment.Center,
         ) {
-            if (page >= images.size) {
-                // 章末引导页：本话已读完，继续滑动进入下一话
-                Text(
-                    text = "本话已读完 · 继续翻页进入下一话 ›",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodyLarge,
-                )
-            } else ComicImage(
+            ComicImage(
                 url = images.getOrNull(page) ?: "",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.FillWidth,
@@ -580,6 +587,82 @@ private fun Modifier.comicPagerTap(
             }
         },
     )
+}
+
+/**
+ * 「越过边界」检测：手指已经把内容推到顶 / 底之后仍然继续拖，就触发上一话 / 下一话。
+ *
+ * 设计要点：
+ * - **只观测指针位移，从不 consume**，所以列表自身滚动、惯性、翻页都不受影响；
+ * - 触发条件是「主动把内容拖过边界」，而不是「滚到末尾就切」——
+ *   后者在内容不足一屏时会一加载就到底，导致连续跳章；
+ * - `resetKey` 变化（切话）时清空累计位移，避免上一话的余量把新一话直接顶走。
+ *
+ * @param vertical true=上下滚动（看 y 轴），false=左右翻页（看 x 轴）
+ * @param canScrollBackward 当前是否还能往前滚（false 表示已到顶/首屏）
+ * @param canScrollForward 当前是否还能往后滚（false 表示已到底/末页）
+ */
+@Composable
+private fun Modifier.edgeOverscroll(
+    resetKey: Any?,
+    vertical: Boolean,
+    canScrollBackward: () -> Boolean,
+    canScrollForward: () -> Boolean,
+    onOverscrollStart: () -> Unit,
+    onOverscrollEnd: () -> Unit,
+): Modifier {
+    // 用 rememberUpdatedState 保证回调/状态判断始终读到最新值，
+    // 而 pointerInput 的协程只启动一次（否则每帧重启手势循环，永远等不到抬手）
+    val backward by rememberUpdatedState(canScrollBackward)
+    val forward by rememberUpdatedState(canScrollForward)
+    val overStart by rememberUpdatedState(onOverscrollStart)
+    val overEnd by rememberUpdatedState(onOverscrollEnd)
+
+    return this.pointerInput(resetKey, vertical) {
+        val threshold = EDGE_OVERSCROLL_THRESHOLD.toPx()
+        awaitPointerEventScope {
+            while (true) {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                var accStart = 0f
+                var accEnd = 0f
+                while (true) {
+                    val event = awaitPointerEvent()
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    if (!change.pressed) break
+                    // 手指位移：< 0 → 往「后」拖（下滚 / 右翻），> 0 → 往「前」拖
+                    val delta = if (vertical) {
+                        change.position.y - change.previousPosition.y
+                    } else {
+                        change.position.x - change.previousPosition.x
+                    }
+                    if (delta == 0f) continue
+                    if (delta < 0f) {
+                        accStart = 0f
+                        if (forward()) {
+                            accEnd = 0f
+                        } else {
+                            accEnd += -delta
+                            if (accEnd >= threshold) {
+                                accEnd = 0f
+                                overEnd()
+                            }
+                        }
+                    } else {
+                        accEnd = 0f
+                        if (backward()) {
+                            accStart = 0f
+                        } else {
+                            accStart += delta
+                            if (accStart >= threshold) {
+                                accStart = 0f
+                                overStart()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -686,3 +769,6 @@ private const val PRELOAD_AHEAD = 2
 
 /** 底部章节导航条高度（正文/设置面板都据此让位） */
 private val CHAPTER_BAR_HEIGHT = 48.dp
+
+/** 越过边界触发翻话所需的累计拖拽距离（太小会误触，太大要拖很久） */
+private val EDGE_OVERSCROLL_THRESHOLD = 90.dp

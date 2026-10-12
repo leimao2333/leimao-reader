@@ -102,7 +102,8 @@ fun SourceImportScreen(
                 .verticalScroll(rememberScrollState()),
         ) {
             Text(
-                text = "支持 JSON / JS / 阅读(legado) 书源，含 .txt 网址书源",
+                text = "支持 阅读(legado) 书源 / Venera 漫画源 / 自研 JSON、JS 源；\n" +
+                    "粘贴书源网址（含 Venera 的 index.json）可批量导入",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

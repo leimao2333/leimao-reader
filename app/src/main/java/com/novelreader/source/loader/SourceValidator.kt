@@ -23,6 +23,8 @@ object SourceValidator {
         val isUrlContent: Boolean = false,
         /** 是否为 legado 多源列表（需要批量导入） */
         val isLegadoList: Boolean = false,
+        /** 是否为 Venera 源索引（index.json，需要逐个下载 .js 再导入） */
+        val isVeneraIndex: Boolean = false,
     )
 
     /**
@@ -32,6 +34,23 @@ object SourceValidator {
         val content = rawContent.trim()
         if (content.isEmpty()) {
             return Result(false, "源内容为空")
+        }
+
+        // 0. Venera 源索引（index.json）：内容是 [{name,fileName,key,version}]，
+        //    本身不是源，需要按 fileName 逐个下载再导入
+        if (content.startsWith("[") && content.contains("fileName")) {
+            runCatching {
+                val arr = com.google.gson.JsonParser.parseString(content).asJsonArray
+                val first = arr.firstOrNull()?.takeIf { it.isJsonObject }?.asJsonObject
+                if (first != null && first.has("fileName") && first.has("key")) {
+                    return Result(
+                        true,
+                        "检测到 Venera 源索引（共 ${arr.size()} 个源）",
+                        SourceFormat.VENERA,
+                        isVeneraIndex = true,
+                    )
+                }
+            }
         }
 
         // 1. 判断格式
@@ -51,6 +70,7 @@ object SourceValidator {
             SourceFormat.JSON -> validateJsonOrLegado(content)
             SourceFormat.JS -> validateJs(content)
             SourceFormat.LEGADO -> validateJsonOrLegado(content)
+            SourceFormat.VENERA -> validateVenera(content)
             // 本地书不走导入校验链路（独立入口），理论上不会到这里
             SourceFormat.LOCAL -> Result(false, "本地书请在书架页导入，不走书源导入")
         }
@@ -58,8 +78,12 @@ object SourceValidator {
 
     /** 检测源格式 */
     private fun detectFormat(content: String, fileName: String?): SourceFormat? {
+        // Venera 源也是 .js，但依赖独立运行时（class / async-await），必须优先识别
+        if (content.contains("extends ComicSource")) return SourceFormat.VENERA
+
         // 优先按文件扩展名判断
         fileName?.lowercase()?.let {
+            if (it.endsWith(".venera")) return SourceFormat.VENERA
             if (it.endsWith(".txt")) {
                 // txt 内容可能是网址，或 legado 书源 JSON
                 return SourceFormat.LEGADO
@@ -133,6 +157,18 @@ object SourceValidator {
         } catch (e: Exception) {
             Result(false, "JSON 解析失败：${e.message}")
         }
+    }
+
+    /** 校验 Venera 源（`class Xxx extends ComicSource`） */
+    private fun validateVenera(content: String): Result {
+        if (!content.contains("extends ComicSource")) {
+            return Result(false, "不是有效的 Venera 源（缺少 extends ComicSource）")
+        }
+        // 至少要有 comic.loadInfo，否则取不到详情与目录
+        if (!content.contains("loadInfo")) {
+            return Result(false, "Venera 源不完整：缺少 comic.loadInfo")
+        }
+        return Result(true, "校验通过（Venera 源）", SourceFormat.VENERA)
     }
 
     /** 校验 JS 源 */

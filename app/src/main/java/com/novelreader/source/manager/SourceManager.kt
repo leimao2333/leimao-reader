@@ -28,7 +28,14 @@ data class ImportedSource(
  *
  * 统一调度源的生命周期，打通「加载 → 解析 → 适配器」完整链路。
  */
-class SourceManager {
+class SourceManager(
+    /**
+     * Venera 源运行时（隐藏 WebView）。
+     *
+     * 为 null 时仍可导入 Venera 源（会持久化），只是执行时会报「运行时不可用」。
+     */
+    private val veneraEngine: com.novelreader.source.venera.VeneraEngine? = null,
+) {
 
     /** 源注册表：sourceId -> SourceInfo */
     private val sourceMap = mutableMapOf<String, SourceInfo>()
@@ -64,6 +71,11 @@ class SourceManager {
         val format = validateResult.format
             ?: throw IllegalArgumentException("无法识别源格式")
 
+        // Venera 漫画源（独立运行时）
+        if (format == SourceFormat.VENERA) {
+            return importVenera(rawContent, fileName)
+        }
+
         // legado 格式（单个或列表）
         if (format == SourceFormat.LEGADO) {
             return importLegado(rawContent, fileName)
@@ -98,6 +110,40 @@ class SourceManager {
             results.add(ImportedSource(info, singleJson))
         }
         return results
+    }
+
+    /** 导入 Venera 源（单个 .js 文件） */
+    private fun importVenera(code: String, fileName: String?): List<ImportedSource> {
+        val engine = veneraEngine
+            ?: throw IllegalArgumentException("Venera 运行时不可用，无法导入该源")
+        val info = toVeneraInfo(code, fileName)
+        val adapter = com.novelreader.source.venera.VeneraSourceAdapter(info, code, engine)
+        engine.putSource(info.id, code)
+        registerSource(info, adapter, code)
+        return listOf(ImportedSource(info, code))
+    }
+
+    /** 从源码里抽取 Venera 源的元信息（name / key / version 都是类字段字面量） */
+    private fun toVeneraInfo(code: String, fileName: String?): SourceInfo {
+        val name = Regex("""\bname\s*=\s*["'`]([^"'`]*)["'`]""").find(code)?.groupValues?.getOrNull(1).orEmpty()
+        val key = Regex("""\bkey\s*=\s*["'`]([^"'`]*)["'`]""").find(code)?.groupValues?.getOrNull(1).orEmpty()
+        val version = Regex("""\bversion\s*=\s*["'`]([^"'`]*)["'`]""").find(code)?.groupValues?.getOrNull(1).orEmpty()
+
+        // id 约定：由文件名推导（见 VeneraSourceId），保证「重启恢复」与「重复导入」都能命中同一条，
+        // 同时避免 index.json 里 key 重复的条目互相覆盖
+        val id = com.novelreader.source.venera.VeneraSourceId.fromFileName(fileName)
+            ?: ("venera_" + (key.ifBlank { name }.hashCode().toString().replace("-", "_")))
+        return SourceInfo(
+            id = id,
+            name = name.ifBlank { key.ifBlank { "Venera 源" } },
+            type = SourceType.COMIC,
+            version = version.ifBlank { "venera" },
+            author = key,
+            desc = "",
+            baseUrl = "",
+            format = SourceFormat.VENERA,
+            category = "漫画",
+        )
     }
 
     private fun toSourceInfo(src: LegadoBookSource, fileName: String?, index: Int): SourceInfo {
@@ -161,6 +207,7 @@ class SourceManager {
         sourceMap.remove(sourceId)
         adapterCache.remove(sourceId)
         rawContentCache.remove(sourceId)
+        veneraEngine?.removeSource(sourceId)
     }
 
     /** 启用 / 禁用源 */
@@ -206,6 +253,13 @@ class SourceManager {
 
         // 先解析构建新适配器（失败则抛异常，原源不动）
         val newAdapter: SourceAdapter = when (format) {
+            SourceFormat.VENERA -> {
+                val engine = veneraEngine
+                    ?: throw IllegalArgumentException("Venera 运行时不可用，无法更新该源")
+                val info = toVeneraInfo(rawContent, null).copy(id = oldInfo.id)
+                engine.putSource(oldInfo.id, rawContent)
+                com.novelreader.source.venera.VeneraSourceAdapter(info, rawContent, engine)
+            }
             SourceFormat.LEGADO -> {
                 val pairs = LegadoBookSource.parseListWithRaw(rawContent)
                 if (pairs.isEmpty()) throw IllegalArgumentException("未解析到有效书源")

@@ -117,6 +117,13 @@ class SourceManageViewModel(
                         tmpFile.delete()
                     }
                 }
+                // Venera 源索引（index.json）：内容只是清单，需要逐个下载 .js 再导入
+                val veneraIndex = parseVeneraIndex(content)
+                if (veneraIndex != null) {
+                    importVeneraIndex(url, veneraIndex)
+                    return@launch
+                }
+
                 val imported = sourceRepository.importSource(content, "legado_remote")
                 _message.value = "从网址导入成功：${imported.size} 个源"
                 refresh()
@@ -133,6 +140,77 @@ class SourceManageViewModel(
                 _downloadProgress.value = null
             }
         }
+    }
+
+    /**
+     * 解析 Venera 源索引（`[{name, fileName, key, version}]`）。
+     *
+     * 这是 venera-configs 仓库的 index.json 格式：它不是源本身，
+     * 每个条目对应同目录下的一个 .js 源文件，需要逐个下载后再导入。
+     */
+    private fun parseVeneraIndex(content: String): com.google.gson.JsonArray? {
+        val trimmed = content.trim()
+        if (!trimmed.startsWith("[")) return null
+        return runCatching {
+            val arr = com.google.gson.JsonParser.parseString(trimmed).asJsonArray
+            val first = arr.firstOrNull()?.takeIf { it.isJsonObject }?.asJsonObject ?: return null
+            if (first.has("fileName") && first.has("key")) arr else null
+        }.getOrNull()
+    }
+
+    /** 批量导入 Venera 源：逐个下载同目录下的 .js 并注册 */
+    private suspend fun importVeneraIndex(indexUrl: String, arr: com.google.gson.JsonArray) {
+        val dir = indexUrl.substringBeforeLast('/', "")
+        var ok = 0
+        val failures = mutableListOf<String>()
+        // 本批次会注册的 id 集合（id 由 .js 文件名决定，同目录内文件名唯一）
+        val batchIds = mutableSetOf<String>()
+
+        arr.forEachIndexed { i, el ->
+            val obj = el.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEachIndexed
+            val fileName = obj.get("fileName")?.asString ?: return@forEachIndexed
+            val key = obj.get("key")?.asString ?: fileName.substringBeforeLast(".")
+            val name = obj.get("name")?.asString ?: key
+            // 注意：index.json 里存在 key 重复的条目（如 copy_manga 与 copy_manga_multi_accounts），
+            // 因此 id 必须取文件名而不是 key，否则后者会覆盖前者导致少导入。
+            val id = com.novelreader.source.venera.VeneraSourceId.fromFileName(fileName)
+                ?: return@forEachIndexed
+            val sourceFileName = "$id.venera"
+            batchIds += id
+
+            _message.value = "正在导入 Venera 源 ${i + 1}/${arr.size()}：$name"
+            _downloadProgress.value = i.toFloat() / arr.size().coerceAtLeast(1)
+
+            runCatching {
+                val code = withContext(Dispatchers.IO) {
+                    com.novelreader.core.network.HttpClient.get("$dir/$fileName")
+                }
+                sourceRepository.importSource(code, sourceFileName)
+            }.onSuccess {
+                ok++
+            }.onFailure {
+                failures += "$name（${it.message}）"
+            }
+        }
+
+        // 清理历史遗留 / 已从索引中移除的 Venera 源（本批次之外的），避免重复与僵尸条目
+        runCatching {
+            sourceRepository.getAllSources()
+                .filter {
+                    it.format == com.novelreader.domain.model.SourceFormat.VENERA && it.id !in batchIds
+                }
+                .forEach { sourceRepository.deleteSource(it.id) }
+        }
+
+        _message.value = buildString {
+            append("Venera 源导入完成：成功 $ok/${arr.size()}")
+            if (failures.isNotEmpty()) {
+                append("；失败 ${failures.size} 个：")
+                append(failures.take(3).joinToString("，"))
+                if (failures.size > 3) append(" 等")
+            }
+        }
+        refresh()
     }
 
     /** 删除源 */

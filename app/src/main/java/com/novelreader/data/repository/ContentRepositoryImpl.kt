@@ -134,7 +134,7 @@ class ContentRepositoryImpl(
                             append('|')
                             append(FuzzyMatch.normalize(item.title))
                             append('|')
-                            append(FuzzyMatch.normalize(item.author ?: ""))
+                            append(FuzzyMatch.normalizeAuthor(item.author ?: ""))
                         }
                     }
                     if (seenKeys.add(key)) results.add(item)

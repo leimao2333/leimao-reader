@@ -8,6 +8,7 @@ import com.novelreader.source.legado.LegadoBookSource
 import com.novelreader.source.legado.LegadoRuleEngine
 import com.novelreader.source.legado.LegadoSourceAdapter
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -143,6 +144,182 @@ class LegadoRealSourceTest {
         assertEquals(listOf("B", "A"), reversed.map { it["chapterName"] })
     }
 
+    // ===== legado 变量机制 @put:{k:v} / @get:{k} =====
+
+    /**
+     * 条目级变量表必须**以外层变量为初值**，不能被空表遮蔽。
+     *
+     * 这是设备端实测发现的最后一个「目录空白」成因（爱看漫画 / m.kanman.com）：
+     * 搜索阶段 `$.comic_name@put:{bid:$.comic_id}` 把作品 ID 存进变量、随结果条目带出；
+     * 目录阶段外层变量表里本来就有 `bid`，但若每条记录另起一张**空表**，
+     * 章节地址里的 `@get:{bid}` 就取到空串 —— 实测地址退化成
+     * `...&comic_id=&chapter_newid=1&...`，图片接口返回不了数据，正文就「无法加载」。
+     *
+     * 这里用真实源的规则形状回归：字面 URL + `@get:{bid}` + `{{$.chapter_newid}}`。
+     */
+    @Test
+    fun `legado 变量 - 目录条目继承搜索阶段变量`() {
+        val json =
+            """{"data":[{"chapter_name":"第1话","chapter_newid":"11"},{"chapter_name":"第2话","chapter_newid":"12"}]}"""
+        val fields = mapOf(
+            "chapterName" to "$.chapter_name",
+            "chapterUrl" to
+                "https://m.kanman.com/api/getchapterinfov2?product_id=1&comic_id=@get:{bid}" +
+                "&chapter_newid={{$.chapter_newid}}&isWebp=1",
+        )
+
+        // 外层变量表模拟「搜索阶段已写入 bid」
+        LegadoRuleEngine.variables = hashMapOf("bid" to "106463")
+        val list = adapter(minimalComicJson()).jsonListForTest(json, fields, "-$.data.[*]")
+        LegadoRuleEngine.variables = HashMap()
+
+        // 前置 `-` 倒置照旧生效：站点原始顺序 [第1话,第2话] → 倒置为 [第2话,第1话]
+        assertEquals(listOf("第2话", "第1话"), list.map { it["chapterName"] })
+        // 关键：外层变量被继承，地址里绝不出现空 comic_id
+        assertEquals(
+            "https://m.kanman.com/api/getchapterinfov2?product_id=1&comic_id=106463&chapter_newid=12&isWebp=1",
+            list[0]["chapterUrl"],
+        )
+        assertEquals(
+            "https://m.kanman.com/api/getchapterinfov2?product_id=1&comic_id=106463&chapter_newid=11&isWebp=1",
+            list[1]["chapterUrl"],
+        )
+        assertFalse("章节地址不应残留 @get: 字面量", list[0]["chapterUrl"]!!.contains("@get:"))
+    }
+
+
+    /**
+     * `@put:{key:取值规则}` 写入变量、`@get:{key}` 回填。
+     *
+     * 这是「目录无内容」的第三个独立成因：不少 JSON API 源把作品 ID 存在变量里，
+     * 目录地址再用 `@get:{key}` 取回来。变量缺失时地址里会残留字面量，
+     * 接口返回空 / 错误数据，目录就空白了。
+     */
+    @Test
+    fun `legado 变量 - @put 写入与 @get 回填`() {
+        LegadoRuleEngine.variables = HashMap()
+        // @put 段被剥离，且取值规则被求值写入变量表
+        val stripped = LegadoRuleEngine.applyPutRules("$.comic_name@put:{bid:$.comic_id}") { "106463" }
+        assertEquals("$.comic_name", stripped)
+        assertEquals("106463", LegadoRuleEngine.variables["bid"])
+
+        // 目录地址模板里的 @get:{bid} 被回填
+        assertEquals(
+            "https://m.kanman.com/api/getchapterlist?product_id=1&comic_id=106463",
+            LegadoRuleEngine.resolveGetRules(
+                "https://m.kanman.com/api/getchapterlist?product_id=1&comic_id=@get:{bid}",
+            ),
+        )
+    }
+
+    /** 变量未命中时替换为空串，绝不把 `@get:{...}` 字面量留在地址里 */
+    @Test
+    fun `legado 变量 - @get 未命中不残留字面量`() {
+        LegadoRuleEngine.variables = HashMap()
+        val url = LegadoRuleEngine.resolveGetRules("https://x/api?comic_id=@get:{notSet}&p=1")
+        assertEquals("https://x/api?comic_id=&p=1", url)
+        assertFalse("地址里不应残留 @get: 字面量", url.contains("@get:"))
+    }
+
+    /**
+     * JSON 列表规则里 `@put:` 必须**按条目隔离**：
+     * 若共用一张变量表，多条搜索结果会互相覆盖，点开任意一条拿到的都是最后一条的 ID。
+     */
+    @Test
+    fun `legado 变量 - JSON 列表按条目隔离`() {
+        val json = """{"data":[{"comic_id":"11","comic_name":"A"},{"comic_id":"22","comic_name":"B"}]}"""
+        val sink = mutableListOf<Map<String, String>>()
+        val list = LegadoRuleEngine.extractList(
+            json,
+            "@json:$.data",
+            mapOf("name" to "$.comic_name@put:{bid:$.comic_id}"),
+            "",
+            sink,
+        )
+        assertEquals(listOf("A", "B"), list.map { it["name"] })
+        assertEquals("11", sink[0]["bid"])
+        assertEquals("22", sink[1]["bid"])
+    }
+
+    /** 列表倒置（前置 `-`）时，变量表也要同步倒置，否则章节和变量会错位配对 */
+    @Test
+    fun `legado 变量 - 列表倒置时变量表同步倒置`() {
+        val json = """{"data":[{"comic_id":"11","comic_name":"A"},{"comic_id":"22","comic_name":"B"}]}"""
+        val sink = mutableListOf<Map<String, String>>()
+        val list = LegadoRuleEngine.extractList(
+            json,
+            "-@json:$.data",
+            mapOf("name" to "$.comic_name@put:{bid:$.comic_id}"),
+            "",
+            sink,
+        )
+        assertEquals(listOf("B", "A"), list.map { it["name"] })
+        assertEquals("22", sink[0]["bid"])
+        assertEquals("11", sink[1]["bid"])
+    }
+
+    /** 连续多个 `@put:` 与含花括号的取值规则都要能正确解析 */
+    @Test
+    fun `legado 变量 - 多个 put 与含花括号的取值规则`() {
+        LegadoRuleEngine.variables = HashMap()
+        // 求值函数收到的是「取值规则」本身（如 $.comic_id），此处按规则给值
+        val read = mapOf("$.comic_id" to "77", "$.name##\\{.*" to "abc")
+        val stripped = LegadoRuleEngine.applyPutRules(
+            "p@put:{bid:$.comic_id}@put:{clean:$.name##\\{.*}",
+        ) { r -> read[r] }
+        assertEquals("p", stripped)
+        assertEquals("77", LegadoRuleEngine.variables["bid"])
+        assertEquals("abc", LegadoRuleEngine.variables["clean"])
+    }
+
+    // ===== JSON 目录列表（前置 `-` 倒置 / `||` 备选路径 / `[*]` 后缀） =====
+    /**
+     * JSON 目录规则的前置 `-` 必须倒置。
+     *
+     * 形如 `-$.data.[*]` 的规则（爱看漫画、看漫画吧等）不走 `@json:` 前缀，
+     * 若只在 HTML 列表里处理倒置，这类源的目录顺序会是倒着的
+     * （打开漫画直接停在「最新话」，而非「第 1 话」）。
+     */
+    @Test
+    fun `JSON 目录列表 - 前置负号倒置`() {
+        val json = """{"data":[{"chapter_name":"第3话"},{"chapter_name":"第2话"},{"chapter_name":"第1话"}]}"""
+        val fields = mapOf("chapterName" to "$.chapter_name")
+
+        val natural = adapter(minimalComicJson()).jsonListForTest(json, fields, "$.data.[*]")
+        assertEquals(listOf("第3话", "第2话", "第1话"), natural.map { it["chapterName"] })
+
+        val reversed = adapter(minimalComicJson()).jsonListForTest(json, fields, "-$.data.[*]")
+        assertEquals(listOf("第1话", "第2话", "第3话"), reversed.map { it["chapterName"] })
+    }
+
+    /** 列表路径支持 `||` 备选与 `@json:` 前缀（大小写不敏感） */
+    @Test
+    fun `JSON 目录列表 - 备选路径与前缀兼容`() {
+        val json = """{"data":[{"chapter_name":"A"},{"chapter_name":"B"}]}"""
+        val fields = mapOf("chapterName" to "$.chapter_name")
+        val ad = adapter(minimalComicJson())
+
+        // $.data.data 解析不到 → 退回 $.data
+        assertEquals(
+            listOf("A", "B"),
+            ad.jsonListForTest(json, fields, "$.data.data||$.data").map { it["chapterName"] },
+        )
+        // @JSon: 前缀 + 前置负号
+        assertEquals(
+            listOf("B", "A"),
+            ad.jsonListForTest(json, fields, "-@JSon:$.data").map { it["chapterName"] },
+        )
+    }
+
+    /** 嵌套路径取数组（`$.data.list[*]`） */
+    @Test
+    fun `JSON 目录列表 - 嵌套路径`() {
+        val json = """{"data":{"list":[{"chapter_name":"A"},{"chapter_name":"B"}]}}"""
+        val fields = mapOf("chapterName" to "$.chapter_name")
+        val got = adapter(minimalComicJson()).jsonListForTest(json, fields, "-$.data.list[*]")
+        assertEquals(listOf("B", "A"), got.map { it["chapterName"] })
+    }
+
     // ===== 联网真实源验证 =====
 
     private fun realTestsEnabled(): Boolean = System.getenv("LEIMAO_REAL_TESTS") == "1"
@@ -248,8 +425,29 @@ class LegadoRealSourceTest {
         if (header != null) addProperty("header", header)
     }.toString()
 
-    // ===== 漫画：离线验证「正文 JS + 防盗链请求头」链路 =====
+    /**
+     * 正文规则写成 `$.路径@js:...`（JSON 接口 + JS 拼多图，如爱看漫画）时，
+     * 前缀 JSONPath 必须先解析出 `result`：否则 JS 里 `result.split("\n")` 直接失败，
+     * 一张图都取不到 → 页面显示「图片加载失败」。
+     *
+     * 数组必须按换行拼接（而不是 JSON 数组字面量），JS 才能逐条处理。
+     */
+    @Test
+    fun `漫画正文 - JSONPath 前缀 + JS 拼多图`() {
+        val ad = adapter(minimalComicJson())
+        val json = """{"data":{"current_chapter":{"chapter_img_list":""" +
+            """["https://cdn.x/1.jpg","https://cdn.x/2.jpg","https://cdn.x/3.jpg"]}}}"""
+        val contentRule = "$.data.current_chapter.chapter_img_list@js:" +
+            "result.split(\"\\n\").map(x=>'<img src=\"'+x+'\">').join(\"\\n\")"
 
+        val res = ad.extractComicImages(json, mapOf("content" to contentRule), "https://m.kanman.com/123/")
+        assertEquals(
+            listOf("https://cdn.x/1.jpg", "https://cdn.x/2.jpg", "https://cdn.x/3.jpg"),
+            res.comicImages,
+        )
+    }
+
+    // ===== 漫画：离线验证「正文 JS + 防盗链请求头」链路 =====
     /**
      * 真实书源（野蛮漫画/奇漫屋/彩绘漫画）的写法：
      * JS 把自己的 headers JSON 拼进 `img@src`，形成 `url,{"headers":{...}}` 后缀。

@@ -86,13 +86,18 @@ class LegadoSourceAdapter(
         val listRule = source.ruleSearch["bookList"] ?: source.ruleSearch["list"] ?: ""
         val fieldRules = source.ruleSearch
 
-        val list = if (isJson || listRule.startsWith("@json:")) {
-            extractJsonResults(content, source.ruleSearch)
-        } else {
-            LegadoRuleEngine.extractList(content, listRule, fieldRules, baseUrl)
+        // 每条搜索结果独立收集 `@put:{...}` 变量，随条目带出供详情/目录使用。
+        // 外层换成空表，保证搜索从干净状态开始（不复用上一步残留的变量）。
+        val varsSink = mutableListOf<Map<String, String>>()
+        val list = LegadoRuleEngine.withVariables(mutableMapOf()) {
+            if (isJson || listRule.startsWith("@json:")) {
+                extractJsonResults(content, source.ruleSearch, varsSink = varsSink, listRule = listRule)
+            } else {
+                LegadoRuleEngine.extractList(content, listRule, fieldRules, baseUrl, varsSink)
+            }
         }
 
-        return list.map { fields ->
+        return list.mapIndexed { idx, fields ->
             val title = fields["name"] ?: fields["title"] ?: ""
             val bookUrl = fields["bookUrl"] ?: fields["url"] ?: ""
             val detailUrl = LegadoRuleEngine.toAbsoluteUrl(baseUrl, bookUrl) ?: bookUrl
@@ -110,6 +115,7 @@ class LegadoSourceAdapter(
                 type = info.type,
                 detailUrl = detailUrl,
                 sourceId = info.id,
+                variableMap = varsSink.getOrNull(idx)?.takeIf { it.isNotEmpty() } ?: emptyMap(),
                 extras = buildMap {
                     fields["kind"]?.let { put("kind", it) }
                     fields["lastChapter"]?.let { put("lastChapter", it) }
@@ -128,22 +134,111 @@ class LegadoSourceAdapter(
         content: String,
         rule: Map<String, String>,
         contextUrl: String = baseUrl,
+        varsSink: MutableList<Map<String, String>>? = null,
+        listRule: String? = null,
     ): List<Map<String, String>> {
         return runCatching {
             val root = com.google.gson.JsonParser.parseString(content)
-            // 尝试从 data 字段取数组
-            val arr = if (root.isJsonObject && root.asJsonObject.has("data")) {
-                root.asJsonObject.get("data")
-            } else root
-            val list = if (arr.isJsonArray) arr.asJsonArray.toList()
-            else emptyList<com.google.gson.JsonElement>()
+            val (arr, reverse) = resolveJsonList(root, listRule)
+            val list = arr?.toList() ?: emptyList()
 
-            list.map { node ->
-                rule.mapValues { (_, r) ->
-                    renderJsonRule(r, node, contextUrl) ?: ""
+            val pairs = list.map { node ->
+                // 每条记录用独立变量表：`@put:{bid:$.comic_id}` 之类必须按条目隔离。
+                // 注意要以当前变量表为**初值**（目录阶段要能看到搜索/详情写入的变量），
+                // 否则外层变量会被空表遮蔽，章节地址里的 `@get:` 就取不到了。
+                val vars = LinkedHashMap(LegadoRuleEngine.variables)
+                val fields = LegadoRuleEngine.withVariables(vars) {
+                    rule.mapValues { (_, r) ->
+                        renderJsonRule(r, node, contextUrl) ?: ""
+                    }
+                }
+                fields to vars
+            }
+            // legado 语义：列表规则前置 `-` 表示结果倒置；变量表必须同步倒置才能与条目配对
+            val ordered = if (reverse) pairs.reversed() else pairs
+            varsSink?.addAll(ordered.map { it.second })
+            ordered.map { it.first }
+        }.getOrDefault(emptyList())
+    }
+
+    /**
+     * 测试用：直接渲染 JSON 列表（含前置 `-` 倒置、`||` 备选路径与 `@put:` 变量收集）。
+     * 与 [extractComicImages] 同为 internal，便于离线单测覆盖，不参与线上逻辑。
+     */
+    internal fun jsonListForTest(
+        content: String,
+        fields: Map<String, String>,
+        listRule: String,
+        contextUrl: String = baseUrl,
+    ): List<Map<String, String>> = extractJsonResults(content, fields, contextUrl, listRule = listRule)
+
+    /**
+     * 解析 JSON 列表规则，取「列表数组」与「是否倒置」。
+     *
+     * 支持：
+     * - 前置 `-` → 列表倒置（legado 语义，很多站点目录本身是倒序的）
+     * - `@json:` / `@JSon:` 前缀（大小写不敏感）
+     * - `||` 备选路径（取第一个能解析出数组的）
+     * - 尾部 `[*]` / `.*`（表示「数组全部元素」）
+     * - 路径缺失时兜底取根对象的 `data` 字段
+     */
+    private fun resolveJsonList(
+        root: com.google.gson.JsonElement,
+        listRule: String?,
+    ): Pair<com.google.gson.JsonArray?, Boolean> {
+        var raw = listRule?.trim().orEmpty()
+
+        // 前置 `-` = 列表倒置（`-` 后紧跟数字时是负索引，不倒置）
+        var reverse = false
+        if (raw.length > 1 && raw.startsWith("-") && !raw[1].isDigit()) {
+            reverse = true
+            raw = raw.substring(1).trim()
+        }
+        raw = raw.replaceFirst(Regex("^@json:", RegexOption.IGNORE_CASE), "").trim()
+
+        val paths = raw.split("||").map { it.trim() }.filter { it.isNotEmpty() }
+        var arr: com.google.gson.JsonArray? = null
+        for (p in paths) {
+            val cleaned = p.removeSuffix("[*]").removeSuffix(".*").trim()
+            val node = when {
+                cleaned.isBlank() || cleaned == "$" -> root
+                cleaned.startsWith("$") -> selectJsonNode(root, cleaned)
+                else -> null
+            }
+            arr = when {
+                node == null -> null
+                node.isJsonArray -> node.asJsonArray
+                node.isJsonObject && node.asJsonObject.has("data") ->
+                    node.asJsonObject.get("data").takeIf { it.isJsonArray }?.asJsonArray
+                else -> null
+            }
+            if (arr != null) break
+        }
+        // 兜底：根对象自带的 data 数组（不少接口直接返回 {"data":[...]}）
+        if (arr == null && root.isJsonObject && root.asJsonObject.has("data")) {
+            arr = root.asJsonObject.get("data").takeIf { it.isJsonArray }?.asJsonArray
+        }
+        return arr to reverse
+    }
+
+    /** 按简化 JSONPath 取节点（`$.a.b`、`$.a[0].b`、`$.a.*`） */
+    private fun selectJsonNode(node: com.google.gson.JsonElement, path: String): com.google.gson.JsonElement? {        return runCatching {
+            val cleaned = path.removePrefix("$").removePrefix(".").trim()
+            if (cleaned.isEmpty()) return node
+            var current: com.google.gson.JsonElement = node
+            for (t in cleaned.split(Regex("[.\\[\\]]")).filter { it.isNotBlank() && it != "*" }) {
+                current = when {
+                    current.isJsonObject -> current.asJsonObject.get(t) ?: return null
+                    current.isJsonArray -> {
+                        val idx = t.toIntOrNull() ?: return null
+                        if (idx < 0 || idx >= current.asJsonArray.size()) return null
+                        current.asJsonArray.get(idx)
+                    }
+                    else -> return null
                 }
             }
-        }.getOrDefault(emptyList())
+            current
+        }.getOrNull()
     }
 
     /**
@@ -163,8 +258,18 @@ class LegadoSourceAdapter(
     private fun renderJsonRule(rule: String, node: com.google.gson.JsonElement, contextUrl: String = baseUrl): String? {
         if (rule.isBlank()) return null
 
+        // `@put:{k:v}` 写入变量、`@get:{k}` 回填（legado 变量机制）。
+        // JSON API 源常用它把搜索结果里的 ID 传给后续的目录 / 正文规则。
+        var normalized = rule
+        if (normalized.contains("@get:") || normalized.contains("@put:")) {
+            normalized = LegadoRuleEngine.resolveVariableRules(normalized) { v ->
+                renderJsonRule(v, node, contextUrl)
+            }
+            if (normalized.isBlank()) return null
+        }
+
         // 拆分 ## 正则段（第一段是取值表达式，后续段是 正则[##替换]）
-        val parts = rule.split("##")
+        val parts = normalized.split("##")
         val expr = parts[0].trim()
 
         var value: String? = when {
@@ -307,23 +412,29 @@ class LegadoSourceAdapter(
             }
         }
 
-        cover = fieldValue("coverUrl") ?: cover
-        author = fieldValue("author") ?: author
-        desc = fieldValue("intro") ?: desc
+        // 详情规则里也可能出现 `@put:{...}` / `@get:{...}`：
+        // 用搜索阶段带出的变量表求值，并把详情阶段新写入的变量继续带下去（目录/正文要用）
+        val vars = item.variableMap.toMutableMap()
+        val extras = item.extras.toMutableMap()
+
+        LegadoRuleEngine.withVariables(vars) {
+            cover = fieldValue("coverUrl") ?: cover
+            author = fieldValue("author") ?: author
+            desc = fieldValue("intro") ?: desc
+            // 详情页元信息（#27）：状态 / 字数 / 最新章节 / 更新时间
+            // 搜索阶段未带出的字段，在此从详情规则补齐（缺失则保留搜索时的值）
+            fieldValue("kind")?.takeIf { it.isNotBlank() }?.let { extras["status"] = it }
+            fieldValue("wordCount")?.takeIf { it.isNotBlank() }?.let { extras["wordCount"] = it }
+            fieldValue("lastUpdate")?.takeIf { it.isNotBlank() }?.let { extras["lastUpdate"] = it }
+            fieldValue("lastChapter")?.takeIf { it.isNotBlank() }?.let { extras["lastChapter"] = it }
+        }
+
         // 清理简介中的 HTML 标签
         desc = desc?.replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
             ?.replace(Regex("<[^>]+>"), "")
             ?.trim()
 
-        // 详情页元信息（#27）：状态 / 字数 / 最新章节 / 更新时间
-        // 搜索阶段未带出的字段，在此从详情规则补齐（缺失则保留搜索时的值）
-        val extras = item.extras.toMutableMap()
-        fieldValue("kind")?.takeIf { it.isNotBlank() }?.let { extras["status"] = it }
-        fieldValue("wordCount")?.takeIf { it.isNotBlank() }?.let { extras["wordCount"] = it }
-        fieldValue("lastUpdate")?.takeIf { it.isNotBlank() }?.let { extras["lastUpdate"] = it }
-        fieldValue("lastChapter")?.takeIf { it.isNotBlank() }?.let { extras["lastChapter"] = it }
-
-        return item.copy(cover = cover, author = author, desc = desc, extras = extras)
+        return item.copy(cover = cover, author = author, desc = desc, extras = extras, variableMap = vars)
     }
 
     // ===== 目录 =====
@@ -336,13 +447,18 @@ class LegadoSourceAdapter(
 
         val content = fetch(detailUrl) ?: return emptyList()
 
+        // 目录阶段的 `@get:{...}` 变量来自搜索/详情（如 `&comic_id=@get:{bid}`）。
+        // 注意：变量表按线程隔离，因此这里只在「不挂起」的求值块内使用，不跨 fetch 持有。
+        val vars = item.variableMap.toMutableMap()
+
         // 目录可能有独立 URL：
         // 1. ruleToc.url（URL 模板或选择器规则）
         // 2. ruleBookInfo.tocUrl（需从详情页渲染/提取，baseUrl 指详情页 URL）
         val tocUrlRaw = rule["url"]?.takeIf { it.isNotBlank() }
             ?: source.ruleBookInfo["tocUrl"]?.takeIf { it.isNotBlank() }
-        val tocUrl = tocUrlRaw?.let { resolveTocUrl(it, content, detailUrl) }
-            ?.let { LegadoRuleEngine.toAbsoluteUrl(detailUrl, it) }
+        val tocUrl = LegadoRuleEngine.withVariables(vars) {
+            tocUrlRaw?.let { resolveTocUrl(it, content, detailUrl) }
+        }?.let { LegadoRuleEngine.toAbsoluteUrl(detailUrl, it) }
         val firstPageUrl = tocUrl?.takeIf { it.isNotBlank() && it != detailUrl } ?: detailUrl
         val listContent = if (firstPageUrl != detailUrl) fetch(firstPageUrl) ?: content else content
 
@@ -356,7 +472,14 @@ class LegadoSourceAdapter(
         val jsonContextUrl = tocUrl ?: detailUrl
 
         if (isJson) {
-            val list = extractJsonResults(listContent, rule, jsonContextUrl)
+            val list = LegadoRuleEngine.withVariables(vars) {
+                extractJsonResults(
+                    listContent,
+                    rule,
+                    jsonContextUrl,
+                    listRule = rule["chapterList"] ?: rule["list"],
+                )
+            }
             return list.mapIndexed { index, fields ->
                 fieldsToChapter(fields, index, jsonContextUrl)
             }
@@ -371,7 +494,9 @@ class LegadoSourceAdapter(
             var guard = 0
             while (guard++ < 50) {
                 val last = pages.last()
-                val nextRaw = LegadoRuleEngine.extractString(last.content, nextRule, last.url) ?: break
+                val nextRaw = LegadoRuleEngine.withVariables(vars) {
+                    LegadoRuleEngine.extractString(last.content, nextRule, last.url)
+                } ?: break
                 val nextUrl = LegadoRuleEngine.toAbsoluteUrl(last.url, nextRaw) ?: break
                 if (!visited.add(nextUrl)) break
                 val nextContent = fetch(nextUrl) ?: break
@@ -383,8 +508,10 @@ class LegadoSourceAdapter(
         return pages.flatMap { page ->
             // {{baseUrl}} 在目录规则中指「目录页自身地址」（legado 语义），
             // 传 page.url 而非源根地址，否则相对章节链接会被拼错
-            LegadoRuleEngine.extractList(page.content, listRule, fieldRules, page.url).map { fields ->
-                fieldsToChapter(fields, index++, page.url)
+            LegadoRuleEngine.withVariables(vars) {
+                LegadoRuleEngine.extractList(page.content, listRule, fieldRules, page.url).map { fields ->
+                    fieldsToChapter(fields, index++, page.url)
+                }
             }
         }
     }
@@ -405,7 +532,9 @@ class LegadoSourceAdapter(
 
     /** 渲染仅含 {{baseUrl}} 等简单占位符的 URL 模板（baseUrl 用给定上下文替换） */
     private fun renderUrlTemplate(template: String, contextUrl: String): String {
-        return template.replace("{{baseUrl}}", contextUrl)
+        // `@get:{k}` → 变量回填（如目录接口的 `&comic_id=@get:{bid}`）
+        val t = LegadoRuleEngine.resolveGetRules(template)
+        return t.replace("{{baseUrl}}", contextUrl)
             .replace("{{baseUrl.replace('?paging=0','')}}", contextUrl.replace("?paging=0", ""))
     }
 

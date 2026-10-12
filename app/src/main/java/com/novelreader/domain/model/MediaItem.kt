@@ -30,6 +30,14 @@ data class MediaItem(
     val addedAt: Long = 0,
     /** 书架分组名（书架条目带出，空 = 未分组，v1.3.0） */
     val groupName: String = "",
+    /**
+     * legado 变量表（`@put:{k:v}` 写入 / `@get:{k}` 读取）。
+     *
+     * 搜索时按「单条结果」独立求值并带出，供后续详情 / 目录 / 正文步骤使用。
+     * 很多 JSON API 源依赖它：搜索规则里 `@put:{bid:$.comic_id}` 存下作品 ID，
+     * 目录地址再用 `...&comic_id=@get:{bid}` 取回，否则目录会请求到错误地址而空白。
+     */
+    val variableMap: Map<String, String> = emptyMap(),
 )
 
 /**

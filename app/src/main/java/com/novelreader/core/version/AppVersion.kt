@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.2.3"
+    const val CURRENT_VERSION = "1.2.4"
 
     /**
      * 更新日志。
@@ -19,6 +19,18 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.2.4",
+            date = "2026-10-12",
+            changes = listOf(
+                "修复「目录为空」的另一类独立成因——legado 变量机制 @put:{k:取值规则} / @get:{k} 此前完全未实现：这类 JSON API 源在搜索阶段把作品 ID 存进变量（如 $.comic_name@put:{bid:$.comic_id}），目录地址再取回（如 .../getchapterlist?...&comic_id=@get:{bid}）；变量缺失时地址里会残留字面量，接口返回错误/空数据导致目录空白。现完整支持写入、回填与 URL 模板内联替换",
+                "修复变量按条目隔离：多条搜索结果各自持有一份变量表，不再互相覆盖（此前点开任意一条都拿到最后一条的作品 ID）。条目变量表以外层变量为初值，目录阶段可见搜索/详情写入的变量",
+                "修复设备实测发现的「章节地址取到空 ID」：目录条目若另起空表，章节地址里的 @get:{bid} 会展开成空串（实测退化为 ...&comic_id=&chapter_newid=1...），图片接口拿不到数据、正文「无法加载」。现条目变量表继承外层变量，爱看漫画等源章节地址恢复正确的 comic_id",
+                "修复 JSON 目录列表的前置负号 - 未倒置（仅 @json: 前缀路径处理了倒置）：形如 -$.data.[*] 的规则（爱看漫画、看漫画吧等）目录顺序倒着排，打开漫画停在「最新话」而非「第 1 话」",
+                "修复裸 JSONPath 正文/列表规则（以 $ 开头且无 @ 前缀）不被识别：内容为 JSON 时按路径取值，数组按换行拼接（漫画源的 result.split(\"\\n\") 依赖此语义）",
+                "新增 9 条离线单测：@put 写入与 @get 回填、@get 未命中不残留字面量、JSON 列表按条目隔离、列表倒置时变量表同步倒置、多变量与含花括号取值规则、目录条目继承搜索阶段变量（真实规则形状）、JSON 目录列表前置负号倒置、备选路径与前缀兼容、嵌套路径；全量 94 个单测 0 失败",
+            ),
+        ),
         VersionEntry(
             version = "1.2.3",
             date = "2026-10-12",

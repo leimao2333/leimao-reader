@@ -41,6 +41,120 @@ object LegadoRuleEngine {
     /** legado 索引区间语法（如 `1:6`、`-3:-1`） */
     private val RANGE_REGEX = Regex("-?\\d+:-?\\d+")
 
+    // ===== legado 变量表：`@put:{k:v}` 写入 / `@get:{k}` 读取 =====
+
+    /**
+     * 变量表按线程隔离（[withVariables] 的代码块内不做挂起，因此不会跨线程漂移）。
+     * 用匿名子类而非 `ThreadLocal.withInitial`，以兼容 minSdk 24。
+     */
+    private val variablesHolder = object : ThreadLocal<MutableMap<String, String>>() {
+        override fun initialValue(): MutableMap<String, String> = HashMap()
+    }
+
+    /**
+     * 规则变量表（legado 语义：挂在书源 / 书对象上的 variableMap）。
+     *
+     * `@put:{key:取值规则}` 把取值写入此表；`@get:{key}` 在后续规则、URL 模板中把值填回。
+     * 不少 JSON API 源依赖这套写法，例如目录规则：
+     * - 搜索：`$.comic_name@put:{bid:$.comic_id}`
+     * - 目录：`.../getchapterlist?...&comic_id=@get:{bid}`
+     *
+     * 缺失 `@get:` 时地址里会残留字面量 → 接口返回错误数据或空 → 目录空白。
+     *
+     * 适配器处理「单条搜索结果 / 详情 / 目录」时用 [withVariables] 换上独立的表，
+     * 使变量随条目隔离（否则多条搜索结果会互相覆盖）。
+     */
+    var variables: MutableMap<String, String>
+        get() = variablesHolder.get() ?: HashMap<String, String>()
+        set(value) = variablesHolder.set(value)
+
+    /** 替换变量表执行 [block]，结束后恢复原表（可安全嵌套） */
+    fun <T> withVariables(vars: MutableMap<String, String>, block: () -> T): T {
+        val prev = variables
+        variables = vars
+        return try {
+            block()
+        } finally {
+            variables = prev
+        }
+    }
+
+    private val GET_RULE_REGEX = Regex("@get:\\{([^}]*)\\}")
+
+    /** 把规则里的 `@get:{key}` 替换为变量值（未命中替换为空串，避免地址里残留字面量） */
+    fun resolveGetRules(rule: String): String {
+        if (!rule.contains("@get:")) return rule
+        return GET_RULE_REGEX.replace(rule) { m -> variables[m.groupValues[1].trim()] ?: "" }
+    }
+
+    /**
+     * 执行规则里的 `@put:{key:取值规则}` 段并剥离它们，返回可直接求值的规则。
+     *
+     * @param evaluate 对内部取值规则求值的函数（HTML 场景传元素提取，JSON 场景传节点提取）
+     */
+    fun applyPutRules(rule: String, evaluate: (String) -> String?): String {
+        if (!rule.contains("@put:")) return rule
+        val sb = StringBuilder()
+        var i = 0
+        while (i < rule.length) {
+            val idx = rule.indexOf("@put:", i)
+            if (idx < 0) {
+                sb.append(rule, i, rule.length)
+                break
+            }
+            sb.append(rule, i, idx)
+            val braceStart = idx + 5
+            if (braceStart >= rule.length || rule[braceStart] != '{') {
+                i = braceStart
+                continue
+            }
+            // 按花括号配对找到 `{...}` 结尾（取值规则自身可能含 {} 或 \{ \} 转义）
+            var j = braceStart
+            var depth = 0
+            var end = -1
+            while (j < rule.length) {
+                val c = rule[j]
+                val escaped = j > braceStart && rule[j - 1] == '\\'
+                when {
+                    c == '{' && !escaped -> depth++
+                    c == '}' && !escaped -> {
+                        depth--
+                        if (depth == 0) end = j
+                    }
+                }
+                if (end >= 0) break
+                j++
+            }
+            if (end < 0) {
+                i = braceStart
+                continue
+            }
+            val body = rule.substring(braceStart + 1, end)
+            val sep = body.indexOf(':')
+            if (sep > 0) {
+                val key = body.substring(0, sep).trim()
+                val valueRule = body.substring(sep + 1).trim()
+                if (key.isNotEmpty() && valueRule.isNotEmpty()) {
+                    runCatching { evaluate(valueRule) }.getOrNull()
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { variables[key] = it }
+                }
+            }
+            i = end + 1
+        }
+        return sb.toString()
+    }
+
+    /** 一次完成 `@put:` 求值 + `@get:` 回填（供适配器 JSON 规则复用） */
+    fun resolveVariableRules(rule: String, evaluate: (String) -> String?): String =
+        resolveGetRules(applyPutRules(rule, evaluate))
+
+    /** HTML 规则场景的变量处理：以整篇文档为求值上下文 */
+    private fun prepareRule(content: String, rule: String, baseUrl: String): String {
+        if (!rule.contains("@get:") && !rule.contains("@put:")) return rule
+        return resolveVariableRules(rule) { v -> extractFromDocument(content, v, baseUrl) }
+    }
+
     /** 选择器步骤 */
     private sealed class Step {
         data class Cls(val v: String) : Step()
@@ -65,7 +179,10 @@ object LegadoRuleEngine {
         if (rule.isBlank()) return null
         // 支持 || 多规则（取第一个非空）；任何异常都不得向外抛出
         for (r in rule.split("||")) {
-            val result = runCatching { extractFromDocument(content.trim(), r.trim(), baseUrl) }.getOrNull()
+            // `@put:{k:v}` 先写入变量表，`@get:{k}` 再回填，之后才求值
+            val prepared = prepareRule(content.trim(), r.trim(), baseUrl)
+            if (prepared.isBlank()) continue
+            val result = runCatching { extractFromDocument(content.trim(), prepared, baseUrl) }.getOrNull()
             if (!result.isNullOrBlank()) return result
         }
         return null
@@ -73,15 +190,46 @@ object LegadoRuleEngine {
 
     /** 从完整 HTML/JSON 文档按规则提取单个字符串 */
     private fun extractFromDocument(content: String, rule: String, baseUrl: String): String? {
+        val trimmed = rule.trimStart()
         // 顶层 @json: 规则：从 JSON 内容提取（内容本身可能不是 JSON，先尝试）
-        if (rule.trimStart().startsWith("@json:", ignoreCase = true)) {
-            val path = rule.trimStart().replaceFirst(Regex("^@json:", RegexOption.IGNORE_CASE), "")
+        if (trimmed.startsWith("@json:", ignoreCase = true)) {
+            val path = trimmed.replaceFirst(Regex("^@json:", RegexOption.IGNORE_CASE), "")
             return runCatching {
                 extractJsonPath(com.google.gson.JsonParser.parseString(content), path)
             }.getOrNull()
         }
+        // 裸 JSONPath（如 `$.data.list`、`$.a.b[0]`）：legado 中 JSON 源的规则常直接写 `$...`。
+        // 内容确实是 JSON 时才按路径取；取不到再退回 HTML 解析（同一规则可能两用）。
+        // 形如 `$.data.images@js:...` 的尾部 JS 规则，其前缀也依赖这里取到 result。
+        if (trimmed.startsWith("$") && !trimmed.contains('@')) {
+            val contentIsJson = content.trimStart().startsWith("{") || content.trimStart().startsWith("[")
+            if (contentIsJson) {
+                extractJsonPathFromRoot(content, trimmed)?.let { return it }
+            }
+        }
         val doc = Jsoup.parse(content)
         return extractFromElement(doc.body() ?: doc, rule, baseUrl)
+    }
+
+    /**
+     * 从 JSON 文本根节点按路径取字符串。
+     *
+     * 数组按**换行**拼接（`$.a[*]` 的常见用法）：正文 JS 里普遍写
+     * `result.split("\n")` 来逐条处理，若返回 JSON 数组字面量就会解析失败。
+     */
+    private fun extractJsonPathFromRoot(content: String, path: String): String? {
+        return runCatching {
+            val node = selectJsonPath(com.google.gson.JsonParser.parseString(content), path)
+                ?: return null
+            when {
+                node.isJsonPrimitive -> node.asString
+                node.isJsonNull -> null
+                node.isJsonArray -> node.asJsonArray.joinToString("\n") { el ->
+                    if (el.isJsonPrimitive) el.asString else el.toString()
+                }
+                else -> node.toString()
+            }
+        }.getOrNull()
     }
 
     /**
@@ -90,8 +238,15 @@ object LegadoRuleEngine {
     private fun extractFromElement(element: Element, rule: String, baseUrl: String): String? {
         if (rule.isBlank()) return element.text()
 
+        // `@put:{k:v}` 写入 / `@get:{k}` 回填（legado 变量机制，目录 URL 模板里常见）
+        var raw = rule
+        if (raw.contains("@get:") || raw.contains("@put:")) {
+            raw = resolveVariableRules(raw) { v -> extractFromElement(element, v, baseUrl) }
+            if (raw.isBlank()) return null
+        }
+
         // 先剥离 ## 正则（作用于最终取值）
-        var expr = rule
+        var expr = raw
         var replacePart: String? = null
         val hashIndex = expr.indexOf("##")
         if (hashIndex >= 0) {
@@ -483,29 +638,56 @@ object LegadoRuleEngine {
         listRule: String,
         fieldRules: Map<String, String>,
         baseUrl: String = "",
+        varsSink: MutableList<Map<String, String>>? = null,
     ): List<Map<String, String>> {
         if (listRule.isBlank()) return emptyList()
 
+        // `@put:` / `@get:`（legado 变量机制）：列表规则里也可能用到变量
+        val resolvedListRule =
+            if (listRule.contains("@get:") || listRule.contains("@put:")) {
+                resolveVariableRules(listRule) { v -> extractString(content, v, baseUrl) }
+            } else listRule
+        if (resolvedListRule.isBlank()) return emptyList()
+
         // legado 语义：列表规则最前面的 `-` 表示「结果倒置」（很多站点目录是倒序的）。
         // 注意与负索引（-1 取最后一个）区分：`-` 后紧跟数字时不视为倒置标记。
-        val (rule, reverse) = stripListReverse(listRule)
+        val (rule, reverse) = stripListReverse(resolvedListRule)
 
         // 处理 @json: 列表（大小写不敏感：@json: / @JSon: 都有源在用）
         if (rule.startsWith("@json:", ignoreCase = true)) {
-            val list = extractJsonList(content, rule, fieldRules)
-            return if (reverse) list.reversed() else list
+            val base = varsSink?.size ?: 0
+            val list = extractJsonList(content, rule, fieldRules, varsSink)
+            if (!reverse) return list
+            // 倒置时变量表顺序也要跟着倒过来（两者必须同序，调用方按下标配对）
+            varsSink?.let { sink ->
+                for (i in 0 until list.size / 2) {
+                    val a = base + i
+                    val b = base + list.size - 1 - i
+                    val t = sink[a]; sink[a] = sink[b]; sink[b] = t
+                }
+            }
+            return list.reversed()
         }
 
         val doc = Jsoup.parse(content)
         val items = selectListElements(doc, rule)
         if (items.isEmpty()) return emptyList()
 
-        val out = items.map { el ->
-            fieldRules.mapValues { (_, r) ->
-                runCatching { extractFromElement(el, r, baseUrl) }.getOrNull() ?: ""
+        // 每条记录用独立变量表求值：`@put:{bid:...}` 必须按条目隔离，
+        // 否则多条搜索结果会互相覆盖，点开任意一条都拿到最后一条的 ID。
+        // 以当前变量表为初值，保证外层（搜索/详情阶段）写入的变量仍可见。
+        val pairs = items.map { el ->
+            val vars = LinkedHashMap(variables)
+            val fields = withVariables(vars) {
+                fieldRules.mapValues { (_, r) ->
+                    runCatching { extractFromElement(el, r, baseUrl) }.getOrNull() ?: ""
+                }
             }
+            fields to vars
         }
-        return if (reverse) out.reversed() else out
+        val ordered = if (reverse) pairs.reversed() else pairs
+        varsSink?.addAll(ordered.map { it.second })
+        return ordered.map { it.first }
     }
 
     /**
@@ -607,16 +789,29 @@ object LegadoRuleEngine {
     }
 
     /** 从 JSON 内容按 @json: 规则提取列表 */
-    private fun extractJsonList(json: String, listRule: String, fieldRules: Map<String, String>): List<Map<String, String>> {
+    private fun extractJsonList(
+        json: String,
+        listRule: String,
+        fieldRules: Map<String, String>,
+        varsSink: MutableList<Map<String, String>>? = null,
+    ): List<Map<String, String>> {
         // 前缀大小写不敏感（@json: / @JSon:）
         val jsonPath = listRule.replaceFirst(Regex("^@json:", RegexOption.IGNORE_CASE), "").trim()
         return runCatching {
             val root = com.google.gson.JsonParser.parseString(json)
             val arr = selectJsonArray(root, jsonPath)
             arr.map { node ->
-                fieldRules.mapValues { (_, rule) ->
-                    extractFromJsonNode(node, rule) ?: ""
+                // 每条记录独立变量表（`@put:{bid:...}` 需按条目隔离）。
+                // 以当前变量表为初值：目录阶段的外层变量（搜索/详情写入）必须仍可见，
+                // 否则章节地址里的 `@get:` 会被空表遮蔽而取到空串。
+                val vars = LinkedHashMap(variables)
+                val fields = withVariables(vars) {
+                    fieldRules.mapValues { (_, rule) ->
+                        extractFromJsonNode(node, rule) ?: ""
+                    }
                 }
+                varsSink?.add(vars)
+                fields
             }
         }.getOrDefault(emptyList())
     }
@@ -652,7 +847,13 @@ object LegadoRuleEngine {
     // ===== JSON 提取 =====
 
     private fun extractFromJsonNode(node: com.google.gson.JsonElement, rule: String): String? {
-        val path = if (rule.startsWith("@json:")) rule.substringAfter("@json:") else rule
+        // `@put:{k:v}` / `@get:{k}`（legado 变量机制）
+        var normalized = rule
+        if (normalized.contains("@get:") || normalized.contains("@put:")) {
+            normalized = resolveVariableRules(normalized) { v -> extractFromJsonNode(node, v) }
+            if (normalized.isBlank()) return null
+        }
+        val path = if (normalized.startsWith("@json:")) normalized.substringAfter("@json:") else normalized
         return extractJsonPath(node, path)
     }
 

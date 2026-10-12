@@ -406,7 +406,7 @@ class LegadoSourceAdapter(
         val contentRule = rule["content"] ?: rule["text"] ?: ""
         if (contentRule.isBlank()) {
             // 无规则时取 body 文本
-            return ContentResult.novel(Jsoup.parse(content).body()?.text() ?: "")
+            return ContentResult.novel(normalizePlainText(Jsoup.parse(content).body()?.wholeText() ?: ""))
         }
 
         // JSON 正文（如 {"code":200,"data":{"content":"..."}}）
@@ -429,8 +429,32 @@ class LegadoSourceAdapter(
             // 正文规则常带 @html 提取（如 xxx@html），结果是 HTML 片段，
             // 必须转成纯文本（按块级标签保留段落换行），否则 div/br/&nbsp; 直接显示给用户
             htmlToPlainText(afterRegex)
-        } else text
+        } else {
+            // JSON 正文可能是含 <br>/&nbsp; 的 HTML 片段，同样归一化并保留缩进
+            normalizePlainText(applyHtmlEntities(text))
+        }
         return ContentResult.novel(cleaned)
+    }
+
+    /** 解码 JSON 正文里常见的 HTML 实体与 <br> 标签（保留段落与缩进） */
+    private fun applyHtmlEntities(text: String): String {
+        if (text.isBlank()) return text
+        var t = text
+        if (t.contains('<')) {
+            t = runCatching {
+                val doc = Jsoup.parse(t)
+                doc.outputSettings().prettyPrint(false)
+                doc.select("br").forEach { it.appendText("\n") }
+                doc.select("p, div").forEach { it.appendText("\n") }
+                doc.wholeText()
+            }.getOrDefault(t)
+        }
+        return t.replace("&nbsp;", "\u3000")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
     }
 
     /**
@@ -438,22 +462,43 @@ class LegadoSourceAdapter(
      * - br 视为换行；p/div 等块级标签边界视为段落换行；
      * - 其余标签剥除；HTML 实体（&nbsp; 等）由 Jsoup 自动解码。
      * 已经是纯文本（不含标签）时原样返回（避免误伤含 < 的正文）。
+     *
+     * 注意：**不要 trim 掉段首的全角空格**——中文小说源常用 `\u3000\u3000` 做首行缩进，
+     * 旧实现对每行做了 `trim()`，把缩进一并删除，导致「段落没有首行缩进」。
+     * 这里只压缩「行尾空白与行内连续空白」，保留行首缩进。
      */
     private fun htmlToPlainText(text: String): String {
-        if (!text.contains('<')) return text
+        if (!text.contains('<')) return normalizePlainText(text)
         return runCatching {
             val doc = Jsoup.parse(text)
             doc.outputSettings().prettyPrint(false)
             // Jsoup 的 text() 会丢失段落边界，先用 br 换行占位再转
             doc.select("br").forEach { it.appendText("\n") }
+            // 块级标签结束处补换行，让 <p>/<div> 之间形成分段
+            doc.select("p, div").forEach { it.appendText("\n") }
             val raw = doc.wholeText()
-            // 逐段压缩连续空行，去除行内多余空白（全角空格保留）
-            raw.split("\n")
-                .map { line -> line.replace(Regex("[ \\t\\u00A0\\u3000]+"), " ").trim() }
-                .joinToString("\n")
-                .replace(Regex("\n{3,}"), "\n\n")
-                .trim()
+            normalizePlainText(raw)
         }.getOrDefault(text)
+    }
+
+    /**
+     * 规范化纯文本：保留每行行首缩进（全角/半角空格），仅压缩行尾与行内多余空白，
+     * 并把连续空行折叠为单空行。
+     */
+    private fun normalizePlainText(raw: String): String {
+        if (!raw.contains('\n')) return raw.trimEnd()
+        return raw.split("\n")
+            .joinToString("\n") { line ->
+                // 1) 保留行首空白（缩进）；2) 行内多空格压缩为一个半角空格；3) 去掉行尾空白
+                val leading = line.takeWhile { it == ' ' || it == '\t' || it == '\u3000' }
+                val rest = line.substring(leading.length)
+                    .replace(Regex("[ \\t\\u00A0]{2,}"), " ")
+                    .trimEnd()
+                leading + rest
+            }
+            // 连续 3 个以上换行折叠为 1 个空行
+            .replace(Regex("\n{3,}"), "\n\n")
+            .trim('\n')
     }
 
     /** 提取漫画图片列表 */

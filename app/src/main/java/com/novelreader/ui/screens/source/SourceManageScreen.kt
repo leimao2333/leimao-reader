@@ -49,6 +49,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -303,10 +304,42 @@ fun SourceManageScreen(
                         viewModel.setAllEnabled(displayedSources, false)
                     }) { Text("全部禁用") }
                 }
+                // 源有效性检测（自动筛选无用源）
+                val testResults by viewModel.testResults.collectAsState()
+                val testing by viewModel.testing.collectAsState()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val failedCount = testResults.count { !it.value }
+                    Text(
+                        text = when {
+                            testing.isNotEmpty() -> "正在检测…（剩余 ${testing.size}）"
+                            testResults.isEmpty() -> "尚未检测源可用性"
+                            failedCount == 0 -> "检测完成：全部可用"
+                            else -> "检测到 $failedCount 个疑似失效"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        enabled = testing.isEmpty(),
+                        onClick = { viewModel.testSources(displayedSources) },
+                    ) { Text("检测可用性") }
+                    TextButton(
+                        enabled = failedCount > 0 && testing.isEmpty(),
+                        onClick = { viewModel.disableFailedSources() },
+                    ) { Text("禁用失效") }
+                }
 
                 if (tableView) {
                     SourceTableView(
                         sources = displayedSources,
+                        testResults = testResults,
+                        testing = testing,
                         onToggle = { viewModel.toggleEnabled(it) },
                         onDelete = { viewModel.deleteSource(it) },
                     )
@@ -321,6 +354,12 @@ fun SourceManageScreen(
                                 source = source,
                                 selectionMode = selectionMode,
                                 selected = source.id in selectedIds,
+                                testStatus = when {
+                                    source.id in testing -> SourceTestStatus.TESTING
+                                    testResults[source.id] == true -> SourceTestStatus.OK
+                                    testResults[source.id] == false -> SourceTestStatus.FAILED
+                                    else -> SourceTestStatus.UNKNOWN
+                                },
                                 onToggle = { viewModel.toggleEnabled(source) },
                                 onDelete = { viewModel.deleteSource(source) },
                                 onLongClick = {
@@ -346,6 +385,8 @@ fun SourceManageScreen(
 @Composable
 private fun SourceTableView(
     sources: List<SourceInfo>,
+    testResults: Map<String, Boolean> = emptyMap(),
+    testing: Set<String> = emptySet(),
     onToggle: (SourceInfo) -> Unit,
     onDelete: (SourceInfo) -> Unit,
 ) {
@@ -357,11 +398,11 @@ private fun SourceTableView(
                 .background(MaterialTheme.colorScheme.surfaceVariant)
                 .padding(horizontal = 12.dp, vertical = 10.dp),
         ) {
-            TableCell("名称", 2.2f)
-            TableCell("类型", 1f)
-            TableCell("分类", 1f)
-            TableCell("启用", 1f)
-            TableCell("操作", 1f)
+            TableCell("名称", 2.0f)
+            TableCell("类型", 0.8f)
+            TableCell("状态", 1f)
+            TableCell("启用", 0.9f)
+            TableCell("操作", 0.8f)
         }
         HorizontalDivider()
 
@@ -373,10 +414,18 @@ private fun SourceTableView(
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    TableCell(source.name, 2.2f)
-                    TableCell(source.type.label(), 1f)
-                    TableCell(source.category.ifBlank { "-" }, 1f)
-                    Row(modifier = Modifier.weight(1f)) {
+                    TableCell(source.name, 2.0f)
+                    TableCell(source.type.label(), 0.8f)
+                    val status = when {
+                        source.id in testing -> SourceTestStatus.TESTING
+                        testResults[source.id] == true -> SourceTestStatus.OK
+                        testResults[source.id] == false -> SourceTestStatus.FAILED
+                        else -> SourceTestStatus.UNKNOWN
+                    }
+                    androidx.compose.foundation.layout.Box(modifier = Modifier.weight(1f)) {
+                        SourceTestBadge(status)
+                    }
+                    Row(modifier = Modifier.weight(0.9f)) {
                         Switch(
                             checked = source.enabled,
                             onCheckedChange = { onToggle(source) },
@@ -481,6 +530,7 @@ private fun SourceCard(
     onDelete: () -> Unit,
     selectionMode: Boolean = false,
     selected: Boolean = false,
+    testStatus: SourceTestStatus = SourceTestStatus.UNKNOWN,
     onLongClick: () -> Unit = {},
     onSelectToggle: () -> Unit = {},
 ) {
@@ -529,6 +579,10 @@ private fun SourceCard(
                     if (source.category.isNotBlank()) {
                         Spacer(Modifier.width(6.dp))
                         CategoryBadge(source.category)
+                    }
+                    if (testStatus != SourceTestStatus.UNKNOWN) {
+                        Spacer(Modifier.width(6.dp))
+                        SourceTestBadge(testStatus)
                     }
                 }
                 Spacer(Modifier.height(4.dp))
@@ -579,5 +633,24 @@ private fun CategoryBadge(category: String) {
         text = category,
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.tertiary,
+    )
+}
+
+/** 源可用性检测状态 */
+enum class SourceTestStatus { UNKNOWN, TESTING, OK, FAILED }
+
+/** 源可用性徽标 */
+@Composable
+private fun SourceTestBadge(status: SourceTestStatus) {
+    val (label, color) = when (status) {
+        SourceTestStatus.TESTING -> "检测中" to MaterialTheme.colorScheme.onSurfaceVariant
+        SourceTestStatus.OK -> "可用" to Color(0xFF2E7D32)
+        SourceTestStatus.FAILED -> "疑似失效" to MaterialTheme.colorScheme.error
+        SourceTestStatus.UNKNOWN -> return
+    }
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall,
+        color = color,
     )
 }

@@ -41,6 +41,7 @@ fun ComicDetailScreen(
     viewModel: ComicDetailViewModel,
     item: MediaItem,
     onChapterClick: (ChapterItem) -> Unit,
+    onRead: () -> Unit,
     onBack: () -> Unit,
 ) {
     val detail by viewModel.detail.collectAsState()
@@ -66,13 +67,30 @@ fun ComicDetailScreen(
                 text = "‹ 返回",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(8.dp),
+                modifier = Modifier
+                    .clickable(onClick = onBack)
+                    .padding(8.dp),
             )
         }
 
         if (loading && chapters.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
+            }
+            return@Column
+        }
+
+        if (!loading && chapters.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "没有获取到章节，可能源已失效",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(onClick = { viewModel.load(item) }) { Text("重新加载") }
+                }
             }
             return@Column
         }
@@ -118,10 +136,17 @@ fun ComicDetailScreen(
                         }
                         Spacer(Modifier.height(12.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            Button(
+                                onClick = onRead,
+                                enabled = chapters.isNotEmpty(),
+                            ) {
+                                Text(if (chapters.isEmpty()) "暂无章节" else "开始阅读")
+                            }
+                            Spacer(Modifier.width(8.dp))
                             if (collected) {
                                 OutlinedButton(onClick = viewModel::toggleCollect) { Text("已收藏") }
                             } else {
-                                Button(onClick = viewModel::toggleCollect) { Text("加入书架") }
+                                OutlinedButton(onClick = viewModel::toggleCollect) { Text("加入书架") }
                             }
                             Spacer(Modifier.width(8.dp))
                             OutlinedButton(onClick = viewModel::downloadComic) { Text("下载") }

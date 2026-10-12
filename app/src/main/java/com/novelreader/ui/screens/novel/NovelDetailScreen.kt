@@ -72,6 +72,7 @@ fun NovelDetailScreen(
     val changeSourceCandidates by viewModel.changeSourceCandidates.collectAsState()
     val changeSourceLoading by viewModel.changeSourceLoading.collectAsState()
     val changeSourceError by viewModel.changeSourceError.collectAsState()
+    val changeSourceProgress by viewModel.changeSourceProgress.collectAsState()
     val hasProgress by viewModel.hasProgress.collectAsState()
     val notice by viewModel.notice.collectAsState()
 
@@ -220,6 +221,7 @@ fun NovelDetailScreen(
             DetailChangeSourcePanel(
                 candidates = changeSourceCandidates,
                 loading = changeSourceLoading,
+                progress = changeSourceProgress,
                 error = changeSourceError,
                 onPick = { candidate ->
                     viewModel.closeChangeSource()
@@ -254,6 +256,7 @@ fun NovelDetailScreen(
 private fun DetailChangeSourcePanel(
     candidates: List<MediaItem>,
     loading: Boolean,
+    progress: String?,
     error: String?,
     onPick: (MediaItem) -> Unit,
     onClose: () -> Unit,
@@ -290,9 +293,20 @@ private fun DetailChangeSourcePanel(
                 }
                 Spacer(Modifier.height(8.dp))
                 when {
-                    loading -> {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    // 还没有任何候选：转圈 + 进度
+                    loading && candidates.isEmpty() -> {
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
                             CircularProgressIndicator()
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                text = progress ?: "正在搜索书源…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
                     error != null -> {
@@ -346,6 +360,19 @@ private fun DetailChangeSourcePanel(
                                     }
                                 }
                                 HorizontalDivider()
+                            }
+                            if (loading && progress != null) {
+                                item(key = "progress_footer") {
+                                    Text(
+                                        text = progress,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 10.dp),
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                    )
+                                }
                             }
                         }
                     }

@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.1.9"
+    const val CURRENT_VERSION = "1.1.10"
 
     /**
      * 更新日志。
@@ -19,6 +19,17 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.1.10",
+            date = "2026-10-12",
+            changes = listOf(
+                "修复阅读页（滚动模式）章节标题与正文、「下一章」文字堆叠重叠的布局错误",
+                "修复详情页换源没有结果：改为并发搜索 + 进度实时显示，候选边搜边出，整体限时 60 秒（旧实现串行逐源抓取，死源超时导致数分钟无结果）",
+                "换源候选增量刷新（阅读页 / 详情页）：每完成一个书源即刷新候选列表，不再等全部源搜完",
+                "换源排除当前书更准确：同源且同名（归一化）的候选一并排除，避免出现「换到自己」",
+                "换源作者匹配归一化：去掉「番茄小说 ·」等站点前缀后再比较，减少误过滤",
+            ),
+        ),
         VersionEntry(
             version = "1.1.9",
             date = "2026-10-12",

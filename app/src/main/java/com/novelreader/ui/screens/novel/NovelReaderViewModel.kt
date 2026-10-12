@@ -869,22 +869,32 @@ class NovelReaderViewModel(
             // 换源搜索用「模糊模式」——书名归一化一致的结果排最前，其次近似匹配。
             // 精确模式要求书名完全等于关键词，不同源书名带书名号/副标题时全部漏掉，
             // 导致换源候选为空（换源「没用」的根因）。
-            contentRepository.searchWithProgress(
-                type = SourceType.NOVEL,
-                keyword = title,
-                page = 1,
-                concurrency = 8,
-                fuzzyEnabled = true,
-            ).collectLatest { state ->
-                _changeSourceProgress.value =
-                    if (state.isSearching) "正在搜索书源 ${state.searchedCount}/${state.totalCount}"
-                    else null
-                if (!state.isSearching) {
+            // 整体限时 60 秒：个别死源的挂起会超过单次读超时，不能陪它耗到底；
+            // 候选增量刷新——每完成一个源就刷新一次，不等全部搜完。
+            kotlinx.coroutines.withTimeoutOrNull(60_000) {
+                contentRepository.searchWithProgress(
+                    type = SourceType.NOVEL,
+                    keyword = title,
+                    page = 1,
+                    concurrency = 8,
+                    fuzzyEnabled = true,
+                ).collectLatest { state ->
+                    _changeSourceProgress.value =
+                        if (state.isSearching) "正在搜索书源 ${state.searchedCount}/${state.totalCount}"
+                        else null
                     _allCandidates = state.results
-                    _changeSourceHasMore.value = state.results.isNotEmpty()
-                    filterCandidates()
-                    _changeSourceLoading.value = false
+                    filterCandidates(verify = !state.isSearching)
+                    if (!state.isSearching) {
+                        _changeSourceHasMore.value = state.results.isNotEmpty()
+                        _changeSourceLoading.value = false
+                    }
                 }
+            } ?: run {
+                // 超时：用已收集的结果收尾
+                _changeSourceProgress.value = null
+                _changeSourceHasMore.value = _allCandidates.isNotEmpty()
+                filterCandidates(verify = true)
+                _changeSourceLoading.value = false
             }
         }
     }
@@ -932,7 +942,7 @@ class NovelReaderViewModel(
         return "${item.sourceId}|${item.id.ifBlank { item.detailUrl }}"
     }
 
-    private fun filterCandidates() {
+    private fun filterCandidates(verify: Boolean = true) {
         val title = _currentTitle.value.trim()
         val author = _currentAuthor.value
         val current = currentItem
@@ -943,6 +953,8 @@ class NovelReaderViewModel(
             if (current != null && cand.sourceId == current.sourceId && cand.id == current.id) return@filter false
             // 书名归一化后与当前书名相等（同名），或以当前书名为前缀/包含（近似）
             val candTitleNorm = FuzzyMatch.normalize(cand.title)
+            // 同源 + 同名（归一化后）视为当前书换了 id，同样排除
+            if (current != null && cand.sourceId == current.sourceId && candTitleNorm == titleNorm) return@filter false
             val titleMatch = candTitleNorm == titleNorm ||
                 candTitleNorm.startsWith(titleNorm) ||
                 candTitleNorm.contains(titleNorm) ||
@@ -965,8 +977,8 @@ class NovelReaderViewModel(
             deduped.putIfAbsent(key, cand)
         }
         _changeSourceCandidates.value = deduped.values.toList()
-        // 后台验证候选章节数，0 章的候选从列表剔除
-        verifyCandidates(deduped.values.toList())
+        // 后台验证候选章节数，0 章的候选从列表剔除（增量刷新阶段不验证，收尾统一验证）
+        if (verify) verifyCandidates(deduped.values.toList())
     }
 
     /**

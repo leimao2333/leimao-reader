@@ -1053,7 +1053,8 @@ internal fun BoxScope.ChangeSourcePanel(
                 }
                 Spacer(Modifier.height(4.dp))
                 when {
-                    loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                    // 还没有候选时才整屏转圈；有候选则列表常显（上方已有进度行）
+                    loading && candidates.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                     error != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp))
                     }

@@ -30,6 +30,20 @@ object FuzzyMatch {
      * 用于「精准」判定与分组 key，避免《剑来》/剑 来/剑来 判为不同书。
      */
     fun normalize(s: String): String {
+        return normalizeRaw(s, stripAuthorPrefix = false)
+    }
+
+    /**
+     * 作者归一化：在 [normalize] 基础上，额外去掉来源前缀（「番茄小说」「笔趣阁」等）
+     * 及连接符，使「番茄小说 · 某某」「某某」判为同一作者，正确合并同名书。
+     *
+     * 策略：归一化后，若以来源前缀开头（后跟分隔符），则截去前缀。
+     */
+    fun normalizeAuthor(s: String): String {
+        return normalizeRaw(s, stripAuthorPrefix = true)
+    }
+
+    private fun normalizeRaw(s: String, stripAuthorPrefix: Boolean): String {
         val sb = StringBuilder(s.length)
         for (c in s) {
             when {
@@ -46,8 +60,26 @@ object FuzzyMatch {
                 }
             }
         }
-        return sb.toString()
+        val normalized = sb.toString()
+        if (!stripAuthorPrefix) return normalized
+        // 去掉来源前缀：归一化后标点已去除，形如「番茄小说某某」。
+        // 若已知前缀在开头出现，截去前缀，剩余即作者名。
+        for (prefix in AUTHOR_PREFIXES) {
+            if (normalized.startsWith(prefix)) {
+                val rest = normalized.substring(prefix.length)
+                if (rest.isNotEmpty()) return rest
+            }
+        }
+        return normalized
     }
+
+    /** 常见来源前缀（归一化后），用于作者归一化去前缀合并。 */
+    private val AUTHOR_PREFIXES = listOf(
+        "番茄小说", "番茄", "笔趣阁",
+        "起点中文网", "起点", "飞卢小说", "飞卢", "纵横中文网", "纵横",
+        "17k小说网", "17k", "晋江文学城", "晋江", "红袖添香", "红袖",
+        "潇湘书院", "潇湘", "书旗小说", "书旗", "塔读文学", "塔读",
+    )
 
     /**
      * 计算标题与关键词的相似度得分（0~100）。
@@ -95,6 +127,14 @@ object FuzzyMatch {
     /**
      * 模糊模式：按匹配度降序排序，并过滤不相关条目。
      *
+     * 排序优先级（用户预期：同名排最前，后面是类似名字）：
+     * 1. 书名归一化后与关键词完全一致（同名）→ 绝对最前，作者一致者再优先；
+     * 2. 书名以关键词开头；
+     * 3. 书名包含关键词；
+     * 4. 编辑距离相似（类似名字），按相似度。
+     *
+     * 用显式分层键而非单一分数值，避免 contains 的分数与「同名」档位撞车。
+     *
      * @param minScore 最低匹配分，默认 [MIN_FUZZY_SCORE]——低于此分视为不相关直接过滤
      */
     fun rank(items: List<MediaItem>, keyword: String, minScore: Int = MIN_FUZZY_SCORE): List<MediaItem> {
@@ -103,13 +143,31 @@ object FuzzyMatch {
         return dedupe(
             items
                 .map { item ->
-                    val s = score(item.title, keyword, authorMatch = item.author?.let { normalize(it) == kn } == true)
+                    val s = score(item.title, keyword, authorMatch = item.author?.let { normalizeAuthor(it) == kn } == true)
                     item to s
                 }
                 .filter { (_, s) -> s >= minScore }
-                .sortedWith(compareByDescending<Pair<MediaItem, Int>> { (_, s) -> s }.thenBy { (item, _) -> item.title.length })
+                .sortedWith(
+                    compareByDescending<Pair<MediaItem, Int>> { (item, _) -> titleTier(item.title, kn) }
+                        .thenByDescending { (_, s) -> s }
+                        .thenBy { (item, _) -> item.title.length }
+                )
                 .map { (item, _) -> item }
         )
+    }
+
+    /**
+     * 标题匹配档位（用于排序主键，越大越靠前）：
+     * 3 = 归一化后与关键词完全一致（同名）；2 = 以关键词开头；1 = 包含关键词；0 = 其他（编辑距离兜底）。
+     */
+    private fun titleTier(title: String, kn: String): Int {
+        val tn = normalize(title)
+        return when {
+            tn == kn -> 3
+            tn.startsWith(kn) -> 2
+            tn.contains(kn) -> 1
+            else -> 0
+        }
     }
 
     /**
@@ -155,7 +213,7 @@ object FuzzyMatch {
                     append('|')
                     append(normalize(item.title))
                     append('|')
-                    append(normalize(item.author ?: ""))
+                    append(normalizeAuthor(item.author ?: ""))
                 }
             }
             if (seen.add(key)) out.add(item)
@@ -174,7 +232,7 @@ object FuzzyMatch {
     fun groupDuplicates(items: List<MediaItem>): List<List<MediaItem>> {
         val groups = LinkedHashMap<String, MutableList<MediaItem>>()
         for (item in items) {
-            val author = item.author?.trim()?.let { normalize(it) }.orEmpty()
+            val author = item.author?.trim()?.let { normalizeAuthor(it) }.orEmpty()
             val key = "${normalize(item.title)}|${author}"
             groups.getOrPut(key) { mutableListOf() }.add(item)
         }

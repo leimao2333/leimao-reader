@@ -185,4 +185,39 @@ class FuzzyMatchTest {
         assertEquals("模糊模式不应把仅含「千面」的无关书放进结果", 1, out.size)
         assertEquals("千面之龙", out[0].title)
     }
+
+    @Test
+    fun `作者带来源前缀的同名书应合并为一组`() {
+        // 回归：「番茄小说·某某」与「某某」作者前缀不同，归一化去前缀后应判为同一作者
+        val items = listOf(
+            item("1", "剑来", author = "番茄小说·烽火戏诸侯", sourceId = "s1"),
+            item("2", "剑来", author = "烽火戏诸侯", sourceId = "s2"),
+        )
+        val groups = FuzzyMatch.groupDuplicates(items)
+        assertEquals("作者前缀不同的同名书应合并为一组", 1, groups.size)
+        assertEquals(2, groups[0].size)
+    }
+
+    @Test
+    fun `作者归一化去掉来源前缀`() {
+        assertEquals("烽火戏诸侯", FuzzyMatch.normalizeAuthor("番茄小说·烽火戏诸侯"))
+        assertEquals("烽火戏诸侯", FuzzyMatch.normalizeAuthor("烽火戏诸侯"))
+        assertEquals("佚名", FuzzyMatch.normalizeAuthor("笔趣阁·佚名"))
+    }
+
+    @Test
+    fun `模糊模式同名排最前后面是类似名字`() {
+        // 回归：同名（归一化相等）必须绝对排最前，类似名字（含关键词/以关键词开头）排后面
+        val items = listOf(
+            item("1", "千面之龙同人", sourceId = "s1"),   // 类似名字（以关键词开头）
+            item("2", "千面之龙", sourceId = "s2"),        // 同名
+            item("3", "《千面之龙》", sourceId = "s3"),     // 同名（带书名号）
+            item("4", "千面之龙之剑", sourceId = "s4"),    // 类似名字（包含关键词）
+        )
+        val out = FuzzyMatch.rank(items, "千面之龙")
+        val titles = out.map { FuzzyMatch.normalize(it.title) }
+        assertEquals(4, out.size)
+        // 前两个必须是同名（归一化后 == 千面之龙）
+        assertTrue("同名应排最前", titles[0] == "千面之龙" && titles[1] == "千面之龙")
+    }
 }

@@ -15,6 +15,7 @@ import com.novelreader.domain.repository.BookmarkRepository
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.ProgressRepository
 import com.novelreader.source.search.ChapterLocator
+import com.novelreader.source.search.FuzzyMatch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -207,6 +208,10 @@ class NovelReaderViewModel(
 
     private val _changeSourceLoading = MutableStateFlow(false)
     val changeSourceLoading: StateFlow<Boolean> = _changeSourceLoading.asStateFlow()
+
+    /** 换源搜索进度：已搜源数 / 总源数 + 当前源名，用于「换源有进度」 */
+    private val _changeSourceProgress = MutableStateFlow<String?>(null)
+    val changeSourceProgress: StateFlow<String?> = _changeSourceProgress.asStateFlow()
 
     private val _sameAuthorOnly = MutableStateFlow(true)
     val sameAuthorOnly: StateFlow<Boolean> = _sameAuthorOnly.asStateFlow()
@@ -710,22 +715,28 @@ class NovelReaderViewModel(
         if (title.isBlank()) return
         changeSourcePage = 1
         _changeSourceHasMore.value = false
+        _changeSourceProgress.value = null
         viewModelScope.launch {
             _changeSourceLoading.value = true
             _changeSourceError.value = null
-            runCatching { contentRepository.search(SourceType.NOVEL, title, 1) }
-                .onSuccess { results ->
-                    _allCandidates = results
-                    _changeSourceHasMore.value = results.isNotEmpty()
+            // 用带进度的跨源搜索，实时反馈「已搜 x/y 源」
+            contentRepository.searchWithProgress(
+                type = SourceType.NOVEL,
+                keyword = title,
+                page = 1,
+                concurrency = 8,
+                fuzzyEnabled = false,
+            ).collectLatest { state ->
+                _changeSourceProgress.value =
+                    if (state.isSearching) "正在搜索书源 ${state.searchedCount}/${state.totalCount}"
+                    else null
+                if (!state.isSearching) {
+                    _allCandidates = state.results
+                    _changeSourceHasMore.value = state.results.isNotEmpty()
                     filterCandidates()
+                    _changeSourceLoading.value = false
                 }
-                .onFailure { e ->
-                    _changeSourceError.value = e.message ?: "换源搜索失败"
-                    _allCandidates = emptyList()
-                    _changeSourceCandidates.value = emptyList()
-                    _changeSourceHasMore.value = false
-                }
-            _changeSourceLoading.value = false
+            }
         }
     }
 
@@ -742,14 +753,33 @@ class NovelReaderViewModel(
                         _changeSourceHasMore.value = false
                     } else {
                         changeSourcePage = next
-                        val existed = _allCandidates.map { it.sourceId + "|" + it.id }.toHashSet()
-                        _allCandidates += more.filter { (it.sourceId + "|" + it.id) !in existed }
+                        _allCandidates = mergeCandidates(_allCandidates, more)
                         filterCandidates()
                     }
                 }
                 .onFailure { e -> _changeSourceError.value = e.message ?: "加载更多失败" }
             _changeSourceLoadingMore.value = false
         }
+    }
+
+    /**
+     * 合并换源候选：按「归一化书名 + 作者」去重，彻底合并同名书跨源重复。
+     * 同一本书可能在多个源以不同 id 出现，仅按 sourceId|id 去重会漏掉。
+     */
+    private fun mergeCandidates(base: List<MediaItem>, incoming: List<MediaItem>): List<MediaItem> {
+        val merged = base.toMutableList()
+        val seen = HashSet<String>(base.size)
+        base.forEach { seen.add(candidateKey(it)) }
+        for (item in incoming) {
+            if (seen.add(candidateKey(item))) merged.add(item)
+        }
+        return merged
+    }
+
+    /** 候选去重键：书名归一化 + 作者归一化（作者为空时仅书名），再叠加 sourceId|id 兜底 */
+    private fun candidateKey(item: MediaItem): String {
+        val author = item.author?.trim()?.let { FuzzyMatch.normalize(it) }.orEmpty()
+        return "${FuzzyMatch.normalize(item.title)}|${author}"
     }
 
     private fun filterCandidates() {
@@ -770,7 +800,12 @@ class NovelReaderViewModel(
                 else candAuthor.equals(curAuthor, ignoreCase = true)
             } else true
         }
-        _changeSourceCandidates.value = filtered
+        // 按「书名 + 作者」归一化合并去重，彻底消除同名书跨源重复
+        val deduped = linkedMapOf<String, MediaItem>()
+        for (cand in filtered) {
+            deduped.putIfAbsent(candidateKey(cand), cand)
+        }
+        _changeSourceCandidates.value = deduped.values.toList()
     }
 
     /** 切换到候选源（四级定位，避免一律回退第一章） */

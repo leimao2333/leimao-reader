@@ -61,11 +61,6 @@ class ContentRepositoryImpl(
 
         val total = adapters.size
 
-        // 结果处理：模糊模式做相似度排序并过滤不相关；精准模式只保留书名归一化后
-        // 与关键词一致的条目（源返回的修饰性差异由 FuzzyMatch.normalize 抹平）
-        fun applyRank(items: List<MediaItem>): List<MediaItem> =
-            if (fuzzyEnabled) FuzzyMatch.rank(items, keyword) else FuzzyMatch.exactRank(items, keyword)
-
         // 初始状态：开始搜索
         emit(
             SearchState(
@@ -95,7 +90,10 @@ class ContentRepositoryImpl(
         // 启动并发搜索任务，结果通过 Channel 汇总后由本协程串行 emit
         val maxConcurrency = concurrency.coerceIn(1, 32)
         val semaphore = Semaphore(maxConcurrency)
+        // 结果容器：边搜边追加，搜索过程只做「增量去重」（轻量），
+        // 排序/过滤只在最终统一做一次，避免每批结果都全量重排导致滚动卡顿。
         val results = mutableListOf<MediaItem>()
+        val seenKeys = HashSet<String>()
         coroutineScope {
             val channel = kotlinx.coroutines.channels.Channel<Pair<String, List<MediaItem>>>(
                 capacity = total.coerceAtLeast(1)
@@ -113,15 +111,30 @@ class ContentRepositoryImpl(
                 }
             }
 
-            // 串行收集：每收到一个源的结果就 emit 一次进度
+            // 串行收集：每收到一个源的结果就 emit 一次进度。
+            // 搜索过程中结果直接追加（已按源返回顺序），避免每批全量 rank 卡顿；
+            // 增量去重保证不出现同一源同一本书重复条目。
             var received = 0
             for (msg in channel) {
                 val (sourceName, batch) = msg
-                if (batch.isNotEmpty()) results.addAll(batch)
+                for (item in batch) {
+                    val key = buildString {
+                        append(item.sourceId)
+                        append('|')
+                        append(item.id.ifBlank { item.detailUrl })
+                        if (item.id.isBlank() && item.detailUrl.isBlank()) {
+                            append('|')
+                            append(FuzzyMatch.normalize(item.title))
+                            append('|')
+                            append(FuzzyMatch.normalize(item.author ?: ""))
+                        }
+                    }
+                    if (seenKeys.add(key)) results.add(item)
+                }
                 received++
                 emit(
                     SearchState(
-                        results = applyRank(results.toList()),
+                        results = results.toList(),
                         searchedCount = received,
                         totalCount = total,
                         currentSource = sourceName,
@@ -137,10 +150,15 @@ class ContentRepositoryImpl(
             channel.close()
         }
 
-        // 最终结果
+        // 最终结果：统一做一次排序 / 过滤（模糊=相似度降序，精准=书名归一化一致）
+        val finalResults = if (fuzzyEnabled) {
+            FuzzyMatch.rank(results, keyword)
+        } else {
+            FuzzyMatch.exactRank(results, keyword)
+        }
         emit(
             SearchState(
-                results = applyRank(results.toList()),
+                results = finalResults,
                 searchedCount = total,
                 totalCount = total,
                 currentSource = "",

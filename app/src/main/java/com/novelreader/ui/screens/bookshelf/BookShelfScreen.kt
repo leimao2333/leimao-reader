@@ -307,8 +307,8 @@ private fun BookGrid(
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(12.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         items(books, key = { it.itemKey() }) { item ->
@@ -347,7 +347,7 @@ private fun BookGridCell(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(0.72f),
+                .aspectRatio(0.7f),
         ) {
             // 封面
             val cover = item.cover

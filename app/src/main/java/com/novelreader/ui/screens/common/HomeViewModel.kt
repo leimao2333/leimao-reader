@@ -75,6 +75,50 @@ class HomeViewModel(
 
     init {
         observeBooks()
+        observeGroups()
+    }
+
+    // ===== 书架分组（v1.3.0 对标 legado 书架分组） =====
+
+    /** 所有已用分组名 */
+    private val _groupNames = MutableStateFlow<List<String>>(emptyList())
+    val groupNames: StateFlow<List<String>> = _groupNames.asStateFlow()
+
+    /** 当前选中的分组筛选（null = 全部；"" = 未分组） */
+    private val _selectedGroup = MutableStateFlow<String?>(null)
+    val selectedGroup: StateFlow<String?> = _selectedGroup.asStateFlow()
+
+    private fun observeGroups() {
+        viewModelScope.launch {
+            bookRepository.observeGroupNames().collectLatest { _groupNames.value = it }
+        }
+    }
+
+    /** 切换分组筛选（null = 全部，"" = 未分组） */
+    fun selectGroup(name: String?) {
+        _selectedGroup.value = name
+    }
+
+    /** 设置条目分组（空串 = 移出分组） */
+    fun setBookGroup(item: MediaItem, group: String) {
+        viewModelScope.launch { bookRepository.setBookGroup(item, group) }
+    }
+
+    /** 重命名分组 */
+    fun renameGroup(oldName: String, newName: String) {
+        if (newName.isBlank() || oldName == newName) return
+        viewModelScope.launch {
+            bookRepository.renameGroup(oldName, newName.trim())
+            if (_selectedGroup.value == oldName) _selectedGroup.value = newName.trim()
+        }
+    }
+
+    /** 删除分组（组内条目变为未分组） */
+    fun deleteGroup(name: String) {
+        viewModelScope.launch {
+            bookRepository.deleteGroup(name)
+            if (_selectedGroup.value == name) _selectedGroup.value = null
+        }
     }
 
     private fun observeBooks() {

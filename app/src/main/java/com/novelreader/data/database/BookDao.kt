@@ -31,4 +31,22 @@ interface BookDao {
 
     @Delete
     suspend fun delete(book: BookEntity)
+
+    // ===== 分组管理（v1.3.0） =====
+
+    /** 设置单个条目的分组（空串 = 移出分组） */
+    @Query("UPDATE books SET groupName = :group WHERE sourceId = :sourceId AND itemId = :itemId")
+    suspend fun setGroup(sourceId: String, itemId: String, group: String)
+
+    /** 所有已用分组名（去空） */
+    @Query("SELECT DISTINCT groupName FROM books WHERE groupName != '' ORDER BY groupName")
+    fun observeGroupNames(): Flow<List<String>>
+
+    /** 重命名分组（组内所有条目同步） */
+    @Query("UPDATE books SET groupName = :newName WHERE groupName = :oldName")
+    suspend fun renameGroup(oldName: String, newName: String)
+
+    /** 删除分组（组内条目变为未分组，不从书架移除） */
+    @Query("UPDATE books SET groupName = '' WHERE groupName = :name")
+    suspend fun clearGroup(name: String)
 }

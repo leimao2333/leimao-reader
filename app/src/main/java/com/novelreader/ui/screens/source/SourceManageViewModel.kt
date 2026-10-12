@@ -337,6 +337,105 @@ class SourceManageViewModel(
             SourceSortOrder.CATEGORY -> list.sortedWith(compareBy({ it.category }, { it.name }))
             SourceSortOrder.ENABLED -> list.sortedByDescending { it.enabled }
         }
+
+    // ===== 书源 URL 一键更新（v1.3.0 对标 legado） =====
+
+    /** 是否正在联网更新书源 */
+    private val _updating = MutableStateFlow(false)
+    val updating: StateFlow<Boolean> = _updating.asStateFlow()
+
+    /** 更新进度提示 */
+    private val _updateProgress = MutableStateFlow<String?>(null)
+    val updateProgress: StateFlow<String?> = _updateProgress.asStateFlow()
+
+    /**
+     * 从网络一键更新书源。
+     *
+     * 对每个启用的书源：读取其 JSON 内的 sourceUrl（即源的原始网络地址），
+     * 重新拉取该地址内容，按 sourceUrl 匹配出对应条目后更新本地源。
+     * 4 路并发 + 实时进度；无 sourceUrl / 拉取失败 / 内容未变的源分别计数。
+     */
+    fun updateFromNetwork(targets: List<SourceInfo>? = null) {
+        if (_updating.value) return
+        val list = (targets ?: _sources.value).filter { it.enabled }
+        if (list.isEmpty()) {
+            _message.value = "没有可更新的书源（仅启用的源会更新）"
+            return
+        }
+        viewModelScope.launch {
+            _updating.value = true
+            _updateProgress.value = "准备更新…"
+            var updated = 0
+            var unchanged = 0
+            var failed = 0
+            var skipped = 0
+            val done = java.util.concurrent.atomic.AtomicInteger(0)
+            val total = list.size
+            val semaphore = kotlinx.coroutines.sync.Semaphore(4)
+            kotlinx.coroutines.coroutineScope {
+                list.forEach { src ->
+                    launch {
+                        semaphore.withPermit {
+                            try {
+                                val raw = sourceRepository.getRawContent(src.id)
+                                if (raw.isNullOrBlank()) { skipped++; return@withPermit }
+                                val sourceUrl = extractSourceUrl(raw)
+                                if (!sourceUrl.startsWith("http")) { skipped++; return@withPermit }
+                                val content = withContext(Dispatchers.IO) {
+                                    runCatching { com.novelreader.core.network.HttpClient.get(sourceUrl) }.getOrNull()
+                                }
+                                if (content.isNullOrBlank()) { failed++; return@withPermit }
+                                val newRaw = matchSourceJson(content, sourceUrl)
+                                if (newRaw == null) { failed++; return@withPermit }
+                                if (newRaw == raw.trim()) { unchanged++; return@withPermit }
+                                sourceRepository.updateSource(src.id, newRaw)
+                                updated++
+                            } catch (e: Exception) {
+                                failed++
+                            } finally {
+                                val d = done.incrementAndGet()
+                                if (d % 5 == 0 || d == total) {
+                                    _updateProgress.value = "正在更新 $d/$total"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            refresh()
+            _updateProgress.value = null
+            _updating.value = false
+            _message.value = "书源更新完成：更新 $updated，无变化 $unchanged，失败 $failed" +
+                (if (skipped > 0) "，跳过 $skipped（无来源 URL）" else "")
+        }
+    }
+
+    /** 从源 JSON（数组或单对象）中提取 sourceUrl 字段 */
+    private fun extractSourceUrl(raw: String): String = runCatching {
+        val trimmed = raw.trim()
+        val obj = if (trimmed.startsWith("[")) {
+            org.json.JSONArray(trimmed).optJSONObject(0)
+        } else {
+            org.json.JSONObject(trimmed)
+        }
+        obj?.optString("sourceUrl")?.trim().orEmpty()
+    }.getOrDefault("")
+
+    /** 在网络返回的书源 JSON（数组或单对象）中按 sourceUrl 匹配，返回该条目的 JSON 字符串 */
+    private fun matchSourceJson(content: String, sourceUrl: String): String? = runCatching {
+        val trimmed = content.trim()
+        if (trimmed.startsWith("[")) {
+            val arr = org.json.JSONArray(trimmed)
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                if (obj.optString("sourceUrl").trim() == sourceUrl) return obj.toString()
+            }
+            null
+        } else {
+            val obj = org.json.JSONObject(trimmed)
+            if (obj.optString("sourceUrl").trim() == sourceUrl) obj.toString() else null
+        }
+    }.getOrNull()
 }
 
 /** 源排序方式 */

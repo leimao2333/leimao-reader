@@ -1,5 +1,8 @@
 package com.novelreader.ui.screens.common
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +17,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items as rowItems
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
@@ -25,21 +30,26 @@ import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Source
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -100,6 +110,13 @@ fun HomeScreen(
     val progressMap by viewModel.progressMap.collectAsState()
     val lastChapterMap by viewModel.lastChapterMap.collectAsState()
     val chapterCountMap by viewModel.chapterCountMap.collectAsState()
+
+    // 书架分组（v1.3.0）
+    val groupNames by viewModel.groupNames.collectAsState()
+    val selectedGroup by viewModel.selectedGroup.collectAsState()
+    var assignTarget by remember { mutableStateOf<MediaItem?>(null) }
+    var manageGroup by remember { mutableStateOf<String?>(null) }
+    var newGroupForItem by remember { mutableStateOf<MediaItem?>(null) }
 
     // 展现形式：0=封面墙网格，1=列表
     var gridMode by rememberSaveable { mutableIntStateOf(0) }
@@ -186,12 +203,117 @@ fun HomeScreen(
                     gridMode = gridMode,
                     onToggleGridMode = { gridMode = if (gridMode == 0) 1 else 0 },
                     onImportLocalBook = { txtPicker.launch(arrayOf("text/plain", "text/*", "application/octet-stream")) },
+                    groupNames = groupNames,
+                    selectedGroup = selectedGroup,
+                    onSelectGroup = { viewModel.selectGroup(it) },
+                    onManageGroup = { manageGroup = it },
+                    onAssignGroup = { assignTarget = it },
                     onItemClick = { item ->
                         viewModel.continueReading(item) { chapters, target ->
                             onContinueReading(item, chapters, target)
                         }
                     },
                 )
+
+                // 分组管理弹窗（长按分组 chip 触发：重命名 / 删除）
+                manageGroup?.let { g ->
+                    var nameInput by remember(g) { mutableStateOf(g) }
+                    AlertDialog(
+                        onDismissRequest = { manageGroup = null },
+                        title = { Text("管理分组") },
+                        text = {
+                            OutlinedTextField(
+                                value = nameInput,
+                                onValueChange = { nameInput = it },
+                                label = { Text("分组名") },
+                                singleLine = true,
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(
+                                enabled = nameInput.isNotBlank() && nameInput.trim() != g,
+                                onClick = {
+                                    viewModel.renameGroup(g, nameInput)
+                                    manageGroup = null
+                                },
+                            ) { Text("重命名") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = {
+                                viewModel.deleteGroup(g)
+                                manageGroup = null
+                            }) { Text("删除分组") }
+                        },
+                    )
+                }
+
+                // 移动到分组弹窗（长按书触发）
+                assignTarget?.let { item ->
+                    AlertDialog(
+                        onDismissRequest = { assignTarget = null },
+                        title = { Text("移动到分组") },
+                        text = {
+                            Column {
+                                if (groupNames.isEmpty()) {
+                                    Text(
+                                        text = "还没有分组，先新建一个吧",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                groupNames.forEach { g ->
+                                    TextButton(onClick = {
+                                        viewModel.setBookGroup(item, g)
+                                        assignTarget = null
+                                    }) { Text(g) }
+                                }
+                                if (item.groupName.isNotBlank()) {
+                                    TextButton(onClick = {
+                                        viewModel.setBookGroup(item, "")
+                                        assignTarget = null
+                                    }) { Text("移出分组") }
+                                }
+                                TextButton(onClick = {
+                                    newGroupForItem = item
+                                    assignTarget = null
+                                }) { Text("＋ 新建分组") }
+                            }
+                        },
+                        confirmButton = {},
+                        dismissButton = {
+                            TextButton(onClick = { assignTarget = null }) { Text("取消") }
+                        },
+                    )
+                }
+
+                // 新建分组输入弹窗
+                newGroupForItem?.let { item ->
+                    var nameInput by remember { mutableStateOf("") }
+                    AlertDialog(
+                        onDismissRequest = { newGroupForItem = null },
+                        title = { Text("新建分组") },
+                        text = {
+                            OutlinedTextField(
+                                value = nameInput,
+                                onValueChange = { nameInput = it },
+                                label = { Text("分组名") },
+                                singleLine = true,
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(
+                                enabled = nameInput.isNotBlank(),
+                                onClick = {
+                                    viewModel.setBookGroup(item, nameInput.trim())
+                                    newGroupForItem = null
+                                },
+                            ) { Text("确定") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { newGroupForItem = null }) { Text("取消") }
+                        },
+                    )
+                }
             }
         }
     }
@@ -211,10 +333,21 @@ private fun BookshelfContent(
     gridMode: Int,
     onToggleGridMode: () -> Unit,
     onImportLocalBook: () -> Unit = {},
+    groupNames: List<String> = emptyList(),
+    selectedGroup: String? = null,
+    onSelectGroup: (String?) -> Unit = {},
+    onManageGroup: (String) -> Unit = {},
+    onAssignGroup: (MediaItem) -> Unit = {},
     onItemClick: (MediaItem) -> Unit,
 ) {
     // 按当前 tab 类型过滤
-    val filtered = books.filter { it.type == currentType }
+    val typeFiltered = books.filter { it.type == currentType }
+    // 分组筛选：null=全部；""=未分组；其余=指定分组
+    val filtered = when (selectedGroup) {
+        null -> typeFiltered
+        "" -> typeFiltered.filter { it.groupName.isBlank() }
+        else -> typeFiltered.filter { it.groupName == selectedGroup }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -244,13 +377,35 @@ private fun BookshelfContent(
             }
         }
 
+        // 分组筛选 chips（长按分组可重命名/删除）
+        if (groupNames.isNotEmpty()) {
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                item {
+                    GroupChip("全部", selectedGroup == null) { onSelectGroup(null) }
+                }
+                rowItems(groupNames) { g ->
+                    GroupChip(g, selectedGroup == g, onLongClick = { onManageGroup(g) }) {
+                        onSelectGroup(g)
+                    }
+                }
+                item {
+                    GroupChip("未分组", selectedGroup == "") { onSelectGroup("") }
+                }
+            }
+        }
+
         if (filtered.isEmpty()) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    text = "书架空空如也\n去搜索并收藏喜欢的内容吧",
+                    text = if (selectedGroup != null && typeFiltered.isNotEmpty()) "该分组下暂无内容\n长按封面可移动到分组"
+                    else "书架空空如也\n去搜索并收藏喜欢的内容吧",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -266,7 +421,7 @@ private fun BookshelfContent(
                 selecting = false,
                 selectedKeys = emptySet(),
                 onClick = onItemClick,
-                onLongClick = { },
+                onLongClick = onAssignGroup,
             )
         } else {
             // 列表形式（复用书架网格 cell 的封面+信息，简化）
@@ -286,12 +441,35 @@ private fun BookshelfContent(
                         selected = false,
                         selecting = false,
                         onClick = { onItemClick(item) },
-                        onLongClick = { },
+                        onLongClick = { onAssignGroup(item) },
                     )
                 }
             }
         }
     }
+}
+
+/** 分组筛选 chip（长按触发分组管理） */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun GroupChip(
+    label: String,
+    selected: Boolean,
+    onLongClick: (() -> Unit)? = null,
+    onClick: () -> Unit,
+) {
+    val bg = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+    val fg = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+    Text(
+        text = label,
+        style = MaterialTheme.typography.bodySmall,
+        color = fg,
+        maxLines = 1,
+        modifier = Modifier
+            .background(bg, RoundedCornerShape(16.dp))
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+    )
 }
 
 private fun com.novelreader.domain.model.MediaItem.itemKey(): String = "$sourceId:$id"

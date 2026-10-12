@@ -31,4 +31,6 @@ data class BookEntity(
     val detailUrl: String,
     /** 收藏时间戳 */
     val addedAt: Long = System.currentTimeMillis(),
+    /** 自定义分组名（空 = 未分组，v1.3.0） */
+    val groupName: String = "",
 )

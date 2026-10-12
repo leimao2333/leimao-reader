@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.2.0"
+    const val CURRENT_VERSION = "1.3.0"
 
     /**
      * 更新日志。
@@ -19,6 +19,16 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.3.0",
+            date = "2026-10-12",
+            changes = listOf(
+                "新增书架分组管理（对标 legado）：长按封面移动到分组 / 新建分组，分组 chips 一键筛选，长按分组可重命名或删除（删除不丢书）",
+                "新增全书搜索（对标 legado 搜索全书）：正文搜索面板切到「全书」即可跨章节查找，4 路并发 + 实时进度，结果点击直达所在章节并定位匹配处；搜索抓到的正文自动入缓存",
+                "新增书源 URL 一键更新（对标 legado）：源管理页一键从各源 sourceUrl 拉取最新规则，按 sourceUrl 匹配合并，无变化/失败/无来源分别计数，4 路并发 + 实时进度",
+                "再次收藏不丢分组与加入时间：addToBookshelf 改为保留原 bookId、分组（数据库迁移 v8→v9 新增 books.groupName 列）",
+            ),
+        ),
         VersionEntry(
             version = "1.2.0",
             date = "2026-10-12",

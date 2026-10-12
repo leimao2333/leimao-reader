@@ -73,6 +73,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.novelreader.core.preferences.PreferencesManager
+import com.novelreader.core.text.ChineseConverter
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.ui.theme.ReaderBackgrounds
@@ -152,7 +153,13 @@ fun NovelReaderScreen(
     chapter: ChapterItem,
     onBack: () -> Unit,
 ) {
-    val content by viewModel.content.collectAsState()
+    val rawContent by viewModel.content.collectAsState()
+    val convertMode by viewModel.convertMode.collectAsState()
+    // 简繁转换：逐字映射，长度与下标一一对应，
+    // 因此正文搜索的匹配位置在转换前后保持一致。
+    val content = remember(rawContent, convertMode) {
+        ChineseConverter.convert(rawContent, convertMode)
+    }
     val loading by viewModel.loading.collectAsState()
     val error by viewModel.error.collectAsState()
     val fontSize by viewModel.fontSize.collectAsState()
@@ -204,6 +211,9 @@ fun NovelReaderScreen(
     val chapterQuery by viewModel.chapterQuery.collectAsState()
     val chapterDesc by viewModel.chapterDesc.collectAsState()
     val replaceOpen by viewModel.replaceOpen.collectAsState()
+    val contentSearchOpen by viewModel.contentSearchOpen.collectAsState()
+    val speaking by viewModel.speaking.collectAsState()
+    val speechRate by viewModel.speechRate.collectAsState()
 
     val displayItem = currentItemState ?: item
     val chapterList = if (vmChapters.isNotEmpty()) vmChapters else chapters
@@ -456,6 +466,7 @@ fun NovelReaderScreen(
                     collected = collected,
                     onToggleCollect = { viewModel.toggleCollect() },
                     onAddBookmark = { viewModel.addBookmark(currentRatio, content.take(60)) },
+                    onOpenContentSearch = { viewModel.openContentSearch() },
                     onBack = onBack,
                 )
             }
@@ -492,6 +503,9 @@ fun NovelReaderScreen(
                 brightness = brightness,
                 readSeconds = readSeconds,
                 replaceRules = replaceRules,
+                convertMode = convertMode,
+                speaking = speaking,
+                speechRate = speechRate,
                 onAddBookmark = { viewModel.addBookmark(currentRatio, content.take(60)) },
             )
         }
@@ -521,6 +535,15 @@ fun NovelReaderScreen(
                 textColor = textColor,
                 onSave = { viewModel.setReplaceRules(it) },
                 onClose = { viewModel.closeReplaceRules() },
+            )
+        }
+
+        if (contentSearchOpen) {
+            ContentSearchPanel(
+                viewModel = viewModel,
+                backgroundColor = backgroundColor,
+                textColor = textColor,
+                onClose = { viewModel.closeContentSearch() },
             )
         }
 

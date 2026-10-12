@@ -93,4 +93,14 @@ class AppContainer(context: Context) {
     val downloadManager: DownloadManager by lazy {
         DownloadManager(appContext)
     }
+
+    /**
+     * 朗读控制器（v1.1.8 对标开源阅读听书）。
+     *
+     * 用 applicationContext 构造，避免持有 Activity；
+     * 懒加载——只有真正进入阅读页发起朗读时才初始化 TTS 引擎。
+     */
+    val ttsController: com.novelreader.core.tts.TtsController by lazy {
+        com.novelreader.core.tts.TtsController(appContext)
+    }
 }

@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.TextFormat
@@ -45,6 +46,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -105,6 +107,7 @@ internal fun BoxScope.ReaderTopBar(
     collected: Boolean,
     onToggleCollect: () -> Unit,
     onAddBookmark: () -> Unit,
+    onOpenContentSearch: () -> Unit,
     onBack: () -> Unit,
 ) {
     Row(
@@ -139,6 +142,9 @@ internal fun BoxScope.ReaderTopBar(
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodySmall,
             )
+        }
+        IconButton(onClick = onOpenContentSearch) {
+            Icon(Icons.Filled.Search, contentDescription = "正文搜索", tint = textColor)
         }
         IconButton(onClick = onAddBookmark) {
             Icon(Icons.Filled.BookmarkBorder, contentDescription = "添加书签", tint = textColor)
@@ -204,6 +210,9 @@ internal fun BoxScope.ReaderBottomMenu(
     brightness: Float,
     readSeconds: Long,
     replaceRules: List<ReplaceRule>,
+    convertMode: Int,
+    speaking: Boolean,
+    speechRate: Float,
     onAddBookmark: () -> Unit,
 ) {
     val backgroundColors = if (nightMode) ReaderBackgrounds.nightColors else ReaderBackgrounds.dayColors
@@ -252,6 +261,9 @@ internal fun BoxScope.ReaderBottomMenu(
                         brightness = brightness,
                         readSeconds = readSeconds,
                         replaceRules = replaceRules,
+                        convertMode = convertMode,
+                        speaking = speaking,
+                        speechRate = speechRate,
                         textColor = textColor,
                     )
                 }
@@ -653,6 +665,9 @@ private fun SettingsPanel(
     brightness: Float,
     readSeconds: Long,
     replaceRules: List<ReplaceRule>,
+    convertMode: Int,
+    speaking: Boolean,
+    speechRate: Float,
     textColor: Color,
 ) {
     SettingSwitch("夜间模式", nightMode) { viewModel.toggleNightMode() }
@@ -675,6 +690,54 @@ private fun SettingsPanel(
             onChange = { viewModel.setAutoPageInterval(it.toInt()) },
         )
     }
+    // 朗读 / 听书（对标开源阅读 ReadAloud）
+    Spacer(Modifier.height(10.dp))
+    Text("朗读", color = textColor, style = MaterialTheme.typography.titleSmall)
+    Spacer(Modifier.height(6.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        MenuChip(
+            if (speaking) "停止朗读" else "朗读本章",
+            speaking,
+            textColor,
+        ) {
+            if (speaking) viewModel.stopSpeaking() else viewModel.speakCurrentChapter()
+        }
+    }
+    Spacer(Modifier.height(6.dp))
+    SettingSlider(
+        label = "语速",
+        value = speechRate,
+        display = String.format("%.1f", speechRate),
+        valueRange = 0.5f..2.0f,
+        textColor = textColor,
+        onChange = { viewModel.setSpeechRate(it) },
+    )
+    Spacer(Modifier.height(8.dp))
+
+    // 简繁转换（对标开源阅读 ChineseConverter）
+    Spacer(Modifier.height(10.dp))
+    Text("简繁转换", color = textColor, style = MaterialTheme.typography.titleSmall)
+    Spacer(Modifier.height(6.dp))
+    Row {
+        MenuChip(
+            "不转换",
+            convertMode == PreferencesManager.CONVERT_NONE,
+            textColor,
+        ) { viewModel.setConvertMode(PreferencesManager.CONVERT_NONE) }
+        Spacer(Modifier.width(8.dp))
+        MenuChip(
+            "简转繁",
+            convertMode == PreferencesManager.CONVERT_TO_TRADITIONAL,
+            textColor,
+        ) { viewModel.setConvertMode(PreferencesManager.CONVERT_TO_TRADITIONAL) }
+        Spacer(Modifier.width(8.dp))
+        MenuChip(
+            "繁转简",
+            convertMode == PreferencesManager.CONVERT_TO_SIMPLIFIED,
+            textColor,
+        ) { viewModel.setConvertMode(PreferencesManager.CONVERT_TO_SIMPLIFIED) }
+    }
+    Spacer(Modifier.height(8.dp))
     SettingSlider(
         label = if (brightness < 0f) "亮度（跟随系统）" else "亮度",
         value = if (brightness < 0f) 0.5f else brightness,
@@ -1151,6 +1214,102 @@ private fun SettingSlider(
             valueRange = valueRange,
             modifier = Modifier.fillMaxWidth(),
         )
+    }
+}
+
+/**
+ * 正文搜索面板（覆盖层）：在当前章节正文中查找关键词，支持上/下跳转。
+ *
+ * 对标开源阅读 SearchMenu 的「章节内搜索」能力。
+ * 匹配下标由 ViewModel 基于原文计算，简繁转换为逐字映射（长度不变），
+ * 因此高亮位置在转换后依然有效。
+ */
+@Composable
+fun ContentSearchPanel(
+    viewModel: NovelReaderViewModel,
+    backgroundColor: Color,
+    textColor: Color,
+    onClose: () -> Unit,
+) {
+    val query by viewModel.contentQuery.collectAsState()
+    val matches by viewModel.contentMatches.collectAsState()
+    val currentIndex by viewModel.currentMatchIndex.collectAsState()
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.5f))
+            .clickable { onClose() },
+    ) {
+        Surface(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .clickable { /* 消费点击，避免穿透到遮罩触发关闭 */ },
+            color = backgroundColor,
+            shape = RoundedCornerShape(12.dp),
+            shadowElevation = 8.dp,
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "正文搜索",
+                        color = textColor,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "关闭",
+                        color = AccentColor,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier
+                            .clickable { onClose() }
+                            .padding(8.dp),
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { viewModel.updateContentQuery(it) },
+                    placeholder = { Text("输入要查找的内容") },
+                    maxLines = 1,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = when {
+                            query.isBlank() -> "输入关键词开始搜索"
+                            matches.isEmpty() -> "本章未找到「$query」"
+                            else -> "第 ${currentIndex + 1}/${matches.size} 个匹配"
+                        },
+                        color = textColor.copy(alpha = 0.75f),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (matches.isNotEmpty()) {
+                        Text(
+                            text = "上一个",
+                            color = AccentColor,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier
+                                .clickable { viewModel.prevMatch() }
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                        )
+                        Text(
+                            text = "下一个",
+                            color = AccentColor,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier
+                                .clickable { viewModel.nextMatch() }
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 

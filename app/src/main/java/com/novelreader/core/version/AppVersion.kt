@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.1.5"
+    const val CURRENT_VERSION = "1.1.8"
 
     /**
      * 更新日志。
@@ -19,6 +19,33 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.1.8",
+            date = "2026-10-12",
+            changes = listOf(
+                "新增朗读/听书（对标开源阅读 ReadAloud）：阅读菜单「朗读本章」可朗读当前章节正文，支持停止与 0.5~2.0 倍语速调节；离开阅读页自动停止，TTS 引擎由 AppContainer 单例持有复用",
+                "新增正文内搜索（对标开源阅读 SearchMenu）：顶栏搜索入口，可在当前章节正文中查找关键词，显示匹配总数与上/下一个跳转",
+                "新增简繁转换（对标开源阅读 ChineseConverter）：设置面板可选「不转换 / 简转繁 / 繁转简」，逐字映射保证长度与搜索下标不变",
+                "新增 ChineseConverter 单元测试 8 条（原文返回/空串/简转繁/繁转简/长度保持/未收录字保留/往返一致/非中文不受影响）",
+            ),
+        ),
+        VersionEntry(
+            version = "1.1.7",
+            date = "2026-10-12",
+            changes = listOf(
+                "搜索同名合并修正：结果分组改为仅按书名归一化，同名书跨源必定合并（作者前缀/空值/格式差异不再拆组）",
+                "换源候选去重改为「源+ID」，同名书跨源保留每一条，换源能看到并切换每个源",
+                "合并最近阅读与书架：首页内容区直接内联书架封面墙，移除重复的最近阅读列表与书架入口",
+            ),
+        ),
+        VersionEntry(
+            version = "1.1.6",
+            date = "2026-10-12",
+            changes = listOf(
+                "同名作者前缀合并：新增作者归一化剥离来源前缀（番茄小说/笔趣阁/起点等），「番茄小说·某某」与「某某」判为同一作者",
+                "模糊排序同名优先：改为显式分层排序，书名与关键词一致的同名书绝对排最前",
+            ),
+        ),
         VersionEntry(
             version = "1.1.5",
             date = "2026-10-12",

@@ -88,6 +88,10 @@ class PreferencesManager(private val context: Context) {
         /** 累计阅读时长（秒，全局） */
         val KEY_NOVEL_READ_SECONDS = longPreferencesKey("novel_read_seconds")
 
+        // ----- v1.1.8 对标开源阅读补齐 -----
+        /** 简繁转换：0=不转换 1=简转繁 2=繁转简（对标开源阅读 ChineseConverter） */
+        val KEY_NOVEL_CONVERT_MODE = intPreferencesKey("novel_convert_mode")
+
         // 统一翻页方式常量
         const val PAGE_TYPE_COVER = 0
         const val PAGE_TYPE_SIMULATE = 1
@@ -107,6 +111,14 @@ class PreferencesManager(private val context: Context) {
         const val FONT_FAMILY_DEFAULT = 0
         const val FONT_FAMILY_SERIF = 1
         const val FONT_FAMILY_MONO = 2
+
+        // 简繁转换模式常量
+        /** 不转换（原文） */
+        const val CONVERT_NONE = 0
+        /** 简体 → 繁体 */
+        const val CONVERT_TO_TRADITIONAL = 1
+        /** 繁体 → 简体 */
+        const val CONVERT_TO_SIMPLIFIED = 2
 
         /** 默认亮度（跟随系统） */
         const val DEFAULT_BRIGHTNESS = -1f
@@ -272,6 +284,15 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setNovelAutoPageInterval(value: Int) {
         context.dataStore.edit { it[KEY_NOVEL_AUTO_PAGE_INTERVAL] = value.coerceIn(5, 120) }
+    }
+
+    // ===== 简繁转换（v1.1.8） =====
+    /** 简繁转换模式：见 CONVERT_NONE / CONVERT_TO_TRADITIONAL / CONVERT_TO_SIMPLIFIED */
+    val novelConvertModeFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_NOVEL_CONVERT_MODE] ?: CONVERT_NONE }
+
+    suspend fun setNovelConvertMode(value: Int) {
+        context.dataStore.edit { it[KEY_NOVEL_CONVERT_MODE] = value.coerceIn(0, 2) }
     }
 
     /** 音量键翻页开关 */

@@ -45,7 +45,55 @@ class NovelReaderViewModel(
     private val chapterCacheRepository: com.novelreader.domain.repository.ChapterCacheRepository? = null,
     private val bookRepository: BookRepository? = null,
     private val bookmarkRepository: BookmarkRepository? = null,
+    /** 朗读控制器（v1.1.8 对标开源阅读听书）；为 null 时朗读功能不可用 */
+    private val ttsController: com.novelreader.core.tts.TtsController? = null,
 ) : ViewModel() {
+
+    // ===== 朗读（v1.1.8 对标开源阅读 ReadAloud） =====
+    /** 是否正在朗读（由 TTS 引擎回调驱动） */
+    val speaking: StateFlow<Boolean> = ttsController?.speaking
+        ?: kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    /** 朗读语速（0.5 ~ 2.0，1.0 = 正常） */
+    private val _speechRate = MutableStateFlow(ttsController?.getSpeechRate() ?: 1.0f)
+    val speechRate: StateFlow<Float> = _speechRate.asStateFlow()
+
+    /** 朗读当前章节正文 */
+    fun speakCurrentChapter() {
+        val controller = ttsController
+        if (controller == null) {
+            showToast("朗读功能不可用")
+            return
+        }
+        val text = _content.value
+        if (text.isBlank()) {
+            showToast("正文为空，无法朗读")
+            return
+        }
+        // 长文本分段：TTS 单次朗读有长度上限，按段落切分后逐段朗读
+        controller.speak(text)
+        showToast("开始朗读本章")
+    }
+
+    /** 停止朗读 */
+    fun stopSpeaking() {
+        ttsController?.stop()
+    }
+
+    /** 设置语速并即时生效 */
+    fun setSpeechRate(rate: Float) {
+        val r = rate.coerceIn(0.5f, 2.0f)
+        _speechRate.value = r
+        ttsController?.setSpeechRate(r)
+    }
+
+    /**
+     * 离开阅读页时停止朗读（但不销毁 TTS 引擎——它由 AppContainer 单例持有、跨页面复用）。
+     */
+    override fun onCleared() {
+        super.onCleared()
+        ttsController?.stop()
+    }
 
     // ===== 正文 =====
     private val _content = MutableStateFlow("")
@@ -158,6 +206,95 @@ class NovelReaderViewModel(
             viewModelScope.launch { raw.collectLatest { state.value = TextReplaceRules.decode(it) } }
             state
         }
+
+    // ===== 简繁转换（v1.1.8 对标开源阅读） =====
+    /** 0=不转换 1=简转繁 2=繁转简 */
+    val convertMode: StateFlow<Int> =
+        stateOf(preferences.novelConvertModeFlow, PreferencesManager.CONVERT_NONE)
+
+    fun setConvertMode(mode: Int) {
+        viewModelScope.launch { preferences.setNovelConvertMode(mode) }
+    }
+
+    // ===== 正文内搜索（v1.1.8 对标开源阅读 SearchMenu） =====
+    private val _contentSearchOpen = MutableStateFlow(false)
+    val contentSearchOpen: StateFlow<Boolean> = _contentSearchOpen.asStateFlow()
+
+    /** 当前搜索关键词 */
+    private val _contentQuery = MutableStateFlow("")
+    val contentQuery: StateFlow<String> = _contentQuery.asStateFlow()
+
+    /** 关键词在正文中出现的下标列表 */
+    private val _contentMatches = MutableStateFlow<List<Int>>(emptyList())
+    val contentMatches: StateFlow<List<Int>> = _contentMatches.asStateFlow()
+
+    /** 当前高亮的匹配项下标（-1 = 无） */
+    private val _currentMatchIndex = MutableStateFlow(-1)
+    val currentMatchIndex: StateFlow<Int> = _currentMatchIndex.asStateFlow()
+
+    fun openContentSearch() {
+        _contentSearchOpen.value = true
+    }
+
+    fun closeContentSearch() {
+        _contentSearchOpen.value = false
+        _contentQuery.value = ""
+        _contentMatches.value = emptyList()
+        _currentMatchIndex.value = -1
+    }
+
+    /**
+     * 更新搜索关键词并在当前正文中查找所有匹配。
+     *
+     * 空关键词清空结果；匹配为空时 currentMatchIndex 置 -1。
+     */
+    fun updateContentQuery(query: String) {
+        _contentQuery.value = query
+        if (query.isBlank()) {
+            _contentMatches.value = emptyList()
+            _currentMatchIndex.value = -1
+            return
+        }
+        val text = _content.value
+        if (text.isEmpty()) {
+            _contentMatches.value = emptyList()
+            _currentMatchIndex.value = -1
+            return
+        }
+        val matches = mutableListOf<Int>()
+        var from = 0
+        while (true) {
+            val idx = text.indexOf(query, from)
+            if (idx < 0) break
+            matches.add(idx)
+            from = idx + query.length
+            if (from >= text.length) break
+        }
+        _contentMatches.value = matches
+        _currentMatchIndex.value = if (matches.isEmpty()) -1 else 0
+    }
+
+    /** 跳到指定匹配项 */
+    fun gotoMatch(index: Int) {
+        val size = _contentMatches.value.size
+        if (size == 0) return
+        _currentMatchIndex.value = index.coerceIn(0, size - 1)
+    }
+
+    /** 下一个匹配（循环） */
+    fun nextMatch() {
+        val size = _contentMatches.value.size
+        if (size == 0) return
+        _currentMatchIndex.value = (_currentMatchIndex.value + 1) % size
+    }
+
+    /** 上一个匹配（循环） */
+    fun prevMatch() {
+        val size = _contentMatches.value.size
+        if (size == 0) return
+        _currentMatchIndex.value =
+            if (_currentMatchIndex.value <= 0) size - 1 else _currentMatchIndex.value - 1
+    }
 
     /** 菜单开关 */
     private val _showMenu = MutableStateFlow(false)

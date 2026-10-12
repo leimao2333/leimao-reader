@@ -342,6 +342,7 @@ fun AppNavHost(container: AppContainer) {
                         it.chapterCacheRepository,
                         it.bookRepository,
                         it.bookmarkRepository,
+                        it.ttsController,
                     )
                 }
             )

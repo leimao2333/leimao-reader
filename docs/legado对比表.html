@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>磊毛阅读 vs 开源阅读(legado) 功能对比表</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --text:#1f2329; --muted:#6b7280;
+    --border:#e5e7eb; --accent:#2563eb; --red:#dc2626; --amber:#d97706; --green:#16a34a;
+    --red-bg:#fef2f2; --amber-bg:#fffbeb; --green-bg:#f0fdf4;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);line-height:1.6;padding:24px 16px}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:24px;margin-bottom:4px}
+  .sub{color:var(--muted);font-size:14px;margin-bottom:20px}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px;font-size:13px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:12px;height:12px;border-radius:3px;display:inline-block}
+  .dot.red{background:var(--red)} .dot.amber{background:var(--amber)} .dot.green{background:var(--green)}
+  section{margin-bottom:28px}
+  h2{font-size:18px;margin-bottom:12px;padding-left:10px;border-left:4px solid var(--accent)}
+  table{width:100%;border-collapse:collapse;background:var(--card);border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06);font-size:14px}
+  thead th{background:#1f2329;color:#fff;text-align:left;padding:10px 12px;font-weight:600;white-space:nowrap}
+  tbody td{padding:10px 12px;border-top:1px solid var(--border);vertical-align:top}
+  tbody tr:nth-child(even){background:#fafbfc}
+  td.c{width:14px}
+  .tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;white-space:nowrap}
+  .tag.red{background:var(--red-bg);color:var(--red)}
+  .tag.amber{background:var(--amber-bg);color:var(--amber)}
+  .tag.green{background:var(--green-bg);color:var(--green)}
+  .tag.gray{background:#f3f4f6;color:#6b7280}
+  .fn{font-weight:600}
+  .legado{color:var(--muted);font-size:13px}
+  .note{font-size:13px;color:var(--muted);margin-top:4px}
+  .todo{background:#fff7ed;color:#9a3412;padding:1px 6px;border-radius:3px;font-size:12px}
+  .summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px}
+  .stat{background:var(--card);border-radius:8px;padding:16px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  .stat .num{font-size:28px;font-weight:700}
+  .stat.red .num{color:var(--red)} .stat.amber .num{color:var(--amber)} .stat.green .num{color:var(--green)}
+  .stat .lbl{font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>磊毛阅读 vs 开源阅读(legado) 功能对比表</h1>
+  <div class="sub">基于 legado 源码（fork 完整仓库 misumi111/legado-book，607 个 Kotlin 文件）逐模块比对 · 生成于 2026-10-12</div>
+
+  <div class="summary">
+    <div class="stat red"><div class="num">10</div><div class="lbl">缺失功能（已核实确认没做）</div></div>
+    <div class="stat amber"><div class="num">11</div><div class="lbl">不完善（有但不到位）</div></div>
+    <div class="stat green"><div class="num">4</div><div class="lbl">不合理（设计/交互问题）</div></div>
+  </div>
+  <div class="note" style="margin-bottom:16px">
+    <strong>修订说明</strong>：本表经代码核实后修订。翻页动画(6种)、自动翻页、书签、净化替换规则、书源规则编辑器<strong>均已实现</strong>，已从「缺失」改为「已有」——上一版基于关键词粗筛有误判。
+  </div>
+
+  <div class="legend">
+    <span><i class="dot red"></i> 缺失：legado 有、本项目完全没有</span>
+    <span><i class="dot amber"></i> 不完善：有但能力不足/未达对标效果</span>
+    <span><i class="dot green"></i> 不合理：设计或交互体验有明显问题</span>
+    <span><i class="dot" style="background:#9ca3af"></i> 已有：核实后本轮确认已实现（上一版误判为缺失）</span>
+  </div>
+
+  <!-- ============ 阅读器 ============ -->
+  <section>
+    <h2>一、阅读器（核心）</h2>
+    <table>
+      <thead><tr><th>级别</th><th>功能点</th><th>legado 现状</th><th>本项目现状</th><th>建议</th></tr></thead>
+      <tbody>
+        <tr><td class="c"><span class="tag gray">已有</span></td><td class="fn">翻页动画模式</td>
+          <td class="legado">6 种：覆盖 / 仿真 / 滑动 / 滚动 / 无动画 / 上下</td>
+          <td><strong>已实现 6 种</strong>（PAGE_TYPE_COVER=0 / SIMULATE=1 / SLIDE=2 / SCROLL=3 / VERTICAL=4 / NO_ANIM=5），阅读菜单可选</td>
+          <td>已对标，无需补齐</td></tr>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">朗读/听书(TTS)</td>
+          <td class="legado">系统 TTS + 在线朗读引擎(HttpTTS)，支持语速/音色，后台朗读服务</td>
+          <td>完全没有（全项目 0 文件命中 TTS/朗读/听书）</td>
+          <td><strong>高优先级</strong>：接入系统 TTS 朗读 + 暂停/继续 + 语速</td></tr>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">内容搜索（章节内/全书）</td>
+          <td class="legado">SearchMenu：当前章节/全书搜索、正则、跳转高亮</td>
+          <td>无正文内搜索（0 文件命中）</td>
+          <td><strong>高优先级</strong>：加章节内 + 全书搜索</td></tr>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">简繁转换</td>
+          <td class="legado">ChineseConverter 一键简转繁/繁转简</td>
+          <td>无（0 文件命中）</td>
+          <td>加简繁转换开关（实现简单，快速见效）</td></tr>
+        <tr><td class="c"><span class="tag gray">已有</span></td><td class="fn">自动翻页/自动阅读</td>
+          <td class="legado">AutoReadDialog 可调速自动翻页</td>
+          <td><strong>已实现</strong>：KEY_NOVEL_AUTO_PAGE + 间隔 5~120 秒可调，菜单有开关与滑块</td>
+          <td>已对标</td></tr>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">正文编辑</td>
+          <td class="legado">ContentEditDialog 在线修正正文错别字</td>
+          <td>无</td>
+          <td>低优先级，可选</td></tr>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">章节正则重命名</td>
+          <td class="legado">TocRegexDialog 用正则批量清洗章节标题</td>
+          <td>无</td>
+          <td>加目录标题正则净化</td></tr>
+        <tr><td class="c"><span class="tag amber">不完善</span></td><td class="fn">阅读排版设置</td>
+          <td class="legado">字号/行距/段距/字距/加粗/字体/背景(12+主题)/夜间/护眼</td>
+          <td>有字号/行距/段距/字距/加粗/字体/背景/亮度，但背景主题少、无「护眼模式」</td>
+          <td>扩充背景主题 + 护眼模式</td></tr>
+        <tr><td class="c"><span class="tag gray">已有</span></td><td class="fn">书签</td>
+          <td class="legado">书签列表 + 书签内跳转 + 标注划线</td>
+          <td><strong>已实现</strong>：BookmarkRepository(Room) + 书签面板（添加/列表跳转/删除）；划线批注仍无</td>
+          <td>可选补：划线批注</td></tr>
+        <tr><td class="c"><span class="tag green">不合理</span></td><td class="fn">阅读菜单呼出</td>
+          <td class="legado">中间点击呼出，三区可自定义，菜单层级清晰</td>
+          <td>历史反馈「菜单呼出非常别扭」，手势区划分与菜单触发逻辑需重构</td>
+          <td>重构阅读菜单呼出手势与层级</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ============ 书架 ============ -->
+  <section>
+    <h2>二、书架</h2>
+    <table>
+      <thead><tr><th>级别</th><th>功能点</th><th>legado 现状</th><th>本项目现状</th><th>建议</th></tr></thead>
+      <tbody>
+        <tr><td class="c"><span class="tag amber">不完善</span></td><td class="fn">书架布局</td>
+          <td class="legado">5 种布局：列表/紧凑列表/网格/紧凑网格/封面网格，列数 1-9 可调</td>
+          <td>仅网格 + 列表 2 种，无紧凑模式，列数固定</td>
+          <td>加紧凑网格 + 可调列数</td></tr>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">书架分组管理</td>
+          <td class="legado">自定义分组、拖拽排序、组内移动</td>
+          <td>无分组管理（仅按类型 tab 粗分）</td>
+          <td>加自定义分组 + 拖拽</td></tr>
+        <tr><td class="c"><span class="tag amber">不完善</span></td><td class="fn">书架排序</td>
+          <td class="legado">多维度：最近阅读/最近更新/书名/作者/手动排序</td>
+          <td>仅按进度时间排序为主</td>
+          <td>补「最近更新」「手动排序」</td></tr>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">更换封面</td>
+          <td class="legado">changecover：换封面图/在线搜索封面</td>
+          <td>无</td>
+          <td>低优先级</td></tr>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">本地书(TXT/EPUB)</td>
+          <td class="legado">TextFile/EpubFile/UmdFile 解析，手动浏览 + 智能扫描本地导入</td>
+          <td>无（0 文件命中 txt/epub/本地书）</td>
+          <td>重点补：TXT/EPUB 本地导入</td></tr>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">书架 Web 端</td>
+          <td class="legado">内置 WebService（NanoHTTPD），浏览器访问 web 书架</td>
+          <td>无</td>
+          <td>低优先级</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ============ 搜索 ============ -->
+  <section>
+    <h2>三、搜索（用户最关注）</h2>
+    <table>
+      <thead><tr><th>级别</th><th>功能点</th><th>legado 现状</th><th>本项目现状</th><th>建议</th></tr></thead>
+      <tbody>
+        <tr><td class="c"><span class="tag amber">不完善</span></td><td class="fn">搜索结果相关性</td>
+          <td class="legado">源返回 + 本地同名聚合，精确优先</td>
+          <td>多次迭代：批内过滤 + 收尾排序，但仍有「同名作者前缀未合并」「模糊不模糊」的回归</td>
+          <td>FuzzyMatch 排序与归一化需再精修</td></tr>
+        <tr><td class="c"><span class="tag amber">不完善</span></td><td class="fn">同名书合并</td>
+          <td class="legado">同书名跨源折叠，作者辅助</td>
+          <td>已改为「仅书名归一化」分组，但作者前缀剥离、同名判定仍不彻底</td>
+          <td>归一化策略持续优化（书名号/副标题/前缀）</td></tr>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">搜索历史/热门搜索</td>
+          <td class="legado">搜索历史 + 一键清除 + 热门词</td>
+          <td>有搜索历史（LazyRow）但无热门词、清除交互简陋</td>
+          <td>补热门搜索词 + 历史管理</td></tr>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">发现/分类浏览</td>
+          <td class="legado">explore：按书源分类发现，榜单/分类页</td>
+          <td>无「发现」页（只有搜索入口）</td>
+          <td>加发现页（榜单/分类）</td></tr>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">RSS 订阅源</td>
+          <td class="legado">完整 RSS 订阅/阅读</td>
+          <td>无（0 文件）</td>
+          <td>低优先级，可选</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ============ 书源 ============ -->
+  <section>
+    <h2>四、书源系统</h2>
+    <table>
+      <thead><tr><th>级别</th><th>功能点</th><th>legado 现状</th><th>本项目现状</th><th>建议</th></tr></thead>
+      <tbody>
+        <tr><td class="c"><span class="tag amber">不完善</span></td><td class="fn">规则引擎完备度</td>
+          <td class="legado">JSoup/XPath/JSONPath/正则 四种分析器 + 完整 JS(Rhino) 扩展(1043 行 JsExtensions)</td>
+          <td>有 JSoup + JSONPath 子集，但 XPath/正则分析器不独立、JS 扩展缺失，`@js:`/`<js>` 规则直接返回空</td>
+          <td>补齐 JS 规则执行（Rhino 已引入但书源 JS 未接）</td></tr>
+        <tr><td class="c"><span class="tag amber">不完善</span></td><td class="fn">书源校验</td>
+          <td class="legado">SourceVerificationHelp：搜索+详情+目录+正文四段式校验</td>
+          <td>有「检测」但只测连通性，未做四段式内容校验</td>
+          <td>补四段式源校验</td></tr>
+        <tr><td class="c"><span class="tag amber">不完善</span></td><td class="fn">书源分组</td>
+          <td class="legado">书源自定义分组 + 组内启用/禁用</td>
+          <td>有「分组」关键词但实现简单，无分组 UI</td>
+          <td>补书源分组管理 UI</td></tr>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">书源一键更新</td>
+          <td class="legado">从网络源 URL 更新/检查书源版本</td>
+          <td>无（只有手动导入）</td>
+          <td>加书源 URL 更新</td></tr>
+        <tr><td class="c"><span class="tag gray">已有</span></td><td class="fn">书源规则编辑器</td>
+          <td class="legado">内置规则编辑 + 语法高亮(code widget)</td>
+          <td><strong>已实现</strong>（v1.1.1）：SourceEditDialog（等宽字体编辑框）+ getRawContent/updateSource；语法高亮仍无</td>
+          <td>可选补：语法高亮</td></tr>
+        <tr><td class="c"><span class="tag green">不合理</span></td><td class="fn">书源导入链路</td>
+          <td class="legado">legado://import 协议 + 剪贴板 + 文件 + 网络一键导入</td>
+          <td>导入 JSON/txt 链路正在打通中，体验待完善</td>
+          <td>统一导入入口 + legado:// 协议</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ============ 净化/替换 ============ -->
+  <section>
+    <h2>五、净化 / 替换规则</h2>
+    <table>
+      <thead><tr><th>级别</th><th>功能点</th><th>legado 现状</th><th>本项目现状</th><th>建议</th></tr></thead>
+      <tbody>
+        <tr><td class="c"><span class="tag gray">已有</span></td><td class="fn">替换规则/净化</td>
+          <td class="legado">正则替换 + 净化规则 + 章节名规则 + 书源替换分组</td>
+          <td><strong>已实现</strong>：TextReplaceRules(正则/字面) + TextCleaner(换行/空行/行尾空白) + 阅读菜单净化规则配置面板；缺「按书源分组」与导入导出</td>
+          <td>可选补：规则分组 + 导入导出</td></tr>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">净化规则在线订阅</td>
+          <td class="legado">可订阅净化规则源自动更新</td>
+          <td>无</td>
+          <td>低优先级</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ============ 设置/数据 ============ -->
+  <section>
+    <h2>六、设置 / 数据管理</h2>
+    <table>
+      <thead><tr><th>级别</th><th>功能点</th><th>legado 现状</th><th>本项目现状</th><th>建议</th></tr></thead>
+      <tbody>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">备份/恢复/WebDav</td>
+          <td class="legado">AppWebDav：完整数据备份/恢复/云同步</td>
+          <td>无（设置页仅有关于/字体/版本/缓存）</td>
+          <td>重点补：本地备份/恢复 + WebDav</td></tr>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">主题系统</td>
+          <td class="legado">theme 模块：多主题 + 在线主题订阅</td>
+          <td>仅有内置明/暗主题，无自定义主题</td>
+          <td>低优先级</td></tr>
+        <tr><td class="c"><span class="tag amber">不完善</span></td><td class="fn">缓存管理</td>
+          <td class="legado">CacheManager：章节缓存 + 预下载 + 清理</td>
+          <td>有缓存管理页但预下载/离线能力弱</td>
+          <td>补离线缓存 + 预下载</td></tr>
+        <tr><td class="c"><span class="tag green">不合理</span></td><td class="fn">设置页结构</td>
+          <td class="legado">设置项丰富、分类清晰</td>
+          <td>设置项过少（仅 4 类），大量能力无处配置</td>
+          <td>重构设置页，承载新增能力</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ============ 下载/缓存 ============ -->
+  <section>
+    <h2>七、下载 / 离线</h2>
+    <table>
+      <thead><tr><th>级别</th><th>功能点</th><th>legado 现状</th><th>本项目现状</th><th>建议</th></tr></thead>
+      <tbody>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">章节下载/批量下载</td>
+          <td class="legado">DownloadService：单章/批量/缓存书下载</td>
+          <td>无下载服务</td>
+          <td>加离线下载</td></tr>
+        <tr><td class="c"><span class="tag amber">不完善</span></td><td class="fn">章节缓存</td>
+          <td class="legado">自动缓存已读章节 + 手动缓存</td>
+          <td>有 ChapterCacheRepository 但缓存策略简单</td>
+          <td>完善缓存策略 + 缓存预读</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ============ 其他 ============ -->
+  <section>
+    <h2>八、其他 / 体验</h2>
+    <table>
+      <thead><tr><th>级别</th><th>功能点</th><th>legado 现状</th><th>本项目现状</th><th>建议</th></tr></thead>
+      <tbody>
+        <tr><td class="c"><span class="tag red">缺失</span></td><td class="fn">漫画/视频是扩展</td>
+          <td class="legado">专注小说（漫画/视频非核心，本项目自创三合一）</td>
+          <td>本项目做了小说/漫画/视频三模块，但漫画/视频的源规则、播放体验均未达小说同等成熟度</td>
+          <td>明确三模块定位，漫画/视频补齐核心链路</td></tr>
+        <tr><td class="c"><span class="tag green">不合理</span></td><td class="fn">换源流程</td>
+          <td class="legado">换源面板：进度条 + 同章节定位 + 自动换源</td>
+          <td>历史多次反馈「换源没用」，候选过滤/章节定位/0章排除仍需迭代</td>
+          <td>重点修复换源链路（已部分修复，持续验证）</td></tr>
+        <tr><td class="c"><span class="tag green">不合理</span></td><td class="fn">0 章/无内容排除</td>
+          <td class="legado">换源候选会校验章节有效性</td>
+          <td>已加 0 章排除，但「有章节无内容」未彻底排除</td>
+          <td>换源候选加正文有效性校验</td></tr>
+        <tr><td class="c"><span class="tag green">不合理</span></td><td class="fn">阅读页复制功能</td>
+          <td class="legado">可选开启的选文复制（默认不干扰滑动）</td>
+          <td>历史长按复制误触滑动，已移除，但需确认滑动翻页完全正常</td>
+          <td>确认移除复制后滑动翻页无回归</td></tr>
+        <tr><td class="c"><span class="tag amber">不完善</span></td><td class="fn">登录/云同步</td>
+          <td class="legado">可选 WebDav/云同步</td>
+          <td>无任何云同步</td>
+          <td>低优先级</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <div class="note" style="margin-top:8px">
+    <strong>说明：</strong>本项目为 Kotlin + Compose 技术栈，legado 为传统 View 体系，实现方式不可直接照搬，但功能语义可对标。
+    上述「级别」中：<span class="todo">红色=缺失</span> <span class="todo">琥珀=不完善</span> <span class="todo">绿色=不合理</span>。
+    优先级建议从高到低：阅读器翻页/朗读 → 搜索相关性 → 换源链路 → 本地书导入 → 备份 → 其余。
+  </div>
+</div>
+</body>
+</html>

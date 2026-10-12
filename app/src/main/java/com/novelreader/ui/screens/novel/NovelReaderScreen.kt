@@ -55,6 +55,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -85,7 +86,13 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /* ===================== 手势 ===================== */
 
-/** 三区单击：左 1/3 上一页，右 1/3 下一页，中间呼出菜单；长按 → 选文；双击 → 呼出菜单 */
+/**
+ * 三区单击：左 1/3 上一页，右 1/3 下一页，中间呼出菜单；长按 → 选文。
+ *
+ * 关键修正：长按判定必须结合「移动距离」。旧实现仅用 450ms 超时判定长按，
+ * 手指滑动时若停留稍久（如按住拖拽停顿）会被误判为长按 → 弹出复制面板。
+ * 现在：一旦移动超过阈值（24px）立即取消长按与单击，滑动再也不会触发选文/菜单。
+ */
 private fun Modifier.pageTap(
     onLeft: () -> Unit,
     onCenter: () -> Unit,
@@ -95,19 +102,42 @@ private fun Modifier.pageTap(
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
         val downPos = down.position
-        var up: androidx.compose.ui.input.pointer.PointerInputChange? = null
+        var moved = false
         var longPressed = false
-        withTimeoutOrNull(450L) { up = waitForUpOrCancellation() }
-        if (up == null) longPressed = true
-        if (longPressed) {
+        var up: androidx.compose.ui.input.pointer.PointerInputChange? = null
+        // 逐个处理指针事件：能感知移动，移动超阈值立即放弃长按/单击
+        var done = false
+        while (!done) {
+            val event = withTimeoutOrNull(500L) { awaitPointerEvent() }
+            if (event == null) {
+                longPressed = true
+                done = true
+            } else {
+                val change = event.changes.firstOrNull()
+                if (change == null) {
+                    // 无变化，继续
+                } else if (change.changedToUp()) {
+                    up = change
+                    done = true
+                } else {
+                    val curDx = kotlin.math.abs(change.position.x - downPos.x)
+                    val curDy = kotlin.math.abs(change.position.y - downPos.y)
+                    if (curDx > 24f || curDy > 24f) {
+                        moved = true
+                        done = true
+                    } else {
+                        event.changes.forEach { it.consume() }
+                    }
+                }
+            }
+        }
+        if (longPressed && !moved) {
             onLongPress?.invoke()
             waitForUpOrCancellation()
             return@awaitEachGesture
         }
+        if (moved) return@awaitEachGesture
         val u = up ?: return@awaitEachGesture
-        val dx = kotlin.math.abs(u.position.x - downPos.x)
-        val dy = kotlin.math.abs(u.position.y - downPos.y)
-        if (dx > 24f || dy > 24f) return@awaitEachGesture
         val w = size.width.toFloat()
         if (w <= 0f) return@awaitEachGesture
         val x = u.position.x
@@ -116,19 +146,13 @@ private fun Modifier.pageTap(
             x > w * 2f / 3f -> onRight()
             else -> onCenter()
         }
-        val secondDown = withTimeoutOrNull(260L) { awaitFirstDown(requireUnconsumed = false) }
-        if (secondDown != null) {
-            val secondUp = waitForUpOrCancellation()
-            if (secondUp != null) {
-                val sdx = kotlin.math.abs(secondUp.position.x - secondDown.position.x)
-                val sdy = kotlin.math.abs(secondUp.position.y - secondDown.position.y)
-                if (sdx <= 24f && sdy <= 24f) onCenter()
-            }
-        }
     }
 }
 
-/** 滚动模式：整屏分上下两半翻屏，中间竖条呼出菜单；长按选文；双击菜单 */
+/**
+ * 滚动模式：整屏分上下两半翻屏，中间竖条呼出菜单；长按选文。
+ * 长按判定结合移动距离，滚动不再误触发选文/菜单。
+ */
 private fun Modifier.scrollTap(
     onUp: () -> Unit,
     onCenter: () -> Unit,
@@ -138,19 +162,41 @@ private fun Modifier.scrollTap(
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
         val downPos = down.position
-        var up: androidx.compose.ui.input.pointer.PointerInputChange? = null
+        var moved = false
         var longPressed = false
-        withTimeoutOrNull(450L) { up = waitForUpOrCancellation() }
-        if (up == null) longPressed = true
-        if (longPressed) {
+        var up: androidx.compose.ui.input.pointer.PointerInputChange? = null
+        var done = false
+        while (!done) {
+            val event = withTimeoutOrNull(500L) { awaitPointerEvent() }
+            if (event == null) {
+                longPressed = true
+                done = true
+            } else {
+                val change = event.changes.firstOrNull()
+                if (change == null) {
+                    // 无变化，继续
+                } else if (change.changedToUp()) {
+                    up = change
+                    done = true
+                } else {
+                    val curDx = kotlin.math.abs(change.position.x - downPos.x)
+                    val curDy = kotlin.math.abs(change.position.y - downPos.y)
+                    if (curDx > 24f || curDy > 24f) {
+                        moved = true
+                        done = true
+                    } else {
+                        event.changes.forEach { it.consume() }
+                    }
+                }
+            }
+        }
+        if (longPressed && !moved) {
             onLongPress?.invoke()
             waitForUpOrCancellation()
             return@awaitEachGesture
         }
+        if (moved) return@awaitEachGesture
         val u = up ?: return@awaitEachGesture
-        val dx = kotlin.math.abs(u.position.x - downPos.x)
-        val dy = kotlin.math.abs(u.position.y - downPos.y)
-        if (dx > 24f || dy > 24f) return@awaitEachGesture
         val w = size.width.toFloat()
         val h = size.height.toFloat()
         if (w <= 0f || h <= 0f) return@awaitEachGesture
@@ -162,15 +208,6 @@ private fun Modifier.scrollTap(
             onUp()
         } else {
             onDown()
-        }
-        val secondDown = withTimeoutOrNull(260L) { awaitFirstDown(requireUnconsumed = false) }
-        if (secondDown != null) {
-            val secondUp = waitForUpOrCancellation()
-            if (secondUp != null) {
-                val sdx = kotlin.math.abs(secondUp.position.x - secondDown.position.x)
-                val sdy = kotlin.math.abs(secondUp.position.y - secondDown.position.y)
-                if (sdx <= 24f && sdy <= 24f) onCenter()
-            }
         }
     }
 }
@@ -217,6 +254,7 @@ fun NovelReaderScreen(
     val changeSourceOpen by viewModel.changeSourceOpen.collectAsState()
     val changeSourceCandidates by viewModel.changeSourceCandidates.collectAsState()
     val changeSourceLoading by viewModel.changeSourceLoading.collectAsState()
+    val changeSourceProgress by viewModel.changeSourceProgress.collectAsState()
     val sameAuthorOnly by viewModel.sameAuthorOnly.collectAsState()
     val changeSourceError by viewModel.changeSourceError.collectAsState()
     val changeSourceHasMore by viewModel.changeSourceHasMore.collectAsState()
@@ -548,6 +586,7 @@ fun NovelReaderScreen(
                 error = changeSourceError,
                 hasMore = changeSourceHasMore,
                 loadingMore = changeSourceLoadingMore,
+                progress = changeSourceProgress,
                 backgroundColor = backgroundColor,
                 textColor = textColor,
                 onToggleSameAuthor = { viewModel.setSameAuthorOnly(it) },

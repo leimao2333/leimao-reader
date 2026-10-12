@@ -35,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -162,6 +163,34 @@ fun NovelDetailScreen(
                             Spacer(Modifier.width(8.dp))
                             OutlinedButton(onClick = { reverseChapters = !reverseChapters }) {
                                 Text(if (reverseChapters) "倒序" else "正序")
+                            }
+                        }
+                    }
+                }
+
+                // 0 章提示：该源未返回任何章节，明确引导换源，避免用户误以为应用坏了
+                if (!loading && chapters.isEmpty()) {
+                    item {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            shape = RoundedCornerShape(10.dp),
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Text(
+                                    text = "该源未返回任何章节（0 章）",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    text = "此源目录可能失效或格式不兼容，建议点击「换源」切换到其他源。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.85f),
+                                )
                             }
                         }
                     }

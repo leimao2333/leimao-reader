@@ -942,6 +942,7 @@ internal fun BoxScope.ChangeSourcePanel(
     error: String?,
     hasMore: Boolean,
     loadingMore: Boolean,
+    progress: String?,
     backgroundColor: Color,
     textColor: Color,
     onToggleSameAuthor: (Boolean) -> Unit,
@@ -978,6 +979,14 @@ internal fun BoxScope.ChangeSourcePanel(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("仅同作者", color = textColor, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                     Switch(checked = sameAuthorOnly, onCheckedChange = onToggleSameAuthor)
+                }
+                // 搜索进度反馈（边搜边显示）
+                if (progress != null && loading) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = AccentColor)
+                        Spacer(Modifier.width(8.dp))
+                        Text(progress, color = AccentColor, style = MaterialTheme.typography.labelMedium)
+                    }
                 }
                 Spacer(Modifier.height(4.dp))
                 when {

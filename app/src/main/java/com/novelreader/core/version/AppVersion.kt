@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.1.2"
+    const val CURRENT_VERSION = "1.1.3"
 
     /**
      * 更新日志。
@@ -19,6 +19,17 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.1.3",
+            date = "2026-10-12",
+            changes = listOf(
+                "修复滑动误触弹出复制面板：长按判定结合移动距离，滑动超过阈值立即取消长按，不再误弹「选择文本」",
+                "简化菜单呼出：移除双击呼出菜单，仅保留单击中区呼出（左右翻页/上下翻页/滚动三模式统一）",
+                "换源增加实时进度：跨源搜索边搜边显示「已搜 x/y 源」，不再干等转圈",
+                "同名小说彻底合并：换源候选按「归一化书名+作者」去重，消除跨源重复条目",
+                "详情页 0 章明确提示：源未返回章节时提示「该源未返回任何章节（0 章）」并引导换源",
+            ),
+        ),
         VersionEntry(
             version = "1.1.2",
             date = "2026-10-12",

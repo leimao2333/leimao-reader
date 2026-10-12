@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.3.1"
+    const val CURRENT_VERSION = "1.2.2"
 
     /**
      * 更新日志。
@@ -20,14 +20,14 @@ object AppVersion {
      */
     val CHANGELOG: List<VersionEntry> = listOf(
         VersionEntry(
-            version = "1.3.1",
+            version = "1.2.2",
             date = "2026-10-12",
             changes = listOf(
                 "修复翻页模式正文末行被裁一半：v1.1.0 引入「段距/首行缩进」后，渲染比分页测量多出段距占位行与缩进字符，页尾内容溢出被裁切；现分页测量与渲染共用同一 buildReaderText 构造，并预留页码行高度（左右翻页与上下翻页同步修复）",
             ),
         ),
         VersionEntry(
-            version = "1.3.0",
+            version = "1.2.1",
             date = "2026-10-12",
             changes = listOf(
                 "新增书架分组管理（对标 legado）：长按封面移动到分组 / 新建分组，分组 chips 一键筛选，长按分组可重命名或删除（删除不丢书）",

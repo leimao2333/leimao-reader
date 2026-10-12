@@ -42,36 +42,32 @@ fun NovelSearchScreen(
     val shelfKeys by viewModel.shelfKeys.collectAsState()
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // 返回按钮
+        // 顶部：返回按钮 + 搜索框同行（紧凑，贴合开源阅读）
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 4.dp),
+                .padding(top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onBack) {
                 Icon(Icons.Filled.ArrowBack, contentDescription = "返回")
             }
-            Text(
-                text = "搜索小说",
-                style = MaterialTheme.typography.titleMedium,
+            SearchBar(
+                query = query,
+                onQueryChange = viewModel::onQueryChange,
+                onSearch = viewModel::search,
+                placeholder = "搜索小说",
+                fuzzyEnabled = fuzzyEnabled,
+                onFuzzyChange = viewModel::setFuzzyEnabled,
+                history = history,
+                onHistoryClick = { kw ->
+                    viewModel.onQueryChange(kw)
+                    viewModel.search()
+                },
+                onClearHistory = viewModel::clearHistory,
+                modifier = Modifier.weight(1f),
             )
         }
-
-        SearchBar(
-            query = query,
-            onQueryChange = viewModel::onQueryChange,
-            onSearch = viewModel::search,
-            placeholder = "搜索小说",
-            fuzzyEnabled = fuzzyEnabled,
-            onFuzzyChange = viewModel::setFuzzyEnabled,
-            history = history,
-            onHistoryClick = { kw ->
-                viewModel.onQueryChange(kw)
-                viewModel.search()
-            },
-            onClearHistory = viewModel::clearHistory,
-        )
 
         when {
             // 未搜索：初始空态

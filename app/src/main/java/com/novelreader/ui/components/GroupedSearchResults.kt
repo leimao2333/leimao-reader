@@ -152,18 +152,14 @@ private fun GroupCard(
     hasMulti: Boolean,
     onClick: () -> Unit,
 ) {
-    androidx.compose.material3.Card(
-        onClick = onClick,
+    // 扁平聚合卡片（无 Card 阴影），对齐开源阅读紧凑观感
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp),
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
             // 简版封面（复用占位逻辑即可，不放大图避免折叠态过重）
             Box(
                 modifier = Modifier
@@ -242,13 +238,12 @@ private fun GroupCard(
                     )
                 }
             }
-            if (hasMulti) {
-                Icon(
-                    Icons.Filled.ExpandMore,
-                    contentDescription = "展开",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+        if (hasMulti) {
+            Icon(
+                Icons.Filled.ExpandMore,
+                contentDescription = "展开",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

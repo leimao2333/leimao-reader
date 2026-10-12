@@ -17,7 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material3.Card
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -51,13 +51,14 @@ fun MediaItemCard(
     onToggleShelf: (() -> Unit)? = null,
     inShelf: Boolean = false,
 ) {
-    Card(
-        onClick = onClick,
+    // 扁平列表项（无 Card 阴影/elevation），对齐开源阅读紧凑、流畅的观感
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp),
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
-        Row(modifier = Modifier.padding(12.dp)) {
+        Row(modifier = Modifier.fillMaxWidth()) {
             CoverImage(item = item)
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
@@ -67,7 +68,6 @@ fun MediaItemCard(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Spacer(Modifier.height(4.dp))
                 // 作者 + 状态（连载中/已完结）首行
                 val status = BookMeta.statusText(item)
                 val authorLine = listOfNotNull(
@@ -75,6 +75,7 @@ fun MediaItemCard(
                     status,
                 ).joinToString(" · ")
                 if (authorLine.isNotEmpty()) {
+                    Spacer(Modifier.height(2.dp))
                     Text(
                         text = authorLine,
                         style = MaterialTheme.typography.bodySmall,
@@ -83,45 +84,35 @@ fun MediaItemCard(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                // 元信息行：字数 · 最新章节 · 更新时间（#23）
-                val metaLine = BookMeta.summaryLine(item)
-                if (metaLine.isNotEmpty()) {
-                    Spacer(Modifier.height(4.dp))
+                // 简介（单行，替代多行元信息，减少高度与重组开销）
+                val desc = item.desc?.takeIf { it.isNotBlank() }
+                if (desc != null) {
+                    Spacer(Modifier.height(3.dp))
                     Text(
-                        text = metaLine,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                // 简介（小说等展示）
-                item.desc?.takeIf { it.isNotBlank() }?.let {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = it,
+                        text = desc,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                // 来源名
-                if (item.sourceName.isNotBlank()) {
+                // 来源名 + 操作区（阅读/收藏）合入同一行，紧凑
+                val hasSource = item.sourceName.isNotBlank()
+                if (hasSource || onRead != null || onToggleShelf != null) {
                     Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = "来源：${item.sourceName}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                // 操作行：阅读（可选）+ 收藏（可选，#22 让搜索结果可直接入库，无需进详情页）
-                if (onRead != null || onToggleShelf != null) {
-                    Spacer(Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (hasSource) {
+                            Text(
+                                text = item.sourceName,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                        }
                         if (onRead != null) {
+                            if (hasSource) Spacer(Modifier.width(10.dp))
                             Text(
                                 text = "阅读",
                                 style = MaterialTheme.typography.labelMedium,
@@ -132,42 +123,34 @@ fun MediaItemCard(
                                         RoundedCornerShape(6.dp),
                                     )
                                     .clickable(onClick = onRead)
-                                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                                    .padding(horizontal = 14.dp, vertical = 5.dp),
                             )
                         }
-                        if (onRead != null && onToggleShelf != null) Spacer(Modifier.width(8.dp))
                         if (onToggleShelf != null) {
+                            if (hasSource || onRead != null) Spacer(Modifier.width(8.dp))
                             val tint = if (inShelf) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurfaceVariant
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
+                            Icon(
+                                imageVector = if (inShelf) Icons.Filled.Bookmark
+                                else Icons.Filled.BookmarkBorder,
+                                contentDescription = if (inShelf) "已在书架" else "加入书架",
+                                tint = tint,
                                 modifier = Modifier
-                                    .background(
-                                        tint.copy(alpha = 0.12f),
-                                        RoundedCornerShape(6.dp),
-                                    )
+                                    .size(22.dp)
                                     .clickable(onClick = onToggleShelf)
-                                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                            ) {
-                                Icon(
-                                    imageVector = if (inShelf) Icons.Filled.Bookmark
-                                    else Icons.Filled.BookmarkBorder,
-                                    contentDescription = null,
-                                    tint = tint,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Text(
-                                    text = if (inShelf) "已在书架" else "加入书架",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = tint,
-                                )
-                            }
+                                    .padding(2.dp),
+                            )
                         }
                     }
                 }
             }
         }
+        // 底部分隔线（扁平列表用 divider 替代卡片阴影）
+        HorizontalDivider(
+            modifier = Modifier.padding(top = 10.dp),
+            thickness = 0.5.dp,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+        )
     }
 }
 

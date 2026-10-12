@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -55,6 +56,7 @@ fun SearchBar(
     onClearHistory: (() -> Unit)? = null,
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
+        // 圆角填充式搜索框（无边框描边），贴合开源阅读观感
         OutlinedTextField(
             value = query,
             onValueChange = onQueryChange,
@@ -63,17 +65,16 @@ fun SearchBar(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             placeholder = { Text(placeholder) },
             singleLine = true,
+            shape = RoundedCornerShape(22.dp),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { onSearch() }),
+            leadingIcon = {
+                Icon(Icons.Filled.Search, contentDescription = "搜索")
+            },
             trailingIcon = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (query.isNotEmpty()) {
-                        IconButton(onClick = { onQueryChange("") }) {
-                            Icon(Icons.Filled.Clear, contentDescription = "清空")
-                        }
-                    }
-                    IconButton(onClick = onSearch) {
-                        Icon(Icons.Filled.Search, contentDescription = "搜索")
+                if (query.isNotEmpty()) {
+                    IconButton(onClick = { onQueryChange("") }) {
+                        Icon(Icons.Filled.Clear, contentDescription = "清空")
                     }
                 }
             },

@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.1.3"
+    const val CURRENT_VERSION = "1.1.4"
 
     /**
      * 更新日志。
@@ -19,6 +19,16 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.1.4",
+            date = "2026-10-12",
+            changes = listOf(
+                "搜索流畅度对齐开源阅读：跨源搜索改为边搜边追加结果，排序/过滤统一在搜索完成时执行一次，消除每批结果全量重排导致的滚动卡顿",
+                "搜索结果列表项扁平化：去掉卡片阴影与冗余内容，改为轻量分隔线式条目，滚动更跟手",
+                "搜索框改圆角填充式样式，顶部返回+标题行精简为「返回+搜索框」同行，观感更贴近开源阅读",
+                "书架封面墙优化：封面占比增大、间距收窄，更接近开源阅读书架观感",
+            ),
+        ),
         VersionEntry(
             version = "1.1.3",
             date = "2026-10-12",

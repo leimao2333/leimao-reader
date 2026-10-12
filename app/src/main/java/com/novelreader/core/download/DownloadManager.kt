@@ -1,6 +1,10 @@
 package com.novelreader.core.download
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.util.Log
+import com.novelreader.core.image.ComicImageScramble
 import com.novelreader.core.network.HttpClient
 import com.novelreader.domain.model.ContentResult
 import com.novelreader.domain.model.MediaItem
@@ -86,9 +90,38 @@ class DownloadManager(private val context: Context) {
         images.forEachIndexed { index, url ->
             val ext = url.substringBefore('?').substringAfterLast('.', "jpg").takeIf { it.length <= 5 } ?: "jpg"
             val file = File(dir, "%03d.$ext".format(index + 1))
-            HttpClient.downloadFile(url, file)
+            HttpClient.downloadFile(url, file, content.comicHeaders)
+            // 部分站点（禁漫 JM 等）把每页按 N 段纵向打乱后下发；落盘前先还原，
+            // 否则下载到本地的图片同样是乱序的
+            unscrambleDownloaded(file, content.comicImageScripts[url])
         }
         return dir
+    }
+
+    /**
+     * 就地把已下载的乱序图片还原。
+     *
+     * 识别不出脚本、或段数 ≤ 1 时不动文件；任何异常都只记日志，不影响下载结果。
+     */
+    private fun unscrambleDownloaded(file: File, script: String?) {
+        if (script.isNullOrBlank() || !file.isFile) return
+        runCatching {
+            val src = BitmapFactory.decodeFile(file.absolutePath) ?: return
+            val fixed = ComicImageScramble.unscrambleByScript(src, script)
+            if (fixed === src) {
+                src.recycle()
+                return
+            }
+            // 按原扩展名编码，避免 png/webp 被写成 jpg 后内容与后缀不符
+            val format = if (file.extension.equals("png", true) || file.extension.equals("webp", true)) {
+                Bitmap.CompressFormat.PNG
+            } else {
+                Bitmap.CompressFormat.JPEG
+            }
+            java.io.FileOutputStream(file).use { out -> fixed.compress(format, 92, out) }
+            fixed.recycle()
+            src.recycle()
+        }.onFailure { Log.w(TAG, "图片乱序还原失败（${file.name}）：${it.message}") }
     }
 
     /** 下载视频（单文件） */
@@ -106,4 +139,8 @@ class DownloadManager(private val context: Context) {
     /** 清理文件名中的非法字符 */
     private fun sanitize(name: String): String =
         name.replace(Regex("[\\\\/:*?\"<>|]"), "_").take(80)
+
+    private companion object {
+        const val TAG = "DownloadManager"
+    }
 }

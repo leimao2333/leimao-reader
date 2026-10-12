@@ -683,9 +683,20 @@
         return String(v);
     }
 
+    /**
+     * 把源返回的图片列表序列化成 app 可消费的结构。
+     *
+     * `loadEp` 可能返回 `["url", …]`（纯地址）或 `[{url, headers}, …]`（按图请求头）。
+     * 之后逐张调用 `onImageLoad(url, comicId, epId)`（18/33 个源实现了它），
+     * 其返回值可以「改地址 / 带请求头 / 给出 modifyImage 脚本」：
+     * modifyImage 是**解码后的像素后处理脚本**，禁漫（JM）用它把「按 N 段纵向打乱」
+     * 的图片还原回正常顺序。这个脚本必须跟着地址一起交给 app，
+     * 否则读者看到的就是一页页乱序的图片。
+     */
     async function serializeImages(list, src, comicId, epId) {
         var urls = [];
         var headers = {};
+        var scripts = {};
         var arr = list || [];
         for (var i = 0; i < arr.length; i++) {
             var item = arr[i];
@@ -699,31 +710,35 @@
                 headers = item.headers;
             }
         }
-        // onImageLoad：源用它补签名 / 防盗链头 / 二次解析真实地址
+        // onImageLoad：源用它补签名 / 防盗链头 / 二次解析真实地址 / 给出乱序还原脚本
         var onLoad = src.comic && src.comic.onImageLoad;
         if (typeof onLoad === 'function' && urls.length) {
             var fixed = [];
             for (var j = 0; j < urls.length; j++) {
+                var orig = urls[j];
+                var finalUrl = orig;
                 try {
-                    var r = await onLoad.call(src, urls[j], comicId, epId);
+                    var r = await onLoad.call(src, orig, comicId, epId);
                     if (typeof r === 'string') {
-                        fixed.push(r);
-                    } else if (r && typeof r === 'object' && r.url) {
-                        fixed.push(r.url);
+                        finalUrl = r;
+                    } else if (r && typeof r === 'object') {
+                        if (typeof r.url === 'string' && r.url) finalUrl = r.url;
                         if (r.headers && Object.keys(r.headers).length && Object.keys(headers).length === 0) {
                             headers = r.headers;
                         }
-                    } else {
-                        fixed.push(urls[j]);
+                        // modifyImage 多为代码字符串（JM）；函数无法跨桥传递，只能跳过
+                        if (typeof r.modifyImage === 'string' && r.modifyImage) {
+                            scripts[finalUrl] = r.modifyImage;
+                        }
                     }
                 } catch (e) {
                     log('warning', 'onImageLoad', String(e));
-                    fixed.push(urls[j]);
                 }
+                fixed.push(finalUrl);
             }
             urls = fixed;
         }
-        return { images: urls, headers: headers };
+        return { images: urls, headers: headers, scripts: scripts };
     }
 
     /**

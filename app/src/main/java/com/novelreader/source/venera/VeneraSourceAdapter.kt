@@ -100,8 +100,27 @@ class VeneraSourceAdapter(
         val headers = obj.getAsJsonObject("headers")?.entrySet()
             ?.associate { (k, v) -> k to (if (v.isJsonPrimitive) v.asString else v.toString()) }
             ?: emptyMap()
-        return ContentResult.comic(images, headers)
+        // 逐图后处理脚本（modifyImage）：禁漫等站的图片是按 N 段纵向打乱的，
+        // 解析出段数后在解码阶段重排，否则读者看到的是乱序画面。
+        val scripts = obj.getAsJsonObject("scripts")?.entrySet()
+            ?.mapNotNull { (k, v) ->
+                val js = v.takeIf { it.isJsonPrimitive }?.asString
+                if (js.isNullOrBlank()) null else k to js
+            }?.toMap()
+            ?: emptyMap()
+        return ContentResult.comic(images, sanitizeHeaders(headers), scripts)
     }
+
+    /**
+     * 去掉必须由客户端自己协商的请求头。
+     *
+     * 源给的图片请求头里普遍带 `Accept-Encoding: gzip, deflate, br, zstd`
+     * （那是浏览器该发的），原样透传会**关掉 OkHttp / Coil 的透明解压**，
+     * 一旦 CDN 真返回压缩内容就会解码失败——与引擎侧踩过的同一个坑。
+     * `Connection` / `Host` / `Content-Length` 之类同理由客户端接管。
+     */
+    private fun sanitizeHeaders(raw: Map<String, String>): Map<String, String> =
+        raw.filterKeys { it.lowercase() !in DROPPED_HEADERS }
 
     override suspend fun test(): Boolean = runCatching {
         engine.putSource(key, code)
@@ -119,5 +138,18 @@ class VeneraSourceAdapter(
 
     companion object {
         private const val CHAPTER_SEP = "|"
+
+        /** 交由客户端协商的请求头（见 [sanitizeHeaders]） */
+        private val DROPPED_HEADERS = setOf(
+            "accept-encoding",
+            "connection",
+            "keep-alive",
+            "transfer-encoding",
+            "content-length",
+            "host",
+            "te",
+            "upgrade",
+            "expect",
+        )
     }
 }

@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.2.6"
+    const val CURRENT_VERSION = "1.2.7"
 
     /**
      * 更新日志。
@@ -19,6 +19,19 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.2.7",
+            date = "2026-10-13",
+            changes = listOf(
+                "修复**漫画图片乱序**（禁漫 JM 等站点）：这类站点会把每一页图片按 N 段纵向切开、再打乱顺序后下发，还原规则以 JS 片段的形式由源给出（Venera 源的 `comic.onImageLoad → modifyImage`）。此前运行时只取了图片地址、把这段脚本丢掉了，于是每页都显示成「拼错位」的乱图 —— 这正是用户看到的「图片是乱序的」",
+                "运行时现把 `modifyImage` 与图片地址一起交给应用，在**图片解码后、写入缓存前**完成还原（Coil transformation），因此内存 / 磁盘缓存里存的都是还原后的图，翻页时不会再先闪一下乱序画面。下载章节时同样还原，避免落盘的文件本身就是乱的",
+                "还原逻辑不跑 JS：从脚本里识别出「按 N 段纵向倒序重排」这一形态并取出段数，直接在 Bitmap 上分段倒序拼接（与站点脚本的 blocks 构造逐字一致：等分高度、余数全部并入最后一段）。认不出的脚本**不还原并写一条告警日志**，绝不静默画错",
+                "漫画阅读器的顶部栏与底部章节条**并入可呼出菜单**：此前两条栏常驻、一直压着图片，现在点击画面才统一呼出 / 收起（含设置面板），不呼出时整屏都是图片，走到哪里都能沉浸阅读",
+                "图片请求头剥掉 `Accept-Encoding` / `Connection` / `Host` / `Content-Length` 等应由客户端自己协商的头：源给的防盗链请求头里常带 `Accept-Encoding: gzip, deflate, br, zstd`，原样透传会**关掉 OkHttp / Coil 的透明解压**，一旦 CDN 返回压缩内容就会解码失败（与引擎侧同一类坑）",
+                "预加载与阅读页现在共用同一套缓存键，预热过的图片翻到时就命中，不再白下载一遍",
+                "新增 15 条离线单测（ComicImageScrambleTest）：真实禁漫脚本的段数识别、段数非法 / 形态不符时不得还原、分段高度在任意高度与段数下之和恒等于原图高度、还原即纯粹段倒序、`ContentResult` 工厂透传逐图脚本，以及 runtime.js 资产必须产出 `scripts` 字段的契约断言；全量 127 个单测 0 失败",
+            ),
+        ),
         VersionEntry(
             version = "1.2.6",
             date = "2026-10-12",

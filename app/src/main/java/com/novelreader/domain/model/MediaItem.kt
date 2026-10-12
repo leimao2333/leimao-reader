@@ -83,6 +83,14 @@ data class ContentResult(
     val comicImages: List<String>? = null,
     /** 漫画图片加载所需的请求头（防盗链 Referer 等） */
     val comicHeaders: Map<String, String> = emptyMap(),
+    /**
+     * 逐图后处理脚本（按图片地址索引）。
+     *
+     * 目前唯一来源是 Venera 源的 `modifyImage`：部分站点（如禁漫 JM）把每页图片
+     * 按 N 段纵向打乱后下发，需要解码后重排才能得到正常画面。
+     * 详见 [com.novelreader.core.image.ComicImageScramble]。
+     */
+    val comicImageScripts: Map<String, String> = emptyMap(),
     /** 视频播放地址 */
     val videoUrl: String? = null,
     /** 视频播放所需的额外请求头（防盗链等） */
@@ -90,8 +98,11 @@ data class ContentResult(
 ) {
     companion object {
         fun novel(text: String) = ContentResult(novelText = text)
-        fun comic(images: List<String>, headers: Map<String, String> = emptyMap()) =
-            ContentResult(comicImages = images, comicHeaders = headers)
+        fun comic(
+            images: List<String>,
+            headers: Map<String, String> = emptyMap(),
+            scripts: Map<String, String> = emptyMap(),
+        ) = ContentResult(comicImages = images, comicHeaders = headers, comicImageScripts = scripts)
         fun video(url: String, headers: Map<String, String> = emptyMap()) =
             ContentResult(videoUrl = url, videoHeaders = headers)
     }

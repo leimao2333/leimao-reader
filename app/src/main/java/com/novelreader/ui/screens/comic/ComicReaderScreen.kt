@@ -1,6 +1,9 @@
 package com.novelreader.ui.screens.comic
 
 import android.content.Context
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -62,6 +65,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.SubcomposeAsyncImage
 import coil.imageLoader
 import coil.request.ImageRequest
+import com.novelreader.core.image.ComicImageScramble
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import kotlinx.coroutines.launch
@@ -91,6 +95,7 @@ fun ComicReaderScreen(
     val currentPage by viewModel.currentPage.collectAsState()
     val chapterTitle by viewModel.chapterTitle.collectAsState()
     val imageHeaders by viewModel.imageHeaders.collectAsState()
+    val imageScripts by viewModel.imageScripts.collectAsState()
     val chapterPosition by viewModel.chapterIndex.collectAsState()
     val chapterCount by viewModel.chapterCount.collectAsState()
     val hasPrevChapter by viewModel.hasPrevChapter.collectAsState()
@@ -102,12 +107,20 @@ fun ComicReaderScreen(
 
     // 进入/切换章节后，先预热前几张图片
     val context = LocalContext.current
-    LaunchedEffect(images, imageHeaders) {
-        images.take(PRELOAD_INITIAL).forEach { preloadImage(context, it, imageHeaders) }
+    LaunchedEffect(images, imageHeaders, imageScripts) {
+        images.take(PRELOAD_INITIAL).forEach { preloadImage(context, it, imageHeaders, imageScripts[it]) }
     }
 
-    // 是否显示设置面板
+    // 统一菜单：顶部栏（返回 / 章节名 / 设置）+ 设置面板 + 底部章节条，
+    // 三者由「点击画面」统一呼出与收起；默认隐藏，图片占满整屏。
+    val menuVisible = remember { mutableStateOf(false) }
+    // 设置面板是菜单的一部分：收起菜单时一并关闭，避免下次呼出时残留
     val showSettings = remember { mutableStateOf(false) }
+
+    val toggleMenu: () -> Unit = {
+        menuVisible.value = !menuVisible.value
+        if (!menuVisible.value) showSettings.value = false
+    }
 
     // 应用是 edge-to-edge（targetSdk 35）绘制：系统状态栏 / 手势条会盖在内容之上。
     // 顶部栏与底部章节条必须避开系统栏区域，否则：
@@ -165,12 +178,13 @@ fun ComicReaderScreen(
                 VerticalScrollReader(
                     images = images,
                     headers = imageHeaders,
+                    scripts = imageScripts,
                     chapterIndex = chapterPosition,
                     hasPrevChapter = hasPrevChapter,
                     hasNextChapter = hasNextChapter,
                     onPrevChapter = { viewModel.prevChapter() },
                     onNextChapter = { viewModel.nextChapter() },
-                    onTap = { showSettings.value = !showSettings.value },
+                    onTap = toggleMenu,
                     bottomContentPadding = barTotalHeight,
                 )
             }
@@ -179,54 +193,70 @@ fun ComicReaderScreen(
                 HorizontalPagerReader(
                     images = images,
                     headers = imageHeaders,
+                    scripts = imageScripts,
                     currentPage = currentPage,
                     chapterIndex = chapterPosition,
                     onPageChange = viewModel::goToPage,
-                    onTap = { showSettings.value = !showSettings.value },
+                    onTap = toggleMenu,
                     onPrevChapter = { viewModel.prevChapter() },
                     onNextChapter = { viewModel.nextChapter() },
                 )
             }
         }
 
-        // 顶部栏
-        Row(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .background(Color.Black.copy(alpha = 0.7f))
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        // ===== 菜单 = 顶部栏 + 设置面板 + 底部章节条，由「点击画面」统一呼出 / 收起 =====
+        // 此前顶部栏与底部章节条是常驻的，会一直压着图片；现在它们都属于菜单，
+        // 不呼出时整屏都是图片。
+        AnimatedVisibility(
+            visible = menuVisible.value,
+            modifier = Modifier.align(Alignment.TopStart),
+            enter = fadeIn(),
+            exit = fadeOut(),
         ) {
-            Text(
-                text = "‹ 返回",
-                color = Color.White,
-                style = MaterialTheme.typography.titleMedium,
+            Row(
                 modifier = Modifier
-                    .clickable(onClick = onBack)
-                    .padding(8.dp),
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                text = chapterTitle,
-                color = Color.White,
-                maxLines = 1,
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Spacer(Modifier.weight(1f))
-            IconButton(onClick = { showSettings.value = !showSettings.value }) {
-                Icon(Icons.Filled.Settings, contentDescription = "设置", tint = Color.White)
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .background(Color.Black.copy(alpha = 0.7f))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "‹ 返回",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier
+                        .clickable(onClick = onBack)
+                        .padding(8.dp),
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = chapterTitle,
+                    color = Color.White,
+                    maxLines = 1,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = { showSettings.value = !showSettings.value }) {
+                    Icon(Icons.Filled.Settings, contentDescription = "设置", tint = Color.White)
+                }
             }
         }
 
-        // 设置面板（上移整个底部章节条的高度，避免被遮挡）
-        if (showSettings.value) {
+        // 设置面板（菜单的一部分；上移整个底部章节条的高度，避免被遮挡）
+        AnimatedVisibility(
+            visible = menuVisible.value && showSettings.value,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = barTotalHeight),
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
             Surface(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .padding(bottom = barTotalHeight),
+                    // 吞掉面板内的点击，避免点空白处把菜单一起收起
+                    .clickable(interactionSource = null, indication = null) { },
                 color = Color(0xFF1E1E1E),
                 shadowElevation = 8.dp,
             ) {
@@ -240,7 +270,7 @@ fun ComicReaderScreen(
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "滚到本话结尾继续拖 → 下一话；滚到开头继续拖 → 上一话（左右翻页同理）",
+                        text = "点击画面呼出 / 收起菜单；滚到本话结尾继续拖 → 下一话，滚到开头继续拖 → 上一话（左右翻页同理）",
                         color = Color(0xFF9E9E9E),
                         style = MaterialTheme.typography.labelSmall,
                     )
@@ -248,17 +278,23 @@ fun ComicReaderScreen(
             }
         }
 
-        // ===== 常驻底部章节导航条（与小说阅读器一致的「上一话 / 下一话」机制）=====
-        ComicChapterBar(
+        // 底部章节导航条（与小说阅读器一致的「上一话 / 下一话」机制，属菜单）
+        AnimatedVisibility(
+            visible = menuVisible.value,
             modifier = Modifier.align(Alignment.BottomCenter),
-            chapterTitle = chapterTitle,
-            chapterPosition = chapterPosition,
-            chapterCount = chapterCount,
-            hasPrevChapter = hasPrevChapter,
-            hasNextChapter = hasNextChapter,
-            onPrevChapter = { viewModel.prevChapter() },
-            onNextChapter = { viewModel.nextChapter() },
-        )
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            ComicChapterBar(
+                chapterTitle = chapterTitle,
+                chapterPosition = chapterPosition,
+                chapterCount = chapterCount,
+                hasPrevChapter = hasPrevChapter,
+                hasNextChapter = hasNextChapter,
+                onPrevChapter = { viewModel.prevChapter() },
+                onNextChapter = { viewModel.nextChapter() },
+            )
+        }
     }
 }
 
@@ -339,6 +375,7 @@ private fun ComicChapterBar(
 private fun VerticalScrollReader(
     images: List<String>,
     headers: Map<String, String>,
+    scripts: Map<String, String>,
     chapterIndex: Int,
     hasPrevChapter: Boolean,
     hasNextChapter: Boolean,
@@ -357,10 +394,10 @@ private fun VerticalScrollReader(
     }
 
     // 预加载：当前可见项之后的 [PRELOAD_AHEAD] 张
-    LaunchedEffect(listState.firstVisibleItemIndex, images, headers) {
+    LaunchedEffect(listState.firstVisibleItemIndex, images, headers, scripts) {
         val start = listState.firstVisibleItemIndex + 1
         for (i in start until (start + PRELOAD_AHEAD).coerceAtMost(images.size)) {
-            if (i >= 0) preloadImage(context, images[i], headers)
+            if (i >= 0) preloadImage(context, images[i], headers, scripts[images[i]])
         }
     }
 
@@ -396,6 +433,7 @@ private fun VerticalScrollReader(
                     .fillMaxWidth()
                     .height(240.dp),
                 headers = headers,
+                script = scripts[url],
             )
         }
         // 章末：本话读完与去向（小说滚动模式同款「下一章 ›」入口）
@@ -479,6 +517,7 @@ private fun ChapterEndButton(
 private fun HorizontalPagerReader(
     images: List<String>,
     headers: Map<String, String>,
+    scripts: Map<String, String>,
     currentPage: Int,
     chapterIndex: Int,
     onPageChange: (Int) -> Unit,
@@ -510,10 +549,10 @@ private fun HorizontalPagerReader(
     }
 
     // 预加载相邻页
-    LaunchedEffect(pagerState.currentPage, images, headers) {
+    LaunchedEffect(pagerState.currentPage, images, headers, scripts) {
         val cur = pagerState.currentPage
         for (i in (cur - 1)..(cur + 1)) {
-            if (i in images.indices) preloadImage(context, images[i], headers)
+            if (i in images.indices) preloadImage(context, images[i], headers, scripts[images[i]])
         }
     }
 
@@ -559,6 +598,7 @@ private fun HorizontalPagerReader(
                 contentScale = ContentScale.FillWidth,
                 placeholderModifier = Modifier.fillMaxSize(),
                 headers = headers,
+                script = scripts[images.getOrNull(page) ?: ""],
             )
         }
     }
@@ -670,6 +710,9 @@ private fun Modifier.edgeOverscroll(
  *
  * 宽度撑满、高度按图片原始比例缩放（ContentScale.FillWidth）。
  * 加载中显示占位，加载失败显示占位 + 点击重试。
+ *
+ * [script] 为源给出的逐图后处理脚本（禁漫等站的「按 N 段纵向打乱」还原），
+ * 命中时挂一个 Coil transformation，让**解码后、进缓存前**就把图拼回正常顺序。
  */
 @Composable
 private fun ComicImage(
@@ -678,15 +721,18 @@ private fun ComicImage(
     contentScale: ContentScale = ContentScale.FillWidth,
     placeholderModifier: Modifier = Modifier,
     headers: Map<String, String> = emptyMap(),
+    script: String? = null,
 ) {
     val context = LocalContext.current
     // 重试计数：并入缓存键，点击重试时产生全新请求
     var retry by remember(url) { mutableIntStateOf(0) }
-    val request = remember(url, retry, headers) {
+    val bands = remember(url, script) { ComicImageScramble.bandCountFromScript(script) }
+    val request = remember(url, retry, headers, bands) {
         ImageRequest.Builder(context)
             .data(url)
             // 防盗链请求头（Referer 等）：漫画 CDN 缺它会 403
             .apply { headers.forEach { (k, v) -> setHeader(k, v) } }
+            .apply { applyBandUnscramble(this, bands) }
             .memoryCacheKey("$url#$retry")
             .build()
     }
@@ -733,12 +779,31 @@ private fun ComicError(
     }
 }
 
+/**
+ * 命中「分段乱序」还原脚本时挂上 transformation。
+ *
+ * 变换要读写像素，必须用软件位图（hardware bitmap 不支持变换），因此显式关掉。
+ */
+private fun applyBandUnscramble(builder: ImageRequest.Builder, bands: Int?) {
+    if (bands == null || bands < 2) return
+    builder.transformations(ReverseBandsTransformation(bands))
+    builder.allowHardware(false)
+}
+
 /** 预加载单张图片（异步入队，失败静默） */
-private fun preloadImage(context: Context, url: String, headers: Map<String, String> = emptyMap()) {
+private fun preloadImage(
+    context: Context,
+    url: String,
+    headers: Map<String, String> = emptyMap(),
+    script: String? = null,
+) {
     if (url.isBlank()) return
     val request = ImageRequest.Builder(context)
         .data(url)
         .apply { headers.forEach { (k, v) -> setHeader(k, v) } }
+        .apply { applyBandUnscramble(this, ComicImageScramble.bandCountFromScript(script)) }
+        // 与 ComicImage 的缓存键保持同一套（它的 retry 从 0 起），预热才真正命中
+        .memoryCacheKey("$url#0")
         .build()
     context.imageLoader.enqueue(request)
 }

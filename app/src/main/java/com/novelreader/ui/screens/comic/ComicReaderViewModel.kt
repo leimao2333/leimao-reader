@@ -33,6 +33,15 @@ class ComicReaderViewModel(
     private val _imageHeaders = MutableStateFlow<Map<String, String>>(emptyMap())
     val imageHeaders: StateFlow<Map<String, String>> = _imageHeaders.asStateFlow()
 
+    /**
+     * 逐图后处理脚本（按图片地址索引）。
+     *
+     * 部分站点（禁漫 JM）把每页按 N 段纵向打乱后下发，源的 `modifyImage` 脚本
+     * 描述了还原方式；这里把它带给阅读页，在解码阶段重排（见 ComicImageScramble）。
+     */
+    private val _imageScripts = MutableStateFlow<Map<String, String>>(emptyMap())
+    val imageScripts: StateFlow<Map<String, String>> = _imageScripts.asStateFlow()
+
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
@@ -94,6 +103,7 @@ class ComicReaderViewModel(
         _chapterTitle.value = chapter.title
         _currentPage.value = 0
         _images.value = emptyList()
+        _imageScripts.value = emptyMap()
         syncPosition()
         viewModelScope.launch {
             _loading.value = true
@@ -103,6 +113,7 @@ class ComicReaderViewModel(
                     val imgs = result.comicImages?.filter { it.isNotBlank() } ?: emptyList()
                     _images.value = imgs
                     _imageHeaders.value = result.comicHeaders
+                    _imageScripts.value = result.comicImageScripts
                     // 图片列表为空时不进入渲染分支，避免纯黑屏无提示
                     if (imgs.isEmpty()) {
                         _error.value = "本章暂无可用图片，可能源已失效或章节待更新"

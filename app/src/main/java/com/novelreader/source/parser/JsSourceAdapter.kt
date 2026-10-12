@@ -95,10 +95,12 @@ class JsSourceAdapter(
 
     // ===== 有效性自检 =====
     override suspend fun test(): Boolean {
-        return runCatching {
-            search("test", 1)
-            true
-        }.getOrDefault(false)
+        return kotlinx.coroutines.withTimeoutOrNull(15_000L) {
+            runCatching {
+                search("test", 1)
+                true
+            }.getOrDefault(false)
+        } ?: false
     }
 
     // ===== 类型转换工具 =====

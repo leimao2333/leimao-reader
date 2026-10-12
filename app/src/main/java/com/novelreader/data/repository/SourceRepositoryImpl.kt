@@ -71,6 +71,33 @@ class SourceRepositoryImpl(
     override suspend fun getAdapter(sourceId: String): SourceAdapter? =
         sourceManager.getAdapter(sourceId)
 
+    override suspend fun getRawContent(sourceId: String): String? =
+        sourceManager.getRawContent(sourceId)
+
+    override suspend fun updateSource(sourceId: String, rawContent: String): SourceInfo =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            // 先在 SourceManager 重建适配器（失败抛异常，原源不变）
+            val updated = sourceManager.updateSource(sourceId, rawContent)
+            // 持久化新的原始内容
+            val entity = sourceDao.getById(sourceId)
+            if (entity != null) {
+                sourceDao.insert(
+                    entity.copy(
+                        name = updated.name,
+                        type = updated.type.name.lowercase(),
+                        version = updated.version,
+                        author = updated.author,
+                        desc = updated.desc,
+                        baseUrl = updated.baseUrl,
+                        format = updated.format.name.lowercase(),
+                        rawContent = rawContent,
+                        category = updated.category,
+                    )
+                )
+            }
+            updated
+        }
+
     /**
      * 从数据库恢复所有源到 SourceManager（应用启动时调用）。
      */

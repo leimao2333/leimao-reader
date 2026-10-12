@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.1.0"
+    const val CURRENT_VERSION = "1.1.1"
 
     /**
      * 更新日志。
@@ -19,6 +19,17 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.1.1",
+            date = "2026-10-12",
+            changes = listOf(
+                "修复「测试源」闪退：JS 源 Rhino 引擎并发调用非线程安全导致崩溃，改为全局锁串行化所有 JS 执行",
+                "源检测增加超时保护（单个源 20s 超时），并捕获 Error 级异常，任何异常只标记「疑似失效」不再崩溃",
+                "源规则可编辑：源管理新增「编辑」入口，可直接修改源的 JSON/JS/legado 原始规则并保存生效",
+                "编辑采用「先解析后替换」策略：规则写错时原源保持不变，不会把源改坏",
+                "编辑保存后保留源 id 与启停状态，仅替换规则并重建适配器",
+            ),
+        ),
         VersionEntry(
             version = "1.1.0",
             date = "2026-10-12",

@@ -7,9 +7,13 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.common.Format
+import androidx.media3.common.Tracks
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import com.novelreader.core.network.HttpClient
 import com.novelreader.core.preferences.PreferencesManager
 import com.novelreader.core.util.LineSwitch
@@ -51,6 +55,16 @@ data class VideoPlaybackState(
     val boostSpeed: Float = 0f,
     /** 长按方向：+1 快进，-1 快退，0 无 */
     val boostDirection: Int = 0,
+)
+
+/**
+ * 清晰度档位（v1.3.9.0）。
+ *
+ * 仅从多码率 HLS master playlist 提取，按视频轨道分辨率高度去重。
+ */
+data class QualityTrack(
+    val height: Int,
+    val label: String,
 )
 
 /**
@@ -137,6 +151,14 @@ class VideoPlayerViewModel(
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
+    /** 清晰度（视频轨道）列表，来自 HLS master playlist 的多码率 variant（v1.3.9.0） */
+    private val _qualityTracks = MutableStateFlow<List<QualityTrack>>(emptyList())
+    val qualityTracks: StateFlow<List<QualityTrack>> = _qualityTracks.asStateFlow()
+
+    /** 当前播放的清晰度（null = 自动） */
+    private val _selectedQuality = MutableStateFlow<QualityTrack?>(null)
+    val selectedQuality: StateFlow<QualityTrack?> = _selectedQuality.asStateFlow()
+
     private var currentItem: NovelMediaItem? = null
     private var currentEpisode: ChapterItem? = null
     private var tickerJob: Job? = null
@@ -213,9 +235,102 @@ class VideoPlayerViewModel(
             override fun onPlayerError(error: PlaybackException) {
                 _error.value = error.message ?: "播放出错"
             }
+
+            override fun onTracksChanged(tracks: Tracks) {
+                collectQualityTracks()
+            }
         })
         player.setPlaybackSpeed(normalSpeed)
         startTicker()
+    }
+
+    /**
+     * 从当前轨道里提取视频清晰度档位（v1.3.9.0）。
+     *
+     * 仅当源是多码率（HLS master playlist 含多个视频 variant）时才有多个档位；
+     * 大多数采集站只提供 1080p 单码率，此时列表为空，UI 不显示清晰度入口。
+     */
+    private fun collectQualityTracks() {
+        val p = player ?: return
+        val videoGroups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
+        // 只有多视频轨（含自动切换组）时才值得展示清晰度
+        val formats = videoGroups.flatMap { group ->
+            (0 until group.length).map { group.getTrackFormat(it) }
+        }.filter { it.height != Format.NO_VALUE && it.height > 0 }
+
+        if (formats.size <= 1) {
+            _qualityTracks.value = emptyList()
+            _selectedQuality.value = null
+            return
+        }
+
+        val tracks = formats
+            .distinctBy { it.height }
+            .sortedByDescending { it.height }
+            .map { QualityTrack(it.height, qualityLabel(it.height, it.bitrate)) }
+
+        // 去重后若仍只有一档（多轨但同分辨率），也不展示
+        if (tracks.size <= 1) {
+            _qualityTracks.value = emptyList()
+            _selectedQuality.value = null
+            return
+        }
+        _qualityTracks.value = tracks
+
+        // 自动模式：把当前已应用的轨道覆盖映射回档位；无显式覆盖则置 null（自动）
+        val selector = p.trackSelectionParameters as? DefaultTrackSelector.Parameters
+        val currentSelected = selector?.let { params ->
+            val height = params.overrides.values
+                .flatMap { it.trackIndices }
+                .mapNotNull { idx ->
+                    p.currentTracks.groups
+                        .firstOrNull { it.type == C.TRACK_TYPE_VIDEO }
+                        ?.getTrackFormat(idx)?.height
+                }
+                .firstOrNull()
+            tracks.firstOrNull { it.height == height }
+        }
+        _selectedQuality.value = currentSelected
+    }
+
+    /** 清晰度标签：`1080P` / `720P` / `480P`（带码率可选，暂只显示分辨率） */
+    private fun qualityLabel(height: Int, bitrate: Int): String {
+        val name = when {
+            height >= 2160 -> "4K"
+            height >= 1440 -> "2K"
+            height >= 1080 -> "1080P"
+            height >= 720 -> "720P"
+            height >= 480 -> "480P"
+            else -> "360P"
+        }
+        return name
+    }
+
+    /** 切换到指定清晰度（按分辨率高度锁定对应视频轨道） */
+    fun selectQuality(track: QualityTrack) {
+        val p = player ?: return
+        val selector = p.trackSelectionParameters as? DefaultTrackSelector.Parameters ?: return
+        val group = p.currentTracks.groups.firstOrNull { it.type == C.TRACK_TYPE_VIDEO } ?: return
+        // 找到该分辨率对应的轨道下标
+        val index = (0 until group.length).firstOrNull {
+            group.getTrackFormat(it).height == track.height
+        } ?: return
+        p.trackSelectionParameters = selector.buildUpon()
+            .setOverrideForType(
+                TrackSelectionOverride(group.mediaTrackGroup, index),
+            )
+            .build()
+        _selectedQuality.value = track
+    }
+
+    /** 恢复自动清晰度（清除轨道覆盖） */
+    fun resetQuality() {
+        val p = player ?: return
+        val selector = p.trackSelectionParameters as? DefaultTrackSelector.Parameters ?: return
+        p.trackSelectionParameters = selector.buildUpon()
+            .clearOverrides()
+            .build()
+        _selectedQuality.value = null
     }
 
     fun init(item: NovelMediaItem, episodes: List<ChapterItem>, episode: ChapterItem) {
@@ -292,6 +407,10 @@ class VideoPlayerViewModel(
         seekToMs: Long? = null,
     ) {
         val player = player ?: return
+
+        // 换集 / 换源时清空清晰度状态，待新流的轨道就绪后由 onTracksChanged 重建
+        _qualityTracks.value = emptyList()
+        _selectedQuality.value = null
 
         val mediaItem = MediaItem.Builder().setUri(url).build()
 

@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
@@ -101,6 +102,10 @@ fun BoxScope.VideoControlsOverlay(
     onNext: () -> Unit,
     onToggleFullscreen: () -> Unit,
     onOpenEpisodes: () -> Unit,
+    qualityTracks: List<QualityTrack> = emptyList(),
+    selectedQuality: QualityTrack? = null,
+    onSelectQuality: (QualityTrack) -> Unit = {},
+    onResetQuality: () -> Unit = {},
 ) {
     val duration = durationMs.coerceAtLeast(0L)
 
@@ -219,6 +224,7 @@ fun BoxScope.VideoControlsOverlay(
     ) {
         var dragValue by remember { mutableStateOf<Float?>(null) }
         var speedMenuOpen by remember { mutableStateOf(false) }
+        var qualityMenuOpen by remember { mutableStateOf(false) }
 
         Column(
             modifier = Modifier
@@ -318,6 +324,64 @@ fun BoxScope.VideoControlsOverlay(
                 )
 
                 Spacer(Modifier.weight(1f))
+
+                // 清晰度（仅多码率源显示）
+                if (qualityTracks.isNotEmpty()) {
+                    Box {
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { qualityMenuOpen = true }
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                Icons.Filled.HighQuality,
+                                contentDescription = "清晰度",
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = selectedQuality?.label ?: "自动",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = qualityMenuOpen,
+                            onDismissRequest = { qualityMenuOpen = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = "自动",
+                                        fontWeight = if (selectedQuality == null) FontWeight.Bold else FontWeight.Normal,
+                                    )
+                                },
+                                onClick = {
+                                    onResetQuality()
+                                    qualityMenuOpen = false
+                                },
+                            )
+                            qualityTracks.forEach { track ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = track.label,
+                                            fontWeight = if (selectedQuality?.height == track.height) FontWeight.Bold else FontWeight.Normal,
+                                        )
+                                    },
+                                    onClick = {
+                                        onSelectQuality(track)
+                                        qualityMenuOpen = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.width(4.dp))
+                }
 
                 IconButton(onClick = onToggleFullscreen) {
                     Icon(

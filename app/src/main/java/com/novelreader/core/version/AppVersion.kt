@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.3.8.2"
+    const val CURRENT_VERSION = "1.3.9.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.3.9.0",
+            date = "2026-10-13",
+            changes = listOf(
+                "**影视首页聚合式源**：不再让用户手动挑单个源（实测采集站失效比例极高，约三分之二已死），改为自动探测所有存活源 → 合并它们的分类（同名合并）→ 每个分类跨源聚合内容去重。死源在探测阶段直接跳过，不再有「选到死源空屏」的问题",
+                "**短剧频道改为红果短剧式**：原来的全屏上下滑沉浸流改为「分类 Tab + 竖屏海报墙」——顶部横向分类 Tab（跨源聚合去重的短剧分类），下方 3 列 3:4 竖版海报，点海报进现有影视详情页看全部剧集 / 换源 / 播放",
+                "**视频播放新增清晰度调节**：控制层底部新增「清晰度」菜单，读取 HLS 多码率流的所有分辨率档位（4K / 2K / 1080P / 720P / 480P / 360P），点选即锁定对应轨道，支持一键恢复「自动」。单码率源不显示该入口（多数采集站仅 1080p 单码率）",
+            ),
+        ),
         VersionEntry(
             version = "1.3.8.2",
             date = "2026-10-13",

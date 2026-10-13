@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novelreader.core.util.VideoFilters
 import com.novelreader.domain.model.ChapterItem
+import com.novelreader.domain.model.ExploreCategory
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.BookRepository
@@ -287,6 +288,8 @@ class HomeViewModel(
         val error: String? = null,
         /** 非致命提示（如「已自动切换到某源」），独立于 error，不随重新加载清除 */
         val notice: String? = null,
+        /** 聚合模式下探测出的存活源 id 列表（分区视图加载时填充，网格视图复用） */
+        val availableSources: List<String> = emptyList(),
     ) {
         val currentSourceName: String
             get() = sources.firstOrNull { it.id == currentSourceId }?.name.orEmpty()
@@ -342,7 +345,6 @@ class HomeViewModel(
     /** 切换影视首页的源 */
     fun selectVideoSource(sourceId: String) {
         if (sourceId == _videoHome.value.currentSourceId) return
-        autoSwitchTried.clear()
         _videoHome.value = _videoHome.value.copy(
             currentSourceId = sourceId,
             categories = emptyList(),
@@ -517,132 +519,98 @@ class HomeViewModel(
     }
 
     /**
-     * 分区视图：继续观看 + 各一级分类各拉一页，组成多排横滑。
+     * 分区视图：继续观看 + 各分类（**跨源聚合**）各一排横滑。
      *
-     * 请求量控制：分类先 `ac=list` 拿一次，随后每个分类一次 `ac=detail&pg=1`。
-     * 一份配置里分类可能十几个，所以只取前 [MAX_VIDEO_ROWS] 个，
-     * 并限定 [ROWS_CONCURRENCY] 路并发 —— 弱站被十几个并发请求打挂过，不敢全放。
+     * 聚合式源（v1.3.9.0）：不再让用户手动挑单个源（实测采集站失效比例极高，约 2/3 源已死），
+     * 而是**自动探测所有可用源 → 合并它们的分类（同名合并）→ 每个分类聚合各源内容去重**。
+     * 死源在探测阶段直接跳过，不再有「选到死源空屏」的问题。
      *
-     * 失败处理：个别分类失败只丢那一排；**首批全灭**才判定源不可达。
-     * 不可达时**自动测活并切换**到第一个可用源（采集站失效比例高，实测 39 个源
-     * 只有约 1/3 存活，让用户手动逐个试几乎必踩死源）；全部不可达才报错。
+     * 请求量控制：存活源取前 [MAX_AGGREGATE_SOURCES] 个，分类合并后取前 [MAX_VIDEO_ROWS] 个，
+     * 每个分类并发拉各源内容（[ROWS_CONCURRENCY] 路），单源超时由仓库层兜底。
      */
     private suspend fun loadVideoSections(sourceId: String) {
         _videoHome.value = _videoHome.value.copy(loading = true, loadingMore = false, error = null)
 
-        // 分类接口都打不通 = 源当前不可达：先尝试自动换源，换不了再报错
-        val categories = runCatching { contentRepository.exploreCategoriesOf(sourceId) }.getOrElse {
-            tryAutoSwitchSource(fromId = sourceId, reason = "连接不上该视频源")
+        val all = _videoHome.value.sources
+        if (all.isEmpty()) {
+            _videoHome.value = _videoHome.value.copy(
+                loading = false, error = "还没有可用的视频源，去「源管理 → 导入源」添加",
+            )
             return
         }
 
-        // 部分源的 ac=list 不返回 class：退化成单排「全部」，至少还有内容可看
-        val plan: List<Pair<String, String>> = if (categories.isEmpty()) {
-            listOf("" to "全部")
-        } else {
-            categories.take(MAX_VIDEO_ROWS).map { it.url to it.title }
+        // 1) 探测存活源（能拉到分类的源；分类为空的源退化为一次内容请求探测）
+        val alive = coroutineScope {
+            all.take(MAX_AGGREGATE_SOURCES).map { src -> async {
+                val alive = runCatching {
+                    contentRepository.exploreCategoriesOf(src.id).isNotEmpty()
+                }.getOrDefault(false) || runCatching {
+                    contentRepository.explore(src.id, "", 1).isNotEmpty()
+                }.getOrDefault(false)
+                if (alive) src else null
+            } }.awaitAll().filterNotNull()
+        }
+        if (alive.isEmpty()) {
+            _videoHome.value = _videoHome.value.copy(
+                loading = false,
+                error = "所有视频源都暂时无法连接，请检查网络后重试",
+            )
+            return
         }
 
+        // 2) 拉各存活源的分类，按标题合并去重（保序）
+        val allCats = alive.flatMap { src ->
+            runCatching { contentRepository.exploreCategoriesOf(src.id) }.getOrDefault(emptyList())
+        }
+        val mergedCats = LinkedHashMap<String, ExploreCategory>()
+        for (cat in allCats) if (cat.title.isNotBlank() && cat.title !in mergedCats) {
+            mergedCats[cat.title] = cat
+        }
+        // 有的源不返回分类：用「全部」兜底一行
+        val plan: List<Pair<String, String>> = if (mergedCats.isEmpty()) {
+            listOf("" to "全部")
+        } else {
+            mergedCats.values.take(MAX_VIDEO_ROWS).map { it.url to it.title }
+        }
+
+        // 3) 每个分类：并发拉各存活源该分类的内容，合并去重
         val rows = mutableListOf<VideoRow>()
-        var anyFailed = false
-        var anyOk = false
         for (chunk in plan.chunked(ROWS_CONCURRENCY)) {
             val results = coroutineScope {
-                chunk.map { (id, title) ->
-                    async {
-                        Triple(
-                            id,
-                            title,
-                            runCatching { contentRepository.explore(sourceId, id, 1) }.getOrNull(),
-                        )
+                chunk.map { (catUrl, title) -> async {
+                    val merged = coroutineScope {
+                        alive.map { src -> async {
+                            runCatching { contentRepository.explore(src.id, catUrl, 1) }
+                                .getOrDefault(emptyList())
+                        } }.awaitAll().flatten()
                     }
-                }.awaitAll()
+                    val seen = LinkedHashSet<String>()
+                    val dedup = merged.filter { seen.add("${it.sourceId}:${it.id}") }
+                    Triple(catUrl, title, dedup)
+                } }.awaitAll()
             }
-            for ((id, title, items) in results) {
-                if (items == null) {
-                    anyFailed = true
-                    continue
-                }
-                anyOk = true
-                if (items.isNotEmpty()) rows += VideoRow(id, title, items)
+            for ((catUrl, title, items) in results) {
+                if (items.isNotEmpty()) rows += VideoRow(catUrl, title, items)
             }
-            if (!anyOk && anyFailed) break
         }
 
         _videoHome.value = _videoHome.value.copy(
             loading = false,
             loadingMore = false,
-            categories = categories,
+            categories = mergedCats.values.toList(),
             rows = rows,
-            error = when {
-                rows.isNotEmpty() -> {
-                    autoSwitchTried.clear()
-                    null
-                }
-                anyFailed -> {
-                    // 有分类但内容首批全灭：同样尝试自动换源
-                    val switched = tryAutoSwitchSource(fromId = sourceId, reason = null)
-                    if (switched) null else "连接不上该视频源，请检查网络或换个源试试"
-                }
-                else -> {
-                    // 请求都成功但内容全空（死源常见的「200 空响应」形态）：也自动换源
-                    val switched = tryAutoSwitchSource(fromId = sourceId, reason = null)
-                    if (switched) null else "这个源暂时没有可展示的内容，换一个源试试"
-                }
-            },
+            availableSources = alive.map { it.id },
+            error = if (rows.isEmpty()) "没有取到内容，可能是各源暂时不可用，稍后再试" else null,
         )
     }
 
     /**
-     * 当前源不可达时，自动探测其余源并切换到第一个可用的。
+     * 网格视图：单分类海报墙 + 触底分页（带片库筛选参数）。
      *
-     * 探测即「拉一次分类接口」（源不可达时 [ContentRepository.exploreCategoriesOf] 会抛异常），
-     * 顺序探测但单源限时由仓库层兜底；找到即切换（持久化记忆）并重新加载首页。
-     *
-     * @param reason 非 null 时，若最终没有任何可用源，展示该原因
-     * @return 是否成功切换到了可用源
+     * v1.3.9.0 聚合模式：展开分类后**聚合所有存活源该分类的内容**（分页），
+     * 而非只拉单个源。存活源来自分区视图探测的 [VideoHomeState.availableSources]，
+     * 若为空（直接进网格等边缘情况）则退化为当前源。
      */
-    private suspend fun tryAutoSwitchSource(fromId: String, reason: String?): Boolean {
-        autoSwitchTried += fromId
-        val candidates = _videoHome.value.sources.filter { it.id != fromId && it.id !in autoSwitchTried }
-        for (candidate in candidates) {
-            val alive = runCatching {
-                contentRepository.exploreCategoriesOf(candidate.id)
-            }.getOrDefault(emptyList()).isNotEmpty() || runCatching {
-                // 分类为空的源（ac=list 不返回 class）也可能是活的，退一步用一次内容请求探测
-                contentRepository.explore(candidate.id, "", 1).isNotEmpty()
-            }.getOrDefault(false)
-            if (!alive) continue
-
-            // 找到活源：切换（复用 selectVideoSource 的状态清理 + 持久化），并带上提示
-            _videoHome.value = _videoHome.value.copy(
-                currentSourceId = candidate.id,
-                categories = emptyList(),
-                selectedCategory = "",
-                items = emptyList(),
-                rows = emptyList(),
-                expanded = false,
-                expandedTitle = "",
-                loading = false,
-                notice = "原源不可达，已自动切换到「${candidate.name}」",
-            )
-            viewModelScope.launch {
-                runCatching { preferencesManager?.setVideoHomeSource(candidate.id) }
-            }
-            loadVideoHome(reset = true)
-            return true
-        }
-        if (reason != null) {
-            _videoHome.value = _videoHome.value.copy(
-                loading = false,
-                loadingMore = false,
-                error = "$reason，且所有视频源都暂时无法连接，请检查网络",
-            )
-        }
-        return false
-    }
-
-    /** 网格视图：单分类海报墙 + 触底分页（带片库筛选参数） */
     private suspend fun loadVideoGrid(sourceId: String, reset: Boolean) {
         if (reset) videoPage = 0
         val nextPage = videoPage + 1
@@ -655,19 +623,30 @@ class HomeViewModel(
         )
         _videoHome.value = snapshot.copy(loading = reset, loadingMore = !reset, error = null)
 
-        val items = runCatching {
-            contentRepository.exploreFiltered(sourceId, category, nextPage, filters)
-        }.getOrDefault(emptyList())
+        // 聚合源：可用源列表（含当前源去重）
+        val sourcesToUse = (snapshot.availableSources.ifEmpty { listOf(sourceId) })
+            .distinct()
+            .takeIf { it.isNotEmpty() }
+            ?: listOf(sourceId)
+
+        val fetched = coroutineScope {
+            sourcesToUse.map { sid -> async {
+                runCatching {
+                    contentRepository.exploreFiltered(sid, category, nextPage, filters)
+                }.getOrDefault(emptyList())
+            } }.awaitAll().flatten()
+        }
 
         videoPage = nextPage
         val current = _videoHome.value
-        val merged = if (reset) items else current.items + items
+        val seen = current.items.mapTo(HashSet()) { "${it.sourceId}:${it.id}" }
+        val merged = if (reset) fetched else current.items + fetched
         _videoHome.value = current.copy(
             items = merged.distinctBy { "${it.sourceId}:${it.id}" },
             loading = false,
             loadingMore = false,
-            hasMore = items.isNotEmpty(),
-            error = if (reset && items.isEmpty()) "没有取到内容，可能是源暂时不可用或该分类为空" else null,
+            hasMore = fetched.isNotEmpty(),
+            error = if (reset && fetched.isEmpty()) "没有取到内容，可能是源暂时不可用或该分类为空" else null,
         )
     }
 
@@ -677,47 +656,32 @@ class HomeViewModel(
      * 短剧频道状态。
      *
      * 数据 = 聚合所有「分类名含『短剧』」的可用源（实测豆瓣/茅台/iKun/电影天堂/猫眼/量子/360
-     * 等 7 个活源都有短剧分类），轮询各源翻页合并成 feed。
+     * 等 7 个活源都有短剧分类），短剧分类名作为顶部 Tab，选中分类后聚合各源该分类的海报。
      */
     data class ShortDramaState(
         val loading: Boolean = false,
         val loadingMore: Boolean = false,
+        /** 短剧分类名（顶部 Tab，跨源去重保序） */
+        val categories: List<String> = emptyList(),
+        /** 当前选中分类名（空 = 未选） */
+        val selectedCategory: String = "",
+        /** 当前分类的海报（跨源聚合去重） */
         val items: List<MediaItem> = emptyList(),
-        /** 参与聚合的（源, 分类）数，0 = 探测中 */
-        val planCount: Int = 0,
         val error: String? = null,
     ) {
         val loaded: Boolean get() = items.isNotEmpty()
     }
 
-    /** 短剧某部片的播放解析状态（key = sourceId:itemPath） */
-    data class DramaPlayback(
-        val loading: Boolean = true,
-        /** 当前集的播放直链 */
-        val url: String? = null,
-        /** 播放所需请求头（防盗链 Referer 等） */
-        val headers: Map<String, String> = emptyMap(),
-        val episodes: List<com.novelreader.domain.model.ChapterItem> = emptyList(),
-        val episodeIndex: Int = 0,
-        val error: String? = null,
-    )
-
     private val _shortDrama = MutableStateFlow(ShortDramaState())
     val shortDrama: StateFlow<ShortDramaState> = _shortDrama.asStateFlow()
 
-    private val _dramaPlayback = MutableStateFlow<Map<String, DramaPlayback>>(emptyMap())
-    val dramaPlayback: StateFlow<Map<String, DramaPlayback>> = _dramaPlayback.asStateFlow()
+    /** 短剧聚合计划：短剧分类名 → 各（源, 分类地址）；会话内缓存 */
+    private var dramaPlan: Map<String, List<Pair<com.novelreader.domain.model.SourceInfo, String>>>? = null
 
-    /** 短剧聚合计划：（源, 短剧分类地址），会话内缓存避免重复探测 */
-    private var dramaPlan: List<Pair<com.novelreader.domain.model.SourceInfo, String>>? = null
-
-    /** 各（源, 分类）已拉到的页数与枯竭标记 */
+    /** 各分类已拉到的页数与枯竭标记 */
     private val dramaPages = mutableMapOf<String, Int>()
     private val dramaExhausted = mutableSetOf<String>()
     private var dramaJob: kotlinx.coroutines.Job? = null
-
-    /** 本轮自动换源已尝试过的源（防死源之间循环切换；手动换源或加载成功时清空） */
-    private val autoSwitchTried = mutableSetOf<String>()
 
     /** 进入短剧 Tab：已有内容就不重复加载 */
     fun onShortDramaShown() {
@@ -727,7 +691,7 @@ class HomeViewModel(
         }
     }
 
-    /** 刷新短剧 feed（丢弃聚合计划重新探测） */
+    /** 刷新短剧（丢弃聚合计划重新探测） */
     fun refreshShortDrama() {
         dramaPlan = null
         dramaPages.clear()
@@ -736,71 +700,84 @@ class HomeViewModel(
         loadShortDrama(reset = true)
     }
 
-    /** 加载下一批（触底调用） */
+    /** 切换短剧分类 Tab */
+    fun selectShortDramaCategory(category: String) {
+        val st = _shortDrama.value
+        if (category == st.selectedCategory) return
+        _shortDrama.value = st.copy(selectedCategory = category, items = emptyList())
+        loadShortDramaCategory(category, reset = true)
+    }
+
+    /** 当前分类触底加载下一页 */
     fun loadMoreShortDrama() {
         val st = _shortDrama.value
-        if (st.loading || st.loadingMore) return
-        loadShortDrama(reset = false)
+        if (st.loading || st.loadingMore || st.selectedCategory.isEmpty()) return
+        loadShortDramaCategory(st.selectedCategory, reset = false)
     }
 
     private fun loadShortDrama(reset: Boolean) {
         dramaJob?.cancel()
         dramaJob = viewModelScope.launch {
-            if (reset) _shortDrama.value = _shortDrama.value.copy(loading = true, error = null)
-            else _shortDrama.value = _shortDrama.value.copy(loadingMore = true)
-
+            _shortDrama.value = _shortDrama.value.copy(loading = true, error = null)
             val plan = ensureDramaPlan()
             if (plan.isEmpty()) {
                 _shortDrama.value = _shortDrama.value.copy(
                     loading = false,
-                    loadingMore = false,
-                    error = "没有找到带「短剧」分类的可用视频源，去影视首页换个源或稍后再试",
+                    error = "没有找到带「短剧」分类的可用视频源",
                 )
                 return@launch
             }
-            _shortDrama.value = _shortDrama.value.copy(planCount = plan.size)
+            val categories = plan.keys.toList()
+            val first = categories.first()
+            _shortDrama.value = _shortDrama.value.copy(
+                loading = false,
+                categories = categories,
+                selectedCategory = first,
+            )
+            loadShortDramaCategory(first, reset = true)
+        }
+    }
 
-            // 一轮取 6 个（源, 分类）各拉一页，并发 3；空页标记枯竭
-            val batch = plan.filter { (src, cat) ->
-                val key = dramaKey(src.id, cat)
-                key !in dramaExhausted
-            }.take(DRAMA_BATCH)
-            if (batch.isEmpty()) {
-                _shortDrama.value = _shortDrama.value.copy(
-                    loading = false,
-                    loadingMore = false,
-                    error = if (reset) "短剧源都拉完了吗——没有更多内容了" else _shortDrama.value.error,
-                )
+    /** 加载某个短剧分类：聚合各源该分类的内容（分页） */
+    private fun loadShortDramaCategory(category: String, reset: Boolean) {
+        dramaJob?.cancel()
+        dramaJob = viewModelScope.launch {
+            val st = _shortDrama.value
+            if (reset) _shortDrama.value = st.copy(loading = true, error = null)
+            else _shortDrama.value = st.copy(loadingMore = true)
+
+            val plan = ensureDramaPlan()
+            val entries = plan[category].orEmpty()
+            if (entries.isEmpty()) {
+                _shortDrama.value = _shortDrama.value.copy(loading = false, loadingMore = false)
                 return@launch
             }
 
-            val fresh = coroutineScope {
-                batch.map { (src, cat) -> async {
-                    val key = dramaKey(src.id, cat)
-                    val page = (dramaPages[key] ?: 0) + 1
-                    val items = runCatching {
-                        contentRepository.explore(src.id, cat, page)
-                    }.getOrDefault(emptyList())
-                    if (items.isEmpty()) dramaExhausted += key else dramaPages[key] = page
-                    items
+            // 该分类下各（源, 分类地址）翻页；空页标记枯竭
+            val active = entries.filter { (src, cat) -> dramaKey(src.id, cat) !in dramaExhausted }
+            val nextPage = if (reset) 1 else (dramaPages[category] ?: 0) + 1
+            val fetched = coroutineScope {
+                active.map { (src, cat) -> async {
+                    runCatching { contentRepository.explore(src.id, cat, nextPage) }
+                        .getOrDefault(emptyList())
+                        .also { if (it.isEmpty()) dramaExhausted += dramaKey(src.id, cat) }
                 } }.awaitAll().flatten()
             }
+            if (fetched.isNotEmpty()) dramaPages[category] = nextPage
 
-            val seen = _shortDrama.value.items.mapTo(HashSet()) { "${it.sourceId}:${it.id}" }
-            val merged = if (reset) fresh else _shortDrama.value.items + fresh
-            _shortDrama.value = _shortDrama.value.copy(
-                items = merged.distinctBy { "${it.sourceId}:${it.id}" }.filter { true },
+            val current = _shortDrama.value
+            val merged = if (reset) fetched else current.items + fetched
+            _shortDrama.value = current.copy(
+                items = merged.distinctBy { "${it.sourceId}:${it.id}" },
                 loading = false,
                 loadingMore = false,
-                error = if (reset && merged.none { seen.add("${it.sourceId}:${it.id}") } && fresh.isEmpty()) {
-                    "短剧源暂时都不可用，稍后再试"
-                } else null,
+                error = if (reset && fetched.isEmpty()) "该分类暂无内容" else null,
             )
         }
     }
 
-    /** 探测所有源里带「短剧」分类的（源, 分类地址），会话内缓存 */
-    private suspend fun ensureDramaPlan(): List<Pair<com.novelreader.domain.model.SourceInfo, String>> {
+    /** 探测所有源里带「短剧」分类的，按分类名聚合 → 各（源, 分类地址）。会话内缓存 */
+    private suspend fun ensureDramaPlan(): Map<String, List<Pair<com.novelreader.domain.model.SourceInfo, String>>> {
         dramaPlan?.let { return it }
         val sources = _videoHome.value.sources.ifEmpty {
             sourceRepository?.getSourcesByType(SourceType.VIDEO)
@@ -812,71 +789,31 @@ class HomeViewModel(
                 val cats = runCatching { contentRepository.exploreCategoriesOf(src.id) }
                     .getOrDefault(emptyList())
                     .filter { it.title.contains("短剧") }
-                cats.map { src to it.url }
+                cats.map { cat -> cat.title to (src to cat.url) }
             } }.awaitAll().flatten()
         }
-        dramaPlan = found
-        return found
+        val grouped = LinkedHashMap<String, MutableList<Pair<com.novelreader.domain.model.SourceInfo, String>>>()
+        for ((title, entry) in found) {
+            grouped.getOrPut(title) { mutableListOf() }.add(entry)
+        }
+        dramaPlan = grouped
+        return grouped
     }
 
     private fun dramaKey(sourceId: String, catUrl: String) = "$sourceId|$catUrl"
 
-    /** 解析短剧某部片的当前集直链（UI 进入某页时调用） */
-    fun resolveDramaEpisode(item: MediaItem, episodeIndex: Int = 0) {
-        val key = "${item.sourceId}:${item.id}"
-        if (_dramaPlayback.value[key]?.loading == true) return
-        viewModelScope.launch {
-            _dramaPlayback.value = _dramaPlayback.value + (key to DramaPlayback(loading = true))
-            val episodes = runCatching { contentRepository.chapterList(item) }.getOrDefault(emptyList())
-            if (episodes.isEmpty()) {
-                _dramaPlayback.value = _dramaPlayback.value + (
-                    key to DramaPlayback(loading = false, error = "这部短剧暂时取不到剧集")
-                )
-                return@launch
-            }
-            val idx = episodeIndex.coerceIn(0, episodes.lastIndex)
-            val chapter = episodes[idx]
-            val result = runCatching { contentRepository.content(chapter) }.getOrNull()
-            val url = result?.videoUrl
-            val headers = result?.videoHeaders.orEmpty()
-            _dramaPlayback.value = _dramaPlayback.value + (
-                key to DramaPlayback(
-                    loading = false,
-                    url = url,
-                    headers = headers,
-                    episodes = episodes,
-                    episodeIndex = idx,
-                    error = if (url.isNullOrBlank()) "本集播放地址无效，上下滑换一部试试" else null,
-                )
-            )
-        }
-    }
-
-    /** 短剧播完当前集自动接下一集 */
-    fun nextDramaEpisode(item: MediaItem) {
-        val key = "${item.sourceId}:${item.id}"
-        val cur = _dramaPlayback.value[key] ?: return
-        val nextIdx = cur.episodeIndex + 1
-        if (nextIdx > cur.episodes.lastIndex) return  // 本部已完结，停留最后一集
-        resolveDramaEpisode(item, nextIdx)
-    }
-
-    fun consumeDramaPlayback(key: String) {
-        _dramaPlayback.value = _dramaPlayback.value - key
-    }
-
     companion object {
         /** 分区视图最多展示几排（MoonTV 首页 3 排；采集站分类多，取 6 排） */
         private const val MAX_VIDEO_ROWS = 6
+
+        /** 聚合模式最多探测几个源（实测约 1/3 存活，探测 12 个足够凑出可用源） */
+        private const val MAX_AGGREGATE_SOURCES = 12
 
         /** 分区并发拉取路数 */
         private const val ROWS_CONCURRENCY = 3
 
         /** 「继续观看」最多展示条数 */
         private const val MAX_CONTINUE_ITEMS = 12
-
-        /** 短剧 feed 一轮拉取的（源, 分类）数 */
-        private const val DRAMA_BATCH = 6
 
         /** 「继续观看」随条目带出的续播集数 extras key */
         const val EXTRA_RESUME_INDEX = "resumeIndex"

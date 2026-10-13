@@ -244,7 +244,6 @@ fun HomeScreen(
                     // 影视首页（MoonTV 风格）：继续观看 + 分类分区横滑 / 分类网格 + 四维筛选（v1.3.5.0）
                     com.novelreader.ui.screens.video.VideoHomeContent(
                         state = videoHomeState,
-                        onSelectSource = viewModel::selectVideoSource,
                         onSelectCategory = viewModel::selectVideoCategory,
                         onSelectArea = viewModel::selectVideoArea,
                         onSelectYear = viewModel::selectVideoYear,
@@ -259,17 +258,13 @@ fun HomeScreen(
                 }
 
                 if (showShortDrama) {
-                    // 短剧频道（v1.3.9.0）：竖屏沉浸上下滑，聚合各源「短剧」分类
+                    // 短剧频道（红果式：分类 Tab + 竖屏海报网格）
                     val dramaState by viewModel.shortDrama.collectAsState()
-                    val dramaPlayback by viewModel.dramaPlayback.collectAsState()
                     com.novelreader.ui.screens.video.ShortDramaScreen(
                         state = dramaState,
-                        playback = dramaPlayback,
-                        onBack = { videoSubTab = 0 },
-                        onRefresh = viewModel::refreshShortDrama,
+                        onSelectCategory = viewModel::selectShortDramaCategory,
                         onLoadMore = viewModel::loadMoreShortDrama,
-                        onResolveEpisode = viewModel::resolveDramaEpisode,
-                        onNextEpisode = viewModel::nextDramaEpisode,
+                        onRefresh = viewModel::refreshShortDrama,
                         onOpenDetail = onOpenVideoItem,
                     )
                 }

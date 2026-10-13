@@ -88,7 +88,6 @@ import com.novelreader.ui.screens.common.HomeViewModel
 @Composable
 fun VideoHomeContent(
     state: HomeViewModel.VideoHomeState,
-    onSelectSource: (String) -> Unit,
     onSelectCategory: (String) -> Unit,
     onSelectArea: (String) -> Unit,
     onSelectYear: (String) -> Unit,
@@ -101,8 +100,6 @@ fun VideoHomeContent(
     onOpenSearch: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var pickerOpen by remember { mutableStateOf(false) }
-
     Column(modifier = modifier.fillMaxSize()) {
         if (state.expanded) {
             VideoGridContent(
@@ -112,7 +109,6 @@ fun VideoHomeContent(
                 onSelectArea = onSelectArea,
                 onSelectYear = onSelectYear,
                 onSelectOrder = onSelectOrder,
-                onOpenPicker = { pickerOpen = true },
                 onItemClick = onItemClick,
                 onRefresh = onRefresh,
                 onLoadMore = onLoadMore,
@@ -121,25 +117,12 @@ fun VideoHomeContent(
         } else {
             VideoSectionsContent(
                 state = state,
-                onOpenPicker = { pickerOpen = true },
                 onExpandCategory = onExpandCategory,
                 onItemClick = onItemClick,
                 onRefresh = onRefresh,
                 onOpenSearch = onOpenSearch,
             )
         }
-    }
-
-    if (pickerOpen) {
-        SourcePickerDialog(
-            sources = state.sources,
-            currentId = state.currentSourceId,
-            onPick = {
-                pickerOpen = false
-                onSelectSource(it)
-            },
-            onDismiss = { pickerOpen = false },
-        )
     }
 }
 
@@ -148,7 +131,6 @@ fun VideoHomeContent(
 @Composable
 private fun VideoSectionsContent(
     state: HomeViewModel.VideoHomeState,
-    onOpenPicker: () -> Unit,
     onExpandCategory: (String, String) -> Unit,
     onItemClick: (MediaItem) -> Unit,
     onRefresh: () -> Unit,
@@ -161,7 +143,6 @@ private fun VideoSectionsContent(
         item(key = "header") {
             SourceHeaderRow(
                 state = state,
-                onOpenPicker = onOpenPicker,
                 onRefresh = onRefresh,
                 onOpenSearch = onOpenSearch,
             )
@@ -283,11 +264,10 @@ private fun SectionHeader(title: String, onMore: (() -> Unit)? = null) {
     }
 }
 
-/** 顶部：搜索入口 + 当前源（可点切换）+ 刷新 */
+/** 顶部：搜索入口 + 聚合源状态 + 刷新 */
 @Composable
 private fun SourceHeaderRow(
     state: HomeViewModel.VideoHomeState,
-    onOpenPicker: () -> Unit,
     onRefresh: () -> Unit,
     onOpenSearch: () -> Unit,
     leading: (@Composable () -> Unit)? = null,
@@ -308,31 +288,18 @@ private fun SourceHeaderRow(
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.width(8.dp))
+        // 聚合模式：显示「聚合 N 个源」；不再提供手动选单源（死源比例高，聚合天然跳过）
         Row(
-            modifier = Modifier
-                .weight(1f)
-                .clickable(enabled = state.sources.isNotEmpty()) { onOpenPicker() },
+            modifier = Modifier.weight(1f),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            val aliveCount = state.availableSources.size
             Text(
-                text = state.currentSourceName.ifBlank { "选择视频源" },
+                text = if (aliveCount > 0) "聚合 $aliveCount 个源" else "正在探测视频源…",
                 style = MaterialTheme.typography.titleSmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
             )
-            if (state.sources.size > 1) {
-                Icon(
-                    Icons.Filled.ArrowDropDown,
-                    contentDescription = "切换源",
-                    modifier = Modifier.size(20.dp),
-                )
-                Text(
-                    text = "（${state.sources.size} 个源）",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
         }
         IconButton(onClick = onRefresh) {
             Icon(Icons.Filled.Refresh, contentDescription = "刷新")
@@ -350,7 +317,6 @@ private fun VideoGridContent(
     onSelectArea: (String) -> Unit,
     onSelectYear: (String) -> Unit,
     onSelectOrder: (String) -> Unit,
-    onOpenPicker: () -> Unit,
     onItemClick: (MediaItem) -> Unit,
     onRefresh: () -> Unit,
     onLoadMore: () -> Unit,
@@ -370,7 +336,6 @@ private fun VideoGridContent(
     Column(modifier = Modifier.fillMaxSize()) {
         SourceHeaderRow(
             state = state,
-            onOpenPicker = onOpenPicker,
             onRefresh = onRefresh,
             onOpenSearch = onOpenSearch,
             leading = {
@@ -810,59 +775,3 @@ private fun GridSkeleton() {
     }
 }
 
-/** 视频源选择弹窗（源可能很多，用列表滚动） */
-@Composable
-private fun SourcePickerDialog(
-    sources: List<SourceInfo>,
-    currentId: String,
-    onPick: (String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("选择视频源（${sources.size}）") },
-        text = {
-            Box(modifier = Modifier.heightIn(max = 420.dp)) {
-                LazyColumn {
-                    items(sources, key = { it.id }) { source ->
-                        Column {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { onPick(source.id) }
-                                    .padding(vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    text = source.name,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = if (source.id == currentId) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurface
-                                    },
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                if (source.id == currentId) {
-                                    Text(
-                                        text = "使用中",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.primary,
-                                    )
-                                }
-                            }
-                            HorizontalDivider(
-                                thickness = 0.5.dp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
-                            )
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-    )
-}

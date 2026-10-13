@@ -118,6 +118,8 @@ fun VideoPlayerScreen(
     val currentLineIndex by viewModel.currentLineIndex.collectAsState()
     val lineSpeeds by viewModel.lineSpeeds.collectAsState()
     val speedTesting by viewModel.speedTesting.collectAsState()
+    val qualityTracks by viewModel.qualityTracks.collectAsState()
+    val selectedQuality by viewModel.selectedQuality.collectAsState()
 
     // 创建并绑定 ExoPlayer（生命周期由 Composable 管理）
     val player = remember {
@@ -548,6 +550,10 @@ fun VideoPlayerScreen(
                 onNext = { viewModel.playNext() },
                 onToggleFullscreen = { isFullscreen = !isFullscreen },
                 onOpenEpisodes = { episodesOpen = true },
+                qualityTracks = qualityTracks,
+                selectedQuality = selectedQuality,
+                onSelectQuality = { viewModel.selectQuality(it) },
+                onResetQuality = { viewModel.resetQuality() },
             )
 
             // ===== 选集 / 换源 浮层 =====

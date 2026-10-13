@@ -68,7 +68,7 @@ class VeneraEngine(private val context: Context) {
     private val bootMutex = Mutex()
     private val callSeq = java.util.concurrent.atomic.AtomicInteger(0)
 
-    /** 独立 Cookie Jar：与 legado 源隔离，避免互相污染 */
+    /** 独立 Cookie Jar：与 legado 源隔离，避免互相污染；登录态 Cookie 持久化到本地 */
     private val cookieJar = SimpleCookieJar()
 
     private val client: OkHttpClient by lazy {
@@ -400,6 +400,46 @@ class VeneraEngine(private val context: Context) {
 
     private fun prefs() = context.getSharedPreferences("venera_store", Context.MODE_PRIVATE)
 
+    // ==================== 账号登录（v1.3.0）====================
+
+    /** 源登录态标记的 prefs key */
+    private fun loginMarkKey(key: String) = "login_ok_$key"
+
+    /**
+     * 该源此前是否成功登录过（本地标记，供 UI 展示「已登录」徽标）。
+     *
+     * 只读 prefs，不启动 WebView——UI 列表刷新时可以放心调用。
+     * 真实登录态以源自己的 checkLogin / 服务端会话为准。
+     */
+    fun isLoginMarked(key: String): Boolean = prefs().getString(loginMarkKey(key), null) == "1"
+
+    /**
+     * 查询源的账号能力与登录态。
+     *
+     * @return (是否支持登录, 是否已登录)——后者依赖源实现 checkLogin；未实现时回退本地标记
+     */
+    suspend fun accountInfo(sourceKey: String): Pair<Boolean, Boolean> {
+        val json = call(sourceKey, "accountInfo")
+        val obj = runCatching { JsonParser.parseString(json).asJsonObject }
+            .getOrElse { return Pair(false, isLoginMarked(sourceKey)) }
+        val supported = obj.get("supported")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
+        val loggedInRemote = obj.get("loggedIn")?.takeIf { it.isJsonPrimitive }?.asBoolean
+        return Pair(supported, loggedInRemote ?: isLoginMarked(sourceKey))
+    }
+
+    /** 账号密码登录：成功后写本地登录标记（Cookie 由 saveFromResponse 自动持久化） */
+    suspend fun login(sourceKey: String, account: String, password: String) {
+        call(sourceKey, "login", account, password)
+        prefs().edit().putString(loginMarkKey(sourceKey), "1").apply()
+    }
+
+    /** 退出登录：清登录标记 + 清该源 Cookie */
+    suspend fun logout(sourceKey: String) {
+        runCatching { call(sourceKey, "logout") }
+        prefs().edit().remove(loginMarkKey(sourceKey)).apply()
+        cookieJar.clearAll()
+    }
+
     private fun jsString(text: String): String = gson.toJson(text)
 
     private fun friendly(e: Throwable): String =
@@ -407,9 +447,27 @@ class VeneraEngine(private val context: Context) {
 
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
-    /** 简易内存 CookieJar */
-    private class SimpleCookieJar : CookieJar {
+    /**
+     * 简易 CookieJar：内存存取 + 登录 Cookie 持久化。
+     *
+     * v1.3.0：登录后的会话 Cookie 必须在应用重启后仍有效（否则每次启动都要重新登录），
+     * 因此按 host 写入 SharedPreferences，引擎创建时回灌。
+     */
+    private inner class SimpleCookieJar : CookieJar {
         private val store = ConcurrentHashMap<String, MutableList<Cookie>>()
+
+        init {
+            // 回灌持久化的 Cookie（按请求 host 分组存储）
+            val all = prefs().all
+            all.entries.filter { it.key.startsWith(COOKIE_PREF_PREFIX) }.forEach { (prefKey, value) ->
+                val host = prefKey.removePrefix(COOKIE_PREF_PREFIX)
+                val httpUrl = runCatching { "https://$host/".toHttpUrl() }.getOrNull() ?: return@forEach
+                (value as? String)?.split('\n')?.forEach { line ->
+                    val cookie = runCatching { Cookie.parse(httpUrl, line) }.getOrNull()
+                    if (cookie != null) store.getOrPut(host) { mutableListOf() }.add(cookie)
+                }
+            }
+        }
 
         override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
             val key = url.host
@@ -419,6 +477,7 @@ class VeneraEngine(private val context: Context) {
                     list.removeAll { it.name == c.name && it.path == c.path }
                     if (c.expiresAt > System.currentTimeMillis()) list.add(c)
                 }
+                persistHost(key, list)
             }
         }
 
@@ -433,6 +492,21 @@ class VeneraEngine(private val context: Context) {
 
         fun clear(url: HttpUrl) {
             store.remove(url.host)
+            prefs().edit().remove(COOKIE_PREF_PREFIX + url.host).apply()
+        }
+
+        /** 退出登录：清空全部 Cookie（登录态是全站性的，逐 host 清理意义不大） */
+        fun clearAll() {
+            store.keys.toList().forEach { host ->
+                store.remove(host)
+                prefs().edit().remove(COOKIE_PREF_PREFIX + host).apply()
+            }
+        }
+
+        private fun persistHost(host: String, cookies: List<Cookie>) {
+            // Cookie.toString() 产出 Set-Cookie 风格行，Cookie.parse 可无损还原
+            val text = synchronized(cookies) { cookies.joinToString("\n") { it.toString() } }
+            prefs().edit().putString(COOKIE_PREF_PREFIX + host, text).apply()
         }
     }
 
@@ -443,5 +517,8 @@ class VeneraEngine(private val context: Context) {
                 "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         private const val START_TIMEOUT_MS = 20_000L
         private const val CALL_TIMEOUT_MS = 60_000L
+
+        /** Cookie 持久化 prefs key 前缀：venera_store 里 "ck_<host>" → 多行 Set-Cookie 文本 */
+        private const val COOKIE_PREF_PREFIX = "ck_"
     }
 }

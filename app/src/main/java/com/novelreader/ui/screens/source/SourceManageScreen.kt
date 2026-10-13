@@ -53,6 +53,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.novelreader.domain.model.SourceFormat
 import com.novelreader.domain.model.SourceInfo
 import com.novelreader.domain.model.SourceType
 
@@ -78,6 +79,8 @@ fun SourceManageScreen(
     var selectedType by remember { mutableStateOf<SourceType?>(null) }
     // 内容分类筛选：null = 全部分类
     var selectedCategory by remember { mutableStateOf<String?>(null) }
+    // 漫画源二级格式筛选（v1.3.0）：选中「漫画」类型后出现下级菜单（legado / Venera）
+    var selectedFormat by remember { mutableStateOf<SourceFormat?>(null) }
     // 排序方式
     var sortOrder by remember { mutableStateOf(SourceSortOrder.DEFAULT) }
     // 视图模式：false = 列表，true = 表格
@@ -87,6 +90,8 @@ fun SourceManageScreen(
     // 批量选择模式
     var selectionMode by remember { mutableStateOf(false) }
     val selectedIds = remember { androidx.compose.runtime.mutableStateListOf<String>() }
+    // 正在登录的 Venera 源（非空弹出登录对话框，v1.3.0）
+    var loginTarget by remember { mutableStateOf<SourceInfo?>(null) }
 
     LaunchedEffect(Unit) { viewModel.observe() }
 
@@ -112,10 +117,19 @@ fun SourceManageScreen(
         if (selectedType == null) keywordFiltered
         else keywordFiltered.filter { it.type == selectedType }
     }
-    val grouped = remember(typeFiltered) { viewModel.groupByCategory(typeFiltered) }
-    val categories = remember(typeFiltered) { viewModel.sortedCategories(typeFiltered) }
-    val categoryFiltered = remember(typeFiltered, selectedCategory) {
-        if (selectedCategory == null) typeFiltered
+    // 切走漫画类型时复位二级筛选
+    LaunchedEffect(selectedType) {
+        if (selectedType != SourceType.COMIC) selectedFormat = null
+    }
+    // 二级格式筛选只对漫画类型生效
+    val formatFiltered = remember(typeFiltered, selectedType, selectedFormat) {
+        if (selectedType != SourceType.COMIC || selectedFormat == null) typeFiltered
+        else typeFiltered.filter { it.format == selectedFormat }
+    }
+    val grouped = remember(formatFiltered) { viewModel.groupByCategory(formatFiltered) }
+    val categories = remember(formatFiltered) { viewModel.sortedCategories(formatFiltered) }
+    val categoryFiltered = remember(formatFiltered, selectedCategory) {
+        if (selectedCategory == null) formatFiltered
         else grouped[selectedCategory] ?: emptyList()
     }
     val displayedSources = remember(categoryFiltered, sortOrder) {
@@ -276,6 +290,13 @@ fun SourceManageScreen(
                     selected = selectedType,
                     onSelect = { selectedType = it },
                 )
+                // 漫画源二级格式筛选（legado / Venera，v1.3.0）
+                if (selectedType == SourceType.COMIC) {
+                    FormatFilterBar(
+                        selected = selectedFormat,
+                        onSelect = { selectedFormat = it },
+                    )
+                }
                 // 内容分类筛选栏
                 CategoryFilterBar(
                     categories = categories,
@@ -369,6 +390,8 @@ fun SourceManageScreen(
                         onDelete = { viewModel.deleteSource(it) },
                     )
                 } else {
+                    val loginStates by viewModel.loginStates.collectAsState()
+                    val loggingIn by viewModel.loggingIn.collectAsState()
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
@@ -385,9 +408,12 @@ fun SourceManageScreen(
                                     testResults[source.id] == false -> SourceTestStatus.FAILED
                                     else -> SourceTestStatus.UNKNOWN
                                 },
+                                loggedIn = loginStates[source.id] == true,
+                                loggingIn = source.id in loggingIn,
                                 onToggle = { viewModel.toggleEnabled(source) },
                                 onEdit = { viewModel.openEditSource(source) },
                                 onDelete = { viewModel.deleteSource(source) },
+                                onLogin = { loginTarget = source },
                                 onLongClick = {
                                     selectionMode = true
                                     if (source.id !in selectedIds) selectedIds.add(source.id)
@@ -406,6 +432,110 @@ fun SourceManageScreen(
 
     // ===== 源规则编辑对话框 =====
     SourceEditDialog(viewModel = viewModel)
+
+    // ===== Venera 登录对话框（v1.3.0）=====
+    val loggingIn by viewModel.loggingIn.collectAsState()
+    val target = loginTarget
+    if (target != null) {
+        VeneraLoginDialog(
+            source = target,
+            loggingIn = target.id in loggingIn,
+            loggedIn = viewModel.loginStates.collectAsState().value[target.id] == true,
+            onConfirm = { account, password ->
+                viewModel.login(target, account, password)
+                loginTarget = null
+            },
+            onLogout = {
+                viewModel.logout(target)
+                loginTarget = null
+            },
+            onDismiss = { loginTarget = null },
+        )
+    }
+}
+
+/**
+ * Venera 源登录对话框（v1.3.0）。
+ *
+ * 输入账号密码调用源自己实现的 account.login；已登录时提供「退出登录」。
+ */
+@Composable
+private fun VeneraLoginDialog(
+    source: SourceInfo,
+    loggingIn: Boolean,
+    loggedIn: Boolean,
+    onConfirm: (String, String) -> Unit,
+    onLogout: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var account by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var showPassword by remember { mutableStateOf(false) }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { if (!loggingIn) onDismiss() },
+        title = { Text("登录 · ${source.name}") },
+        text = {
+            Column {
+                Text(
+                    text = "使用该漫画源的网站账号登录，会话将保存到本机",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                androidx.compose.material3.OutlinedTextField(
+                    value = account,
+                    onValueChange = { account = it },
+                    label = { Text("账号 / 邮箱") },
+                    singleLine = true,
+                    enabled = !loggingIn,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                androidx.compose.material3.OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("密码") },
+                    singleLine = true,
+                    enabled = !loggingIn,
+                    visualTransformation = if (showPassword) {
+                        androidx.compose.ui.text.input.VisualTransformation.None
+                    } else {
+                        androidx.compose.ui.text.input.PasswordVisualTransformation()
+                    },
+                    trailingIcon = {
+                        IconButton(onClick = { showPassword = !showPassword }) {
+                            Icon(
+                                imageVector = if (showPassword) Icons.Default.Close else Icons.Default.Search,
+                                contentDescription = if (showPassword) "隐藏密码" else "显示密码",
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !loggingIn && account.isNotBlank() && password.isNotBlank(),
+                onClick = { onConfirm(account, password) },
+            ) { Text(if (loggingIn) "登录中…" else "登录") }
+        },
+        dismissButton = {
+            Row {
+                if (loggedIn) {
+                    TextButton(
+                        enabled = !loggingIn,
+                        onClick = onLogout,
+                    ) { Text("退出登录") }
+                }
+                TextButton(
+                    enabled = !loggingIn,
+                    onClick = onDismiss,
+                ) { Text("取消") }
+            }
+        },
+    )
 }
 
 /**
@@ -590,6 +720,38 @@ private fun TypeFilterBar(
 }
 
 /**
+ * 漫画源二级格式筛选栏（v1.3.0）：全部分类下按源格式再分一级菜单，
+ * Venera 源（独立 WebView 运行时，支持账号登录）与 legado 漫画源分开管理。
+ */
+@Composable
+private fun FormatFilterBar(
+    selected: SourceFormat?,
+    onSelect: (SourceFormat?) -> Unit,
+) {
+    data class FormatOption(val format: SourceFormat?, val label: String)
+
+    val options = listOf(
+        FormatOption(null, "全部漫画"),
+        FormatOption(SourceFormat.LEGADO, "legado"),
+        FormatOption(SourceFormat.VENERA, "Venera"),
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        options.forEach { option ->
+            FilterChip(
+                selected = selected == option.format,
+                onClick = { onSelect(option.format) },
+                label = { Text(option.label) },
+            )
+        }
+    }
+}
+
+/**
  * 分类筛选栏（横向滚动的 FilterChip）。
  */
 @Composable
@@ -634,6 +796,12 @@ private fun SourceCard(
     testStatus: SourceTestStatus = SourceTestStatus.UNKNOWN,
     onLongClick: () -> Unit = {},
     onSelectToggle: () -> Unit = {},
+    /** Venera 源登录态（非 Venera 源恒 false），v1.3.0 */
+    loggedIn: Boolean = false,
+    /** 正在登录中（转圈文案） */
+    loggingIn: Boolean = false,
+    /** 点击「登录」按钮（仅 Venera 源） */
+    onLogin: () -> Unit = {},
 ) {
     val cardModifier = Modifier
         .fillMaxWidth()
@@ -685,6 +853,14 @@ private fun SourceCard(
                         Spacer(Modifier.width(6.dp))
                         SourceTestBadge(testStatus)
                     }
+                    if (source.format == SourceFormat.VENERA && loggedIn) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "已登录",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF2E7D32),
+                        )
+                    }
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -708,6 +884,18 @@ private fun SourceCard(
             }
             if (!selectionMode) {
                 Switch(checked = source.enabled, onCheckedChange = { onToggle() })
+                // Venera 源：登录按钮（v1.3.0）
+                if (source.format == SourceFormat.VENERA) {
+                    TextButton(onClick = onLogin) {
+                        Text(
+                            when {
+                                loggingIn -> "登录中…"
+                                loggedIn -> "已登录"
+                                else -> "登录"
+                            }
+                        )
+                    }
+                }
                 TextButton(onClick = onEdit) { Text("编辑") }
                 TextButton(onClick = onDelete) { Text("删除") }
             }

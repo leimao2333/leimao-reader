@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.2.11"
+    const val CURRENT_VERSION = "1.3.0"
 
     /**
      * 更新日志。
@@ -19,6 +19,16 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.3.0",
+            date = "2026-10-13",
+            changes = listOf(
+                "**Venera 源登录**：源管理选中「漫画」类型后出现下级菜单（legado / Venera）；Venera 源卡片新增「登录」按钮，输入账号密码调用源自己实现的登录逻辑（在隐藏 WebView 的 V8 里执行），登录会话 Cookie 持久化到本机，重启后无需重复登录；已登录源显示绿色「已登录」徽标，对话框内可一键退出登录",
+                "**修复部分小说源不加载（根因一）**：真实书源里 `header` 等字段偶尔写成 JSON 对象（而非字符串），旧解析直接抛异常、整个源被静默丢弃；现对非字符串字段容错，header 对象可正常解析出请求头",
+                "**修复部分小说源不加载（根因二）**：从网址导入书源时所有列表共用同一个源 id，第二次从不同网址导入会静默覆盖上一次的第一个源；现按网址生成稳定唯一 id，同一网址重复导入仍原地更新",
+                "**导入不再静默丢源**：legado 列表里解析失败的条目现在会计数并在导入消息中明示「另有 N 个条目解析失败已跳过」，启动恢复失败的源也会写日志，便于排查",
+            ),
+        ),
         VersionEntry(
             version = "1.2.11",
             date = "2026-10-13",

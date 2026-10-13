@@ -23,6 +23,8 @@ import kotlinx.coroutines.withContext
 class SourceManageViewModel(
     private val sourceRepository: SourceRepository,
     private val sourceRepositoryImpl: SourceRepositoryImpl? = null,
+    /** Venera 运行时：Venera 漫画源的登录 / 退出登录走这里（v1.3.0） */
+    private val veneraEngine: com.novelreader.source.venera.VeneraEngine? = null,
 ) : ViewModel() {
 
     /** 源列表 */
@@ -45,6 +47,26 @@ class SourceManageViewModel(
     private val _downloading = MutableStateFlow(false)
     val downloading: StateFlow<Boolean> = _downloading.asStateFlow()
 
+    // ===== Venera 源登录（v1.3.0）=====
+
+    /** Venera 源登录态：sourceId -> 是否已登录（读本地标记，不启动 WebView） */
+    private val _loginStates = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val loginStates: StateFlow<Map<String, Boolean>> = _loginStates.asStateFlow()
+
+    /** 是否正在登录（sourceId 集合） */
+    private val _loggingIn = MutableStateFlow<Set<String>>(emptySet())
+    val loggingIn: StateFlow<Set<String>> = _loggingIn.asStateFlow()
+
+    private fun refreshLoginStates() {
+        if (veneraEngine == null) return
+        _loginStates.value = _sources.value
+            .filter { it.format == com.novelreader.domain.model.SourceFormat.VENERA }
+            .associate { it.id to veneraEngine.isLoginMarked(it.id) }
+            .filterValues { it }
+    }
+
+    // 注意：init 必须放在所有 StateFlow 属性声明之后——
+    // Kotlin 按声明顺序初始化属性，init 提前会拿到 null 的 _loginStates（v1.3.0 实测崩溃）
     init {
         refresh()
     }
@@ -53,6 +75,7 @@ class SourceManageViewModel(
     fun refresh() {
         viewModelScope.launch {
             _sources.value = sourceRepository.getAllSources()
+            refreshLoginStates()
         }
     }
 
@@ -62,9 +85,55 @@ class SourceManageViewModel(
             viewModelScope.launch {
                 impl.observeSources().collect { list ->
                     _sources.value = list
+                    refreshLoginStates()
                 }
             }
         } ?: refresh()
+    }
+
+    /**
+     * 账号密码登录 Venera 源。
+     *
+     * 调用源自己实现的 account.login（在隐藏 WebView 的 V8 里执行），
+     * 会话 Cookie 由引擎自动持久化，重启后仍有效。
+     */
+    fun login(source: SourceInfo, account: String, password: String) {
+        if (account.isBlank() || password.isBlank()) {
+            _message.value = "账号和密码不能为空"
+            return
+        }
+        viewModelScope.launch {
+            _loggingIn.value = _loggingIn.value + source.id
+            try {
+                val adapter = sourceRepository.getAdapter(source.id)
+                    as? com.novelreader.source.venera.VeneraSourceAdapter
+                if (adapter == null) {
+                    _message.value = "登录失败：源不可用"
+                    return@launch
+                }
+                adapter.login(account.trim(), password)
+                _message.value = "「${source.name}」登录成功"
+                refreshLoginStates()
+            } catch (e: Exception) {
+                _message.value = "登录失败：${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                _loggingIn.value = _loggingIn.value - source.id
+            }
+        }
+    }
+
+    /** 退出登录：调用源的 account.logout 并清 Cookie / 本地标记 */
+    fun logout(source: SourceInfo) {
+        viewModelScope.launch {
+            try {
+                (sourceRepository.getAdapter(source.id)
+                    as? com.novelreader.source.venera.VeneraSourceAdapter)?.logout()
+                _message.value = "「${source.name}」已退出登录"
+                refreshLoginStates()
+            } catch (e: Exception) {
+                _message.value = "退出失败：${e.message ?: e.javaClass.simpleName}"
+            }
+        }
     }
 
     /** 导入源（原始内容 + 文件名） */
@@ -74,10 +143,14 @@ class SourceManageViewModel(
             _message.value = null
             try {
                 val imported = sourceRepository.importSource(rawContent, fileName)
-                _message.value = if (imported.size == 1) {
-                    "导入成功：${imported[0].name}（${imported[0].type}）"
-                } else {
-                    "导入成功：${imported.size} 个源"
+                _message.value = buildString {
+                    if (imported.size == 1) {
+                        append("导入成功：${imported[0].name}（${imported[0].type}）")
+                    } else {
+                        append("导入成功：${imported.size} 个源")
+                    }
+                    val skipped = sourceRepositoryImpl?.lastImportSkipped() ?: 0
+                    if (skipped > 0) append("；另有 $skipped 个条目解析失败已跳过")
                 }
                 refresh()
             } catch (e: Exception) {
@@ -87,6 +160,17 @@ class SourceManageViewModel(
             }
         }
     }
+
+    /**
+     * 网址导入的文件名（参与源 id 生成）。
+     *
+     * v1.3.0 修复：旧实现固定传 "legado_remote" → 不同网址导入的**第一个源 id 相同**，
+     * 后一次导入会静默覆盖前一次的第一个源（「部分小说源不加载/消失」根因之一）。
+     * 现按 URL 哈希生成稳定文件名：同一网址重复导入仍命中同一批 id（原地更新），
+     * 不同网址互不冲突。
+     */
+    private fun remoteFileName(url: String): String =
+        "legado_" + (url.trim().hashCode().toString().replace("-", "n"))
 
     /**
      * 从网址导入书源（txt 内容为 URL 时）。
@@ -124,7 +208,7 @@ class SourceManageViewModel(
                     return@launch
                 }
 
-                val imported = sourceRepository.importSource(content, "legado_remote")
+                val imported = sourceRepository.importSource(content, remoteFileName(url))
                 _message.value = "从网址导入成功：${imported.size} 个源"
                 refresh()
             } catch (e: Exception) {

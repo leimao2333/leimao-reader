@@ -846,6 +846,37 @@
                 return await serializeImages(imgs, src, args[0], args[1]);
             }
 
+            // ===== 账号（v1.3.0：源管理页登录按钮）=====
+            // Venera 约定：源可声明 account = { login(account, pwd), logout(), checkLogin?() }
+            case 'accountInfo': {
+                var acc = src.account;
+                if (!acc) return { supported: false };
+                var loggedIn = false;
+                if (typeof acc.checkLogin === 'function') {
+                    // 源自带登录态检测（如请求个人中心接口判断）
+                    loggedIn = !!await acc.checkLogin.call(src);
+                }
+                return {
+                    supported: typeof acc.login === 'function',
+                    loggedIn: loggedIn,
+                };
+            }
+
+            case 'login': {
+                if (!src.account || typeof src.account.login !== 'function') {
+                    throw new Error('该源不支持账号登录');
+                }
+                await src.account.login.call(src, String(args[0] || ''), String(args[1] || ''));
+                return { ok: true };
+            }
+
+            case 'logout': {
+                if (src.account && typeof src.account.logout === 'function') {
+                    await src.account.logout.call(src);
+                }
+                return { ok: true };
+            }
+
             default:
                 throw new Error('未知操作：' + op);
         }

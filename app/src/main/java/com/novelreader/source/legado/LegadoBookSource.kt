@@ -81,17 +81,30 @@ data class LegadoBookSource(
          * 解析 legado 书源列表，返回 (书源对象, 原始 JSON 字符串) 对。
          * 用于导入时保留完整规则以供持久化。
          */
-        fun parseListWithRaw(raw: String): List<Pair<LegadoBookSource, String>> {
+        fun parseListWithRaw(raw: String): List<Pair<LegadoBookSource, String>> =
+            parseListWithRawDetailed(raw).pairs
+
+        /**
+         * 解析 legado 书源列表并报告解析失败数。
+         *
+         * @property pairs 成功解析的 (书源对象, 原始 JSON) 列表
+         * @property skipped 解析失败被跳过的条目数（v1.3.0：导入时向用户报告，不再静默丢弃）
+         */
+        data class Detailed(val pairs: List<Pair<LegadoBookSource, String>>, val skipped: Int)
+
+        fun parseListWithRawDetailed(raw: String): Detailed {
             val element: JsonElement = runCatching {
                 JsonParser.parseString(raw.trim())
             }.getOrElse { throw IllegalArgumentException("JSON 解析失败") }
 
+            var skipped = 0
             val array = when {
                 element.isJsonArray -> element.asJsonArray
                 element.isJsonObject -> {
                     val obj = element.asJsonObject
                     if (obj.has("bookSourceName")) {
-                        return listOf(parseOne(obj.toString()) to obj.toString())
+                        // 单对象路径：解析失败直接抛给上层（明确报错优于静默）
+                        return Detailed(listOf(parseOne(obj.toString()) to obj.toString()), 0)
                     }
                     val candidates = listOf("data", "bookSources", "sources", "list", "result")
                     val found = candidates.firstOrNull { key ->
@@ -103,9 +116,11 @@ data class LegadoBookSource(
                 else -> throw IllegalArgumentException("无法识别书源结构")
             }
 
-            return array.mapNotNull { item ->
-                runCatching { parseOne(item.toString()) to item.toString() }.getOrNull()
+            val pairs = array.mapNotNull { item ->
+                runCatching { parseOne(item.toString()) to item.toString() }
+                    .getOrElse { skipped++; null }
             }
+            return Detailed(pairs, skipped)
         }
 
         /** 解析单个 legado 书源对象 */
@@ -135,8 +150,17 @@ data class LegadoBookSource(
 }
 
 /** JsonObject 便捷取值扩展 */
-private fun com.google.gson.JsonObject.str(key: String): String? =
-    if (has(key) && !get(key).isJsonNull) get(key).asString else null
+private fun com.google.gson.JsonObject.str(key: String): String? = when {
+    // 字段缺失或为 null
+    !has(key) || get(key).isJsonNull -> null
+    // 常规字符串
+    get(key).isJsonPrimitive -> get(key).asString
+    // 对象/数组：原样序列化为字符串，而不是抛异常。
+    // 真实书源里 header / searchUrl 偶尔会写成 JSON 对象（如 "header": {"User-Agent": "..."}），
+    // 旧实现直接 get(key).asString 抛 IllegalStateException → parseOne 失败 →
+    // parseList 的 runCatching 把整个源静默丢弃（v1.3.0 排查「部分小说源不加载」的根因之一）。
+    else -> get(key).toString()
+}
 
 private fun com.google.gson.JsonObject.int(key: String): Int =
     if (has(key) && get(key).isJsonPrimitive) get(key).asInt else 0

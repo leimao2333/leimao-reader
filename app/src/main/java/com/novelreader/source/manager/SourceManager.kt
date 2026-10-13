@@ -48,6 +48,15 @@ class SourceManager(
     private val rawContentCache = mutableMapOf<String, String>()
 
     /**
+     * 最近一次 importSource 中被跳过的条目数（legado 列表里解析失败的条目）。
+     * 导入方（ViewModel）在导入完成后读取并拼进结果消息，向用户明示「跳过 N 个」，
+     * 避免误以为整份文件全部导入成功（v1.3.0「部分小说源不加载」排查产物）。
+     */
+    @Volatile
+    var lastImportSkipped: Int = 0
+        private set
+
+    /**
      * 启动恢复完成信号。
      *
      * 冷启动时源从数据库异步恢复，深链自动搜索等入口可能在恢复完成前触发，
@@ -113,9 +122,18 @@ class SourceManager(
     /** 导入 legado 书源（单个或列表） */
     private fun importLegado(rawContent: String, fileName: String?): List<ImportedSource> {
         // 解析出所有 legado 书源对象（保留各自完整原始 JSON）
-        val pairs = LegadoBookSource.parseListWithRaw(rawContent)
+        val detailed = LegadoBookSource.parseListWithRawDetailed(rawContent)
+        val pairs = detailed.pairs
+        lastImportSkipped = detailed.skipped
         if (pairs.isEmpty()) {
             throw IllegalArgumentException("未解析到有效书源")
+        }
+        if (detailed.skipped > 0) {
+            // v1.3.0：解析失败的条目不再完全静默——留日志 + 供导入消息展示
+            android.util.Log.w(
+                "SourceManager",
+                "legado 列表导入：${detailed.skipped} 个条目解析失败已跳过（共 ${pairs.size + detailed.skipped} 条）",
+            )
         }
 
         val results = mutableListOf<ImportedSource>()

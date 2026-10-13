@@ -146,6 +146,33 @@ class VeneraSourceAdapter(
         true
     }.getOrDefault(false)
 
+    // ===== 账号登录（v1.3.0：源管理页登录按钮）=====
+
+    /**
+     * 查询该源的账号能力与登录态。
+     *
+     * @return (是否支持登录, 是否已登录)；引擎异常时返回 (false, false)
+     */
+    suspend fun accountInfo(): Pair<Boolean, Boolean> = runCatching {
+        engine.putSource(key, code)
+        engine.accountInfo(key)
+    }.getOrDefault(Pair(false, false))
+
+    /** 账号密码登录（调用源自己实现的 account.login） */
+    suspend fun login(account: String, password: String) {
+        engine.putSource(key, code)
+        engine.login(key, account, password)
+    }
+
+    /** 退出登录（调用源的 account.logout，清 Cookie 与本地标记） */
+    suspend fun logout() {
+        engine.putSource(key, code)
+        engine.logout(key)
+    }
+
+    /** 本地登录标记（只读 prefs，不启动 WebView，供列表即时刷新徽标） */
+    fun isLoginMarked(): Boolean = engine.isLoginMarked(key)
+
     private fun encodeChapterUrl(comicId: String, epId: String) = "$comicId$CHAPTER_SEP$epId"
 
     private fun JsonObject.str(name: String): String? {

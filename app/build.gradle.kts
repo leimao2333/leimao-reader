@@ -13,6 +13,8 @@ android {
         applicationId = "com.novelreader"
         minSdk = 24
         targetSdk = 35
+        // 版本规范：小版本每版 +1；小版本满 10 进大版本（1.9.0 -> 2.0.0）
+        // versionCode = 大版本 * 10000 + 小版本 * 100 + 修订
         versionCode = 15000
         versionName = "1.5.0"
 

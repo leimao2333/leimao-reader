@@ -7,6 +7,11 @@ package com.novelreader.core.version
  * 新增版本时：提升 [CURRENT_VERSION]，并在 [CHANGELOG] 顶部追加一条记录。
  *
  * 注意：本文件的 [CURRENT_VERSION] 必须与 `app/build.gradle.kts` 的 `versionName` 保持一致。
+ *
+ * 版本规范（`大版本.小版本.修订`）：
+ * - 小版本每发一版 +1，修订位日常保持 0（`1.5.0` → `1.6.0` → …）；
+ * - 小版本走满 0~9 十个数后，大版本 +1 且小版本归零（`1.9.0` → `2.0.0`）；
+ * - 修订位仅在「同一小版本内打紧急补丁」时递增（`1.6.0` → `1.6.1`）。
  */
 object AppVersion {
 

@@ -69,6 +69,26 @@ data class ChapterItem(
 )
 
 /**
+ * 章节线路（v1.3.6.0）。
+ *
+ * 影视源常见「同一部片有多条线路」（苹果 CMS 的 `vod_play_from` 用 `$$$` 分隔），
+ * 每条线路是一套独立的剧集地址 —— 某条线路卡顿或挂掉时可以换一条继续看。
+ *
+ * 小说 / 漫画源只有一条线路，用 [DEFAULT_NAME] 包装即可（见 `SourceAdapter.chapterLines`）。
+ */
+data class ChapterLine(
+    /** 线路名（苹果 CMS 的 `vod_play_from`，如 `kk线路` / `量子资源`） */
+    val name: String,
+    /** 该线路下的剧集 */
+    val chapters: List<ChapterItem>,
+) {
+    companion object {
+        /** 单线路源的兜底线路名 */
+        const val DEFAULT_NAME = "默认线路"
+    }
+}
+
+/**
  * 正文内容结果。
  *
  * 根据类型，对应字段生效：

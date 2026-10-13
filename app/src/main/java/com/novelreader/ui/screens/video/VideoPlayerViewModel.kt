@@ -10,8 +10,11 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import com.novelreader.core.network.HttpClient
 import com.novelreader.core.preferences.PreferencesManager
+import com.novelreader.core.util.LineSwitch
 import com.novelreader.domain.model.ChapterItem
+import com.novelreader.domain.model.ChapterLine
 import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.ProgressRepository
@@ -19,6 +22,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,6 +33,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.novelreader.domain.model.MediaItem as NovelMediaItem
 
 /**
@@ -94,6 +101,29 @@ class VideoPlayerViewModel(
 
     private val _episodes = MutableStateFlow<List<ChapterItem>>(emptyList())
     val episodes: StateFlow<List<ChapterItem>> = _episodes.asStateFlow()
+
+    // ==================== 换源（多线路，v1.3.6.0） ====================
+
+    /** 全部线路（按集数降序，第 0 条为默认） */
+    private val _lines = MutableStateFlow<List<ChapterLine>>(emptyList())
+    val lines: StateFlow<List<ChapterLine>> = _lines.asStateFlow()
+
+    /** 当前线路下标 */
+    private val _currentLineIndex = MutableStateFlow(0)
+    val currentLineIndex: StateFlow<Int> = _currentLineIndex.asStateFlow()
+
+    /**
+     * 线路测速结果：线路下标 → 延迟毫秒。
+     *
+     * `null` 表示这条线路**不可达**（超时 / 非 2xx），UI 显示「-」。
+     * 未测过的下标不出现在 map 里。
+     */
+    private val _lineSpeeds = MutableStateFlow<Map<Int, Long?>>(emptyMap())
+    val lineSpeeds: StateFlow<Map<Int, Long?>> = _lineSpeeds.asStateFlow()
+
+    /** 是否正在测速（UI 禁用按钮 + 显示进度） */
+    private val _speedTesting = MutableStateFlow(false)
+    val speedTesting: StateFlow<Boolean> = _speedTesting.asStateFlow()
 
     /** 当前选集标题 */
     private val _episodeTitle = MutableStateFlow("")
@@ -196,10 +226,41 @@ class VideoPlayerViewModel(
         _currentEpisodeUrl.value = episode.url
         normalSpeed = _prefs.value.savedSpeed.coerceIn(0.25f, 5f)
         loadEpisode(episode, restoreProgress = true)
+        // 线路表后台加载（详情页已把首条线路的剧集通过导航传进来，所以不必阻塞起播）
+        viewModelScope.launch { loadLines(item, episode) }
     }
 
-    /** 加载某集的播放地址 */
-    fun loadEpisode(episode: ChapterItem, restoreProgress: Boolean = false) {
+    /**
+     * 加载全部线路，并把当前线路定位到「当前正在播的那一集所属的线路」。
+     *
+     * 不覆盖 [episodes] 以外的东西：传入的 episodes 就是首选线路的剧集，
+     * `loadLines` 只是补上「还有哪些线路可选」这一层信息。
+     */
+    private suspend fun loadLines(item: NovelMediaItem, episode: ChapterItem) {
+        val lines = runCatching { contentRepository.chapterLines(item) }.getOrDefault(emptyList())
+        if (lines.isEmpty()) return
+        _lines.value = lines
+        val index = lines.indexOfFirst { line -> line.chapters.any { it.url == episode.url } }
+        if (index >= 0) {
+            _currentLineIndex.value = index
+            // 首条线路的剧集与传入的一致时无需替换；不一致（如源返回顺序变了）才同步
+            lines[index].chapters.takeIf { it.isNotEmpty() }?.let { _episodes.value = it }
+        } else {
+            _currentLineIndex.value = 0
+        }
+    }
+
+    /**
+     * 加载某集的播放地址。
+     *
+     * @param restoreProgress 是否恢复上次观看位置（进入播放页时用）
+     * @param seekToMs 显式起播位置（换源时用来「原位置续播」，优先于 [restoreProgress]）
+     */
+    fun loadEpisode(
+        episode: ChapterItem,
+        restoreProgress: Boolean = false,
+        seekToMs: Long? = null,
+    ) {
         currentEpisode = episode
         _episodeTitle.value = episode.title
         _currentEpisodeUrl.value = episode.url
@@ -214,7 +275,7 @@ class VideoPlayerViewModel(
                         _error.value = "未获取到播放地址"
                     } else {
                         _videoUrl.value = url
-                        play(url, result.videoHeaders, restoreProgress)
+                        play(url, result.videoHeaders, restoreProgress, seekToMs)
                     }
                 }
                 .onFailure { e ->
@@ -224,7 +285,12 @@ class VideoPlayerViewModel(
         }
     }
 
-    private fun play(url: String, headers: Map<String, String>, restoreProgress: Boolean) {
+    private fun play(
+        url: String,
+        headers: Map<String, String>,
+        restoreProgress: Boolean,
+        seekToMs: Long? = null,
+    ) {
         val player = player ?: return
 
         val mediaItem = MediaItem.Builder().setUri(url).build()
@@ -247,21 +313,27 @@ class VideoPlayerViewModel(
         _error.value = null
         _state.update { it.copy(positionMs = 0L, durationMs = 0L, bufferedMs = 0L) }
 
-        // 恢复上次播放进度
-        if (restoreProgress) {
-            viewModelScope.launch {
-                val item = currentItem ?: return@launch
-                val ep = currentEpisode ?: return@launch
-                val progress = progressRepository.getProgress(item.sourceId, item.id)
-                val position = progress?.playPositionMs ?: 0L
-                // 若进度对应当前集，则 seek 到该位置（避免跨集误 seek）
-                if (progress != null && progress.chapterUrl == ep.url && position > 0) {
-                    player.seekTo(position)
-                }
+        when {
+            // 换源：在**原位置**继续（新线路的时长可能不同，交给 seekTo 夹取）
+            seekToMs != null && seekToMs > 0L -> {
+                player.seekTo(seekToMs)
                 player.play()
             }
-        } else {
-            player.play()
+            // 恢复上次播放进度
+            restoreProgress -> {
+                viewModelScope.launch {
+                    val item = currentItem ?: return@launch
+                    val ep = currentEpisode ?: return@launch
+                    val progress = progressRepository.getProgress(item.sourceId, item.id)
+                    val position = progress?.playPositionMs ?: 0L
+                    // 若进度对应当前集，则 seek 到该位置（避免跨集误 seek）
+                    if (progress != null && progress.chapterUrl == ep.url && position > 0) {
+                        player.seekTo(position)
+                    }
+                    player.play()
+                }
+            }
+            else -> player.play()
         }
     }
 
@@ -371,6 +443,97 @@ class VideoPlayerViewModel(
         }
     }
 
+    // ==================== 换源 / 测速择优（v1.3.6.0） ====================
+
+    /**
+     * 切换到指定线路。
+     *
+     * 两条保位规则：
+     * 1. **保集**：优先切到新线路的**同一集序号**（各线路集序基本一致）；
+     *    若新线路集数不够（如只有预告），退回该线路第 1 集。
+     * 2. **保位置**：把当前播放进度带到新线路继续，避免换源后从头看。
+     */
+    fun switchLine(index: Int) {
+        val lines = _lines.value
+        val target = lines.getOrNull(index) ?: return
+        if (index == _currentLineIndex.value) return
+
+        val position = player?.currentPosition ?: 0L
+        val wantedIndex = currentEpisode?.index ?: 0
+        val next = LineSwitch.pickChapter(target.chapters, wantedIndex)
+            ?: run {
+                _message.value = "该线路没有可用剧集"
+                return
+            }
+
+        saveProgress() // 换源前先把当前线路的进度落盘
+        _currentLineIndex.value = index
+        _episodes.value = target.chapters
+        loadEpisode(next, restoreProgress = false, seekToMs = position)
+        _message.value = "已切换到「${target.name}」${next.title}"
+    }
+
+    /** 切到当前测速结果里最快的一条线路；没有可用结果时不动 */
+    fun switchToFastestLine() {
+        val best = LineSwitch.fastestIndex(_lineSpeeds.value) ?: run {
+            _message.value = "还没有可用的测速结果"
+            return
+        }
+        if (best == _currentLineIndex.value) {
+            _message.value = "当前已是最快线路"
+            return
+        }
+        switchLine(best)
+    }
+
+    /**
+     * 对各条线路测速（首字节延迟）。
+     *
+     * 用**当前正在看的这一集**作为探测目标 —— 这才是真正要播放的地址，
+     * 用它测出来的数字才有参考意义（换成第 1 集可能落在不同 CDN 上）。
+     *
+     * 分片并发 [SPEED_CONCURRENCY] 路：串行在 10 条线路时要等一分钟；
+     * 全并发又容易把弱站打挂（首页分片拉取踩过同样的坑），所以折中。
+     * 结果**逐条回填**，用户能实时看到先算出来的那些。
+     */
+    fun speedTest() {
+        val lines = _lines.value
+        if (lines.size < 2) {
+            _message.value = "这个源只有一条线路"
+            return
+        }
+        if (_speedTesting.value) return
+
+        val episodeIndex = currentEpisode?.index ?: 0
+        viewModelScope.launch {
+            _speedTesting.value = true
+            _lineSpeeds.value = emptyMap()
+            val collected = mutableMapOf<Int, Long?>()
+            for (chunk in lines.indices.chunked(SPEED_CONCURRENCY)) {
+                coroutineScope {
+                    chunk.map { i ->
+                        async {
+                            val line = lines[i]
+                            val url = line.chapters.getOrNull(episodeIndex)?.url
+                                ?: line.chapters.firstOrNull()?.url
+                            // 必须切到 IO：probe 是阻塞式 socket 调用，
+                            // 在 viewModelScope（Main）上直接跑会抛 NetworkOnMainThreadException，
+                            // 被 runCatching 一吞就变成「所有线路都不可达」。
+                            val ms = url
+                                ?.takeIf { it.isNotBlank() }
+                                ?.let { withContext(Dispatchers.IO) { HttpClient.probe(it, SPEED_PROBE_TIMEOUT_MS) } }
+                            i to ms
+                        }
+                    }.awaitAll()
+                }.forEach { (i, ms) ->
+                    collected[i] = ms
+                    _lineSpeeds.value = collected.toMap()
+                }
+            }
+            _speedTesting.value = false
+        }
+    }
+
     fun consumeMessage() {
         _message.value = null
     }
@@ -468,5 +631,9 @@ class VideoPlayerViewModel(
         private const val REWIND_TICK_MS = 250L
         /** 长按快退等效倍速（仅用于展示） */
         private const val REWIND_RATE = 4f
+        /** 测速并发路数（太高容易把弱站打挂，见 speedTest 注释） */
+        private const val SPEED_CONCURRENCY = 3
+        /** 单条线路测速超时 */
+        private const val SPEED_PROBE_TIMEOUT_MS = 5_000L
     }
 }

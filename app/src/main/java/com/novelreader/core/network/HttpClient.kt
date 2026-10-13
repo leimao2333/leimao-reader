@@ -153,6 +153,53 @@ object HttpClient {
                 .build()
         }
 
+    // ===== 播放地址测速（v1.3.6.0「测速择优」）=====
+
+    /**
+     * 探测播放地址的可达性与响应延迟（毫秒），失败返回 `null`。
+     *
+     * 为什么不用 [get]：播放地址动辄几百 MB，[get] 会把**整个文件**读进内存。
+     * 这里只发 `Range: bytes=0-0` 拿**首字节**，拿到就立刻关连接 ——
+     * 测的是「连接 + 首字节」耗时（用户感知的起播延迟），而不是下载带宽。
+     *
+     * 有界且不重试：测速是给用户看的对比数字，站点挂了就应该快速给个「-」，
+     * 重试只会让整轮测速拖到分钟级。
+     *
+     * **注意：这是阻塞式调用，必须在 IO 线程上调用**（如 `withContext(Dispatchers.IO)`），
+     * 否则会抛 `NetworkOnMainThreadException` —— 而它会被本方法的 `runCatching` 吞掉，
+     * 表现为「所有线路都不可达」，非常难查（v1.3.6.0 踩过）。
+     *
+     * @param timeoutMs 单条线路的超时（连接 + 读取）
+     */
+    fun probe(url: String, timeoutMs: Long = PROBE_TIMEOUT_MS): Long? {
+        val request = runCatching {
+            Request.Builder()
+                .url(url)
+                .get()
+                .header("User-Agent", DEFAULT_USER_AGENT)
+                // 只要首字节；不支持的站点会忽略它开始推流，我们读完 1 字节即断开
+                .header("Range", "bytes=0-0")
+                .build()
+        }.getOrNull() ?: return null
+
+        val startedAt = System.nanoTime()
+        return runCatching {
+            clientWithTimeout(timeoutMs, retry = false).newCall(request).execute().use { response ->
+                // 部分站点返回 200（忽略 Range）、部分返回 206（支持 Range），都算通
+                if (!response.isSuccessful && response.code != HTTP_PARTIAL_CONTENT) {
+                    return@runCatching null
+                }
+                response.body?.byteStream()?.read()
+                (System.nanoTime() - startedAt) / 1_000_000L
+            }
+        }.getOrNull()
+    }
+
+    /** 测速默认超时：单条线路最长等多久 */
+    const val PROBE_TIMEOUT_MS = 5_000L
+
+    private const val HTTP_PARTIAL_CONTENT = 206
+
     /**
      * 下载文件到本地，带进度回调。
      *

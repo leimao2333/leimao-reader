@@ -1,6 +1,7 @@
 package com.novelreader.data.repository
 
 import com.novelreader.domain.model.ChapterItem
+import com.novelreader.domain.model.ChapterLine
 import com.novelreader.domain.model.ContentResult
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SearchState
@@ -211,6 +212,13 @@ class ContentRepositoryImpl(
             val adapter = resolveAdapter(item.sourceId)
                 ?: return@withContext emptyList()
             runCatching { adapter.chapterList(item) }.getOrDefault(emptyList())
+        }
+
+    override suspend fun chapterLines(item: MediaItem): List<ChapterLine> =
+        withContext(Dispatchers.IO) {
+            val adapter = resolveAdapter(item.sourceId)
+                ?: return@withContext emptyList()
+            runCatching { adapter.chapterLines(item) }.getOrDefault(emptyList())
         }
 
     override suspend fun content(chapter: ChapterItem): ContentResult =

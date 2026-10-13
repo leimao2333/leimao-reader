@@ -29,6 +29,13 @@ object MacCmsParser {
         val url: String,
     )
 
+    /** 一条线路：线路名 + 该线路的剧集（v1.3.6.0） */
+    data class EpisodeLine(
+        /** 线路名（`vod_play_from` 对应项，可能为空） */
+        val name: String,
+        val episodes: List<Episode>,
+    )
+
     /** 拼接采集接口地址（自动处理已有 `?`、URL 编码参数值） */
     fun buildUrl(api: String, params: List<Pair<String, String>>): String {
         val base = api.trim()
@@ -64,17 +71,28 @@ object MacCmsParser {
         return parseEpisodes(str(hit, "vod_play_from"), str(hit, "vod_play_url"))
     }
 
+    /** 解析分类响应里的**全部线路**（v1.3.6.0 播放页「换源」） */
+    fun episodeLinesOf(json: String, vodId: String): List<EpisodeLine> {
+        val arr = listArray(json) ?: return emptyList()
+        val objs = arr.mapNotNull { it as? JsonObject }
+        val hit = objs.firstOrNull { str(it, "vod_id") == vodId } ?: objs.firstOrNull() ?: return emptyList()
+        return parseEpisodeLines(str(hit, "vod_play_from"), str(hit, "vod_play_url"))
+    }
+
     /**
-     * `vod_play_from` + `vod_play_url` → 剧集列表。
+     * `vod_play_from` + `vod_play_url` → **全部线路**（v1.3.6.0 播放页「换源」）。
      *
      * 两个字段都用 `$$$` 分割线路、线路内用 `#` 分割集、集内用 `$` 分割「集名 / 地址」。
-     * 多线路时**取集数最多的那条线路**（更完整，且能避开「预告/花絮」这类短线路）。
+     *
+     * 约定：**按集数降序**返回，集数相同时保持响应里的原始顺序（用稳定排序）。
+     * 集数最多的线路更完整、也能避开「预告 / 花絮」这类短线路，所以排第一作为默认选路。
      */
-    fun parseEpisodes(playFrom: String?, playUrl: String?): List<Episode> {
+    fun parseEpisodeLines(playFrom: String?, playUrl: String?): List<EpisodeLine> {
         if (playUrl.isNullOrBlank()) return emptyList()
         val lineNames = playFrom?.split("$$$").orEmpty()
 
-        val groups = playUrl.split("$$$").mapIndexedNotNull { index, line ->
+        return playUrl.split("$$$").mapIndexedNotNull { index, line ->
+            val lineName = lineNames.getOrNull(index)?.trim().orEmpty()
             val episodes = line.split("#").mapNotNull { raw ->
                 val text = raw.trim()
                 if (text.isEmpty()) return@mapNotNull null
@@ -91,20 +109,29 @@ object MacCmsParser {
                     url = text.substring(sep + 1).trim().substringBefore('$').trim()
                 }
                 if (url.isBlank()) return@mapNotNull null
-                title to url
+                Episode(line = lineName, title = title, url = url)
             }
-            if (episodes.isEmpty()) null
-            else lineNames.getOrNull(index)?.trim().orEmpty() to episodes
-        }
-        val best = groups.maxByOrNull { it.second.size } ?: return emptyList()
-        return best.second.mapIndexed { i, (title, url) ->
-            Episode(
-                line = best.first,
-                title = title.ifBlank { "第${i + 1}集" },
-                url = url,
-            )
-        }
+            if (episodes.isEmpty()) {
+                null
+            } else {
+                EpisodeLine(
+                    name = lineName,
+                    episodes = episodes.mapIndexed { i, ep ->
+                        // 没有集名的补「第 N 集」，N 按线路内序号（各线路各自从 1 开始）
+                        ep.copy(title = ep.title.ifBlank { "第${i + 1}集" })
+                    },
+                )
+            }
+        }.sortedByDescending { it.episodes.size }
     }
+
+    /**
+     * 只取一条线路的剧集（`chapterList` 用）：**集数最多的那条**。
+     *
+     * 语义与 v1.3.3.0 起保持一致，现在只是改由 [parseEpisodeLines] 实现。
+     */
+    fun parseEpisodes(playFrom: String?, playUrl: String?): List<Episode> =
+        parseEpisodeLines(playFrom, playUrl).firstOrNull()?.episodes.orEmpty()
 
     /** 解析一级分类（`class` 中 `type_pid == 0` 的条目） */
     fun parseCategories(json: String): List<ExploreCategory> {

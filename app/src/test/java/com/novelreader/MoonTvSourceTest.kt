@@ -204,6 +204,82 @@ class MoonTvSourceTest {
         assertEquals("第03集", episodes.last().title)
     }
 
+    // ===== 多线路（v1.3.6.0 换源）=====
+
+    @Test
+    fun `解析全部线路并按集数降序`() {
+        val lines = MacCmsParser.parseEpisodeLines(
+            "线路A" + "$$$" + "线路B" + "$$$" + "短线路",
+            "第01集${D}u1#第02集${D}u2" + "$$$" +
+                "第01集${D}v1#第02集${D}v2#第03集${D}v3" + "$$$" +
+                "预告${D}w1",
+        )
+        assertEquals(3, lines.size)
+        // 集数最多（3 集）的线路排第一 —— 与 chapterList 的默认选路一致
+        assertEquals("线路B", lines[0].name)
+        assertEquals(3, lines[0].episodes.size)
+        assertEquals("线路A", lines[1].name)
+        assertEquals(2, lines[1].episodes.size)
+        assertEquals("短线路", lines[2].name)
+    }
+
+    @Test
+    fun `集数相同时保持响应里的原始顺序`() {
+        val lines = MacCmsParser.parseEpisodeLines(
+            "甲" + "$$$" + "乙",
+            "e${D}a" + "$$$" + "e${D}b",
+        )
+        assertEquals(listOf("甲", "乙"), lines.map { it.name })
+    }
+
+    @Test
+    fun `每条线路的剧集各自从 1 开始补集名`() {
+        val lines = MacCmsParser.parseEpisodeLines(
+            "甲" + "$$$" + "乙",
+            "${D}x1#${D}x2" + "$$$" + "${D}y1",
+        )
+        // 甲乙各 2 集和 1 集：甲在前（集数多）
+        assertEquals(listOf("第1集", "第2集"), lines[0].episodes.map { it.title })
+        assertEquals(listOf("第1集"), lines[1].episodes.map { it.title })
+    }
+
+    @Test
+    fun `单线路与空响应都不会被当成多线路`() {
+        val one = MacCmsParser.parseEpisodeLines("独播", "第01集${D}u1")
+        assertEquals(1, one.size)
+        assertEquals("独播", one[0].name)
+        // 线路名为空时留空，交由上层兜底成「默认线路」
+        assertEquals("", MacCmsParser.parseEpisodeLines(null, "a${D}u1")[0].name)
+
+        assertTrue(MacCmsParser.parseEpisodeLines(null, null).isEmpty())
+        assertTrue(MacCmsParser.parseEpisodeLines("甲" + "$$$" + "乙", "").isEmpty())
+        // 全是空线路（如 `$$$`）时不该产出空线路项
+        assertTrue(MacCmsParser.parseEpisodeLines("甲" + "$$$" + "乙", "$$$").isEmpty())
+    }
+
+    @Test
+    fun `取线路的 parseEpisodes 与新接口结果一致`() {
+        val from = "甲" + "$$$" + "乙"
+        val url = "第01集${D}a1#第02集${D}a2" + "$$$" + "第01集${D}b1"
+        val best = MacCmsParser.parseEpisodes(from, url)
+        val lines = MacCmsParser.parseEpisodeLines(from, url)
+        // 兼容旧接口：parseEpisodes 就是「集数最多的那条线路」
+        assertEquals(lines[0].episodes, best)
+    }
+
+    @Test
+    fun `从详情响应里取出全部线路`() {
+        val lines = MacCmsParser.episodeLinesOf(SAMPLE_LIST_JSON, "1001")
+        assertEquals(1, lines.size)
+        // 样例响应里 vod_play_from 是「线路A」
+        assertEquals("线路A", lines[0].name)
+        assertEquals(2, lines[0].episodes.size)
+
+        // 未知 id 时按「取第一条」兜底，不返回空
+        assertEquals(1, MacCmsParser.episodeLinesOf(SAMPLE_LIST_JSON, "9999").size)
+        assertTrue(MacCmsParser.episodeLinesOf("{}", "1001").isEmpty())
+    }
+
     @Test
     fun `选集兼容无集名与多地址写法`() {
         val noName = MacCmsParser.parseEpisodes(null, "https://x/1.m3u8#https://x/2.m3u8")

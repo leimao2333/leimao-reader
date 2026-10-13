@@ -32,6 +32,24 @@ interface SourceAdapter {
     suspend fun chapterList(item: MediaItem): List<ChapterItem>
 
     /**
+     * 获取**全部线路**的剧集（v1.3.6.0 播放页「换源」）。
+     *
+     * 默认实现把 [chapterList] 包装成单条线路 —— 小说 / 漫画与只提供单线路的源
+     * 无需改动即可支持「换源」 Tab（Tab 里只有一条线路）。
+     * 多线路源（苹果 CMS 的 `vod_play_from`）自行覆写，返回全部线路。
+     *
+     * 约定：**返回顺序即推荐顺序**，调用方默认使用第一条。
+     */
+    suspend fun chapterLines(item: MediaItem): List<ChapterLine> {
+        val chapters = chapterList(item)
+        return if (chapters.isEmpty()) {
+            emptyList()
+        } else {
+            listOf(ChapterLine(ChapterLine.DEFAULT_NAME, chapters))
+        }
+    }
+
+    /**
      * 获取正文内容。
      */
     suspend fun content(chapter: ChapterItem): ContentResult

@@ -2,6 +2,7 @@ package com.novelreader.source.moontv
 
 import com.novelreader.core.network.HttpClient
 import com.novelreader.domain.model.ChapterItem
+import com.novelreader.domain.model.ChapterLine
 import com.novelreader.domain.model.ContentResult
 import com.novelreader.domain.model.ExploreCategory
 import com.novelreader.domain.model.MediaItem
@@ -103,15 +104,34 @@ class MoonTvSourceAdapter(
         )
     }
 
-    override suspend fun chapterList(item: MediaItem): List<ChapterItem> {
+    override suspend fun chapterList(item: MediaItem): List<ChapterItem> =
+        // 取集数最多的线路（parseEpisodeLines 已按集数降序，第一条即最优），
+        // 语义与 v1.3.3.0 起一致
+        linesOf(item).firstOrNull()?.chapters.orEmpty()
+
+    /**
+     * 全部线路（v1.3.6.0 播放页「换源」）。
+     *
+     * 苹果 CMS 的 `vod_play_from` / `vod_play_url` 用 `$$$` 分隔线路，
+     * 这里把每条线路都转成 [ChapterLine]；`parseEpisodeLines` 已按集数降序排好，
+     * 所以第一条就是默认使用的那条（与 [chapterList] 保持一致）。
+     */
+    override suspend fun chapterLines(item: MediaItem): List<ChapterLine> = linesOf(item)
+
+    private suspend fun linesOf(item: MediaItem): List<ChapterLine> {
         val json = runCatching { detailJson(item.id) }.getOrNull() ?: return emptyList()
-        return MacCmsParser.episodesOf(json, item.id).mapIndexed { i, ep ->
-            ChapterItem(
-                id = "$i",
-                title = ep.title,
-                url = ep.url,
-                index = i,
-                sourceId = info.id,
+        return MacCmsParser.episodeLinesOf(json, item.id).map { line ->
+            ChapterLine(
+                name = line.name.ifBlank { ChapterLine.DEFAULT_NAME },
+                chapters = line.episodes.mapIndexed { i, ep ->
+                    ChapterItem(
+                        id = "$i",
+                        title = ep.title,
+                        url = ep.url,
+                        index = i,
+                        sourceId = info.id,
+                    )
+                },
             )
         }
     }

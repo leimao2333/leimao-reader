@@ -45,6 +45,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -113,6 +114,10 @@ fun VideoPlayerScreen(
     val playback by viewModel.state.collectAsState()
     val prefs by viewModel.prefs.collectAsState()
     val message by viewModel.message.collectAsState()
+    val lines by viewModel.lines.collectAsState()
+    val currentLineIndex by viewModel.currentLineIndex.collectAsState()
+    val lineSpeeds by viewModel.lineSpeeds.collectAsState()
+    val speedTesting by viewModel.speedTesting.collectAsState()
 
     // 创建并绑定 ExoPlayer（生命周期由 Composable 管理）
     val player = remember {
@@ -143,6 +148,8 @@ fun VideoPlayerScreen(
     var fullscreenInited by remember { mutableStateOf(false) }
     var controlsVisible by remember { mutableStateOf(true) }
     var episodesOpen by remember { mutableStateOf(false) }
+    // 「选集 / 换源」双 Tab 的当前 Tab（v1.3.6.0）；窗口态与全屏浮层共用同一个下标
+    var sheetTab by remember { mutableIntStateOf(SheetTabs.EPISODES) }
     var ripple by remember { mutableStateOf<SeekRipple?>(null) }
     var seekPreview by remember { mutableStateOf<SeekPreview?>(null) }
     var verticalIndicator by remember { mutableStateOf<VerticalIndicator?>(null) }
@@ -543,30 +550,41 @@ fun VideoPlayerScreen(
                 onOpenEpisodes = { episodesOpen = true },
             )
 
-            // ===== 选集浮层 =====
-            EpisodePickerOverlay(
+            // ===== 选集 / 换源 浮层 =====
+            EpisodeLinePickerOverlay(
                 visible = episodesOpen,
+                tab = sheetTab,
+                onTabChange = { sheetTab = it },
                 episodes = episodesList,
                 currentUrl = currentEpisodeUrl,
+                lines = lines,
+                currentLineIndex = currentLineIndex,
+                lineSpeeds = lineSpeeds,
+                speedTesting = speedTesting,
                 onPick = {
                     viewModel.playEpisode(it)
                     episodesOpen = false
                 },
+                onPickLine = { viewModel.switchLine(it) },
+                onSpeedTest = { viewModel.speedTest() },
+                onPickFastest = { viewModel.switchToFastestLine() },
                 onDismiss = { episodesOpen = false },
             )
         }
 
         if (!isFullscreen) {
-            // ===== 窗口态：选集列表 =====
+            // ===== 窗口态：选集 / 换源 面板 =====
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "选集（${episodesList.size}）",
+                    text = episodeTitle,
                     style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
                 TextButton(
@@ -578,31 +596,21 @@ fun VideoPlayerScreen(
                     enabled = viewModel.hasNext(),
                 ) { Text("下一集") }
             }
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
-                items(episodesList) { ep ->
-                    val isCurrent = ep.url == currentEpisodeUrl
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                if (isCurrent) MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
-                                else Color.Transparent
-                            )
-                            .clickable { viewModel.playEpisode(ep) }
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                    ) {
-                        Text(
-                            text = ep.title,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (isCurrent) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-                }
-            }
+            EpisodeLineSheet(
+                dark = false,
+                tab = sheetTab,
+                onTabChange = { sheetTab = it },
+                episodes = episodesList,
+                currentUrl = currentEpisodeUrl,
+                lines = lines,
+                currentLineIndex = currentLineIndex,
+                lineSpeeds = lineSpeeds,
+                speedTesting = speedTesting,
+                onPick = { viewModel.playEpisode(it) },
+                onPickLine = { viewModel.switchLine(it) },
+                onSpeedTest = { viewModel.speedTest() },
+                onPickFastest = { viewModel.switchToFastestLine() },
+            )
         }
     }
 }

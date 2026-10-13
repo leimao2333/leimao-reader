@@ -87,6 +87,25 @@ interface ContentRepository {
     /** 获取正文 */
     suspend fun content(chapter: ChapterItem): ContentResult
 
+    /**
+     * 获取**全部线路**的剧集（v1.3.6.0 播放页「换源」）。
+     *
+     * 默认实现把 [chapterList] 包成单条线路，单线路源无需改动。
+     */
+    suspend fun chapterLines(item: MediaItem): List<com.novelreader.domain.model.ChapterLine> {
+        val chapters = chapterList(item)
+        return if (chapters.isEmpty()) {
+            emptyList()
+        } else {
+            listOf(
+                com.novelreader.domain.model.ChapterLine(
+                    com.novelreader.domain.model.ChapterLine.DEFAULT_NAME,
+                    chapters,
+                )
+            )
+        }
+    }
+
     // ===== 发现页（v1.2.3.0 对标 legado exploreUrl/ruleExplore） =====
 
     /** 有发现分类的已启用源列表（分类惰性加载：仅解析源 JSON，不发请求） */

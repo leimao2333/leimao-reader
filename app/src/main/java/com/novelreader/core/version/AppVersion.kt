@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.3.9.0"
+    const val CURRENT_VERSION = "1.3.10.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.3.10.0",
+            date = "2026-10-13",
+            changes = listOf(
+                "**短剧竖屏沉浸播放**：短剧点海报不再进横屏详情页，而是**直接进竖屏全屏播放**（自动拉取剧集列表并播第 1 集）；播放页底部常驻红果式信息栏（剧名 + 「第 N / M 集」 + 右下角「选集」按钮）。全屏按钮在短剧下变为**竖屏 / 横屏切换**，返回键直接退出播放页",
+                "**红果式短剧选集浮层**：底部滑出，集数以 4 列竖版大块网格铺开（当前集绿色高亮），点选即切集；顶部保留「换源」Tab 可切换线路。与普通视频的「选集 / 换源」双 Tab 面板独立，互不影响",
+                "**短剧标记机制**：短剧条目自动携带 `isShortDrama` 标记，详情页 / 播放页据此识别短剧并应用竖屏 + 红果式 UI；普通影视的横屏播放体验保持不变",
+            ),
+        ),
         VersionEntry(
             version = "1.3.9.0",
             date = "2026-10-13",

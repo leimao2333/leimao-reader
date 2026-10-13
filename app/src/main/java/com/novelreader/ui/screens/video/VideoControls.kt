@@ -9,8 +9,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -20,6 +22,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -45,6 +50,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -698,4 +704,164 @@ private fun speedLabel(measured: Boolean, speed: Long?, testing: Boolean): Strin
     !measured -> if (testing) " · 测速中…" else ""
     speed == null -> " · 不可达"
     else -> " · ${speed}ms"
+}
+
+// ==================== 红果式短剧选集浮层（v1.3.10.0） ====================
+
+/**
+ * 红果短剧风格的选集浮层：底部滑出，集数以竖版大块网格铺开。
+ *
+ * 与普通视频的「选集 / 换源」双 Tab 面板不同，短剧选集对标红果：
+ * - 顶部标题「选集（N）」+ 换源 Tab + 关闭
+ * - 每集一个竖版块（红果是 3:4 竖屏缩略图，这里用「第 N 集」大字块）
+ * - 当前集高亮描边，点击即切集
+ *
+ * @param onPick 点选某一集（传入集在列表中的下标）
+ * @param onPickLine 切换线路（换源 Tab 用）
+ */
+@Composable
+fun ShortDramaEpisodeOverlay(
+    visible: Boolean,
+    episodes: List<ChapterItem>,
+    currentUrl: String,
+    lines: List<ChapterLine>,
+    currentLineIndex: Int,
+    onPick: (Int) -> Unit,
+    onPickLine: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    if (!visible) return
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.55f))
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.72f)
+                .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                .background(Color(0xFF16181C))
+                .clickable(enabled = false) {},
+        ) {
+            ShortDramaEpisodeSheet(
+                episodes = episodes,
+                currentUrl = currentUrl,
+                lines = lines,
+                currentLineIndex = currentLineIndex,
+                onPick = onPick,
+                onPickLine = onPickLine,
+            )
+        }
+    }
+}
+
+/**
+ * 红果式选集面板内容（不含遮罩）。
+ */
+@Composable
+private fun ShortDramaEpisodeSheet(
+    episodes: List<ChapterItem>,
+    currentUrl: String,
+    lines: List<ChapterLine>,
+    currentLineIndex: Int,
+    onPick: (Int) -> Unit,
+    onPickLine: (Int) -> Unit,
+) {
+    var tab by remember { mutableIntStateOf(SheetTabs.EPISODES) }
+    Column(modifier = Modifier.fillMaxSize()) {
+        // 顶部：选集 / 换源 Tab + 当前集信息
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SheetTab("选集（${episodes.size}）", tab == SheetTabs.EPISODES, SheetPalette(
+                accent = Color(0xFF7ED694),
+                text = Color.White,
+                subText = Color.White.copy(alpha = 0.55f),
+                divider = Color.White.copy(alpha = 0.10f),
+                tabTrack = Color.White.copy(alpha = 0.08f),
+                tabSelected = Color(0xFF4CAF50).copy(alpha = 0.30f),
+                tagBg = Color(0xFF4CAF50).copy(alpha = 0.20f),
+            )) {
+                tab = SheetTabs.EPISODES
+            }
+            if (lines.size > 1) {
+                Spacer(Modifier.width(8.dp))
+                SheetTab("换源（${lines.size}）", tab == SheetTabs.LINES, SheetPalette(
+                    accent = Color(0xFF7ED694),
+                    text = Color.White,
+                    subText = Color.White.copy(alpha = 0.55f),
+                    divider = Color.White.copy(alpha = 0.10f),
+                    tabTrack = Color.White.copy(alpha = 0.08f),
+                    tabSelected = Color(0xFF4CAF50).copy(alpha = 0.30f),
+                    tagBg = Color(0xFF4CAF50).copy(alpha = 0.20f),
+                )) {
+                    tab = SheetTabs.LINES
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "第 ${episodes.indexOfFirst { it.url == currentUrl }.let { if (it >= 0) it + 1 else 1 }} 集",
+                color = Color.White.copy(alpha = 0.6f),
+                fontSize = 12.sp,
+            )
+        }
+
+        if (tab == SheetTabs.LINES) {
+            // 换源：复用深色线路列表
+            LineList(
+                lines = lines,
+                currentLineIndex = currentLineIndex,
+                lineSpeeds = emptyMap(),
+                speedTesting = false,
+                colors = SheetPalette(
+                    accent = Color(0xFF7ED694),
+                    text = Color.White,
+                    subText = Color.White.copy(alpha = 0.55f),
+                    divider = Color.White.copy(alpha = 0.10f),
+                    tabTrack = Color.White.copy(alpha = 0.08f),
+                    tabSelected = Color(0xFF4CAF50).copy(alpha = 0.30f),
+                    tagBg = Color(0xFF4CAF50).copy(alpha = 0.20f),
+                ),
+                onPickLine = onPickLine,
+            )
+        } else {
+            // 选集：红果式竖版大块网格
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(4),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                gridItemsIndexed(episodes) { index, ep ->
+                    val current = ep.url == currentUrl
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(3f / 4f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                if (current) Color(0xFF4CAF50).copy(alpha = 0.28f)
+                                else Color.White.copy(alpha = 0.08f)
+                            )
+                            .clickable { onPick(index) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "${index + 1}",
+                            color = if (current) Color(0xFF7ED694) else Color.White.copy(alpha = 0.85f),
+                            fontSize = 18.sp,
+                            fontWeight = if (current) FontWeight.Bold else FontWeight.Normal,
+                        )
+                    }
+                }
+            }
+        }
+    }
 }

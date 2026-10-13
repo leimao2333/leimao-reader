@@ -768,7 +768,9 @@ class HomeViewModel(
             val current = _shortDrama.value
             val merged = if (reset) fetched else current.items + fetched
             _shortDrama.value = current.copy(
-                items = merged.distinctBy { "${it.sourceId}:${it.id}" },
+                // 打「短剧」标记：详情页 / 播放页据此默认竖屏播放 + 红果式选集
+                items = merged.distinctBy { "${it.sourceId}:${it.id}" }
+                    .map { it.copy(extras = it.extras + (EXTRA_SHORT_DRAMA to "1")) },
                 loading = false,
                 loadingMore = false,
                 error = if (reset && fetched.isEmpty()) "该分类暂无内容" else null,
@@ -820,5 +822,8 @@ class HomeViewModel(
 
         /** 「继续观看」随条目带出的续播集地址 extras key（优先按地址匹配） */
         const val EXTRA_RESUME_URL = "resumeUrl"
+
+        /** 短剧标记（extras key）：值为 "1" 时播放页默认竖屏 + 红果式选集 */
+        const val EXTRA_SHORT_DRAMA = "isShortDrama"
     }
 }

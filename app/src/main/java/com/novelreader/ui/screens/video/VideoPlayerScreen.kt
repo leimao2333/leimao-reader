@@ -30,6 +30,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
@@ -52,6 +53,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -146,7 +148,11 @@ fun VideoPlayerScreen(
     }
 
     // ===== 界面状态 =====
-    var isFullscreen by remember { mutableStateOf(false) }
+    // 短剧：默认竖屏沉浸（铺满 + 竖屏方向），可切横屏；普通视频：窗口 16:9 起步，可切横屏全屏
+    val isShortDrama = item.extras[com.novelreader.ui.screens.common.HomeViewModel.EXTRA_SHORT_DRAMA] == "1"
+    var isFullscreen by remember { mutableStateOf(isShortDrama) }
+    // 短剧横屏切换（默认竖屏；点全屏按钮切横屏，再点切回竖屏）
+    var shortDramaLandscape by remember { mutableStateOf(false) }
     var fullscreenInited by remember { mutableStateOf(false) }
     var controlsVisible by remember { mutableStateOf(true) }
     var episodesOpen by remember { mutableStateOf(false) }
@@ -156,10 +162,11 @@ fun VideoPlayerScreen(
     var seekPreview by remember { mutableStateOf<SeekPreview?>(null) }
     var verticalIndicator by remember { mutableStateOf<VerticalIndicator?>(null) }
 
-    // 首帧后按设置决定是否直接全屏
+    // 首帧后按设置决定是否直接全屏（短剧始终竖屏全屏，不受「默认全屏」设置影响）
     LaunchedEffect(prefs.loaded, prefs.fullscreenDefault) {
         if (prefs.loaded && !fullscreenInited) {
-            isFullscreen = prefs.fullscreenDefault
+            if (!isShortDrama) isFullscreen = prefs.fullscreenDefault
+            fullscreenInited = true
             fullscreenInited = true
         }
     }
@@ -178,11 +185,13 @@ fun VideoPlayerScreen(
     }
 
     // ===== 全屏：屏幕方向 =====
-    LaunchedEffect(isFullscreen) {
-        activity?.requestedOrientation = if (isFullscreen) {
-            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        } else {
-            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    // 短剧全屏 = 竖屏沉浸（可切横屏）；普通视频全屏 = 横屏
+    LaunchedEffect(isFullscreen, isShortDrama, shortDramaLandscape) {
+        activity?.requestedOrientation = when {
+            isShortDrama && shortDramaLandscape -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            isShortDrama -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            isFullscreen -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 
@@ -209,11 +218,11 @@ fun VideoPlayerScreen(
         onDispose { view.keepScreenOn = previous }
     }
 
-    // 返回键：先关选集浮层 → 再退全屏 → 最后退出页面
+    // 返回键：先关选集浮层 → 再退全屏（短剧无窗口态，直接退出）→ 最后退出页面
     BackHandler {
         when {
             episodesOpen -> episodesOpen = false
-            isFullscreen -> isFullscreen = false
+            isFullscreen && !isShortDrama -> isFullscreen = false
             else -> onBack()
         }
     }
@@ -539,7 +548,7 @@ fun VideoPlayerScreen(
                 durationMs = playback.durationMs,
                 bufferedMs = playback.bufferedMs,
                 speed = playback.speed,
-                isFullscreen = isFullscreen,
+                isFullscreen = if (isShortDrama) shortDramaLandscape else isFullscreen,
                 hasPrev = viewModel.hasPrev(),
                 hasNext = viewModel.hasNext(),
                 onBack = onBack,
@@ -548,7 +557,10 @@ fun VideoPlayerScreen(
                 onSpeedChange = { viewModel.setSpeed(it) },
                 onPrev = { viewModel.playPrev() },
                 onNext = { viewModel.playNext() },
-                onToggleFullscreen = { isFullscreen = !isFullscreen },
+                onToggleFullscreen = {
+                    if (isShortDrama) shortDramaLandscape = !shortDramaLandscape
+                    else isFullscreen = !isFullscreen
+                },
                 onOpenEpisodes = { episodesOpen = true },
                 qualityTracks = qualityTracks,
                 selectedQuality = selectedQuality,
@@ -556,30 +568,101 @@ fun VideoPlayerScreen(
                 onResetQuality = { viewModel.resetQuality() },
             )
 
-            // ===== 选集 / 换源 浮层 =====
-            EpisodeLinePickerOverlay(
-                visible = episodesOpen,
-                tab = sheetTab,
-                onTabChange = { sheetTab = it },
-                episodes = episodesList,
-                currentUrl = currentEpisodeUrl,
-                lines = lines,
-                currentLineIndex = currentLineIndex,
-                lineSpeeds = lineSpeeds,
-                speedTesting = speedTesting,
-                onPick = {
-                    viewModel.playEpisode(it)
-                    episodesOpen = false
-                },
-                onPickLine = { viewModel.switchLine(it) },
-                onSpeedTest = { viewModel.speedTest() },
-                onPickFastest = { viewModel.switchToFastestLine() },
-                onDismiss = { episodesOpen = false },
-            )
+            // ===== 短剧底部常驻栏（红果式：选集按钮 + 剧名 + 集数）=====
+            if (isShortDrama) {
+                val curIdx = episodesList.indexOfFirst { it.url == currentEpisodeUrl }
+                    .let { if (it >= 0) it else 0 }
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth()
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f))
+                            )
+                        )
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = item.title,
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = "第 ${curIdx + 1} / ${episodesList.size} 集",
+                            color = Color.White.copy(alpha = 0.75f),
+                            fontSize = 12.sp,
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    // 选集入口（红果右下角常驻按钮）
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(Color.White.copy(alpha = 0.2f))
+                            .clickable { episodesOpen = true }
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.List,
+                                contentDescription = "选集",
+                                tint = Color.White,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text("选集", color = Color.White, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+
+            // ===== 选集 / 换源 浮层（短剧用红果式，普通视频用双 Tab 面板）=====
+            if (isShortDrama) {
+                ShortDramaEpisodeOverlay(
+                    visible = episodesOpen,
+                    episodes = episodesList,
+                    currentUrl = currentEpisodeUrl,
+                    lines = lines,
+                    currentLineIndex = currentLineIndex,
+                    onPick = {
+                        viewModel.playEpisode(episodesList.getOrNull(it) ?: return@ShortDramaEpisodeOverlay)
+                        episodesOpen = false
+                    },
+                    onPickLine = { viewModel.switchLine(it) },
+                    onDismiss = { episodesOpen = false },
+                )
+            } else {
+                EpisodeLinePickerOverlay(
+                    visible = episodesOpen,
+                    tab = sheetTab,
+                    onTabChange = { sheetTab = it },
+                    episodes = episodesList,
+                    currentUrl = currentEpisodeUrl,
+                    lines = lines,
+                    currentLineIndex = currentLineIndex,
+                    lineSpeeds = lineSpeeds,
+                    speedTesting = speedTesting,
+                    onPick = {
+                        viewModel.playEpisode(it)
+                        episodesOpen = false
+                    },
+                    onPickLine = { viewModel.switchLine(it) },
+                    onSpeedTest = { viewModel.speedTest() },
+                    onPickFastest = { viewModel.switchToFastestLine() },
+                    onDismiss = { episodesOpen = false },
+                )
+            }
         }
 
         if (!isFullscreen) {
-            // ===== 窗口态：选集 / 换源 面板 =====
+            // ===== 窗口态：选集 / 换源 面板（短剧无窗口态，始终全屏）=====
             Row(
                 modifier = Modifier
                     .fillMaxWidth()

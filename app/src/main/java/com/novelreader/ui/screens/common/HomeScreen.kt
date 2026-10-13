@@ -88,6 +88,8 @@ fun HomeScreen(
     /** 打开 RSS 订阅（v1.3.1.0） */
     onOpenRss: () -> Unit = {},
     onContinueReading: (MediaItem, List<ChapterItem>, ChapterItem?) -> Unit,
+    /** 打开短剧（直达竖屏播放，v1.3.10.0） */
+    onOpenShortDrama: (MediaItem) -> Unit = {},
 ) {
     val importMessage by viewModel.importMessage.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -265,7 +267,7 @@ fun HomeScreen(
                         onSelectCategory = viewModel::selectShortDramaCategory,
                         onLoadMore = viewModel::loadMoreShortDrama,
                         onRefresh = viewModel::refreshShortDrama,
-                        onOpenDetail = onOpenVideoItem,
+                        onOpenDetail = onOpenShortDrama,
                     )
                 }
 

@@ -82,11 +82,26 @@ fun AppNavHost(
                     )
                 }
             )
+            val scope = androidx.compose.runtime.rememberCoroutineScope()
             HomeScreen(
                 viewModel = homeViewModel,
                 onOpenNovelItem = { item -> navController.navigate(Routes.novelDetail(item)) },
                 onOpenComicItem = { item -> navController.navigate(Routes.comicDetail(item)) },
                 onOpenVideoItem = { item -> navController.navigate(Routes.videoDetail(item)) },
+                onOpenShortDrama = { item ->
+                    // 短剧直达竖屏播放：先拉目录（首个线路），空则退回详情页
+                    scope.launch {
+                        val chapters = runCatching {
+                            container.contentRepository.chapterList(item)
+                        }.getOrDefault(emptyList())
+                        if (chapters.isEmpty()) {
+                            navController.navigate(Routes.videoDetail(item))
+                        } else {
+                            NavCache.putChapters(item, chapters)
+                            navController.navigate(Routes.videoPlayer(item, 0))
+                        }
+                    }
+                },
                 onOpenSources = { navController.navigate(Routes.SOURCE_MANAGE) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
                 onOpenNovelSearch = { navController.navigate(Routes.novelSearch()) },

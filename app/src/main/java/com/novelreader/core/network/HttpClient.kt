@@ -105,6 +105,23 @@ object HttpClient {
         return execute(builder.build(), charset)
     }
 
+    /**
+     * 执行请求并返回**原始 [Response]**（不自动关连接、不校验 HTTP 状态）。
+     *
+     * 给需要自定义状态码 / 响应体处理的场景用（如 WebDav 的 PUT/DELETE/PROPFIND），
+     * 调用方负责 `use { }` 关闭。
+     *
+     * **阻塞式调用，必须在 IO 线程执行。**
+     */
+    fun executeRaw(request: Request, timeoutMs: Long? = null): Response {
+        val call = if (timeoutMs == null) {
+            client.newCall(request)
+        } else {
+            clientWithTimeout(timeoutMs, retry = true).newCall(request)
+        }
+        return call.execute()
+    }
+
     /** 统一执行请求并按字符集解码响应体 */
     private fun execute(
         request: Request,

@@ -33,6 +33,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -282,6 +284,53 @@ fun SettingsScreen(
                         importLauncher.launch(arrayOf("application/json", "text/*", "application/octet-stream"))
                     }) { Text("导入") }
                 }
+            }
+
+            // ===== WebDav 云备份（v1.3.8.0） =====
+            val webdavConfig by viewModel.webdavConfig.collectAsState()
+            val webdavBusy by viewModel.webdavBusy.collectAsState()
+            var showWebDavDialog by remember { mutableStateOf(false) }
+
+            SettingRow(
+                title = "WebDav 云备份",
+                subtitle = if (webdavConfig.isConfigured) webdavConfig.url else "配置后可将备份上传 / 下载到 WebDav 服务器，实现多设备同步",
+            ) {
+                Row {
+                    TextButton(onClick = { showWebDavDialog = true }) { Text("配置") }
+                    TextButton(
+                        onClick = { viewModel.testWebDavConnection() },
+                        enabled = webdavConfig.isConfigured && !webdavBusy,
+                    ) { Text("测试") }
+                }
+            }
+
+            if (webdavConfig.isConfigured) {
+                SettingRow(
+                    title = "   · 同步操作",
+                    subtitle = if (webdavBusy) "操作进行中…" else "上传备份到服务器 / 从服务器下载并恢复",
+                ) {
+                    Row {
+                        TextButton(
+                            onClick = { viewModel.uploadToWebDav() },
+                            enabled = !webdavBusy,
+                        ) { Text("上传") }
+                        TextButton(
+                            onClick = { viewModel.downloadFromWebDav() },
+                            enabled = !webdavBusy,
+                        ) { Text("下载") }
+                    }
+                }
+            }
+
+            if (showWebDavDialog) {
+                WebDavConfigDialog(
+                    initial = webdavConfig,
+                    onDismiss = { showWebDavDialog = false },
+                    onSave = { cfg ->
+                        viewModel.saveWebDavConfig(cfg)
+                        showWebDavDialog = false
+                    },
+                )
             }
 
             Spacer(Modifier.height(24.dp))

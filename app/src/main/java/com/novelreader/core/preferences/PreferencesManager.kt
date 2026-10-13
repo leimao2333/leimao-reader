@@ -147,6 +147,16 @@ class PreferencesManager(private val context: Context) {
         /** 影视首页当前使用的视频源 id（记忆上次选择） */
         val KEY_VIDEO_HOME_SOURCE = stringPreferencesKey("video_home_source")
 
+        // ===== WebDav 云备份（v1.3.8.0） =====
+        /** WebDav 服务器根地址（可带路径前缀），空表示未配置 */
+        val KEY_WEBDAV_URL = stringPreferencesKey("webdav_url")
+        /** WebDav 用户名（空表示匿名） */
+        val KEY_WEBDAV_USERNAME = stringPreferencesKey("webdav_username")
+        /** WebDav 密码 */
+        val KEY_WEBDAV_PASSWORD = stringPreferencesKey("webdav_password")
+        /** WebDav 备份文件的相对路径（相对服务器根，默认 leimao-reader-backup.json） */
+        val KEY_WEBDAV_PATH = stringPreferencesKey("webdav_path")
+
         // ===== 搜索 =====
         /** 并行搜索线程数（并发搜索的源数量） */
         val KEY_SEARCH_CONCURRENCY = intPreferencesKey("search_concurrency")
@@ -437,6 +447,40 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setNovelReplaceRules(value: String) {
         context.dataStore.edit { it[KEY_NOVEL_REPLACE_RULES] = value }
+    }
+
+    // ===== WebDav 云备份（v1.3.8.0） =====
+
+    /** WebDav 服务器根地址（空表示未配置） */
+    val webdavUrlFlow: Flow<String> = context.dataStore.data
+        .map { it[KEY_WEBDAV_URL] ?: "" }
+
+    suspend fun setWebdavUrl(value: String) {
+        context.dataStore.edit { it[KEY_WEBDAV_URL] = value }
+    }
+
+    /** WebDav 用户名（空表示匿名） */
+    val webdavUsernameFlow: Flow<String> = context.dataStore.data
+        .map { it[KEY_WEBDAV_USERNAME] ?: "" }
+
+    suspend fun setWebdavUsername(value: String) {
+        context.dataStore.edit { it[KEY_WEBDAV_USERNAME] = value }
+    }
+
+    /** WebDav 密码 */
+    val webdavPasswordFlow: Flow<String> = context.dataStore.data
+        .map { it[KEY_WEBDAV_PASSWORD] ?: "" }
+
+    suspend fun setWebdavPassword(value: String) {
+        context.dataStore.edit { it[KEY_WEBDAV_PASSWORD] = value }
+    }
+
+    /** WebDav 备份文件相对路径 */
+    val webdavPathFlow: Flow<String> = context.dataStore.data
+        .map { it[KEY_WEBDAV_PATH] ?: "leimao-reader-backup.json" }
+
+    suspend fun setWebdavPath(value: String) {
+        context.dataStore.edit { it[KEY_WEBDAV_PATH] = value }
     }
 
     /** 累计阅读时长（秒） */

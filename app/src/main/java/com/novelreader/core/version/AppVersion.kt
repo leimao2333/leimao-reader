@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.3.7.0"
+    const val CURRENT_VERSION = "1.3.8.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,17 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.3.8.0",
+            date = "2026-10-13",
+            changes = listOf(
+                "**WebDav 云备份**：设置页「存储」新增 WebDav 配置 —— 填好服务器地址 / 用户名 / 密码 / 备份文件路径，即可把整份备份**上传到 WebDav 服务器**、或**从服务器下载并恢复**，实现多设备同步（此前只有本地导出 / 导入 JSON，换机要手动拷文件）。认证走 HTTP Basic，兼容坚果云 / Nextcloud / 群晖等常见 WebDav 服务",
+                "**测试连接**：配置完成后可先「测试」一次，认证错误（401 / 403）、服务器不可达都会给出明确提示，避免上传才发现配置不对",
+                "**备份序列化抽离复用**：把 `BackupManager` 里「组装 JSON / 解析 JSON」抽成 `serialize()` / `deserialize()`，本地 SAF 导出导入与 WebDav 上传下载共用同一套序列化 —— 备份内容（书源 / 书架 / 进度 / 书签 / 替换规则 / RSS 订阅）两边完全一致，不会出现「本地能恢复、云端不能」的漂移",
+                "**新增 `WebDavClient`**：封装 WebDav 的 `PUT` / `GET` / `DELETE` / `PROPFIND` 与 Basic Auth，含服务器根地址规范化（补协议、去尾部斜杠）与相对路径拼接；`HttpClient` 新增 `executeRaw` 返回原始响应，供 WebDav 按状态码自定义处理",
+                "新增 **12 条离线单测**：WebDav 地址规范化（去尾斜杠 / 补 https / 保留 http / 空白地址报错）与路径拼接（空路径返回根 / 相对路径 / 斜杠开头不双斜杠 / 多级路径 / 首尾空白清理 / 匿名与带用户名构造）",
+            ),
+        ),
         VersionEntry(
             version = "1.3.7.0",
             date = "2026-10-13",

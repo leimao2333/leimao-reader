@@ -3,10 +3,13 @@ package com.novelreader.ui.screens.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novelreader.core.preferences.PreferencesManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 设置中心 ViewModel。
@@ -41,6 +44,106 @@ class SettingsViewModel(
         viewModelScope.launch {
             _backupMessage.value = runCatching { mgr.import(uri) }
                 .getOrElse { "恢复失败：${it.message ?: "未知错误"}" }
+        }
+    }
+
+    // ===== WebDav 云备份（v1.3.8.0） =====
+
+    /** WebDav 配置（服务器 / 用户名 / 密码 / 路径） */
+    data class WebDavConfig(
+        val url: String = "",
+        val username: String = "",
+        val password: String = "",
+        val path: String = "leimao-reader-backup.json",
+    ) {
+        val isConfigured: Boolean get() = url.isNotBlank()
+    }
+
+    private val _webdavConfig = MutableStateFlow(WebDavConfig())
+    val webdavConfig: StateFlow<WebDavConfig> = _webdavConfig.asStateFlow()
+
+    /** WebDav 操作是否进行中（上传 / 下载 / 测试连接共用一个开关，防止并发） */
+    private val _webdavBusy = MutableStateFlow(false)
+    val webdavBusy: StateFlow<Boolean> = _webdavBusy.asStateFlow()
+
+    /** 保存 WebDav 配置 */
+    fun saveWebDavConfig(config: WebDavConfig) {
+        viewModelScope.launch {
+            preferencesManager.setWebdavUrl(config.url.trim())
+            preferencesManager.setWebdavUsername(config.username.trim())
+            preferencesManager.setWebdavPassword(config.password)
+            preferencesManager.setWebdavPath(config.path.trim().ifBlank { "leimao-reader-backup.json" })
+            _webdavConfig.value = config.copy(
+                url = config.url.trim(),
+                username = config.username.trim(),
+                path = config.path.trim().ifBlank { "leimao-reader-backup.json" },
+            )
+            _backupMessage.value = "WebDav 配置已保存"
+        }
+    }
+
+    /** 测试 WebDav 连接 */
+    fun testWebDavConnection() {
+        val cfg = _webdavConfig.value
+        if (!cfg.isConfigured) {
+            _backupMessage.value = "请先填写 WebDav 服务器地址"
+            return
+        }
+        if (_webdavBusy.value) return
+        viewModelScope.launch {
+            _webdavBusy.value = true
+            _backupMessage.value = runCatching {
+                val client = com.novelreader.core.backup.WebDavClient(
+                    cfg.url, cfg.username.ifBlank { null }, cfg.password,
+                )
+                client.testConnection() ?: "连接成功"
+            }.getOrElse { "连接失败：${it.message ?: "未知错误"}" }
+            _webdavBusy.value = false
+        }
+    }
+
+    /** 上传备份到 WebDav */
+    fun uploadToWebDav() {
+        val mgr = backupManager ?: return
+        val cfg = _webdavConfig.value
+        if (!cfg.isConfigured) {
+            _backupMessage.value = "请先填写 WebDav 服务器地址"
+            return
+        }
+        if (_webdavBusy.value) return
+        viewModelScope.launch {
+            _webdavBusy.value = true
+            _backupMessage.value = runCatching {
+                val (json, stats) = mgr.serialize()
+                val client = com.novelreader.core.backup.WebDavClient(
+                    cfg.url, cfg.username.ifBlank { null }, cfg.password,
+                )
+                withContext(kotlinx.coroutines.Dispatchers.IO) { client.put(cfg.path, json) }
+                "已上传到 WebDav：${stats.summary}"
+            }.getOrElse { "上传失败：${it.message ?: "未知错误"}" }
+            _webdavBusy.value = false
+        }
+    }
+
+    /** 从 WebDav 下载并恢复备份 */
+    fun downloadFromWebDav() {
+        val mgr = backupManager ?: return
+        val cfg = _webdavConfig.value
+        if (!cfg.isConfigured) {
+            _backupMessage.value = "请先填写 WebDav 服务器地址"
+            return
+        }
+        if (_webdavBusy.value) return
+        viewModelScope.launch {
+            _webdavBusy.value = true
+            _backupMessage.value = runCatching {
+                val client = com.novelreader.core.backup.WebDavClient(
+                    cfg.url, cfg.username.ifBlank { null }, cfg.password,
+                )
+                val json = withContext(kotlinx.coroutines.Dispatchers.IO) { client.get(cfg.path) }
+                mgr.deserialize(json)
+            }.getOrElse { "下载恢复失败：${it.message ?: "未知错误"}" }
+            _webdavBusy.value = false
         }
     }
 
@@ -87,6 +190,18 @@ class SettingsViewModel(
 
     init {
         observePrefs()
+        observeWebDav()
+    }
+
+    private fun observeWebDav() {
+        viewModelScope.launch {
+            // 先读一次当前配置
+            val url = preferencesManager.webdavUrlFlow.first()
+            val username = preferencesManager.webdavUsernameFlow.first()
+            val password = preferencesManager.webdavPasswordFlow.first()
+            val path = preferencesManager.webdavPathFlow.first()
+            _webdavConfig.value = WebDavConfig(url, username, password, path)
+        }
     }
 
     private fun observePrefs() {

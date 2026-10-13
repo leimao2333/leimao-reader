@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Source
@@ -84,6 +85,8 @@ fun HomeScreen(
     onOpenComicSearch: () -> Unit,
     onOpenVideoSearch: () -> Unit,
     onOpenExplore: (SourceType) -> Unit = {},
+    /** 打开 RSS 订阅（v1.4.0） */
+    onOpenRss: () -> Unit = {},
     onContinueReading: (MediaItem, List<ChapterItem>, ChapterItem?) -> Unit,
 ) {
     val importMessage by viewModel.importMessage.collectAsState()
@@ -158,6 +161,9 @@ fun HomeScreen(
                 actions = {
                     IconButton(onClick = { onOpenExplore(currentType) }) {
                         Icon(Icons.Filled.Explore, contentDescription = "发现")
+                    }
+                    IconButton(onClick = onOpenRss) {
+                        Icon(Icons.Filled.RssFeed, contentDescription = "订阅")
                     }
                     IconButton(onClick = onOpenSources) {
                         Icon(Icons.Filled.Source, contentDescription = "源管理")

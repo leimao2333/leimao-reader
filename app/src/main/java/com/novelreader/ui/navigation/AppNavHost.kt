@@ -91,6 +91,7 @@ fun AppNavHost(
                 onOpenComicSearch = { navController.navigate(Routes.COMIC_SEARCH) },
                 onOpenVideoSearch = { navController.navigate(Routes.videoSearch()) },
                 onOpenExplore = { type -> navController.navigate(Routes.explore(type)) },
+                onOpenRss = { navController.navigate(Routes.RSS) },
                 onContinueReading = { item, chapters, target ->
                     NavCache.putChapters(item, chapters)
                     val index = target?.index?.coerceAtLeast(0) ?: 0
@@ -262,6 +263,39 @@ fun AppNavHost(
         // ===== 更新日志 =====
         composable(Routes.CHANGELOG) {
             com.novelreader.ui.screens.settings.ChangelogScreen(
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        // ===== RSS 订阅（v1.4.0）=====
+        composable(Routes.RSS) {
+            val viewModel: com.novelreader.ui.screens.rss.RssViewModel = viewModel(
+                factory = NovelViewModelFactory(container) {
+                    com.novelreader.ui.screens.rss.RssViewModel(it.rssRepository)
+                }
+            )
+            com.novelreader.ui.screens.rss.RssScreen(
+                viewModel = viewModel,
+                onOpenArticle = { articleId ->
+                    navController.navigate(Routes.rssReader(articleId))
+                },
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        // ===== RSS 文章阅读 =====
+        composable(
+            route = Routes.RSS_READER,
+            arguments = listOf(navArgument("articleId") { type = NavType.LongType }),
+        ) { backStackEntry ->
+            val articleId = backStackEntry.arguments?.getLong("articleId") ?: 0L
+            val viewModel: com.novelreader.ui.screens.rss.RssReaderViewModel = viewModel(
+                factory = NovelViewModelFactory(container) {
+                    com.novelreader.ui.screens.rss.RssReaderViewModel(it.rssRepository, articleId)
+                }
+            )
+            com.novelreader.ui.screens.rss.RssReaderScreen(
+                viewModel = viewModel,
                 onBack = { navController.popBackStack() },
             )
         }

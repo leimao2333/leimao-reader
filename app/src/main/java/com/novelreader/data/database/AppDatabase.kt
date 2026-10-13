@@ -8,12 +8,15 @@ import com.novelreader.data.model.BookEntity
 import com.novelreader.data.model.BookmarkEntity
 import com.novelreader.data.model.ChapterCacheEntity
 import com.novelreader.data.model.ProgressEntity
+import com.novelreader.data.model.RssArticleEntity
+import com.novelreader.data.model.RssFeedEntity
 import com.novelreader.data.model.SourceEntity
 
 /**
  * 应用数据库。
  *
- * 五张表：源（sources）、书架（books）、进度（progress）、章节缓存（chapter_cache）、书签（bookmarks）。
+ * 七张表：源（sources）、书架（books）、进度（progress）、章节缓存（chapter_cache）、
+ * 书签（bookmarks）、RSS 订阅（rss_feeds）、RSS 文章（rss_articles）。
  */
 @Database(
     entities = [
@@ -22,8 +25,10 @@ import com.novelreader.data.model.SourceEntity
         ProgressEntity::class,
         ChapterCacheEntity::class,
         BookmarkEntity::class,
+        RssFeedEntity::class,
+        RssArticleEntity::class,
     ],
-    version = 10,
+    version = 11,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -32,6 +37,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun progressDao(): ProgressDao
     abstract fun chapterCacheDao(): ChapterCacheDao
     abstract fun bookmarkDao(): BookmarkDao
+    abstract fun rssDao(): RssDao
 
     companion object {
         /** v1 -> v2：sources 表新增 category 列 */
@@ -198,6 +204,60 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_9_10 = object : Migration(9, 10) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE books ADD COLUMN requestOptions TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /**
+         * v10 -> v11：新增 RSS 订阅两张表（v1.4.0 RSS 订阅模块）。
+         *
+         * - rss_feeds：订阅源（地址唯一）
+         * - rss_articles：文章（源 + guid 唯一，重复抓取只插新条目，已读/收藏状态不被覆盖）
+         */
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS rss_feeds (
+                        feedId INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        url TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        siteUrl TEXT NOT NULL,
+                        description TEXT NOT NULL,
+                        iconUrl TEXT NOT NULL,
+                        groupName TEXT NOT NULL,
+                        sortOrder INTEGER NOT NULL,
+                        lastFetchAt INTEGER NOT NULL,
+                        lastError TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_rss_feeds_url ON rss_feeds (url)"
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS rss_articles (
+                        articleId INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        feedId INTEGER NOT NULL,
+                        guid TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        link TEXT NOT NULL,
+                        author TEXT NOT NULL,
+                        pubDate INTEGER NOT NULL,
+                        summary TEXT NOT NULL,
+                        contentHtml TEXT NOT NULL,
+                        imageUrl TEXT NOT NULL,
+                        read INTEGER NOT NULL,
+                        starred INTEGER NOT NULL,
+                        fetchedAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_rss_articles_feedId_guid " +
+                        "ON rss_articles (feedId, guid)"
+                )
             }
         }
 

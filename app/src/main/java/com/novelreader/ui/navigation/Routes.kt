@@ -40,6 +40,10 @@ object Routes {
     // ===== 通用 =====
     const val BOOKSHELF = "bookshelf"          // 书架/收藏
 
+    // ===== RSS 订阅（v1.4.0）=====
+    const val RSS = "rss"                              // 订阅列表 + 文章流
+    const val RSS_READER = "rss_reader/{articleId}"    // 订阅文章阅读
+
     // ===== 路由构建函数 =====
     /** 小说搜索页；initialKeyword 非空时进入后按该关键词预搜索（作者名跳转用） */
     fun novelSearch(initialKeyword: String = ""): String {
@@ -83,4 +87,7 @@ object Routes {
         chapterIndex: Int,
     ): String =
         "video_player/${NavArgs.encodeItem(item)}/$chapterIndex"
+
+    /** 订阅文章阅读页（v1.4.0） */
+    fun rssReader(articleId: Long): String = "rss_reader/$articleId"
 }

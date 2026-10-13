@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.3.0"
+    const val CURRENT_VERSION = "1.4.0"
 
     /**
      * 更新日志。
@@ -19,6 +19,18 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.4.0",
+            date = "2026-10-13",
+            changes = listOf(
+                "**RSS 订阅模块**：应用不再只有「搜索型书源」——首页顶栏新增「订阅」入口，可添加 RSS / Atom 订阅源（也支持从博客首页自动发现订阅链接、粘贴 OPML 批量导入），按源或全部查看文章流，未读计数、已读标记、收藏、全部已读一应俱全",
+                "**三格式订阅解析**：RSS 2.0、Atom 1.0、RDF(RSS 1.0) 统一解析，命名空间前缀一律忽略（`content:encoded` / `dc:date` / `dc:creator` 都能取到）；`pubDate` 支持 RFC1123（含 GMT 时区名）、ISO8601、`yyyy-MM-dd HH:mm:ss` 与时间戳；CDATA 与实体转义两种正文写法都能吃下",
+                "**正文阅读**：`content:encoded` / `description` 转成「段落 + 图片」块渲染，正文 16sp / 行高 26sp 与小说阅读页同源；图片自动补全相对地址、优先取懒加载属性（`data-src` 等）；支持同源上一篇 / 下一篇连读、收藏、标记未读、浏览器打开原文",
+                "**只进不退的增量抓取**：文章去重键为「源 + guid」，刷新只插入新文章，**已读 / 收藏状态不会被覆盖**；进入页面自动刷新超过 30 分钟未更新的源，每源最多保留 300 篇防止数据库膨胀",
+                "**备份覆盖订阅**：本地备份 / 恢复新增订阅源与文章（恢复时自动重建自增 ID 映射，文章的已读 / 收藏状态一并带过去）",
+                "新增 26 条离线单测（RssParserTest）：三种格式解析、OPML、页面订阅发现、时间解析、正文块转换与异常路径",
+            ),
+        ),
         VersionEntry(
             version = "1.3.0",
             date = "2026-10-13",

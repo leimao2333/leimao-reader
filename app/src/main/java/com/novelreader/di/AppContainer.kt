@@ -50,6 +50,7 @@ class AppContainer(context: Context) {
                 AppDatabase.MIGRATION_7_8,
                 AppDatabase.MIGRATION_8_9,
                 AppDatabase.MIGRATION_9_10,
+                AppDatabase.MIGRATION_10_11,
             )
             .build()
     }
@@ -94,6 +95,11 @@ class AppContainer(context: Context) {
     /** 书签仓库（v1.1.0） */
     val bookmarkRepository: BookmarkRepository by lazy {
         BookmarkRepositoryImpl(database.bookmarkDao())
+    }
+
+    /** RSS 订阅仓库（v1.4.0） */
+    val rssRepository: com.novelreader.domain.repository.RssRepository by lazy {
+        com.novelreader.data.repository.RssRepositoryImpl(database.rssDao())
     }
 
     /** 下载管理器 */

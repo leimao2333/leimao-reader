@@ -4,6 +4,7 @@ import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
 import com.novelreader.source.search.FuzzyMatch
+import com.novelreader.source.search.VideoTitleKey
 import com.novelreader.ui.navigation.NavArgs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -233,6 +234,45 @@ class FuzzyMatchTest {
         val groups = FuzzyMatch.groupDuplicates(items)
         assertEquals(2, groups.size)
     }
+
+    @Test
+    fun `自定义分组键可按影视片名口径折叠`() {
+        // v1.3.7.0：影视片名带年份 / 画质后缀，默认书名归一化折叠不起来，
+        // 传入 VideoTitleKey.of 才应合并为一组。
+        val items = listOf(
+            video("1", "流浪地球3", "s1"),
+            video("2", "流浪地球3(2026)", "s2"),
+            video("3", "流浪地球3【HD】", "s3"),
+            video("4", "流浪地球3 高清完整版", "s4"),
+        )
+
+        // 默认键：带后缀的会被判成不同片 → 4 组
+        assertEquals("不传 keyOf 时默认按书名归一化，后缀导致拆成 4 组", 4, FuzzyMatch.groupDuplicates(items).size)
+
+        // 影视键：剥离后缀后合并为一组
+        val groups = FuzzyMatch.groupDuplicates(items) { VideoTitleKey.of(it.title) }
+        assertEquals("按影视片名口径应折叠为一组", 1, groups.size)
+        assertEquals(4, groups[0].size)
+        assertEquals("组内保持源返回顺序", "流浪地球3", groups[0][0].title)
+    }
+
+    @Test
+    fun `自定义分组键不会把不同季合并`() {
+        val items = listOf(
+            video("1", "庆余年第一季", "s1"),
+            video("2", "庆余年第二季", "s2"),
+        )
+        val groups = FuzzyMatch.groupDuplicates(items) { VideoTitleKey.of(it.title) }
+        assertEquals("季数不是括号后缀，绝不能被剥掉", 2, groups.size)
+    }
+
+    private fun video(id: String, title: String, sourceId: String) = MediaItem(
+        id = id,
+        title = title,
+        type = SourceType.VIDEO,
+        detailUrl = id,
+        sourceId = sourceId,
+    )
 
     @Test
     fun `作者归一化去掉来源前缀`() {

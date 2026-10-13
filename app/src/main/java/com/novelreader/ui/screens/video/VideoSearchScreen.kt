@@ -1,15 +1,11 @@
 package com.novelreader.ui.screens.video
 
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.Icon
@@ -23,12 +19,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.novelreader.domain.model.MediaItem
-import com.novelreader.ui.components.MediaItemCard
+import com.novelreader.domain.model.SourceType
+import com.novelreader.ui.components.GroupedSearchResults
 import com.novelreader.ui.components.SearchBar
 import com.novelreader.ui.components.SearchProgressBar
 
 /**
  * 视频搜索页。
+ *
+ * 结果按片名折叠聚合（v1.3.7.0）：同一部片在多个采集站都搜到时只显示一条，
+ * 卡片标「N 个播放源，点击展开换源」，展开后逐条列出各源结果。
+ * 折叠键用 [com.novelreader.source.search.VideoTitleKey]——采集站片名带
+ * 年份 / 画质 / 版本后缀（`流浪地球3(2026)`），不额外剥离就折叠不起来。
  */
 @Composable
 fun VideoSearchScreen(
@@ -94,10 +96,12 @@ fun VideoSearchScreen(
             }
             state.isSearching -> {
                 SearchProgressBar(state = state)
-                SearchResultList(
+                GroupedSearchResults(
                     results = state.results,
                     isEmptyHint = "正在搜索中，结果将实时显示…",
                     onItemClick = onItemClick,
+                    type = SourceType.VIDEO,
+                    unitLabel = "播放源",
                 )
             }
             state.error != null -> {
@@ -118,40 +122,14 @@ fun VideoSearchScreen(
                 }
             }
             else -> {
-                SearchResultList(
+                GroupedSearchResults(
                     results = state.results,
                     isEmptyHint = "",
                     onItemClick = onItemClick,
+                    type = SourceType.VIDEO,
+                    unitLabel = "播放源",
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun SearchResultList(
-    results: List<MediaItem>,
-    isEmptyHint: String,
-    onItemClick: (MediaItem) -> Unit,
-) {
-    if (results.isEmpty()) {
-        if (isEmptyHint.isNotBlank()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    text = isEmptyHint,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        return
-    }
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        items(results, key = { "${it.sourceId}_${it.id}" }) { item ->
-            MediaItemCard(item = item, onClick = { onItemClick(item) })
         }
     }
 }

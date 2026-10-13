@@ -68,12 +68,16 @@ fun MediaItemCard(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                // 作者 + 状态（连载中/已完结）首行
+                // 作者 + 状态（连载中/已完结）首行；影视改为「分类 · 备注」（v1.3.7.0）
                 val status = BookMeta.statusText(item)
-                val authorLine = listOfNotNull(
-                    item.author?.takeIf { it.isNotBlank() },
-                    status,
-                ).joinToString(" · ")
+                val authorLine = if (item.type == com.novelreader.domain.model.SourceType.VIDEO) {
+                    listOfNotNull(VideoMeta.typeName(item), VideoMeta.remarks(item)).joinToString(" · ")
+                } else {
+                    listOfNotNull(
+                        item.author?.takeIf { it.isNotBlank() },
+                        status,
+                    ).joinToString(" · ")
+                }
                 if (authorLine.isNotEmpty()) {
                     Spacer(Modifier.height(2.dp))
                     Text(

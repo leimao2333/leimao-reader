@@ -230,13 +230,19 @@ object FuzzyMatch {
      *
      * 组内保持原顺序（源返回序，已由调用方 rank 后传入即有序）。
      *
+     * @param keyOf 分组键函数，默认 [normalize]（按书名）。
+     *   视频场景应传 [VideoTitleKey.of]——采集站片名带年份 / 画质 / 版本后缀，
+     *   不额外剥离就永远折叠不起来（v1.3.7.0）。
      * @return 分组列表，每组至少 1 条
      */
-    fun groupDuplicates(items: List<MediaItem>): List<List<MediaItem>> {
+    fun groupDuplicates(
+        items: List<MediaItem>,
+        keyOf: (MediaItem) -> String = { normalize(it.title) },
+    ): List<List<MediaItem>> {
         val groups = LinkedHashMap<String, MutableList<MediaItem>>()
         for (item in items) {
             // 仅按书名归一化分组：作者前缀/空值/格式差异都不影响同名合并
-            val key = normalize(item.title)
+            val key = keyOf(item)
             groups.getOrPut(key) { mutableListOf() }.add(item)
         }
         return groups.values.toList()

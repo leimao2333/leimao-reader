@@ -38,6 +38,7 @@ import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImageContent
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.source.search.FuzzyMatch
+import com.novelreader.source.search.VideoTitleKey
 
 /**
  * 折叠式搜索结果列表。
@@ -48,15 +49,25 @@ import com.novelreader.source.search.FuzzyMatch
  * - 展开态：逐条显示各源结果（封面 / 标题 / 来源 / 阅读按钮），可再次点击收起。
  *
  * 单条结果的组（无重复源）不显示徽标，行为与普通结果一致。
+ *
+ * @param type 内容类型。决定分组键与元信息行的默认口径：
+ *   小说 / 漫画按书名归一化，影视按 [VideoTitleKey.of]（剥离年份 / 画质后缀）——v1.3.7.0。
+ * @param unitLabel 源数量单位文案（「书源」/「播放源」）
+ * @param metaLine 元信息行生成器；默认按 [type] 自动选 [BookMeta] 或 [VideoMeta]
+ * @param onRead 「阅读」按钮回调；为 null 时不显示按钮（影视点击卡片即进详情，无需此按钮）
  */
 @Composable
 fun GroupedSearchResults(
     results: List<MediaItem>,
     isEmptyHint: String,
     onItemClick: (MediaItem) -> Unit,
-    onRead: (MediaItem) -> Unit,
+    onRead: ((MediaItem) -> Unit)? = null,
     onToggleShelf: ((MediaItem) -> Unit)? = null,
     shelfKeys: Set<String> = emptySet(),
+    type: com.novelreader.domain.model.SourceType = com.novelreader.domain.model.SourceType.NOVEL,
+    unitLabel: String = "书源",
+    metaLine: ((MediaItem) -> String)? = null,
+    keyOf: ((MediaItem) -> String)? = null,
 ) {
     if (results.isEmpty()) {
         if (isEmptyHint.isNotBlank()) {
@@ -70,8 +81,20 @@ fun GroupedSearchResults(
         return
     }
 
-    // 分组（书名+作者归一化），组内保持源返回顺序
-    val groups = remember(results) { FuzzyMatch.groupDuplicates(results) }
+    // 分组键：显式传入优先；否则按类型选默认口径
+    val groupKeyOf: (MediaItem) -> String = keyOf ?: when (type) {
+        com.novelreader.domain.model.SourceType.VIDEO -> { item -> VideoTitleKey.of(item.title) }
+        else -> { item -> FuzzyMatch.normalize(item.title) }
+    }
+
+    // 元信息行：显式传入优先；否则按类型选默认口径
+    val metaOf: (MediaItem) -> String = metaLine ?: when (type) {
+        com.novelreader.domain.model.SourceType.VIDEO -> { item -> VideoMeta.summaryLine(item) }
+        else -> { item -> BookMeta.summaryLine(item) }
+    }
+
+    // 分组，组内保持源返回顺序
+    val groups = remember(results, groupKeyOf) { FuzzyMatch.groupDuplicates(results, groupKeyOf) }
 
     // 展开的组 key 集合（旋转屏/进程恢复时保留）
     var expandedKeys by rememberSaveable(stateSaver = androidx.compose.runtime.saveable.autoSaver()) {
@@ -84,7 +107,7 @@ fun GroupedSearchResults(
     ) {
         groups.forEachIndexed { groupIndex, group ->
             val head = group.first()
-            val groupKey = FuzzyMatch.normalize(head.title)
+            val groupKey = groupKeyOf(head)
             val isExpanded = groupKey in expandedKeys
             val hasMulti = group.size > 1
 
@@ -100,7 +123,7 @@ fun GroupedSearchResults(
                             MediaItemCard(
                                 item = member,
                                 onClick = { onItemClick(member) },
-                                onRead = { onRead(member) },
+                                onRead = onRead?.let { fn -> { fn(member) } },
                                 onToggleShelf = onToggleShelf?.let { fn -> { fn(member) } },
                                 inShelf = "${member.sourceId}|${member.id}" in shelfKeys,
                             )
@@ -121,7 +144,7 @@ fun GroupedSearchResults(
                             )
                             Spacer(Modifier.width(4.dp))
                             Text(
-                                text = "收起 ${group.size} 个书源",
+                                text = "收起 ${group.size} 个$unitLabel",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.primary,
                             )
@@ -133,6 +156,8 @@ fun GroupedSearchResults(
                         head = head,
                         sourceCount = group.size,
                         hasMulti = hasMulti,
+                        unitLabel = unitLabel,
+                        metaOf = metaOf,
                         onClick = {
                             if (hasMulti) expandedKeys = expandedKeys + groupKey
                             else onItemClick(head)
@@ -150,6 +175,8 @@ private fun GroupCard(
     head: MediaItem,
     sourceCount: Int,
     hasMulti: Boolean,
+    unitLabel: String,
+    metaOf: (MediaItem) -> String,
     onClick: () -> Unit,
 ) {
     // 扁平聚合卡片（无 Card 阴影），对齐开源阅读紧凑观感
@@ -194,23 +221,26 @@ private fun GroupCard(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                // 作者 + 状态
-                val authorLine = listOfNotNull(
-                    head.author?.takeIf { it.isNotBlank() },
-                    BookMeta.statusText(head),
-                ).joinToString(" · ")
-                if (authorLine.isNotEmpty()) {
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = authorLine,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                // 作者行：影视不显示 type_name 当作者（元信息行已有分类），
+                // 只有小说 / 漫画才走「作者 · 状态」
+                if (head.type != com.novelreader.domain.model.SourceType.VIDEO) {
+                    val authorLine = listOfNotNull(
+                        head.author?.takeIf { it.isNotBlank() },
+                        BookMeta.statusText(head),
+                    ).joinToString(" · ")
+                    if (authorLine.isNotEmpty()) {
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = authorLine,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
-                // 元信息：字数 · 最新章节 · 更新时间（#23）
-                val meta = BookMeta.summaryLine(head)
+                // 元信息：小说=字数·最新章节·更新时间；影视=评分·分类·年份·地区·备注
+                val meta = metaOf(head)
                 if (meta.isNotEmpty()) {
                     Spacer(Modifier.height(2.dp))
                     Text(
@@ -224,7 +254,7 @@ private fun GroupCard(
                 Spacer(Modifier.height(4.dp))
                 if (hasMulti) {
                     Text(
-                        text = "$sourceCount 个书源，点击展开换源",
+                        text = "$sourceCount 个$unitLabel，点击展开换源",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
                     )

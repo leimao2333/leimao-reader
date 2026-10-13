@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.2.10"
+    const val CURRENT_VERSION = "1.2.11"
 
     /**
      * 更新日志。
@@ -19,6 +19,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.2.11",
+            date = "2026-10-13",
+            changes = listOf(
+                "**漫画封面修复**：大量漫画 CDN 按 UA / Referer 防盗链，而封面由图片加载器直接请求、不带任何头 → 显示占位图。现在全局图片加载器统一补齐浏览器级默认头（浏览器 UA + 图片自站 Referer + 图片 Accept），并新增封面请求头注册表：源声明的请求头（legado `header` / Venera 图床头）按域名命中后优先应用",
+                "**漫画离线缓存**：详情页新增「缓存」——缓存全书 / 前 50 话 / 进度后 50 话；逐话下载图片（含加密图解密与乱序还原），临时目录原子写入防半章坏数据，已缓存话自动跳过、实时进度可取消；阅读时缓存命中直读本地文件，无网也能看",
+                "**漫画发现验证**：漫画模块顶栏「发现」入口走同一发现页（v1.2.10 已支持按类型枚举源），legado 漫画源的 exploreUrl / ruleExplore 分类可直接浏览",
+            ),
+        ),
         VersionEntry(
             version = "1.2.10",
             date = "2026-10-13",

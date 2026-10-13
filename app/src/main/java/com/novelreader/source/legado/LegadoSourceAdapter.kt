@@ -31,6 +31,19 @@ class LegadoSourceAdapter(
     // 清理 baseUrl：去掉末尾的 # 和 /
     private val baseUrl: String = source.url.trim().removeSuffix("#").trimEnd('/')
 
+    init {
+        // 源级请求头注册进封面注册表：书架/搜索/详情的封面由 Coil 直接加载，
+        // 拿不到源上下文，按 host 命中后由 CoverDefaultsInterceptor 补齐（防盗链）
+        if (headers.isNotEmpty()) {
+            runCatching {
+                val host = java.net.URI(baseUrl).host
+                if (!host.isNullOrBlank()) {
+                    com.novelreader.core.image.CoverHeaderRegistry.register(host, headers)
+                }
+            }
+        }
+    }
+
     // ===== 搜索 =====
     override suspend fun search(keyword: String, page: Int): List<MediaItem> {
         if (source.searchUrl.isBlank()) return emptyList()

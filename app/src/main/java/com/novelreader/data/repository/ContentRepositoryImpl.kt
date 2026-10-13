@@ -13,6 +13,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.Semaphore
@@ -68,6 +70,11 @@ class ContentRepositoryImpl(
         concurrency: Int,
         fuzzyEnabled: Boolean,
     ): Flow<SearchState> = flow {
+        // 冷启动竞态防护：深链自动搜索可能在源恢复完成前触发（total=0 空搜）。
+        // 恢复已完成时该等待立即通过，无额外开销。
+        if (!sourceManager.restoredFlow.value) {
+            sourceManager.restoredFlow.filter { it }.first()
+        }
         val adapters: List<Pair<SourceInfo, com.novelreader.domain.model.SourceAdapter>> =
             sourceManager.getEnabledSourcesByType(type)
                 .mapNotNull { info ->

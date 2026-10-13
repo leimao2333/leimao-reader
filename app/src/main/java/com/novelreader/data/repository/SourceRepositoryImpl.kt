@@ -102,16 +102,21 @@ class SourceRepositoryImpl(
      * 从数据库恢复所有源到 SourceManager（应用启动时调用）。
      */
     suspend fun restoreSources() {
-        val entities = sourceDao.getAll()
-        entities.forEach { entity ->
-            // 仅在内存中不存在时恢复
-            if (sourceManager.getAdapter(entity.id) == null) {
-                runCatching {
-                    sourceManager.importSource(entity.rawContent, "${entity.id}.${entity.format}")
-                    // 恢复启用状态
-                    sourceManager.setSourceEnabled(entity.id, entity.enabled)
+        try {
+            val entities = sourceDao.getAll()
+            entities.forEach { entity ->
+                // 仅在内存中不存在时恢复
+                if (sourceManager.getAdapter(entity.id) == null) {
+                    runCatching {
+                        sourceManager.importSource(entity.rawContent, "${entity.id}.${entity.format}")
+                        // 恢复启用状态
+                        sourceManager.setSourceEnabled(entity.id, entity.enabled)
+                    }
                 }
             }
+        } finally {
+            // 无论成败都放行等待方（搜索入口等待此信号，避免冷启动竞态空搜）
+            sourceManager.markRestored()
         }
     }
 }

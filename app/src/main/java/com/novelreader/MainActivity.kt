@@ -32,14 +32,19 @@ class MainActivity : ComponentActivity() {
                 else -> false
             }
             NovelReaderTheme(darkTheme = darkTheme) {
-                // 深链支持：novelreader://search?keyword=xxx 直达小说搜索（自动化测试/外部调用）
-                val deepLinkKeyword = remember(intent?.data) {
+                // 深链支持：novelreader://search?keyword=xxx&type=novel|comic|video
+                // 直达对应类型搜索（自动化测试/外部调用；缺省 type=novel）
+                val deepLink = remember(intent?.data) {
                     val data = intent?.data
                     if (data?.scheme == "novelreader" && data.host == "search") {
-                        data.getQueryParameter("keyword")
+                        (data.getQueryParameter("keyword") ?: "") to (data.getQueryParameter("type") ?: "novel")
                     } else null
                 }
-                AppNavHost(container = app.container, initialNovelSearchKeyword = deepLinkKeyword)
+                AppNavHost(
+                    container = app.container,
+                    initialNovelSearchKeyword = deepLink?.first?.takeIf { it.isNotBlank() },
+                    initialSearchType = deepLink?.second ?: "novel",
+                )
             }
         }
     }

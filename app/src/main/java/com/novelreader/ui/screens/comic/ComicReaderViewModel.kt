@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.novelreader.core.preferences.PreferencesManager
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
+import java.io.File
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.ProgressRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +24,7 @@ class ComicReaderViewModel(
     private val contentRepository: ContentRepository,
     private val progressRepository: ProgressRepository,
     private val preferences: PreferencesManager,
+    private val downloadManager: com.novelreader.core.download.DownloadManager? = null,
 ) : ViewModel() {
 
     /** 图片地址列表 */
@@ -108,7 +110,20 @@ class ComicReaderViewModel(
         viewModelScope.launch {
             _loading.value = true
             _error.value = null
-            runCatching { contentRepository.content(chapter) }
+            // 章节缓存命中（v1.2.11 离线阅读）：本地图片文件直读，不走网络
+            val cachedFiles = currentItem?.let { item ->
+                runCatching {
+                    downloadManager?.comicChapterCacheDir(item, chapter.index)
+                        ?.listFiles()?.filter(File::isFile)
+                        ?.sorted()?.map { android.net.Uri.fromFile(it).toString() }
+                }.getOrNull().takeUnless { it.isNullOrEmpty() }
+            }
+            if (cachedFiles != null) {
+                _images.value = cachedFiles
+                _imageHeaders.value = emptyMap()
+                _imageScripts.value = emptyMap()
+                saveProgress()
+            } else runCatching { contentRepository.content(chapter) }
                 .onSuccess { result ->
                     val imgs = result.comicImages?.filter { it.isNotBlank() } ?: emptyList()
                     _images.value = imgs

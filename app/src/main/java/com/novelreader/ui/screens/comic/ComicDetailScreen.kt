@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -56,6 +57,9 @@ fun ComicDetailScreen(
     val collected by viewModel.collected.collectAsState()
     val download by viewModel.download.collectAsState()
     val chapterDesc by viewModel.chapterDesc.collectAsState()
+    // 批量离线缓存（v1.2.11）
+    val cacheProgress by viewModel.cacheProgress.collectAsState()
+    var showCacheDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(item) {
         viewModel.load(item)
@@ -157,21 +161,24 @@ fun ComicDetailScreen(
                             )
                         }
                         Spacer(Modifier.height(12.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        // FlowRow 自动换行：窄屏下 4 个按钮放不进一行时不再溢出被裁
+                        @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+                        androidx.compose.foundation.layout.FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
                             Button(
                                 onClick = onRead,
                                 enabled = chapters.isNotEmpty(),
                             ) {
                                 Text(if (chapters.isEmpty()) "暂无章节" else "开始阅读")
                             }
-                            Spacer(Modifier.width(8.dp))
                             if (collected) {
                                 OutlinedButton(onClick = viewModel::toggleCollect) { Text("已收藏") }
                             } else {
                                 OutlinedButton(onClick = viewModel::toggleCollect) { Text("加入书架") }
                             }
-                            Spacer(Modifier.width(8.dp))
                             OutlinedButton(onClick = viewModel::downloadComic) { Text("下载") }
+                            OutlinedButton(onClick = { showCacheDialog = true }) { Text("缓存") }
                         }
                     }
                 }
@@ -240,6 +247,64 @@ fun ComicDetailScreen(
                 HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
             }
         }
+
+            // ===== 批量离线缓存弹窗（v1.2.11）：进行中显示进度，否则范围选择/完成提示 =====
+            if (cacheProgress?.running == true) {
+                val p = cacheProgress!!
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = {},
+                    title = { Text("离线缓存") },
+                    text = {
+                        Column {
+                            androidx.compose.material3.LinearProgressIndicator(
+                                progress = { if (p.total > 0) p.done.toFloat() / p.total else 0f },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(text = "正在缓存 ${p.done}/${p.total}（新缓存 ${p.newCached}）")
+                        }
+                    },
+                    confirmButton = {},
+                    dismissButton = {
+                        androidx.compose.material3.TextButton(onClick = { viewModel.cancelCache() }) { Text("取消") }
+                    },
+                )
+            } else if (showCacheDialog) {
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { showCacheDialog = false },
+                    title = { Text("离线缓存") },
+                    text = { Text("选择要缓存的章节范围，缓存完成后无网也能阅读") },
+                    confirmButton = {
+                        androidx.compose.material3.TextButton(onClick = {
+                            showCacheDialog = false
+                            viewModel.cacheAll()
+                        }) { Text("缓存全书") }
+                    },
+                    dismissButton = {
+                        Row {
+                            androidx.compose.material3.TextButton(onClick = {
+                                showCacheDialog = false
+                                viewModel.cacheFirst50()
+                            }) { Text("前50话") }
+                            androidx.compose.material3.TextButton(onClick = {
+                                showCacheDialog = false
+                                viewModel.cacheNext50()
+                            }) { Text("后50话") }
+                            androidx.compose.material3.TextButton(onClick = { showCacheDialog = false }) { Text("取消") }
+                        }
+                    },
+                )
+            }
+            cacheProgress?.takeIf { !it.running && it.message != null }?.let { p ->
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { viewModel.clearCacheProgress() },
+                    title = { Text("离线缓存") },
+                    text = { Text(p.message ?: "") },
+                    confirmButton = {
+                        androidx.compose.material3.TextButton(onClick = { viewModel.clearCacheProgress() }) { Text("确定") }
+                    },
+                )
+            }
     }
 }
 

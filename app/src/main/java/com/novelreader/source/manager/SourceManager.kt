@@ -14,6 +14,7 @@ import com.novelreader.source.loader.SourceValidator
 import com.novelreader.source.parser.JsonSourceParser
 import com.novelreader.source.parser.JsSourceParser
 import com.novelreader.source.parser.SourceParser
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * 导入结果：一个源及其原始内容。
@@ -45,6 +46,21 @@ class SourceManager(
 
     /** 源原始内容缓存：sourceId -> 原始文本 */
     private val rawContentCache = mutableMapOf<String, String>()
+
+    /**
+     * 启动恢复完成信号。
+     *
+     * 冷启动时源从数据库异步恢复，深链自动搜索等入口可能在恢复完成前触发，
+     * 导致「源表为空 → 搜索 0 源 → 未找到结果」的竞态（v1.2.11 视频深链测试发现）。
+     * 搜索入口应先等待此信号为 true 再取源（已完成时立即通过，无额外开销）。
+     */
+    private val _restored = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val restoredFlow: kotlinx.coroutines.flow.StateFlow<Boolean> = _restored.asStateFlow()
+
+    /** 标记启动恢复已完成（成功或失败均需调用，避免永久阻塞等待方） */
+    fun markRestored() {
+        _restored.value = true
+    }
 
     private val loaders: Map<SourceFormat, SourceLoader> = mapOf(
         SourceFormat.JSON to JsonSourceLoader(),

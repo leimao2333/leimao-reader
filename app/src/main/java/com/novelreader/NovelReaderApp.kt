@@ -57,6 +57,7 @@ class NovelReaderApp : Application(), ImageLoaderFactory {
                     .connectTimeout(20, TimeUnit.SECONDS)
                     .readTimeout(30, TimeUnit.SECONDS)
                     .addInterceptor(ImageDecryptInterceptor())
+                    .addInterceptor(com.novelreader.core.image.CoverDefaultsInterceptor())
                     .build()
             }
             .crossfade(true)

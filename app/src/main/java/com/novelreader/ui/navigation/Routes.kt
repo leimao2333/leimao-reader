@@ -33,7 +33,7 @@ object Routes {
     const val COMIC_READER = "comic_reader/{item}/{chapterIndex}"
 
     // ===== 视频 =====
-    const val VIDEO_SEARCH = "video_search"
+    const val VIDEO_SEARCH = "video_search?keyword={keyword}"
     const val VIDEO_DETAIL = "video_detail/{item}"
     const val VIDEO_PLAYER = "video_player/{item}/{chapterIndex}"
 
@@ -68,6 +68,12 @@ object Routes {
         chapterIndex: Int,
     ): String =
         "comic_reader/${NavArgs.encodeItem(item)}/$chapterIndex"
+
+    /** 视频搜索页；initialKeyword 非空时进入后自动填词并搜索（深链测试用） */
+    fun videoSearch(initialKeyword: String = ""): String {
+        val kw = java.net.URLEncoder.encode(initialKeyword, "UTF-8")
+        return "video_search?keyword=$kw"
+    }
 
     fun videoDetail(item: com.novelreader.domain.model.MediaItem): String =
         "video_detail/${NavArgs.encodeItem(item)}"

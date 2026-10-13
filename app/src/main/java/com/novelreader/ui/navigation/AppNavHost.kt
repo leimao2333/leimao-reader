@@ -48,13 +48,22 @@ import kotlinx.coroutines.launch
  * 首页 → 书架 / 源管理（含导入）/ 设置
  */
 @Composable
-fun AppNavHost(container: AppContainer, initialNovelSearchKeyword: String? = null) {
+fun AppNavHost(
+    container: AppContainer,
+    initialNovelSearchKeyword: String? = null,
+    /** 深链搜索类型：novel / comic / video（默认 novel） */
+    initialSearchType: String = "novel",
+) {
     val navController = rememberNavController()
 
-    // 深链预搜索：进入首页后自动跳转小说搜索并执行搜索
+    // 深链预搜索：进入首页后按类型自动跳转搜索页
     androidx.compose.runtime.LaunchedEffect(initialNovelSearchKeyword) {
         if (!initialNovelSearchKeyword.isNullOrBlank()) {
-            navController.navigate(Routes.novelSearch(initialKeyword = initialNovelSearchKeyword))
+            when (initialSearchType.lowercase()) {
+                "comic" -> navController.navigate(Routes.COMIC_SEARCH)
+                "video" -> navController.navigate(Routes.videoSearch(initialNovelSearchKeyword))
+                else -> navController.navigate(Routes.novelSearch(initialKeyword = initialNovelSearchKeyword))
+            }
         }
     }
 
@@ -80,7 +89,7 @@ fun AppNavHost(container: AppContainer, initialNovelSearchKeyword: String? = nul
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
                 onOpenNovelSearch = { navController.navigate(Routes.novelSearch()) },
                 onOpenComicSearch = { navController.navigate(Routes.COMIC_SEARCH) },
-                onOpenVideoSearch = { navController.navigate(Routes.VIDEO_SEARCH) },
+                onOpenVideoSearch = { navController.navigate(Routes.videoSearch()) },
                 onOpenExplore = { type -> navController.navigate(Routes.explore(type)) },
                 onContinueReading = { item, chapters, target ->
                     NavCache.putChapters(item, chapters)
@@ -471,6 +480,7 @@ fun AppNavHost(container: AppContainer, initialNovelSearchKeyword: String? = nul
                         it.contentRepository,
                         it.progressRepository,
                         it.preferencesManager,
+                        it.downloadManager,
                     )
                 }
             )
@@ -484,7 +494,14 @@ fun AppNavHost(container: AppContainer, initialNovelSearchKeyword: String? = nul
         }
 
         // ===== 视频：搜索 =====
-        composable(Routes.VIDEO_SEARCH) {
+        composable(
+            route = Routes.VIDEO_SEARCH,
+            arguments = listOf(navArgument("keyword") {
+                type = NavType.StringType
+                defaultValue = ""
+            }),
+        ) { backStackEntry ->
+            val initialKeyword = backStackEntry.arguments?.getString("keyword").orEmpty()
             val viewModel: VideoSearchViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
                     VideoSearchViewModel(it.contentRepository, it.preferencesManager)
@@ -492,6 +509,7 @@ fun AppNavHost(container: AppContainer, initialNovelSearchKeyword: String? = nul
             )
             VideoSearchScreen(
                 viewModel = viewModel,
+                initialKeyword = initialKeyword,
                 onItemClick = { item ->
                     navController.navigate(Routes.videoDetail(item))
                 },

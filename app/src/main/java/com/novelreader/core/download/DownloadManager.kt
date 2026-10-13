@@ -7,6 +7,7 @@ import android.util.Log
 import com.novelreader.core.image.ComicImageScramble
 import com.novelreader.core.network.HttpClient
 import com.novelreader.domain.model.ContentResult
+import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
 import kotlinx.coroutines.Dispatchers
@@ -129,6 +130,64 @@ class DownloadManager(private val context: Context) {
             fixed.recycle()
             src.recycle()
         }.onFailure { Log.w(TAG, "图片乱序还原失败 err=${it.javaClass.simpleName}") }
+    }
+
+    // ===== 漫画章节离线缓存（v1.2.11） =====
+
+    /** 某本漫画的章节缓存根目录（标题+源标识防同名碰撞） */
+    private fun comicCacheDir(item: MediaItem): File =
+        File(downloadRoot, "comic_cache/${sanitize(item.title)}_${item.sourceId.takeLast(6)}")
+
+    /** 单章缓存目录：以章节索引 5 位数字命名，天然有序 */
+    fun comicChapterCacheDir(item: MediaItem, chapterIndex: Int): File =
+        File(comicCacheDir(item), "%05d".format(chapterIndex))
+
+    /** 某本漫画已缓存的章节索引（目录存在且其中含文件） */
+    fun cachedComicChapters(item: MediaItem): Set<Int> =
+        runCatching {
+            comicCacheDir(item).listFiles()
+                ?.filter { it.isDirectory && (it.listFiles()?.any(File::isFile) == true) }
+                ?.mapNotNull { it.name.toIntOrNull() }
+                ?.toSet()
+        }.getOrNull() ?: emptySet()
+
+    /**
+     * 下载单章到章节缓存（离线阅读）。
+     *
+     * 与「下载到 downloads/comic/ 导出目录」不同，这里写入 comic_cache/：
+     * 先写临时目录、全部成功后原子改名 —— 中途取消/失败不会留下半章坏数据。
+     * 图片解密与乱序还原与整部下载完全一致。
+     */
+    fun downloadChapterToCache(item: MediaItem, chapter: ChapterItem, content: ContentResult): File {
+        val images = content.comicImages?.filter { it.isNotBlank() }
+            ?: throw IllegalStateException("漫画图片为空")
+        val dir = comicChapterCacheDir(item, chapter.index)
+        val tmp = File(dir.parentFile, dir.name + ".tmp")
+        tmp.deleteRecursively()
+        tmp.mkdirs()
+        images.forEachIndexed { index, url ->
+            val ext = url.substringBefore('?').substringAfterLast('.', "jpg")
+                .takeIf { it.length <= 5 } ?: "jpg"
+            val file = File(tmp, "%03d.$ext".format(index + 1))
+            HttpClient.downloadFile(
+                url,
+                file,
+                content.comicHeaders,
+                byteTransform = com.novelreader.core.image.ImageDecryptor::maybeDecrypt,
+            )
+            unscrambleDownloaded(file, content.comicImageScripts[url])
+        }
+        if (dir.exists()) dir.deleteRecursively()
+        if (!tmp.renameTo(dir)) {
+            tmp.deleteRecursively()
+            throw IllegalStateException("缓存目录写入失败")
+        }
+        return dir
+    }
+
+    /** 清除某本漫画的全部章节缓存 */
+    fun clearComicCache(item: MediaItem) {
+        runCatching { comicCacheDir(item).deleteRecursively() }
     }
 
     /** 下载视频（单文件） */

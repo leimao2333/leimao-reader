@@ -35,11 +35,21 @@ fun VideoSearchScreen(
     viewModel: VideoSearchViewModel,
     onItemClick: (MediaItem) -> Unit,
     onBack: () -> Unit,
+    /** 深链带入的关键词：非空时自动填入并搜索 */
+    initialKeyword: String = "",
 ) {
     val query by viewModel.query.collectAsState()
     val state by viewModel.state.collectAsState()
     val fuzzyEnabled by viewModel.fuzzyEnabled.collectAsState()
     val history by viewModel.history.collectAsState()
+
+    // 深链关键词：进入即搜索
+    androidx.compose.runtime.LaunchedEffect(initialKeyword) {
+        if (initialKeyword.isNotBlank()) {
+            viewModel.onQueryChange(initialKeyword)
+            viewModel.search()
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(

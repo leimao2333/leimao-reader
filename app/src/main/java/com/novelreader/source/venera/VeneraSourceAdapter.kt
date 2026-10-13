@@ -114,6 +114,18 @@ class VeneraSourceAdapter(
             TAG,
             "content images=${images.size} headerCount=${headers.size}",
         )
+        // 图床请求头注册进封面注册表：封面与正文图片通常同站点，
+        // 防盗链规则一致，封面加载（Coil 直发）也能按 host 命中
+        if (headers.isNotEmpty()) {
+            runCatching {
+                images.firstOrNull { it.isNotBlank() }?.let { u ->
+                    val host = java.net.URI(u).host
+                    if (!host.isNullOrBlank()) {
+                        com.novelreader.core.image.CoverHeaderRegistry.register(host, sanitizeHeaders(headers))
+                    }
+                }
+            }
+        }
         return ContentResult.comic(images, sanitizeHeaders(headers), scripts)
     }
 

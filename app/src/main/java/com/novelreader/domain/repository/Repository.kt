@@ -87,7 +87,7 @@ interface ContentRepository {
     /** 获取正文 */
     suspend fun content(chapter: ChapterItem): ContentResult
 
-    // ===== 发现页（v1.2.3 对标 legado exploreUrl/ruleExplore） =====
+    // ===== 发现页（v1.2.3.0 对标 legado exploreUrl/ruleExplore） =====
 
     /** 有发现分类的已启用源列表（分类惰性加载：仅解析源 JSON，不发请求） */
     suspend fun exploreSources(type: com.novelreader.domain.model.SourceType): List<Pair<SourceInfo, List<com.novelreader.domain.model.ExploreCategory>>>

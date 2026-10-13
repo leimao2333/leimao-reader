@@ -36,7 +36,7 @@ class ContentRepositoryImpl(
 ) : ContentRepository {
 
     /**
-     * 取适配器：优先在线源；找不到时回退本地书库（v1.2.0），
+     * 取适配器：优先在线源；找不到时回退本地书库（v1.2.0.0），
      * 使本地 TXT 书走与在线书相同的详情/目录/正文链路。
      */
     private fun resolveAdapter(sourceId: String): com.novelreader.domain.model.SourceAdapter? {
@@ -135,7 +135,7 @@ class ContentRepositoryImpl(
 
             // 串行收集：每收到一个源的结果就 emit 一次进度。
             // 每批先做「批内过滤」（批小开销低）：模糊=相似度过滤，精准=书名一致过滤，
-            // 保证边搜边显示的每条结果都与关键词相关（v1.1.4 回归修复）；
+            // 保证边搜边显示的每条结果都与关键词相关（v1.1.4.0 回归修复）；
             // 全局排序仍在收尾统一做一次，避免每批全量重排卡顿。
             // 增量去重保证不出现同一源同一本书重复条目。
             val preFilter: (List<MediaItem>) -> List<MediaItem> =
@@ -220,7 +220,7 @@ class ContentRepositoryImpl(
             runCatching { adapter.content(chapter) }.getOrDefault(ContentResult())
         }
 
-    // ===== 发现页（v1.2.3 对标 legado exploreUrl/ruleExplore） =====
+    // ===== 发现页（v1.2.3.0 对标 legado exploreUrl/ruleExplore） =====
 
     override suspend fun exploreSources(
         type: SourceType,

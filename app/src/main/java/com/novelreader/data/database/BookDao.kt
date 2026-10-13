@@ -35,7 +35,7 @@ interface BookDao {
     @Delete
     suspend fun delete(book: BookEntity)
 
-    // ===== 分组管理（v1.3.0） =====
+    // ===== 分组管理（v1.3.0.0） =====
 
     /** 设置单个条目的分组（空串 = 移出分组） */
     @Query("UPDATE books SET groupName = :group WHERE sourceId = :sourceId AND itemId = :itemId")

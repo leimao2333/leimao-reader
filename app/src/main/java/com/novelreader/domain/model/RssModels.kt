@@ -1,7 +1,7 @@
 package com.novelreader.domain.model
 
 /**
- * RSS 订阅源（领域模型，v1.4.0）。
+ * RSS 订阅源（领域模型，v1.3.1.0）。
  */
 data class RssFeed(
     val feedId: Long,
@@ -21,7 +21,7 @@ data class RssFeed(
 )
 
 /**
- * RSS 文章（领域模型，v1.4.0）。
+ * RSS 文章（领域模型，v1.3.1.0）。
  *
  * 冗余带上 [feedTitle] / [feedIcon]，便于「全部文章」流里直接展示来源。
  */

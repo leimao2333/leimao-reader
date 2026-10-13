@@ -160,7 +160,7 @@ class LegadoSourceAdapter(
         }.filter { it.title.isNotBlank() }
     }
 
-    // ===== 发现页（v1.2.3 对标 legado exploreUrl / ruleExplore） =====
+    // ===== 发现页（v1.2.3.0 对标 legado exploreUrl / ruleExplore） =====
 
     /**
      * 解析发现分类。支持三种格式（与 legado 一致）：

@@ -267,7 +267,7 @@ fun AppNavHost(
             )
         }
 
-        // ===== RSS 订阅（v1.4.0）=====
+        // ===== RSS 订阅（v1.3.1.0）=====
         composable(Routes.RSS) {
             val viewModel: com.novelreader.ui.screens.rss.RssViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {

@@ -88,7 +88,7 @@ data class LegadoBookSource(
          * 解析 legado 书源列表并报告解析失败数。
          *
          * @property pairs 成功解析的 (书源对象, 原始 JSON) 列表
-         * @property skipped 解析失败被跳过的条目数（v1.3.0：导入时向用户报告，不再静默丢弃）
+         * @property skipped 解析失败被跳过的条目数（v1.3.0.0：导入时向用户报告，不再静默丢弃）
          */
         data class Detailed(val pairs: List<Pair<LegadoBookSource, String>>, val skipped: Int)
 
@@ -158,7 +158,7 @@ private fun com.google.gson.JsonObject.str(key: String): String? = when {
     // 对象/数组：原样序列化为字符串，而不是抛异常。
     // 真实书源里 header / searchUrl 偶尔会写成 JSON 对象（如 "header": {"User-Agent": "..."}），
     // 旧实现直接 get(key).asString 抛 IllegalStateException → parseOne 失败 →
-    // parseList 的 runCatching 把整个源静默丢弃（v1.3.0 排查「部分小说源不加载」的根因之一）。
+    // parseList 的 runCatching 把整个源静默丢弃（v1.3.0.0 排查「部分小说源不加载」的根因之一）。
     else -> get(key).toString()
 }
 

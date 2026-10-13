@@ -18,9 +18,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 
 /**
- * 本地备份 / 恢复（v1.2.0 对标 legado WebDav 备份的本地版）。
+ * 本地备份 / 恢复（v1.2.0.0 对标 legado WebDav 备份的本地版）。
  *
- * 备份内容：书源、书架、阅读进度、书签、正文替换规则、RSS 订阅与文章（v1.4.0）。
+ * 备份内容：书源、书架、阅读进度、书签、正文替换规则、RSS 订阅与文章（v1.3.1.0）。
  * 格式：单个 JSON 文件（SAF 导出/导入），版本号字段便于后续演进。
  *
  * 章节缓存不备份（体积大、可重建）；本地 TXT 书不备份（文件在应用私有目录，

@@ -23,7 +23,7 @@ interface BookRepository {
     /** 从书架移除 */
     suspend fun removeFromBookshelf(item: MediaItem)
 
-    // ===== 分组管理（v1.3.0） =====
+    // ===== 分组管理（v1.3.0.0） =====
 
     /** 设置条目分组（空串 = 移出分组） */
     suspend fun setBookGroup(item: MediaItem, group: String)
@@ -31,7 +31,7 @@ interface BookRepository {
     /** 所有已用分组名 */
     fun observeGroupNames(): Flow<List<String>>
 
-    /** 更换书架条目封面（v1.2.3 长按书更换封面） */
+    /** 更换书架条目封面（v1.2.3.0 长按书更换封面） */
     suspend fun updateBookCover(item: MediaItem, coverUrl: String)
 
     /** 重命名分组 */

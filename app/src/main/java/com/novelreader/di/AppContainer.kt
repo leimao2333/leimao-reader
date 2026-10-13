@@ -92,12 +92,12 @@ class AppContainer(context: Context) {
         ChapterCacheRepositoryImpl(database.chapterCacheDao())
     }
 
-    /** 书签仓库（v1.1.0） */
+    /** 书签仓库（v1.1.0.0） */
     val bookmarkRepository: BookmarkRepository by lazy {
         BookmarkRepositoryImpl(database.bookmarkDao())
     }
 
-    /** RSS 订阅仓库（v1.4.0） */
+    /** RSS 订阅仓库（v1.3.1.0） */
     val rssRepository: com.novelreader.domain.repository.RssRepository by lazy {
         com.novelreader.data.repository.RssRepositoryImpl(database.rssDao())
     }
@@ -107,18 +107,18 @@ class AppContainer(context: Context) {
         DownloadManager(appContext)
     }
 
-    /** 本地 TXT 书库（v1.2.0 对标 legado 本地书） */
+    /** 本地 TXT 书库（v1.2.0.0 对标 legado 本地书） */
     val localBookStore: com.novelreader.core.local.LocalBookStore by lazy {
         com.novelreader.core.local.LocalBookStore(appContext)
     }
 
-    /** 本地备份 / 恢复（v1.2.0 对标 legado 备份的本地版） */
+    /** 本地备份 / 恢复（v1.2.0.0 对标 legado 备份的本地版） */
     val backupManager: com.novelreader.core.backup.BackupManager by lazy {
         com.novelreader.core.backup.BackupManager(appContext, database, preferencesManager)
     }
 
     /**
-     * 朗读控制器（v1.1.8 对标开源阅读听书）。
+     * 朗读控制器（v1.1.8.0 对标开源阅读听书）。
      *
      * 用 applicationContext 构造，避免持有 Activity；
      * 懒加载——只有真正进入阅读页发起朗读时才初始化 TTS 引擎。

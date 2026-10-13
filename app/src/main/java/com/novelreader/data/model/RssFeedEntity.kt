@@ -5,7 +5,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
- * RSS 订阅源实体（Room，v1.4.0 新增）。
+ * RSS 订阅源实体（Room，v1.3.1.0 新增）。
  *
  * 一条记录 = 一个订阅地址。与「书源」完全独立：书源是搜索型规则源，
  * 订阅源是推送型内容流，没有搜索/换源语义，所以单独建表。

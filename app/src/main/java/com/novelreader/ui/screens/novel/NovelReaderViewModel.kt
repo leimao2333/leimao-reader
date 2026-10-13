@@ -29,7 +29,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
 /**
- * 小说阅读 ViewModel（v1.1.0 大修）。
+ * 小说阅读 ViewModel（v1.1.0.0 大修）。
  *
  * 对标开源阅读补齐的能力：
  * - 章节预加载（下一章 / 上一章）与内存缓存，翻页切章近乎瞬时；
@@ -45,11 +45,11 @@ class NovelReaderViewModel(
     private val chapterCacheRepository: com.novelreader.domain.repository.ChapterCacheRepository? = null,
     private val bookRepository: BookRepository? = null,
     private val bookmarkRepository: BookmarkRepository? = null,
-    /** 朗读控制器（v1.1.8 对标开源阅读听书）；为 null 时朗读功能不可用 */
+    /** 朗读控制器（v1.1.8.0 对标开源阅读听书）；为 null 时朗读功能不可用 */
     private val ttsController: com.novelreader.core.tts.TtsController? = null,
 ) : ViewModel() {
 
-    // ===== 朗读（v1.1.8 对标开源阅读 ReadAloud） =====
+    // ===== 朗读（v1.1.8.0 对标开源阅读 ReadAloud） =====
     /** 是否正在朗读（由 TTS 引擎回调驱动） */
     val speaking: StateFlow<Boolean> = ttsController?.speaking
         ?: kotlinx.coroutines.flow.MutableStateFlow(false)
@@ -207,7 +207,7 @@ class NovelReaderViewModel(
             state
         }
 
-    // ===== 简繁转换（v1.1.8 对标开源阅读） =====
+    // ===== 简繁转换（v1.1.8.0 对标开源阅读） =====
     /** 0=不转换 1=简转繁 2=繁转简 */
     val convertMode: StateFlow<Int> =
         stateOf(preferences.novelConvertModeFlow, PreferencesManager.CONVERT_NONE)
@@ -216,7 +216,7 @@ class NovelReaderViewModel(
         viewModelScope.launch { preferences.setNovelConvertMode(mode) }
     }
 
-    // ===== 正文内搜索（v1.1.8 对标开源阅读 SearchMenu） =====
+    // ===== 正文内搜索（v1.1.8.0 对标开源阅读 SearchMenu） =====
     private val _contentSearchOpen = MutableStateFlow(false)
     val contentSearchOpen: StateFlow<Boolean> = _contentSearchOpen.asStateFlow()
 
@@ -298,7 +298,7 @@ class NovelReaderViewModel(
         _currentMatchIndex.value = if (matches.isEmpty()) -1 else 0
     }
 
-    // ===== 全书搜索（v1.3.0 对标开源阅读「搜索全书」） =====
+    // ===== 全书搜索（v1.3.0.0 对标开源阅读「搜索全书」） =====
 
     /** 全书搜索结果项 */
     data class BookSearchResult(

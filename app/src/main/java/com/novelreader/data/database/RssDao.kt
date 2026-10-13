@@ -17,7 +17,7 @@ data class FeedUnreadCount(
 )
 
 /**
- * RSS 订阅 DAO（v1.4.0）。
+ * RSS 订阅 DAO（v1.3.1.0）。
  */
 @Dao
 interface RssDao {

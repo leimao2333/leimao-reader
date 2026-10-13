@@ -146,7 +146,7 @@ class VeneraSourceAdapter(
         true
     }.getOrDefault(false)
 
-    // ===== 账号登录（v1.3.0：源管理页登录按钮）=====
+    // ===== 账号登录（v1.3.0.0：源管理页登录按钮）=====
 
     /**
      * 查询该源的账号能力与登录态。

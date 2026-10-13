@@ -60,7 +60,7 @@ data class VideoPrefs(
  * 视频播放 ViewModel。
  *
  * 管理 Media3 ExoPlayer 实例、播放状态、视频目录与进度，
- * 并为 v1.5.0 的播放器交互（全屏 / 长按倍速 / 手势 / 连播）提供状态来源。
+ * 并为 v1.3.2.0 的播放器交互（全屏 / 长按倍速 / 手势 / 连播）提供状态来源。
  */
 @UnstableApi
 class VideoPlayerViewModel(

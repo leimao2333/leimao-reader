@@ -5,7 +5,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
- * RSS 文章实体（Room，v1.4.0 新增）。
+ * RSS 文章实体（Room，v1.3.1.0 新增）。
  *
  * 去重键为「源 + guid」：同一篇文章重复抓取时命中唯一索引，
  * 插入用 IGNORE 策略，因此已读 / 收藏状态不会被刷新覆盖。

@@ -47,7 +47,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * 发现页 ViewModel（v1.2.3 对标 legado 发现）。
+ * 发现页 ViewModel（v1.2.3.0 对标 legado 发现）。
  *
  * 数据流：已启用源中筛出配置了 exploreUrl 的源 → 选源 → 选分类 →
  * 按分类地址拉取列表（{{page}} 分页，「加载更多」追加）。
@@ -162,7 +162,7 @@ class ExploreViewModel(
 }
 
 /**
- * 发现页（v1.2.3 对标 legado）。
+ * 发现页（v1.2.3.0 对标 legado）。
  *
  * 顶部：返回 + 源选择 + 分类选择；下方结果列表（复用 MediaItemCard）+ 加载更多。
  */

@@ -123,7 +123,7 @@ class ComicDetailViewModel(
         }
     }
 
-    // ===== 批量离线缓存（v1.2.11，对标小说侧） =====
+    // ===== 批量离线缓存（v1.2.11.0，对标小说侧） =====
 
     /** 批量缓存进度 */
     data class CacheProgress(

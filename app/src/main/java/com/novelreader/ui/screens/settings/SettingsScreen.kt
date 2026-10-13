@@ -206,7 +206,7 @@ fun SettingsScreen(
 
             Spacer(Modifier.height(24.dp))
 
-            // ===== 视频播放（v1.5.0） =====
+            // ===== 视频播放（v1.3.2.0） =====
             SectionTitle("视频播放")
             SettingRow(
                 title = "进入即全屏",

@@ -97,7 +97,7 @@ class BookShelfViewModel(
     }
 
     /**
-     * 导入本地 TXT 书（v1.2.0）：解析章节 → 存入本地书库 → 加入书架。
+     * 导入本地 TXT 书（v1.2.0.0）：解析章节 → 存入本地书库 → 加入书架。
      */
     fun importLocalBook(uri: android.net.Uri, displayName: String?) {
         val store = localBookStore ?: return

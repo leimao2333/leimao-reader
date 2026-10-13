@@ -23,7 +23,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 /**
- * RSS 订阅仓库实现（v1.4.0）。
+ * RSS 订阅仓库实现（v1.3.1.0）。
  *
  * 数据流：订阅地址 → 抓取（[HttpClient]）→ 解析（[RssParser]）→
  * 增量入库（guid 去重，保留已读/收藏）→ Room Flow 推给界面。

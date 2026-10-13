@@ -62,7 +62,7 @@ class PreferencesManager(private val context: Context) {
         /** 音量键翻页开关（开启后音量键上/下翻页，不调音量） */
         val KEY_NOVEL_VOLUME_PAGE = booleanPreferencesKey("novel_volume_page")
 
-        // ----- 以下为「对标开源阅读」大修新增（v1.1.0） -----
+        // ----- 以下为「对标开源阅读」大修新增（v1.1.0.0） -----
         /**
          * 统一翻页方式（替代旧的 pageMode + pageAnim 双键）：
          * 0=覆盖 1=仿真 2=滑动 3=滚动 4=上下 5=无动画（与开源阅读一致）。
@@ -88,7 +88,7 @@ class PreferencesManager(private val context: Context) {
         /** 累计阅读时长（秒，全局） */
         val KEY_NOVEL_READ_SECONDS = longPreferencesKey("novel_read_seconds")
 
-        // ----- v1.1.8 对标开源阅读补齐 -----
+        // ----- v1.1.8.0 对标开源阅读补齐 -----
         /** 简繁转换：0=不转换 1=简转繁 2=繁转简（对标开源阅读 ChineseConverter） */
         val KEY_NOVEL_CONVERT_MODE = intPreferencesKey("novel_convert_mode")
 
@@ -130,7 +130,7 @@ class PreferencesManager(private val context: Context) {
         // ===== 视频 =====
         val KEY_VIDEO_AUTO_PLAY = booleanPreferencesKey("video_auto_play")
 
-        // ----- v1.5.0 播放器交互（全屏 / 长按快进 / 手势） -----
+        // ----- v1.3.2.0 播放器交互（全屏 / 长按快进 / 手势） -----
         /** 进入播放页默认全屏（横屏沉浸式） */
         val KEY_VIDEO_FULLSCREEN_DEFAULT = booleanPreferencesKey("video_fullscreen_default")
         /** 长按倍速档位（×10 存储：15=1.5x，20=2.0x，30=3.0x） */
@@ -146,7 +146,7 @@ class PreferencesManager(private val context: Context) {
         /** 并行搜索线程数（并发搜索的源数量） */
         val KEY_SEARCH_CONCURRENCY = intPreferencesKey("search_concurrency")
 
-        // ===== 书架（v1.2.0 对标 legado 书架布局） =====
+        // ===== 书架（v1.2.0.0 对标 legado 书架布局） =====
         /** 书架展现形式：0=封面墙 1=紧凑网格 2=列表 */
         val KEY_BOOKSHELF_VIEW_MODE = intPreferencesKey("bookshelf_view_mode")
         /** 封面墙 / 紧凑网格列数（2~6） */
@@ -182,7 +182,7 @@ class PreferencesManager(private val context: Context) {
         /** 搜索历史最大保留条数 */
         const val MAX_SEARCH_HISTORY = 20
 
-        // ----- 视频播放默认值（v1.5.0） -----
+        // ----- 视频播放默认值（v1.3.2.0） -----
         /** 默认不自动进全屏（跟随设置） */
         const val DEFAULT_VIDEO_FULLSCREEN_DEFAULT = false
         /** 默认长按倍速 3.0x */
@@ -316,7 +316,7 @@ class PreferencesManager(private val context: Context) {
         context.dataStore.edit { it[KEY_NOVEL_AUTO_PAGE_INTERVAL] = value.coerceIn(5, 120) }
     }
 
-    // ===== 简繁转换（v1.1.8） =====
+    // ===== 简繁转换（v1.1.8.0） =====
     /** 简繁转换模式：见 CONVERT_NONE / CONVERT_TO_TRADITIONAL / CONVERT_TO_SIMPLIFIED */
     val novelConvertModeFlow: Flow<Int> = context.dataStore.data
         .map { it[KEY_NOVEL_CONVERT_MODE] ?: CONVERT_NONE }
@@ -460,7 +460,7 @@ class PreferencesManager(private val context: Context) {
         context.dataStore.edit { it[KEY_VIDEO_AUTO_PLAY] = value }
     }
 
-    // ----- v1.5.0 播放器交互 -----
+    // ----- v1.3.2.0 播放器交互 -----
     /** 进入播放页默认全屏 */
     val videoFullscreenDefaultFlow: Flow<Boolean> = context.dataStore.data
         .map { it[KEY_VIDEO_FULLSCREEN_DEFAULT] ?: DEFAULT_VIDEO_FULLSCREEN_DEFAULT }
@@ -505,7 +505,7 @@ class PreferencesManager(private val context: Context) {
     val searchConcurrencyFlow: Flow<Int> = context.dataStore.data
         .map { it[KEY_SEARCH_CONCURRENCY] ?: DEFAULT_SEARCH_CONCURRENCY }
 
-    // ===== 书架（v1.2.0） =====
+    // ===== 书架（v1.2.0.0） =====
     /** 书架展现形式：0=封面墙 1=紧凑网格 2=列表 */
     val bookshelfViewModeFlow: Flow<Int> = context.dataStore.data
         .map { it[KEY_BOOKSHELF_VIEW_MODE] ?: 0 }

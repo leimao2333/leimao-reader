@@ -110,7 +110,7 @@ class ComicReaderViewModel(
         viewModelScope.launch {
             _loading.value = true
             _error.value = null
-            // 章节缓存命中（v1.2.11 离线阅读）：本地图片文件直读，不走网络
+            // 章节缓存命中（v1.2.11.0 离线阅读）：本地图片文件直读，不走网络
             val cachedFiles = currentItem?.let { item ->
                 runCatching {
                     downloadManager?.comicChapterCacheDir(item, chapter.index)

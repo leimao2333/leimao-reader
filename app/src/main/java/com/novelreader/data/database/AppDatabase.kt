@@ -152,7 +152,7 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
-         * v7 -> v8：新增 bookmarks 表（阅读书签，v1.1.0）。
+         * v7 -> v8：新增 bookmarks 表（阅读书签，v1.1.0.0）。
          */
         val MIGRATION_7_8 = object : Migration(7, 8) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -185,7 +185,7 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
-         * v8 -> v9：books 表新增 groupName 列（书架自定义分组，v1.3.0）。
+         * v8 -> v9：books 表新增 groupName 列（书架自定义分组，v1.3.0.0）。
          */
         val MIGRATION_8_9 = object : Migration(8, 9) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -208,7 +208,7 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
-         * v10 -> v11：新增 RSS 订阅两张表（v1.4.0 RSS 订阅模块）。
+         * v10 -> v11：新增 RSS 订阅两张表（v1.3.1.0 RSS 订阅模块）。
          *
          * - rss_feeds：订阅源（地址唯一）
          * - rss_articles：文章（源 + guid 唯一，重复抓取只插新条目，已读/收藏状态不被覆盖）

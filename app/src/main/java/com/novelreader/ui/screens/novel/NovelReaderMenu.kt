@@ -1268,7 +1268,7 @@ fun ContentSearchPanel(
     val matches by viewModel.contentMatches.collectAsState()
     val currentIndex by viewModel.currentMatchIndex.collectAsState()
 
-    // 搜索范围：false=本章，true=全书（v1.3.0 对标开源阅读「搜索全书」）
+    // 搜索范围：false=本章，true=全书（v1.3.0.0 对标开源阅读「搜索全书」）
     var wholeBook by remember { mutableStateOf(false) }
     val bookResults by viewModel.bookSearchResults.collectAsState()
     val bookProgress by viewModel.bookSearchProgress.collectAsState()

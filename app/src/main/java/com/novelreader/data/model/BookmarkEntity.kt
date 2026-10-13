@@ -5,7 +5,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
- * 书签实体（Room，v1.1.0 新增）。
+ * 书签实体（Room，v1.1.0.0 新增）。
  *
  * 记录阅读过程中用户手动标记的位置（章节 + 章节内位置 + 摘录），
  * 支持书签列表查看与一键跳回。

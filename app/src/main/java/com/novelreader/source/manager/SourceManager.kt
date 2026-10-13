@@ -50,7 +50,7 @@ class SourceManager(
     /**
      * 最近一次 importSource 中被跳过的条目数（legado 列表里解析失败的条目）。
      * 导入方（ViewModel）在导入完成后读取并拼进结果消息，向用户明示「跳过 N 个」，
-     * 避免误以为整份文件全部导入成功（v1.3.0「部分小说源不加载」排查产物）。
+     * 避免误以为整份文件全部导入成功（v1.3.0.0「部分小说源不加载」排查产物）。
      */
     @Volatile
     var lastImportSkipped: Int = 0
@@ -60,7 +60,7 @@ class SourceManager(
      * 启动恢复完成信号。
      *
      * 冷启动时源从数据库异步恢复，深链自动搜索等入口可能在恢复完成前触发，
-     * 导致「源表为空 → 搜索 0 源 → 未找到结果」的竞态（v1.2.11 视频深链测试发现）。
+     * 导致「源表为空 → 搜索 0 源 → 未找到结果」的竞态（v1.2.11.0 视频深链测试发现）。
      * 搜索入口应先等待此信号为 true 再取源（已完成时立即通过，无额外开销）。
      */
     private val _restored = kotlinx.coroutines.flow.MutableStateFlow(false)
@@ -129,7 +129,7 @@ class SourceManager(
             throw IllegalArgumentException("未解析到有效书源")
         }
         if (detailed.skipped > 0) {
-            // v1.3.0：解析失败的条目不再完全静默——留日志 + 供导入消息展示
+            // v1.3.0.0：解析失败的条目不再完全静默——留日志 + 供导入消息展示
             android.util.Log.w(
                 "SourceManager",
                 "legado 列表导入：${detailed.skipped} 个条目解析失败已跳过（共 ${pairs.size + detailed.skipped} 条）",

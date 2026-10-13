@@ -6,7 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * 视频播放器工具函数的单元测试（v1.5.0）。
+ * 视频播放器工具函数的单元测试（v1.3.2.0）。
  */
 class VideoUtilsTest {
 

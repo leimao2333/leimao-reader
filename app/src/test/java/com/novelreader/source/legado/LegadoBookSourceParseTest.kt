@@ -5,7 +5,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * v1.3.0 「部分小说源不加载」修复回归测试。
+ * v1.3.0.0 「部分小说源不加载」修复回归测试。
  *
  * 根因 1：真实书源里 `header` / 部分字段偶有写成 JSON **对象**（而非字符串）的情况，
  * 旧 `str()` 取值抛异常 → parseOne 失败 → 整个源在列表解析时被静默丢弃。

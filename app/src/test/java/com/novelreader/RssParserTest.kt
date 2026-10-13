@@ -12,7 +12,7 @@ import java.util.Locale
 import java.util.TimeZone
 
 /**
- * RSS 解析内核单测（v1.4.0）。
+ * RSS 解析内核单测（v1.3.1.0）。
  *
  * 覆盖三种订阅格式（RSS 2.0 / Atom / RDF）、OPML、页面订阅地址发现、
  * 时间解析与正文块转换 —— 这些都是「真实订阅源五花八门」的容错点。

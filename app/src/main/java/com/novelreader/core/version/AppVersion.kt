@@ -9,15 +9,15 @@ package com.novelreader.core.version
  * 注意：本文件的 [CURRENT_VERSION] 必须与 `app/build.gradle.kts` 的 `versionName` 保持一致。
  *
  * 版本规范（四段式 `顶端版本.大版本.小版本.修订`）：
- * - 小版本：每发一版 +1（`1.5.0.0` → `1.5.1.0` → …），日常发版只动这一位；
- * - 大版本：每十个小版本 +1，小版本归零（`1.5.9.0` → `1.6.0.0`）；
+ * - 小版本：每发一版 +1（`1.3.2.0` → `1.3.3.0` → …），日常发版只动这一位；
+ * - 大版本：每十个小版本 +1，小版本归零（`1.3.9.0` → `1.4.0.0`）；
  * - 顶端版本：每十个大版本 +1，大版本归零（`1.9.9.0` → `2.0.0.0`）；
- * - 修订：仅在「同一小版本内打补丁」时 +1，日常保持 0（`1.5.1.0` → `1.5.1.1`）。
+ * - 修订：仅在「同一小版本内打补丁」时 +1，日常保持 0（`1.3.3.0` → `1.3.3.1`）。
  */
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.5.0.0"
+    const val CURRENT_VERSION = "1.3.2.0"
 
     /**
      * 更新日志。
@@ -26,7 +26,7 @@ object AppVersion {
      */
     val CHANGELOG: List<VersionEntry> = listOf(
         VersionEntry(
-            version = "1.5.0.0",
+            version = "1.3.2.0",
             date = "2026-10-13",
             changes = listOf(
                 "**全屏播放**：全屏是横屏 + 沉浸式（隐藏状态栏 / 导航栏），退出自动切回竖屏；控制条右下角按钮切换，双击画面中央也能切；全屏时按返回键先退全屏而不是退出播放页；播放全程保持屏幕常亮",
@@ -40,7 +40,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.4.0",
+            version = "1.3.1.0",
             date = "2026-10-13",
             changes = listOf(
                 "**RSS 订阅模块**：应用不再只有「搜索型书源」——首页顶栏新增「订阅」入口，可添加 RSS / Atom 订阅源（也支持从博客首页自动发现订阅链接、粘贴 OPML 批量导入），按源或全部查看文章流，未读计数、已读标记、收藏、全部已读一应俱全",
@@ -52,7 +52,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.3.0",
+            version = "1.3.0.0",
             date = "2026-10-13",
             changes = listOf(
                 "**Venera 源登录**：源管理选中「漫画」类型后出现下级菜单（legado / Venera）；Venera 源卡片新增「登录」按钮，输入账号密码调用源自己实现的登录逻辑（在隐藏 WebView 的 V8 里执行），登录会话 Cookie 持久化到本机，重启后无需重复登录；已登录源显示绿色「已登录」徽标，对话框内可一键退出登录",
@@ -62,16 +62,16 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.2.11",
+            version = "1.2.11.0",
             date = "2026-10-13",
             changes = listOf(
                 "**漫画封面修复**：大量漫画 CDN 按 UA / Referer 防盗链，而封面由图片加载器直接请求、不带任何头 → 显示占位图。现在全局图片加载器统一补齐浏览器级默认头（浏览器 UA + 图片自站 Referer + 图片 Accept），并新增封面请求头注册表：源声明的请求头（legado `header` / Venera 图床头）按域名命中后优先应用",
                 "**漫画离线缓存**：详情页新增「缓存」——缓存全书 / 前 50 话 / 进度后 50 话；逐话下载图片（含加密图解密与乱序还原），临时目录原子写入防半章坏数据，已缓存话自动跳过、实时进度可取消；阅读时缓存命中直读本地文件，无网也能看",
-                "**漫画发现验证**：漫画模块顶栏「发现」入口走同一发现页（v1.2.10 已支持按类型枚举源），legado 漫画源的 exploreUrl / ruleExplore 分类可直接浏览",
+                "**漫画发现验证**：漫画模块顶栏「发现」入口走同一发现页（v1.2.10.0 已支持按类型枚举源），legado 漫画源的 exploreUrl / ruleExplore 分类可直接浏览",
             ),
         ),
         VersionEntry(
-            version = "1.2.10",
+            version = "1.2.10.0",
             date = "2026-10-13",
             changes = listOf(
                 "**发现页**（对标 legado exploreUrl / ruleExplore）：首页顶栏新增「发现」入口，展示各源的自定义分类（JSON 数组 / 分类名::地址 / 纯地址三种格式），选源选分类直接浏览榜单与专区，列表复用搜索的解析链路（含 @put/@get 变量机制）",
@@ -80,7 +80,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.2.9",
+            version = "1.2.9.0",
             date = "2026-10-13",
             changes = listOf(
                 "**日志与文案全面脱敏**：应用里不再出现**具体的源、站点地址与设备型号** —— 日志一旦被截图或粘贴到外部（issue、聊天），就等于把「用户在用哪个源、哪个站点、什么设备」一并带了出去。新增 `core/util/LogSanitizer`，把 URL、裸 IP、邮箱统一折叠成 `<url>` / `<ip>` / `<mail>` 占位符",
@@ -92,7 +92,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.2.8",
+            version = "1.2.8.0",
             date = "2026-10-13",
             changes = listOf(
                 "修复**部分图站「图片全部加载失败」**：这类站点为防止图片被阅读器直接抓取，会把**整张图片用 AES-256-CBC 加密后**再下发，并仍然谎报 `Content-Type: image/jpeg` —— 网页端由前端 JS 解密后 `createObjectURL` 显示，而书源只会给出图片地址、不做解密，于是应用拿到的是**一堆高熵密文**，Coil 解码失败（日志为 `BitmapFactory returned a null bitmap`）。这与站点是否可达、请求头是否正确**完全无关**：实测同一地址带完整浏览器头、用系统浏览器直接打开，拿到的都是同一份密文",
@@ -106,7 +106,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.2.7",
+            version = "1.2.7.0",
             date = "2026-10-13",
             changes = listOf(
                 "修复**漫画图片乱序**：这类站点会把每一页图片按 N 段纵向切开、再打乱顺序后下发，还原规则以 JS 片段的形式由源给出（Venera 源的 `comic.onImageLoad → modifyImage`）。此前运行时只取了图片地址、把这段脚本丢掉了，于是每页都显示成「拼错位」的乱图 —— 这正是用户看到的「图片是乱序的」",
@@ -119,7 +119,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.2.6",
+            version = "1.2.6.0",
             date = "2026-10-12",
             changes = listOf(
                 "新增 Venera 漫画源引擎：TypeScript 系漫画源（`class Xxx extends ComicSource`）可直接导入使用。这类源是「可执行 JS」，重度依赖 class 字段 / async-await / Map / getter，实测项目既有的 Rhino（1.7.15 / 1.8.0 / 1.9.1）连 `class` 都解析不了（`identifier is a reserved word: class`），因此改用系统 WebView（V8）作为运行时 —— 零新增依赖、语法完整。已注入与官方一致的运行时（ComicSource / Network / Convert / HtmlDocument / ComicDetails / UI / APP 等），HTTP 全部经原生 OkHttp，**不受 WebView 同源策略与 CORS 限制**，并复用应用自己的 Cookie 与字符集处理；addJavascriptInterface 在 JS 侧是同步调用，所以源里 `Network.get()` 这类同步取值写法可以原样保留",
@@ -138,7 +138,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.2.5",
+            version = "1.2.5.0",
             date = "2026-10-12",
             changes = listOf(
                 "漫画阅读器新增「上一话 / 下一话」机制（对齐小说阅读器）：底部常驻章节条「‹ 上一话 ｜ 第 x/y 话 · 话名 ｜ 下一话 ›」随时可切话，上下滚动模式在章末给出「本话已读完 / 已是最后一话」与「上一话 / 下一话」入口，左右翻页模式翻到本话最后一页后再翻即自动进入下一话；到第 1 话 / 最后一话时对应按钮置灰，不再静默无响应",
@@ -151,7 +151,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.2.4",
+            version = "1.2.4.0",
             date = "2026-10-12",
             changes = listOf(
                 "修复「目录为空」的另一类独立成因——legado 变量机制 @put:{k:取值规则} / @get:{k} 此前完全未实现：这类 JSON API 源在搜索阶段把作品 ID 存进变量（如 $.comic_name@put:{bid:$.comic_id}），目录地址再取回（如 .../getchapterlist?...&comic_id=@get:{bid}）；变量缺失时地址里会残留字面量，接口返回错误/空数据导致目录空白。现完整支持写入、回填与 URL 模板内联替换",
@@ -163,7 +163,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.2.3",
+            version = "1.2.3.0",
             date = "2026-10-12",
             changes = listOf(
                 "修复部分书源加载后「目录为空」：legado 规则支持在列表规则最前面加负号 - 表示列表倒置（很多站点目录本身就是倒序），此前引擎把 - 当成选择器的一部分（如 -.detail-list-item 解析成类名 .-）导致选不到任何章节；现按 legado 语义识别并倒置列表，同时修正 @json:/@JSon: 前缀大小写、! 位置排除（含 !a:b 区间与负索引）",
@@ -176,14 +176,14 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.2.2",
+            version = "1.2.2.0",
             date = "2026-10-12",
             changes = listOf(
-                "修复翻页模式正文末行被裁一半：v1.1.0 引入「段距/首行缩进」后，渲染比分页测量多出段距占位行与缩进字符，页尾内容溢出被裁切；现分页测量与渲染共用同一 buildReaderText 构造，并预留页码行高度（左右翻页与上下翻页同步修复）",
+                "修复翻页模式正文末行被裁一半：v1.1.0.0 引入「段距/首行缩进」后，渲染比分页测量多出段距占位行与缩进字符，页尾内容溢出被裁切；现分页测量与渲染共用同一 buildReaderText 构造，并预留页码行高度（左右翻页与上下翻页同步修复）",
             ),
         ),
         VersionEntry(
-            version = "1.2.1",
+            version = "1.2.1.0",
             date = "2026-10-12",
             changes = listOf(
                 "新增书架分组管理（对标 legado）：长按封面移动到分组 / 新建分组，分组 chips 一键筛选，长按分组可重命名或删除（删除不丢书）",
@@ -193,7 +193,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.2.0",
+            version = "1.2.0.0",
             date = "2026-10-12",
             changes = listOf(
                 "本地 TXT 书导入阅读（对标 legado 本地书）：书架右上角导入，自动编码探测（UTF-8/GBK/UTF-16）与章节切分，详情/目录/正文/进度全链路可用",
@@ -207,7 +207,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.1.10",
+            version = "1.1.10.0",
             date = "2026-10-12",
             changes = listOf(
                 "修复阅读页（滚动模式）章节标题与正文、「下一章」文字堆叠重叠的布局错误",
@@ -218,7 +218,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.1.9",
+            version = "1.1.9.0",
             date = "2026-10-12",
             changes = listOf(
                 "目录翻页支持（对标 legado nextTocUrl）：分页目录自动抓取后续页并合并章节，修复大量站点目录只有第一页（章节不全）的问题",
@@ -236,7 +236,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.1.8",
+            version = "1.1.8.0",
             date = "2026-10-12",
             changes = listOf(
                 "新增朗读/听书（对标开源阅读 ReadAloud）：阅读菜单「朗读本章」可朗读当前章节正文，支持停止与 0.5~2.0 倍语速调节；离开阅读页自动停止，TTS 引擎由 AppContainer 单例持有复用",
@@ -246,7 +246,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.1.7",
+            version = "1.1.7.0",
             date = "2026-10-12",
             changes = listOf(
                 "搜索同名合并修正：结果分组改为仅按书名归一化，同名书跨源必定合并（作者前缀/空值/格式差异不再拆组）",
@@ -255,7 +255,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.1.6",
+            version = "1.1.6.0",
             date = "2026-10-12",
             changes = listOf(
                 "同名作者前缀合并：新增作者归一化剥离来源前缀（常见站点前缀），「站点前缀·某某」与「某某」判为同一作者",
@@ -263,16 +263,16 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.1.5",
+            version = "1.1.5.0",
             date = "2026-10-12",
             changes = listOf(
-                "修复搜索结果与关键词无关的回归：v1.1.4 优化把过滤推迟到搜索收尾，导致搜索过程中显示源返回的全部原始结果（如搜「千面之龙」出现大量仅含「千面」的无关书）",
+                "修复搜索结果与关键词无关的回归：v1.1.4.0 优化把过滤推迟到搜索收尾，导致搜索过程中显示源返回的全部原始结果（如搜「千面之龙」出现大量仅含「千面」的无关书）",
                 "现改为每批结果到达时即做批内过滤（批小开销低）：精确模式只显示书名一致的结果，模糊模式按相似度过滤；全局排序仍在收尾执行一次，不影响流畅度",
                 "新增回归单测：精确/模糊模式搜「千面之龙」必须过滤「千面妈咪送上门」等无关书",
             ),
         ),
         VersionEntry(
-            version = "1.1.4",
+            version = "1.1.4.0",
             date = "2026-10-12",
             changes = listOf(
                 "搜索流畅度对齐开源阅读：跨源搜索改为边搜边追加结果，排序/过滤统一在搜索完成时执行一次，消除每批结果全量重排导致的滚动卡顿",
@@ -282,7 +282,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.1.3",
+            version = "1.1.3.0",
             date = "2026-10-12",
             changes = listOf(
                 "修复滑动误触弹出复制面板：长按判定结合移动距离，滑动超过阈值立即取消长按，不再误弹「选择文本」",
@@ -293,7 +293,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.1.2",
+            version = "1.1.2.0",
             date = "2026-10-12",
             changes = listOf(
                 "修复源检测 ANR：检测在主线程串行执行 280 个源的网络请求 + JS，卡死 UI 被系统判定无响应（实体机复现）",
@@ -302,7 +302,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.1.1",
+            version = "1.1.1.0",
             date = "2026-10-12",
             changes = listOf(
                 "修复「测试源」闪退：JS 源 Rhino 引擎并发调用非线程安全导致崩溃，改为全局锁串行化所有 JS 执行",
@@ -313,7 +313,7 @@ object AppVersion {
             ),
         ),
         VersionEntry(
-            version = "1.1.0",
+            version = "1.1.0.0",
             date = "2026-10-12",
             changes = listOf(
                 "小说阅读对齐开源阅读（legado）体验：翻页方式扩展为 6 种（覆盖 / 仿真 / 滑动 / 滚动 / 上下 / 无动画）",

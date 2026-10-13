@@ -25,7 +25,7 @@ object Routes {
     const val NOVEL_DETAIL = "novel_detail/{item}"       // item = 编码的 MediaItem
     const val NOVEL_READER = "novel_reader/{item}/{chapterIndex}"  // 章节列表走 NavCache
 
-    const val EXPLORE = "explore?type={type}"   // 发现页（v1.2.3，按类型枚举源的发现分类）
+    const val EXPLORE = "explore?type={type}"   // 发现页（v1.2.3.0，按类型枚举源的发现分类）
 
     // ===== 漫画 =====
     const val COMIC_SEARCH = "comic_search"
@@ -40,7 +40,7 @@ object Routes {
     // ===== 通用 =====
     const val BOOKSHELF = "bookshelf"          // 书架/收藏
 
-    // ===== RSS 订阅（v1.4.0）=====
+    // ===== RSS 订阅（v1.3.1.0）=====
     const val RSS = "rss"                              // 订阅列表 + 文章流
     const val RSS_READER = "rss_reader/{articleId}"    // 订阅文章阅读
 
@@ -88,6 +88,6 @@ object Routes {
     ): String =
         "video_player/${NavArgs.encodeItem(item)}/$chapterIndex"
 
-    /** 订阅文章阅读页（v1.4.0） */
+    /** 订阅文章阅读页（v1.3.1.0） */
     fun rssReader(articleId: Long): String = "rss_reader/$articleId"
 }

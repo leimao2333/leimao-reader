@@ -98,7 +98,7 @@ class SourceRepositoryImpl(
             updated
         }
 
-    /** 最近一次导入中被跳过（解析失败）的条目数（供导入消息展示，v1.3.0） */
+    /** 最近一次导入中被跳过（解析失败）的条目数（供导入消息展示，v1.3.0.0） */
     fun lastImportSkipped(): Int = sourceManager.lastImportSkipped
 
     /**
@@ -115,7 +115,7 @@ class SourceRepositoryImpl(
                         // 恢复启用状态
                         sourceManager.setSourceEnabled(entity.id, entity.enabled)
                     }.onFailure {
-                        // 恢复失败不能完全静默：留日志便于排查「部分源不加载」（v1.3.0）
+                        // 恢复失败不能完全静默：留日志便于排查「部分源不加载」（v1.3.0.0）
                         android.util.Log.w(
                             "SourceRestore",
                             "源恢复失败 id=${entity.id}: ${it.message}",

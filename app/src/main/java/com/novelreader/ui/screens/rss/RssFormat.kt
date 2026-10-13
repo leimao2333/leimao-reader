@@ -5,7 +5,7 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * 订阅模块的时间展示（v1.4.0）。
+ * 订阅模块的时间展示（v1.3.1.0）。
  */
 internal object RssFormat {
 

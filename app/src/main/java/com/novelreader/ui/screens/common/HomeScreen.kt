@@ -85,7 +85,7 @@ fun HomeScreen(
     onOpenComicSearch: () -> Unit,
     onOpenVideoSearch: () -> Unit,
     onOpenExplore: (SourceType) -> Unit = {},
-    /** 打开 RSS 订阅（v1.4.0） */
+    /** 打开 RSS 订阅（v1.3.1.0） */
     onOpenRss: () -> Unit = {},
     onContinueReading: (MediaItem, List<ChapterItem>, ChapterItem?) -> Unit,
 ) {
@@ -116,7 +116,7 @@ fun HomeScreen(
     val lastChapterMap by viewModel.lastChapterMap.collectAsState()
     val chapterCountMap by viewModel.chapterCountMap.collectAsState()
 
-    // 书架分组（v1.3.0）
+    // 书架分组（v1.3.0.0）
     val groupNames by viewModel.groupNames.collectAsState()
     val selectedGroup by viewModel.selectedGroup.collectAsState()
     var assignTarget by remember { mutableStateOf<MediaItem?>(null) }
@@ -331,7 +331,7 @@ fun HomeScreen(
                     )
                 }
 
-                // 更换封面弹窗（长按书 → 更换封面，v1.2.3）
+                // 更换封面弹窗（长按书 → 更换封面，v1.2.3.0）
                 coverEditForItem?.let { item ->
                     var urlInput by remember(item) { mutableStateOf(item.cover ?: "") }
                     AlertDialog(

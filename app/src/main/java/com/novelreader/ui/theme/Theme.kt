@@ -52,7 +52,7 @@ object ReaderBackgrounds {
         val text: Color,
     )
 
-    /** 白天模式可选纸张色（浅底配深字）——对标 legado 12+ 主题扩充（v1.2.0） */
+    /** 白天模式可选纸张色（浅底配深字）——对标 legado 12+ 主题扩充（v1.2.0.0） */
     val dayColors = listOf(
         ReaderColor(Color(0xFFFFFFFF), "纯白", Color(0xFF1A1A1A)),
         ReaderColor(Color(0xFFF5F0E1), "米黄", Color(0xFF3A3228)),

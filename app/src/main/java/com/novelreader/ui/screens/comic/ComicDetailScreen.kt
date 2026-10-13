@@ -57,7 +57,7 @@ fun ComicDetailScreen(
     val collected by viewModel.collected.collectAsState()
     val download by viewModel.download.collectAsState()
     val chapterDesc by viewModel.chapterDesc.collectAsState()
-    // 批量离线缓存（v1.2.11）
+    // 批量离线缓存（v1.2.11.0）
     val cacheProgress by viewModel.cacheProgress.collectAsState()
     var showCacheDialog by remember { mutableStateOf(false) }
 
@@ -248,7 +248,7 @@ fun ComicDetailScreen(
             }
         }
 
-            // ===== 批量离线缓存弹窗（v1.2.11）：进行中显示进度，否则范围选择/完成提示 =====
+            // ===== 批量离线缓存弹窗（v1.2.11.0）：进行中显示进度，否则范围选择/完成提示 =====
             if (cacheProgress?.running == true) {
                 val p = cacheProgress!!
                 androidx.compose.material3.AlertDialog(

@@ -68,7 +68,7 @@ class SettingsViewModel(
     private val _searchConcurrency = MutableStateFlow(PreferencesManager.DEFAULT_SEARCH_CONCURRENCY)
     val searchConcurrency: StateFlow<Int> = _searchConcurrency.asStateFlow()
 
-    // ===== 视频播放（v1.5.0） =====
+    // ===== 视频播放（v1.3.2.0） =====
     /** 进入播放页默认全屏 */
     private val _videoFullscreenDefault = MutableStateFlow(false)
     val videoFullscreenDefault: StateFlow<Boolean> = _videoFullscreenDefault.asStateFlow()
@@ -151,7 +151,7 @@ class SettingsViewModel(
         viewModelScope.launch { preferencesManager.setSearchConcurrency(value) }
     }
 
-    // ===== 视频播放（v1.5.0） =====
+    // ===== 视频播放（v1.3.2.0） =====
     fun setVideoFullscreenDefault(value: Boolean) {
         viewModelScope.launch { preferencesManager.setVideoFullscreenDefault(value) }
     }

@@ -400,7 +400,7 @@ class VeneraEngine(private val context: Context) {
 
     private fun prefs() = context.getSharedPreferences("venera_store", Context.MODE_PRIVATE)
 
-    // ==================== 账号登录（v1.3.0）====================
+    // ==================== 账号登录（v1.3.0.0）====================
 
     /** 源登录态标记的 prefs key */
     private fun loginMarkKey(key: String) = "login_ok_$key"
@@ -450,7 +450,7 @@ class VeneraEngine(private val context: Context) {
     /**
      * 简易 CookieJar：内存存取 + 登录 Cookie 持久化。
      *
-     * v1.3.0：登录后的会话 Cookie 必须在应用重启后仍有效（否则每次启动都要重新登录），
+     * v1.3.0.0：登录后的会话 Cookie 必须在应用重启后仍有效（否则每次启动都要重新登录），
      * 因此按 host 写入 SharedPreferences，引擎创建时回灌。
      */
     private inner class SimpleCookieJar : CookieJar {

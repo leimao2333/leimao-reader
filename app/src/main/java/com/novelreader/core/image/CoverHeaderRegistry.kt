@@ -3,7 +3,7 @@ package com.novelreader.core.image
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 封面请求头注册表（v1.2.11 漫画封面修复）。
+ * 封面请求头注册表（v1.2.11.0 漫画封面修复）。
  *
  * 大量漫画站对图片（含封面）做防盗链：要求 `Referer` 指向站点自身、
  * 校验 `User-Agent`，甚至要求特定 Cookie。书架 / 搜索 / 详情的封面由 Coil

@@ -52,7 +52,7 @@ class BookRepositoryImpl(
         bookDao.updateCover(item.sourceId, item.id, coverUrl)
     }
 
-    // ===== 分组管理（v1.3.0） =====
+    // ===== 分组管理（v1.3.0.0） =====
 
     override suspend fun setBookGroup(item: MediaItem, group: String) {
         bookDao.setGroup(item.sourceId, item.id, group.trim())

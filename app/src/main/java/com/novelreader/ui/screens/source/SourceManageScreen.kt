@@ -79,7 +79,7 @@ fun SourceManageScreen(
     var selectedType by remember { mutableStateOf<SourceType?>(null) }
     // 内容分类筛选：null = 全部分类
     var selectedCategory by remember { mutableStateOf<String?>(null) }
-    // 漫画源二级格式筛选（v1.3.0）：选中「漫画」类型后出现下级菜单（legado / Venera）
+    // 漫画源二级格式筛选（v1.3.0.0）：选中「漫画」类型后出现下级菜单（legado / Venera）
     var selectedFormat by remember { mutableStateOf<SourceFormat?>(null) }
     // 排序方式
     var sortOrder by remember { mutableStateOf(SourceSortOrder.DEFAULT) }
@@ -90,7 +90,7 @@ fun SourceManageScreen(
     // 批量选择模式
     var selectionMode by remember { mutableStateOf(false) }
     val selectedIds = remember { androidx.compose.runtime.mutableStateListOf<String>() }
-    // 正在登录的 Venera 源（非空弹出登录对话框，v1.3.0）
+    // 正在登录的 Venera 源（非空弹出登录对话框，v1.3.0.0）
     var loginTarget by remember { mutableStateOf<SourceInfo?>(null) }
 
     LaunchedEffect(Unit) { viewModel.observe() }
@@ -290,7 +290,7 @@ fun SourceManageScreen(
                     selected = selectedType,
                     onSelect = { selectedType = it },
                 )
-                // 漫画源二级格式筛选（legado / Venera，v1.3.0）
+                // 漫画源二级格式筛选（legado / Venera，v1.3.0.0）
                 if (selectedType == SourceType.COMIC) {
                     FormatFilterBar(
                         selected = selectedFormat,
@@ -356,7 +356,7 @@ fun SourceManageScreen(
                     ) { Text("禁用失效") }
                 }
 
-                // 书源 URL 一键更新（v1.3.0 对标 legado）
+                // 书源 URL 一键更新（v1.3.0.0 对标 legado）
                 val updating by viewModel.updating.collectAsState()
                 val updateProgress by viewModel.updateProgress.collectAsState()
                 Row(
@@ -433,7 +433,7 @@ fun SourceManageScreen(
     // ===== 源规则编辑对话框 =====
     SourceEditDialog(viewModel = viewModel)
 
-    // ===== Venera 登录对话框（v1.3.0）=====
+    // ===== Venera 登录对话框（v1.3.0.0）=====
     val loggingIn by viewModel.loggingIn.collectAsState()
     val target = loginTarget
     if (target != null) {
@@ -455,7 +455,7 @@ fun SourceManageScreen(
 }
 
 /**
- * Venera 源登录对话框（v1.3.0）。
+ * Venera 源登录对话框（v1.3.0.0）。
  *
  * 输入账号密码调用源自己实现的 account.login；已登录时提供「退出登录」。
  */
@@ -720,7 +720,7 @@ private fun TypeFilterBar(
 }
 
 /**
- * 漫画源二级格式筛选栏（v1.3.0）：全部分类下按源格式再分一级菜单，
+ * 漫画源二级格式筛选栏（v1.3.0.0）：全部分类下按源格式再分一级菜单，
  * Venera 源（独立 WebView 运行时，支持账号登录）与 legado 漫画源分开管理。
  */
 @Composable
@@ -796,7 +796,7 @@ private fun SourceCard(
     testStatus: SourceTestStatus = SourceTestStatus.UNKNOWN,
     onLongClick: () -> Unit = {},
     onSelectToggle: () -> Unit = {},
-    /** Venera 源登录态（非 Venera 源恒 false），v1.3.0 */
+    /** Venera 源登录态（非 Venera 源恒 false），v1.3.0.0 */
     loggedIn: Boolean = false,
     /** 正在登录中（转圈文案） */
     loggingIn: Boolean = false,
@@ -884,7 +884,7 @@ private fun SourceCard(
             }
             if (!selectionMode) {
                 Switch(checked = source.enabled, onCheckedChange = { onToggle() })
-                // Venera 源：登录按钮（v1.3.0）
+                // Venera 源：登录按钮（v1.3.0.0）
                 if (source.format == SourceFormat.VENERA) {
                     TextButton(onClick = onLogin) {
                         Text(

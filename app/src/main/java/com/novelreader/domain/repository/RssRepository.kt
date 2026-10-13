@@ -6,7 +6,7 @@ import com.novelreader.domain.model.RssFeedResult
 import kotlinx.coroutines.flow.Flow
 
 /**
- * RSS 订阅仓库（v1.4.0）。
+ * RSS 订阅仓库（v1.3.1.0）。
  *
  * 独立于 [ContentRepository]：订阅源是「地址 + 文章流」模型，
  * 没有搜索 / 详情 / 换源语义，因此单独一条链路，不与书源体系耦合。

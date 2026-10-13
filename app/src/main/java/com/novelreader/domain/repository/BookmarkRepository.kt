@@ -22,7 +22,7 @@ data class Bookmark(
 )
 
 /**
- * 书签仓库接口（v1.1.0）。
+ * 书签仓库接口（v1.1.0.0）。
  */
 interface BookmarkRepository {
 

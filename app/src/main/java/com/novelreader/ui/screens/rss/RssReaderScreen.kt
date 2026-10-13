@@ -67,7 +67,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
- * 订阅文章阅读页 ViewModel（v1.4.0）。
+ * 订阅文章阅读页 ViewModel（v1.3.1.0）。
  *
  * 支持同源内「上一篇 / 下一篇」：切换时只换文章 id，不重开页面
  * （避免连读时把返回栈堆满）。
@@ -134,7 +134,7 @@ class RssReaderViewModel(
 }
 
 /**
- * 订阅文章阅读页（v1.4.0）。
+ * 订阅文章阅读页（v1.3.1.0）。
  *
  * 正文来自源提供的 `content:encoded` / `description`，
  * 经 [RssContent] 转成段落 + 图片块渲染（样式与小说阅读页同源：正文 16sp / 行高 26sp）。

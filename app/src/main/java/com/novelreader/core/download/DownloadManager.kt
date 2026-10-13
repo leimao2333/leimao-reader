@@ -132,7 +132,7 @@ class DownloadManager(private val context: Context) {
         }.onFailure { Log.w(TAG, "图片乱序还原失败 err=${it.javaClass.simpleName}") }
     }
 
-    // ===== 漫画章节离线缓存（v1.2.11） =====
+    // ===== 漫画章节离线缓存（v1.2.11.0） =====
 
     /** 某本漫画的章节缓存根目录（标题+源标识防同名碰撞） */
     private fun comicCacheDir(item: MediaItem): File =

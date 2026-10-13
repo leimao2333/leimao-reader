@@ -41,7 +41,7 @@ interface SourceAdapter {
      */
     suspend fun test(): Boolean = true
 
-    // ===== 发现页（v1.2.3 对标 legado exploreUrl/ruleExplore） =====
+    // ===== 发现页（v1.2.3.0 对标 legado exploreUrl/ruleExplore） =====
 
     /**
      * 发现分类列表（可选实现）。源未配置 exploreUrl 时返回空列表。
@@ -56,7 +56,7 @@ interface SourceAdapter {
 }
 
 /**
- * 发现分类（v1.2.3）。
+ * 发现分类（v1.2.3.0）。
  */
 data class ExploreCategory(
     val title: String,

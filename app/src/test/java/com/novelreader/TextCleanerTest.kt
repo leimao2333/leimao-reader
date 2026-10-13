@@ -8,7 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 正文净化与替换规则引擎的回归测试（v1.1.0 大修新增）。
+ * 正文净化与替换规则引擎的回归测试（v1.1.0.0 大修新增）。
  */
 class TextCleanerTest {
 

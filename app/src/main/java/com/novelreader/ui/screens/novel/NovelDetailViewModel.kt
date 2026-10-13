@@ -177,7 +177,7 @@ class NovelDetailViewModel(
         }
     }
 
-    // ===== 批量离线缓存（v1.2.3） =====
+    // ===== 批量离线缓存（v1.2.3.0） =====
 
     /** 批量缓存进度（running=false 且 message 非空时表示结束） */
     data class CacheProgress(

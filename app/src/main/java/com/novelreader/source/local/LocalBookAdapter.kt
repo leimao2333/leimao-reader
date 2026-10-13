@@ -10,7 +10,7 @@ import com.novelreader.domain.model.SourceInfo
 import com.novelreader.domain.model.SourceType
 
 /**
- * 本地 TXT 书适配器（v1.2.0 对标 legado 本地书）。
+ * 本地 TXT 书适配器（v1.2.0.0 对标 legado 本地书）。
  *
  * 实现统一的 [SourceAdapter] 四接口，使本地书走与在线书完全相同的
  * 详情 / 目录 / 正文 / 阅读链路（含进度、缓存、换源排除等）。

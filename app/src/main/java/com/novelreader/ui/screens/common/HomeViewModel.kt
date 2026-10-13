@@ -38,7 +38,7 @@ class HomeViewModel(
         _importMessage.value = null
     }
 
-    /** 导入本地 TXT 书：解析章节 → 存入本地书库 → 加入书架（v1.2.0） */
+    /** 导入本地 TXT 书：解析章节 → 存入本地书库 → 加入书架（v1.2.0.0） */
     fun importLocalBook(uri: android.net.Uri, displayName: String?) {
         val store = localBookStore ?: return
         viewModelScope.launch {
@@ -78,7 +78,7 @@ class HomeViewModel(
         observeGroups()
     }
 
-    // ===== 书架分组（v1.3.0 对标 legado 书架分组） =====
+    // ===== 书架分组（v1.3.0.0 对标 legado 书架分组） =====
 
     /** 所有已用分组名 */
     private val _groupNames = MutableStateFlow<List<String>>(emptyList())
@@ -121,7 +121,7 @@ class HomeViewModel(
         }
     }
 
-    /** 更换书架条目封面（长按书 → 更换封面，v1.2.3） */
+    /** 更换书架条目封面（长按书 → 更换封面，v1.2.3.0） */
     fun updateCover(item: MediaItem, coverUrl: String) {
         if (coverUrl.isBlank()) return
         viewModelScope.launch { bookRepository.updateBookCover(item, coverUrl) }

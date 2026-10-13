@@ -8,7 +8,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * 本地 TXT 书库（v1.2.0 对标 legado 本地书）。
+ * 本地 TXT 书库（v1.2.0.0 对标 legado 本地书）。
  *
  * - 导入：SAF 选文件 → 读字节 → 编码探测（UTF-8 优先，失败回退 GBK）→ 章节切分
  * - 存储：TXT 原文件存 `filesDir/local_books/<id>.txt`，元数据存 `local_books/index.json`

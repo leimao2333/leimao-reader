@@ -17,7 +17,7 @@ sealed interface RssBlock {
 }
 
 /**
- * 订阅文章 HTML → 阅读块（v1.4.0）。
+ * 订阅文章 HTML → 阅读块（v1.3.1.0）。
  *
  * RSS 的正文 HTML 千奇百怪（WordPress 的 `<p>`、微信式 `<section>`、
  * 老博客的 `<div><br>`），统一按「块级元素分段 + 图片独立成块」处理，

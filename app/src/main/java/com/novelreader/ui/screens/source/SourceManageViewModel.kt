@@ -23,7 +23,7 @@ import kotlinx.coroutines.withContext
 class SourceManageViewModel(
     private val sourceRepository: SourceRepository,
     private val sourceRepositoryImpl: SourceRepositoryImpl? = null,
-    /** Venera 运行时：Venera 漫画源的登录 / 退出登录走这里（v1.3.0） */
+    /** Venera 运行时：Venera 漫画源的登录 / 退出登录走这里（v1.3.0.0） */
     private val veneraEngine: com.novelreader.source.venera.VeneraEngine? = null,
 ) : ViewModel() {
 
@@ -47,7 +47,7 @@ class SourceManageViewModel(
     private val _downloading = MutableStateFlow(false)
     val downloading: StateFlow<Boolean> = _downloading.asStateFlow()
 
-    // ===== Venera 源登录（v1.3.0）=====
+    // ===== Venera 源登录（v1.3.0.0）=====
 
     /** Venera 源登录态：sourceId -> 是否已登录（读本地标记，不启动 WebView） */
     private val _loginStates = MutableStateFlow<Map<String, Boolean>>(emptyMap())
@@ -66,7 +66,7 @@ class SourceManageViewModel(
     }
 
     // 注意：init 必须放在所有 StateFlow 属性声明之后——
-    // Kotlin 按声明顺序初始化属性，init 提前会拿到 null 的 _loginStates（v1.3.0 实测崩溃）
+    // Kotlin 按声明顺序初始化属性，init 提前会拿到 null 的 _loginStates（v1.3.0.0 实测崩溃）
     init {
         refresh()
     }
@@ -164,7 +164,7 @@ class SourceManageViewModel(
     /**
      * 网址导入的文件名（参与源 id 生成）。
      *
-     * v1.3.0 修复：旧实现固定传 "legado_remote" → 不同网址导入的**第一个源 id 相同**，
+     * v1.3.0.0 修复：旧实现固定传 "legado_remote" → 不同网址导入的**第一个源 id 相同**，
      * 后一次导入会静默覆盖前一次的第一个源（「部分小说源不加载/消失」根因之一）。
      * 现按 URL 哈希生成稳定文件名：同一网址重复导入仍命中同一批 id（原地更新），
      * 不同网址互不冲突。
@@ -500,7 +500,7 @@ class SourceManageViewModel(
             SourceSortOrder.ENABLED -> list.sortedByDescending { it.enabled }
         }
 
-    // ===== 书源 URL 一键更新（v1.3.0 对标 legado） =====
+    // ===== 书源 URL 一键更新（v1.3.0.0 对标 legado） =====
 
     /** 是否正在联网更新书源 */
     private val _updating = MutableStateFlow(false)

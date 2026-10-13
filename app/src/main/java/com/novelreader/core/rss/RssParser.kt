@@ -53,7 +53,7 @@ data class OpmlOutline(
 )
 
 /**
- * RSS 订阅源解析器（v1.4.0）。
+ * RSS 订阅源解析器（v1.3.1.0）。
  *
  * 支持三种主流形态，命名空间前缀一律忽略（`content:encoded` / `dc:date` 等按局部名匹配）：
  * - **RSS 2.0**：`<rss><channel><item>`

@@ -8,7 +8,7 @@ import com.novelreader.data.model.BookmarkEntity
 import kotlinx.coroutines.flow.Flow
 
 /**
- * 书签 DAO（v1.1.0）。
+ * 书签 DAO（v1.1.0.0）。
  */
 @Dao
 interface BookmarkDao {

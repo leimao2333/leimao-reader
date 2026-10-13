@@ -89,9 +89,9 @@ fun NovelDetailScreen(
         }
     }
 
-    // 批量离线缓存弹窗开关（v1.2.3）
+    // 批量离线缓存弹窗开关（v1.2.3.0）
     var showCacheDialog by rememberSaveable { mutableStateOf(false) }
-    // ===== 批量离线缓存弹窗（v1.2.3）：进行中显示进度，否则显示范围选择/完成提示 =====
+    // ===== 批量离线缓存弹窗（v1.2.3.0）：进行中显示进度，否则显示范围选择/完成提示 =====
     if (cacheProgress?.running == true) {
         val p = cacheProgress!!
         androidx.compose.material3.AlertDialog(

@@ -80,7 +80,7 @@ private data class SeekPreview(val targetMs: Long, val deltaMs: Long)
 private data class VerticalIndicator(val brightness: Boolean, val value: Float)
 
 /**
- * 视频播放页（v1.5.0 交互重做，对齐 MoonTV / ArtPlayer 的操作习惯）。
+ * 视频播放页（v1.3.2.0 交互重做，对齐 MoonTV / ArtPlayer 的操作习惯）。
  *
  * 支持：
  * - 窗口 / 全屏双态：全屏 = 横屏 + 沉浸式（隐藏系统栏），返回键优先退全屏

@@ -48,6 +48,10 @@ class BookRepositoryImpl(
         bookDao.delete(item.sourceId, item.id)
     }
 
+    override suspend fun updateBookCover(item: MediaItem, coverUrl: String) {
+        bookDao.updateCover(item.sourceId, item.id, coverUrl)
+    }
+
     // ===== 分组管理（v1.3.0） =====
 
     override suspend fun setBookGroup(item: MediaItem, group: String) {

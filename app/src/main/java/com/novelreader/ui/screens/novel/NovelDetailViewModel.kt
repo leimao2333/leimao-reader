@@ -14,6 +14,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /**
  * 小说详情 ViewModel。
@@ -25,6 +27,7 @@ class NovelDetailViewModel(
     private val bookRepository: BookRepository,
     private val downloadManager: DownloadManager? = null,
     private val progressRepository: com.novelreader.domain.repository.ProgressRepository? = null,
+    private val chapterCacheRepository: com.novelreader.domain.repository.ChapterCacheRepository? = null,
 ) : ViewModel() {
 
     /** 详情信息 */
@@ -172,6 +175,102 @@ class NovelDetailViewModel(
                 _download.value = DownloadState(isDownloading = false, success = false, message = "下载失败：${e.message}")
             }
         }
+    }
+
+    // ===== 批量离线缓存（v1.2.3） =====
+
+    /** 批量缓存进度（running=false 且 message 非空时表示结束） */
+    data class CacheProgress(
+        val done: Int,
+        val total: Int,
+        val newCached: Int,
+        val running: Boolean,
+        val message: String? = null,
+    )
+
+    private val _cacheProgress = MutableStateFlow<CacheProgress?>(null)
+    val cacheProgress: StateFlow<CacheProgress?> = _cacheProgress.asStateFlow()
+
+    private var cacheJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * 批量缓存章节：从列表位置 fromIndex（0 起，含）开始缓存 count 章；count < 0 表示缓存到末尾。
+     * 4 路并发，已缓存的章节自动跳过；正文写入章节缓存后可离线阅读。
+     */
+    fun cacheChapters(fromIndex: Int, count: Int) {
+        val item = _detail.value ?: return
+        val repo = chapterCacheRepository ?: return
+        val chapters = _chapters.value
+        if (chapters.isEmpty()) {
+            _cacheProgress.value = CacheProgress(0, 0, 0, false, message = "目录为空，无法缓存")
+            return
+        }
+        val start = fromIndex.coerceIn(0, chapters.size - 1)
+        val end = if (count < 0) chapters.size else (start + count).coerceAtMost(chapters.size)
+        val targets = chapters.subList(start, end)
+        cacheJob?.cancel()
+        cacheJob = viewModelScope.launch {
+            val alreadyCached = runCatching { repo.cachedIndices(item.sourceId, item.id) }
+                .getOrDefault(emptySet())
+            val toFetch = targets.filter { it.index !in alreadyCached }
+            _cacheProgress.value = CacheProgress(0, toFetch.size, 0, true)
+            val semaphore = kotlinx.coroutines.sync.Semaphore(4)
+            val done = java.util.concurrent.atomic.AtomicInteger(0)
+            val fetched = java.util.concurrent.atomic.AtomicInteger(0)
+            kotlinx.coroutines.coroutineScope {
+                toFetch.forEach { ch ->
+                    launch {
+                        semaphore.withPermit {
+                            val result = runCatching { contentRepository.content(ch) }.getOrNull()
+                            val text = result?.novelText
+                            if (!text.isNullOrBlank()) {
+                                runCatching { repo.saveCache(item, ch.index, ch.title, ch.url, text) }
+                                fetched.incrementAndGet()
+                            }
+                        }
+                        val d = done.incrementAndGet()
+                        _cacheProgress.value = CacheProgress(d, toFetch.size, fetched.get(), true)
+                    }
+                }
+            }
+            _cacheProgress.value = CacheProgress(
+                done = toFetch.size,
+                total = toFetch.size,
+                newCached = fetched.get(),
+                running = false,
+                message = "缓存完成：本次处理 ${targets.size} 章，新缓存 ${fetched.get()} 章" +
+                    if (toFetch.size < targets.size) "（已缓存 ${targets.size - toFetch.size} 章跳过）" else "",
+            )
+        }
+    }
+
+    /** 缓存全书 */
+    fun cacheAll() = cacheChapters(0, -1)
+
+    /** 缓存前 50 章 */
+    fun cacheFirst50() = cacheChapters(0, 50)
+
+    /** 从当前阅读进度的下一章起缓存 50 章（无进度则从头开始） */
+    fun cacheNext50() {
+        val item = _detail.value ?: return
+        val repo = progressRepository ?: run { cacheChapters(0, 50); return }
+        viewModelScope.launch {
+            val idx = runCatching { repo.getProgress(item.sourceId, item.id) }
+                .getOrNull()?.chapterIndex ?: -1
+            cacheChapters((idx + 1).coerceAtLeast(0), 50)
+        }
+    }
+
+    /** 取消批量缓存 */
+    fun cancelCache() {
+        cacheJob?.cancel()
+        cacheJob = null
+        _cacheProgress.value = _cacheProgress.value?.copy(running = false, message = "已取消缓存")
+    }
+
+    /** 清除缓存进度（关闭完成弹窗） */
+    fun clearCacheProgress() {
+        _cacheProgress.value = null
     }
 
     // ===== 换源（详情页） =====

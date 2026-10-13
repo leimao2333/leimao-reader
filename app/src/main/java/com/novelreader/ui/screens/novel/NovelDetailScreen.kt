@@ -75,6 +75,7 @@ fun NovelDetailScreen(
     val changeSourceProgress by viewModel.changeSourceProgress.collectAsState()
     val hasProgress by viewModel.hasProgress.collectAsState()
     val notice by viewModel.notice.collectAsState()
+    val cacheProgress by viewModel.cacheProgress.collectAsState()
 
     LaunchedEffect(item) {
         viewModel.load(item)
@@ -86,6 +87,66 @@ fun NovelDetailScreen(
             kotlinx.coroutines.delay(1800)
             viewModel.dismissNotice()
         }
+    }
+
+    // 批量离线缓存弹窗开关（v1.2.3）
+    var showCacheDialog by rememberSaveable { mutableStateOf(false) }
+    // ===== 批量离线缓存弹窗（v1.2.3）：进行中显示进度，否则显示范围选择/完成提示 =====
+    if (cacheProgress?.running == true) {
+        val p = cacheProgress!!
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = {},
+            title = { Text("离线缓存") },
+            text = {
+                Column {
+                    androidx.compose.material3.LinearProgressIndicator(
+                        progress = { if (p.total > 0) p.done.toFloat() / p.total else 0f },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(text = "正在缓存 ${p.done}/${p.total}（新缓存 ${p.newCached}）")
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { viewModel.cancelCache() }) { Text("取消") }
+            },
+        )
+    } else if (showCacheDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showCacheDialog = false },
+            title = { Text("离线缓存") },
+            text = { Text("选择要缓存的章节范围，缓存完成后可离线阅读") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    showCacheDialog = false
+                    viewModel.cacheAll()
+                }) { Text("缓存全书") }
+            },
+            dismissButton = {
+                Row {
+                    androidx.compose.material3.TextButton(onClick = {
+                        showCacheDialog = false
+                        viewModel.cacheFirst50()
+                    }) { Text("前50章") }
+                    androidx.compose.material3.TextButton(onClick = {
+                        showCacheDialog = false
+                        viewModel.cacheNext50()
+                    }) { Text("后50章") }
+                    androidx.compose.material3.TextButton(onClick = { showCacheDialog = false }) { Text("取消") }
+                }
+            },
+        )
+    }
+    cacheProgress?.takeIf { !it.running && it.message != null }?.let { p ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { viewModel.clearCacheProgress() },
+            title = { Text("离线缓存") },
+            text = { Text(p.message ?: "") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { viewModel.clearCacheProgress() }) { Text("确定") }
+            },
+        )
     }
 
     val display = detail ?: item
@@ -135,6 +196,7 @@ fun NovelDetailScreen(
                         onOpenChangeSource = viewModel::openChangeSource,
                         download = download,
                         onDownload = viewModel::downloadBook,
+                        onOpenCacheDialog = { showCacheDialog = true },
                         onAuthorClick = onSearchAuthor,
                         hasProgress = hasProgress,
                         onReadLatest = {
@@ -391,6 +453,7 @@ private fun DetailHeader(
     onOpenChangeSource: () -> Unit = {},
     download: com.novelreader.core.download.DownloadState? = null,
     onDownload: () -> Unit = {},
+    onOpenCacheDialog: () -> Unit = {},
     onAuthorClick: ((String) -> Unit)? = null,
     hasProgress: Boolean = false,
     onReadLatest: () -> Unit = {},
@@ -509,6 +572,8 @@ private fun DetailHeader(
                     OutlinedButton(onClick = onOpenChangeSource) { Text("换源") }
                     Spacer(Modifier.width(8.dp))
                     OutlinedButton(onClick = onDownload) { Text("下载") }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(onClick = onOpenCacheDialog) { Text("缓存") }
                 }
             }
         }

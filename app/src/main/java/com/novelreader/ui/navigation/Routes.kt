@@ -25,6 +25,8 @@ object Routes {
     const val NOVEL_DETAIL = "novel_detail/{item}"       // item = 编码的 MediaItem
     const val NOVEL_READER = "novel_reader/{item}/{chapterIndex}"  // 章节列表走 NavCache
 
+    const val EXPLORE = "explore?type={type}"   // 发现页（v1.2.3，按类型枚举源的发现分类）
+
     // ===== 漫画 =====
     const val COMIC_SEARCH = "comic_search"
     const val COMIC_DETAIL = "comic_detail/{item}"
@@ -44,6 +46,10 @@ object Routes {
         val kw = java.net.URLEncoder.encode(initialKeyword, "UTF-8")
         return "novel_search?keyword=$kw"
     }
+
+    /** 发现页；type 为 SourceType 名称（NOVEL/COMIC/VIDEO） */
+    fun explore(type: com.novelreader.domain.model.SourceType): String =
+        "explore?type=${type.name}"
 
     fun novelDetail(item: com.novelreader.domain.model.MediaItem): String =
         "novel_detail/${NavArgs.encodeItem(item)}"

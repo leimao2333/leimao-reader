@@ -589,6 +589,36 @@ ${'$'}.chapters[*]
         assertTrue("结果应包含关键词相关书名", results.any { it.title.contains("斗破") })
     }
 
+    // ===== 发现分类解析（v1.2.3，离线） =====
+
+    @Test
+    fun `发现分类 - JSON数组格式`() {
+        val json = """{"bookSourceName":"测试源","bookSourceUrl":"http://example.com",
+            "exploreUrl":"[{\"title\":\"玄幻\",\"url\":\"/xuanhuan/{{page}}\"},{\"title\":\"都市\",\"url\":\"/dushi/{{page}}\"}]",
+            "ruleExplore":{"bookList":"class.item","name":"tag.h3@text","bookUrl":"tag.a@href"}}"""
+        val ad = adapter(json)
+        val cats = kotlinx.coroutines.runBlocking { ad.exploreCategories() }
+        assertEquals(2, cats.size)
+        assertEquals("玄幻", cats[0].title)
+        assertEquals("/xuanhuan/{{page}}", cats[0].url)
+        assertEquals("都市", cats[1].title)
+    }
+
+    @Test
+    fun `发现分类 - 分类名冒号地址与纯地址`() {
+        val json = """{"bookSourceName":"测试源2","bookSourceUrl":"http://example.com",
+            "exploreUrl":"玄幻榜::http://example.com/xh/\nhttp://example.com/all/"}"""
+        val ad = adapter(json)
+        val cats = kotlinx.coroutines.runBlocking { ad.exploreCategories() }
+        assertEquals(2, cats.size)
+        assertEquals("玄幻榜", cats[0].title)
+        assertEquals("http://example.com/xh/", cats[0].url)
+        // 纯地址行：标题即地址
+        assertEquals("http://example.com/all/", cats[1].title)
+        assertEquals("http://example.com/all/", cats[1].url)
+    }
+
+    /** 阅友小说：CSS 列表 + onclick JS bookUrl */
     /** 真实源 C：CSS 列表 + onclick JS bookUrl */
     @Test
     fun `真实源 C - 搜索与bookUrl提取`() {

@@ -6,6 +6,7 @@ import com.novelreader.domain.model.ContentResult
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceAdapter
 import com.novelreader.domain.model.SourceInfo
+import com.novelreader.domain.model.ExploreCategory
 import org.jsoup.Jsoup
 
 /**
@@ -36,13 +37,26 @@ class LegadoSourceAdapter(
 
         // searchUrl 可能形如 "url,{请求配置JSON}"（含 method/body/charset/headers），
         // 或以 @js: 开头（执行 JS 得到 URL，可再带 ,{配置}）
-        val (urlTemplate, requestConfig) = if (source.searchUrl.trimStart().startsWith("@js:")) {
+        val spec = if (source.searchUrl.trimStart().startsWith("@js:")) {
             val js = source.searchUrl.trimStart().substringAfter("@js:")
-            val jsResult = evalSearchUrlJs(js, keyword, page) ?: return emptyList()
-            splitRequestConfig(jsResult)
+            evalSearchUrlJs(js, keyword, page) ?: return emptyList()
         } else {
-            splitRequestConfig(source.searchUrl)
+            source.searchUrl
         }
+        return loadList(spec, keyword, page, source.ruleSearch)
+    }
+
+    /**
+     * 从「URL（可带 ,{请求配置} 尾巴）」按规则拉取书籍列表。
+     * 搜索（ruleSearch）与发现（ruleExplore）共用同一条抓取+解析链路。
+     */
+    private suspend fun loadList(
+        rawSpec: String,
+        keyword: String,
+        page: Int,
+        rule: Map<String, String>,
+    ): List<MediaItem> {
+        val (urlTemplate, requestConfig) = splitRequestConfig(rawSpec)
 
         val charset = requestConfig?.get("charset")?.asString?.takeIf { it.isNotBlank() }
         var url = renderUrl(urlTemplate, keyword, page, charset)
@@ -83,15 +97,15 @@ class LegadoSourceAdapter(
         // 判断响应是否为 JSON（@json 规则或 JSON 内容）
         val isJson = content.trimStart().startsWith("{") || content.trimStart().startsWith("[")
 
-        val listRule = source.ruleSearch["bookList"] ?: source.ruleSearch["list"] ?: ""
-        val fieldRules = source.ruleSearch
+        val listRule = rule["bookList"] ?: rule["list"] ?: ""
+        val fieldRules = rule
 
         // 每条搜索结果独立收集 `@put:{...}` 变量，随条目带出供详情/目录使用。
-        // 外层换成空表，保证搜索从干净状态开始（不复用上一步残留的变量）。
+        // 外层换成空表，保证每次拉取从干净状态开始（不复用上一步残留的变量）。
         val varsSink = mutableListOf<Map<String, String>>()
         val list = LegadoRuleEngine.withVariables(mutableMapOf()) {
             if (isJson || listRule.startsWith("@json:")) {
-                extractJsonResults(content, source.ruleSearch, varsSink = varsSink, listRule = listRule)
+                extractJsonResults(content, rule, varsSink = varsSink, listRule = listRule)
             } else {
                 LegadoRuleEngine.extractList(content, listRule, fieldRules, baseUrl, varsSink)
             }
@@ -131,6 +145,50 @@ class LegadoSourceAdapter(
                 },
             )
         }.filter { it.title.isNotBlank() }
+    }
+
+    // ===== 发现页（v1.2.3 对标 legado exploreUrl / ruleExplore） =====
+
+    /**
+     * 解析发现分类。支持三种格式（与 legado 一致）：
+     * - JSON 数组：[{"title":"玄幻","url":"..."},...]
+     * - 逐行 "分类名::地址"
+     * - 逐行纯地址（标题即地址）
+     * @js: 形式的发现暂不支持（返回空，UI 侧该源不展示）。
+     */
+    override suspend fun exploreCategories(): List<ExploreCategory> {
+        val raw = source.exploreUrl.trim()
+        if (raw.isBlank() || raw.startsWith("@js:")) return emptyList()
+        return runCatching {
+            if (raw.startsWith("[")) {
+                val arr = com.google.gson.JsonParser.parseString(raw).asJsonArray
+                arr.mapNotNull { el ->
+                    val obj = el as? com.google.gson.JsonObject ?: return@mapNotNull null
+                    val t = obj.get("title")?.asString?.trim() ?: return@mapNotNull null
+                    val u = obj.get("url")?.asString?.trim() ?: return@mapNotNull null
+                    if (t.isBlank() || u.isBlank()) null else ExploreCategory(t, u)
+                }
+            } else {
+                raw.lines()
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .map { line ->
+                        if (line.contains("::")) {
+                            val t = line.substringBefore("::").trim()
+                            val u = line.substringAfter("::").trim()
+                            ExploreCategory(t.ifBlank { u }, u)
+                        } else {
+                            ExploreCategory(line, line)
+                        }
+                    }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    /** 按发现分类地址拉取列表：{{page}} 等占位符渲染后走与搜索相同的解析链路 */
+    override suspend fun explore(url: String, page: Int): List<MediaItem> {
+        if (source.ruleExplore.isEmpty() || url.isBlank()) return emptyList()
+        return loadList(url, "", page, source.ruleExplore)
     }
 
     /** 处理 JSON 响应的搜索（@json 规则） */

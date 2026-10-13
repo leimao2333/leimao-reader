@@ -29,6 +29,9 @@ interface BookDao {
     @Query("DELETE FROM books WHERE sourceId = :sourceId AND itemId = :itemId")
     suspend fun delete(sourceId: String, itemId: String)
 
+    @Query("UPDATE books SET cover = :cover WHERE sourceId = :sourceId AND itemId = :itemId")
+    suspend fun updateCover(sourceId: String, itemId: String, cover: String)
+
     @Delete
     suspend fun delete(book: BookEntity)
 

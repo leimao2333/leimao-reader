@@ -121,6 +121,12 @@ class HomeViewModel(
         }
     }
 
+    /** 更换书架条目封面（长按书 → 更换封面，v1.2.3） */
+    fun updateCover(item: MediaItem, coverUrl: String) {
+        if (coverUrl.isBlank()) return
+        viewModelScope.launch { bookRepository.updateBookCover(item, coverUrl) }
+    }
+
     private fun observeBooks() {
         viewModelScope.launch {
             bookRepository.observeBookshelf().collectLatest { list ->

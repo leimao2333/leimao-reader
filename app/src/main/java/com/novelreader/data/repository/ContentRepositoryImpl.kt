@@ -212,4 +212,26 @@ class ContentRepositoryImpl(
                 ?: return@withContext ContentResult()
             runCatching { adapter.content(chapter) }.getOrDefault(ContentResult())
         }
+
+    // ===== 发现页（v1.2.3 对标 legado exploreUrl/ruleExplore） =====
+
+    override suspend fun exploreSources(
+        type: SourceType,
+    ): List<Pair<SourceInfo, List<com.novelreader.domain.model.ExploreCategory>>> =
+        withContext(Dispatchers.IO) {
+            sourceManager.getEnabledSourcesByType(type)
+                .mapNotNull { info ->
+                    sourceManager.getAdapter(info.id)?.let { adapter ->
+                        val cats = runCatching { adapter.exploreCategories() }.getOrDefault(emptyList())
+                        if (cats.isEmpty()) null else info to cats
+                    }
+                }
+        }
+
+    override suspend fun explore(sourceId: String, url: String, page: Int): List<MediaItem> =
+        withContext(Dispatchers.IO) {
+            val adapter = resolveAdapter(sourceId) ?: return@withContext emptyList()
+            runCatching { adapter.explore(url, page) }.getOrDefault(emptyList())
+                .map { it.copy(sourceName = it.sourceName.ifBlank { adapter.info.name }) }
+        }
 }

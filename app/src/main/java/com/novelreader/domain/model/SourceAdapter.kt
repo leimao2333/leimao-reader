@@ -40,4 +40,25 @@ interface SourceAdapter {
      * 有效性自检（可选实现）。用于导入源后测试是否可用。
      */
     suspend fun test(): Boolean = true
+
+    // ===== 发现页（v1.2.3 对标 legado exploreUrl/ruleExplore） =====
+
+    /**
+     * 发现分类列表（可选实现）。源未配置 exploreUrl 时返回空列表。
+     */
+    suspend fun exploreCategories(): List<ExploreCategory> = emptyList()
+
+    /**
+     * 按发现分类地址拉取书籍列表（规则同搜索，用 ruleExplore）。
+     * @param url 分类地址（可能含 {{page}} 等占位符）
+     */
+    suspend fun explore(url: String, page: Int = 1): List<MediaItem> = emptyList()
 }
+
+/**
+ * 发现分类（v1.2.3）。
+ */
+data class ExploreCategory(
+    val title: String,
+    val url: String,
+)

@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.ViewList
+import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -82,6 +83,7 @@ fun HomeScreen(
     onOpenNovelSearch: () -> Unit,
     onOpenComicSearch: () -> Unit,
     onOpenVideoSearch: () -> Unit,
+    onOpenExplore: (SourceType) -> Unit = {},
     onContinueReading: (MediaItem, List<ChapterItem>, ChapterItem?) -> Unit,
 ) {
     val importMessage by viewModel.importMessage.collectAsState()
@@ -117,6 +119,7 @@ fun HomeScreen(
     var assignTarget by remember { mutableStateOf<MediaItem?>(null) }
     var manageGroup by remember { mutableStateOf<String?>(null) }
     var newGroupForItem by remember { mutableStateOf<MediaItem?>(null) }
+    var coverEditForItem by remember { mutableStateOf<MediaItem?>(null) }
 
     // 展现形式：0=封面墙网格，1=列表
     var gridMode by rememberSaveable { mutableIntStateOf(0) }
@@ -153,6 +156,9 @@ fun HomeScreen(
             TopAppBar(
                 title = { Text(tabs[selectedTab].label) },
                 actions = {
+                    IconButton(onClick = { onOpenExplore(currentType) }) {
+                        Icon(Icons.Filled.Explore, contentDescription = "发现")
+                    }
                     IconButton(onClick = onOpenSources) {
                         Icon(Icons.Filled.Source, contentDescription = "源管理")
                     }
@@ -277,6 +283,10 @@ fun HomeScreen(
                                     newGroupForItem = item
                                     assignTarget = null
                                 }) { Text("＋ 新建分组") }
+                                TextButton(onClick = {
+                                    coverEditForItem = item
+                                    assignTarget = null
+                                }) { Text("更换封面") }
                             }
                         },
                         confirmButton = {},
@@ -311,6 +321,43 @@ fun HomeScreen(
                         },
                         dismissButton = {
                             TextButton(onClick = { newGroupForItem = null }) { Text("取消") }
+                        },
+                    )
+                }
+
+                // 更换封面弹窗（长按书 → 更换封面，v1.2.3）
+                coverEditForItem?.let { item ->
+                    var urlInput by remember(item) { mutableStateOf(item.cover ?: "") }
+                    AlertDialog(
+                        onDismissRequest = { coverEditForItem = null },
+                        title = { Text("更换封面") },
+                        text = {
+                            Column {
+                                Text(
+                                    text = "输入新的封面图片地址",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = urlInput,
+                                    onValueChange = { urlInput = it },
+                                    label = { Text("封面 URL") },
+                                    singleLine = true,
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(
+                                enabled = urlInput.isNotBlank() && urlInput.trim() != item.cover,
+                                onClick = {
+                                    viewModel.updateCover(item, urlInput.trim())
+                                    coverEditForItem = null
+                                },
+                            ) { Text("确定") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { coverEditForItem = null }) { Text("取消") }
                         },
                     )
                 }

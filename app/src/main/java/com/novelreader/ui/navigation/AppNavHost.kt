@@ -19,6 +19,8 @@ import com.novelreader.ui.screens.comic.ComicReaderScreen
 import com.novelreader.ui.screens.comic.ComicReaderViewModel
 import com.novelreader.ui.screens.comic.ComicSearchScreen
 import com.novelreader.ui.screens.comic.ComicSearchViewModel
+import com.novelreader.ui.screens.novel.ExploreScreen
+import com.novelreader.ui.screens.novel.ExploreViewModel
 import com.novelreader.ui.screens.novel.NovelDetailScreen
 import com.novelreader.ui.screens.novel.NovelDetailViewModel
 import com.novelreader.ui.screens.novel.NovelReaderScreen
@@ -79,6 +81,7 @@ fun AppNavHost(container: AppContainer, initialNovelSearchKeyword: String? = nul
                 onOpenNovelSearch = { navController.navigate(Routes.novelSearch()) },
                 onOpenComicSearch = { navController.navigate(Routes.COMIC_SEARCH) },
                 onOpenVideoSearch = { navController.navigate(Routes.VIDEO_SEARCH) },
+                onOpenExplore = { type -> navController.navigate(Routes.explore(type)) },
                 onContinueReading = { item, chapters, target ->
                     NavCache.putChapters(item, chapters)
                     val index = target?.index?.coerceAtLeast(0) ?: 0
@@ -102,6 +105,36 @@ fun AppNavHost(container: AppContainer, initialNovelSearchKeyword: String? = nul
                         }
                     }
                 },
+            )
+        }
+
+        // ===== 发现页 =====
+        composable(
+            route = Routes.EXPLORE,
+            arguments = listOf(navArgument("type") { type = NavType.StringType; defaultValue = "NOVEL" }),
+        ) { backStackEntry ->
+            val typeName = backStackEntry.arguments?.getString("type") ?: "NOVEL"
+            val type = runCatching {
+                com.novelreader.domain.model.SourceType.valueOf(typeName)
+            }.getOrDefault(com.novelreader.domain.model.SourceType.NOVEL)
+            val viewModel: ExploreViewModel = viewModel(
+                factory = NovelViewModelFactory(container) {
+                    ExploreViewModel(it.contentRepository, type)
+                }
+            )
+            ExploreScreen(
+                viewModel = viewModel,
+                title = "发现",
+                onItemClick = { item ->
+                    when (type) {
+                        com.novelreader.domain.model.SourceType.COMIC ->
+                            navController.navigate(Routes.comicDetail(item))
+                        com.novelreader.domain.model.SourceType.VIDEO ->
+                            navController.navigate(Routes.videoDetail(item))
+                        else -> navController.navigate(Routes.novelDetail(item))
+                    }
+                },
+                onBack = { navController.popBackStack() },
             )
         }
 
@@ -287,6 +320,7 @@ fun AppNavHost(container: AppContainer, initialNovelSearchKeyword: String? = nul
                         it.bookRepository,
                         it.downloadManager,
                         it.progressRepository,
+                        it.chapterCacheRepository,
                     )
                 }
             )

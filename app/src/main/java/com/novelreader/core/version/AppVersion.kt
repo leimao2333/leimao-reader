@@ -11,7 +11,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.2.9"
+    const val CURRENT_VERSION = "1.2.10"
 
     /**
      * 更新日志。
@@ -19,6 +19,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.2.10",
+            date = "2026-10-13",
+            changes = listOf(
+                "**发现页**（对标 legado exploreUrl / ruleExplore）：首页顶栏新增「发现」入口，展示各源的自定义分类（JSON 数组 / 分类名::地址 / 纯地址三种格式），选源选分类直接浏览榜单与专区，列表复用搜索的解析链路（含 @put/@get 变量机制）",
+                "**离线批量下载**（对标 legado 缓存）：详情页新增「缓存」按钮 —— 缓存全书 / 前 50 章 / 当前进度后 50 章，4 路并发、已缓存章节自动跳过、进度可取消，抓到的正文写入章节缓存，无网也能读",
+                "**更换封面**：书架长按书籍弹窗新增「更换封面」，粘贴图片地址即可替换书架封面",
+            ),
+        ),
         VersionEntry(
             version = "1.2.9",
             date = "2026-10-13",

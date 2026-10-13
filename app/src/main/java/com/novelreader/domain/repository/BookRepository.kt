@@ -31,6 +31,9 @@ interface BookRepository {
     /** 所有已用分组名 */
     fun observeGroupNames(): Flow<List<String>>
 
+    /** 更换书架条目封面（v1.2.3 长按书更换封面） */
+    suspend fun updateBookCover(item: MediaItem, coverUrl: String)
+
     /** 重命名分组 */
     suspend fun renameGroup(oldName: String, newName: String)
 

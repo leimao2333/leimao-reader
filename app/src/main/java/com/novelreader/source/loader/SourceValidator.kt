@@ -25,6 +25,8 @@ object SourceValidator {
         val isLegadoList: Boolean = false,
         /** 是否为 Venera 源索引（index.json，需要逐个下载 .js 再导入） */
         val isVeneraIndex: Boolean = false,
+        /** 是否为 MoonTV / LunaTV 采集源配置（含 Base58 订阅，导入后得到多个视频源，v1.3.3.0） */
+        val isMoonTvConfig: Boolean = false,
     )
 
     /**
@@ -53,6 +55,25 @@ object SourceValidator {
             }
         }
 
+        // 0.1 MoonTV / LunaTV 采集源配置（v1.3.3.0）
+        //     订阅正文可能是 **Base58 编码的 JSON**，先解包再判断；
+        //     单站点 JSON（只有 api 字段）同样归入本格式。
+        if (com.novelreader.source.moontv.MoonTvConfig.isConfig(content)) {
+            val sites = com.novelreader.source.moontv.MoonTvConfig.parseConfig(content)
+            if (sites.isEmpty()) {
+                return Result(false, "MoonTV/LunaTV 配置里没有可用的采集接口")
+            }
+            return Result(
+                true,
+                "检测到 MoonTV/LunaTV 配置（共 ${sites.size} 个视频源）",
+                SourceFormat.MOONTV,
+                isMoonTvConfig = true,
+            )
+        }
+        if (com.novelreader.source.moontv.MoonTvConfig.looksLikeSite(content)) {
+            return Result(true, "校验通过（MoonTV 采集源）", SourceFormat.MOONTV)
+        }
+
         // 1. 判断格式
         val format = detectFormat(content, fileName)
 
@@ -71,6 +92,11 @@ object SourceValidator {
             SourceFormat.JS -> validateJs(content)
             SourceFormat.LEGADO -> validateJsonOrLegado(content)
             SourceFormat.VENERA -> validateVenera(content)
+            SourceFormat.MOONTV -> Result(
+                true,
+                "校验通过（MoonTV 采集源）",
+                SourceFormat.MOONTV,
+            )
             // 本地书不走导入校验链路（独立入口），理论上不会到这里
             SourceFormat.LOCAL -> Result(false, "本地书请在书架页导入，不走书源导入")
         }
@@ -84,6 +110,7 @@ object SourceValidator {
         // 优先按文件扩展名判断
         fileName?.lowercase()?.let {
             if (it.endsWith(".venera")) return SourceFormat.VENERA
+            if (it.endsWith(".moontv")) return SourceFormat.MOONTV
             if (it.endsWith(".txt")) {
                 // txt 内容可能是网址，或 legado 书源 JSON
                 return SourceFormat.LEGADO

@@ -101,6 +101,11 @@ class SourceManager(
             return importVenera(rawContent, fileName)
         }
 
+        // MoonTV / LunaTV 采集源（一个配置文件 = 多个视频源）
+        if (format == SourceFormat.MOONTV) {
+            return importMoonTv(rawContent)
+        }
+
         // legado 格式（单个或列表）
         if (format == SourceFormat.LEGADO) {
             return importLegado(rawContent, fileName)
@@ -146,8 +151,44 @@ class SourceManager(
         return results
     }
 
-    /** 导入 Venera 源（单个 .js 文件） */
-    private fun importVenera(code: String, fileName: String?): List<ImportedSource> {
+    /**
+     * 导入 MoonTV / LunaTV 采集源（v1.3.3.0）。
+     *
+     * 输入可以是 Base58 订阅正文（`*.txt`、`?format=2&source=xxx`），
+     * 也可以是原始配置 JSON；一个配置会展开成多个视频源。
+     * 单站点 JSON（`{api, name}`）则只注册一个源。
+     */
+    private fun importMoonTv(rawContent: String): List<ImportedSource> {
+        val sites = com.novelreader.source.moontv.MoonTvConfig.parseConfig(rawContent)
+            .ifEmpty {
+                com.novelreader.source.moontv.MoonTvConfig.siteFromRaw(rawContent)?.let { listOf(it) }
+                    ?: emptyList()
+            }
+        if (sites.isEmpty()) {
+            throw IllegalArgumentException("未解析到有效的 MoonTV 采集源")
+        }
+        lastImportSkipped = 0
+
+        return sites.map { site ->
+            val info = SourceInfo(
+                id = site.sourceId,
+                name = site.name,
+                type = SourceType.VIDEO,
+                version = "moontv",
+                author = site.detail.ifBlank { site.key },
+                desc = "",
+                baseUrl = site.api,
+                format = SourceFormat.MOONTV,
+                category = "影视",
+            )
+            val adapter = com.novelreader.source.moontv.MoonTvSourceAdapter(info, site)
+            val raw = com.novelreader.source.moontv.MoonTvConfig.siteToRaw(site)
+            registerSource(info, adapter, raw)
+            ImportedSource(info, raw)
+        }
+    }
+
+    /** 导入 Venera 源（单个 .js 文件） */    private fun importVenera(code: String, fileName: String?): List<ImportedSource> {
         val engine = veneraEngine
             ?: throw IllegalArgumentException("Venera 运行时不可用，无法导入该源")
         val info = toVeneraInfo(code, fileName)
@@ -293,6 +334,22 @@ class SourceManager(
                 val info = toVeneraInfo(rawContent, null).copy(id = oldInfo.id)
                 engine.putSource(oldInfo.id, rawContent)
                 com.novelreader.source.venera.VeneraSourceAdapter(info, rawContent, engine)
+            }
+            SourceFormat.MOONTV -> {
+                val site = com.novelreader.source.moontv.MoonTvConfig.siteFromRaw(rawContent)
+                    ?: com.novelreader.source.moontv.MoonTvConfig.parseConfig(rawContent).firstOrNull()
+                    ?: throw IllegalArgumentException("未解析到有效的 MoonTV 采集源")
+                val info = SourceInfo(
+                    id = oldInfo.id,
+                    name = site.name,
+                    type = SourceType.VIDEO,
+                    version = "moontv",
+                    author = site.detail.ifBlank { site.key },
+                    baseUrl = site.api,
+                    format = SourceFormat.MOONTV,
+                    category = oldInfo.category.ifBlank { "影视" },
+                )
+                com.novelreader.source.moontv.MoonTvSourceAdapter(info, site)
             }
             SourceFormat.LEGADO -> {
                 val pairs = LegadoBookSource.parseListWithRaw(rawContent)

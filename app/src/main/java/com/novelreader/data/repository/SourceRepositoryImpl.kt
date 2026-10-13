@@ -145,6 +145,7 @@ fun SourceEntity.toDomain(): SourceInfo = SourceInfo(
         "js" -> SourceFormat.JS
         "legado" -> SourceFormat.LEGADO
         "venera" -> SourceFormat.VENERA
+        "moontv" -> SourceFormat.MOONTV
         else -> SourceFormat.JSON
     },
     enabled = enabled,

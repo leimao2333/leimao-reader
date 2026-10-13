@@ -94,4 +94,12 @@ interface ContentRepository {
 
     /** 按发现分类拉取书籍列表 */
     suspend fun explore(sourceId: String, url: String, page: Int): List<MediaItem>
+
+    /**
+     * 取**单个源**的发现分类（v1.3.3.0 影视首页按当前源加载分类）。
+     *
+     * 与 [exploreSources] 不同：只查一个源，避免影视首页在源较多时
+     * 逐个请求全部分类导致长时间等待。
+     */
+    suspend fun exploreCategoriesOf(sourceId: String): List<com.novelreader.domain.model.ExploreCategory>
 }

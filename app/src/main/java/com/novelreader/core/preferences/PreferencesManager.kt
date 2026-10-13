@@ -13,6 +13,7 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.novelreader.domain.model.SourceType
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 /**
@@ -141,6 +142,10 @@ class PreferencesManager(private val context: Context) {
         val KEY_VIDEO_SPEED = intPreferencesKey("video_speed")
         /** 播完自动连播下一集 */
         val KEY_VIDEO_AUTO_NEXT = booleanPreferencesKey("video_auto_next")
+
+        // ----- v1.3.3.0 影视首页（MoonTV 风格）-----
+        /** 影视首页当前使用的视频源 id（记忆上次选择） */
+        val KEY_VIDEO_HOME_SOURCE = stringPreferencesKey("video_home_source")
 
         // ===== 搜索 =====
         /** 并行搜索线程数（并发搜索的源数量） */
@@ -500,6 +505,17 @@ class PreferencesManager(private val context: Context) {
     suspend fun setVideoAutoNext(value: Boolean) {
         context.dataStore.edit { it[KEY_VIDEO_AUTO_NEXT] = value }
     }
+
+    // ----- v1.3.3.0 影视首页 -----
+    /** 影视首页当前视频源 id（空 = 未选择，取第一个可用源） */
+    val videoHomeSourceFlow: Flow<String> = context.dataStore.data
+        .map { it[KEY_VIDEO_HOME_SOURCE] ?: "" }
+
+    suspend fun setVideoHomeSource(sourceId: String) {
+        context.dataStore.edit { it[KEY_VIDEO_HOME_SOURCE] = sourceId }
+    }
+
+    suspend fun getVideoHomeSource(): String = videoHomeSourceFlow.first()
 
     // ===== 搜索 =====
     val searchConcurrencyFlow: Flow<Int> = context.dataStore.data

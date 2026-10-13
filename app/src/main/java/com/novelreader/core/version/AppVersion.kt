@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.3.2.0"
+    const val CURRENT_VERSION = "1.3.3.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,19 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.3.3.0",
+            date = "2026-10-13",
+            changes = listOf(
+                "**支持 MoonTV / LunaTV 采集源**：视频源不再只认 legado 书源 —— 现在可直接粘贴 MoonTV/LunaTV 的订阅链接（`xxx.txt` 或 `?format=2&source=xxx`）或原始配置 JSON，一份配置一次展开成几十个视频源",
+                "**Base58 订阅自动解码**：这类订阅链接的正文是 **Base58 编码的 JSON**（既不是 JSON 也不是书源规则），此前导入必然报「无法识别源格式」；现在自动识别并解码，解出的 `api_site` 字典会逐条转成视频源（缺少接口地址的条目自动跳过）",
+                "**苹果 CMS（maccms10）接口适配**：新增采集源适配器，打通搜索（`ac=detail&wd=`）、详情（`ac=detail&ids=`）、选集（解析 `vod_play_from` / `vod_play_url`，多线路自动取集数最多的那条线路）与分类浏览，来源名称 / 备注 / 年份 / 评分一并带出",
+                "**影视首页（MoonTV 风格）**：视频 Tab 改为「热门 / 收藏」双视图。热门页 = 站点源选择 + 一级分类 chips + 三列海报墙（封面 + 片名 + 右上角更新备注），滚动到底自动加载下一页；当前使用的源会被记住，下次进来直接续上",
+                "**采集接口有界超时**：一份配置动辄几十个站点，新增可按请求指定超时的能力（默认仍为全局 15s/90s），采集接口统一收紧到 12 秒，避免个别失效站点把整轮搜索拖成分钟级",
+                "**修复 GitHub Release 页面的「幽灵贡献者」**：更新说明里的 legado 规则语法 `@put` / `@get` / `@js` 被 GitHub 识别成用户提及，Release 页面凭空多出 `js`、`get` 两位「贡献者」。现源码变更日志与仓库内所有 Release 正文统一用反引号包裹，不再触发提及解析",
+                "新增 19 条离线单测（MoonTvSourceTest）：Base58 已知向量与特征识别、订阅配置解析与非法条目不误收、站点 JSON 往返、单站点与自研 JSON 源的区分、导入校验、SourceManager 全链路导入与冷启动恢复（id 必须稳定）、苹果 CMS 列表 / 选集 / 分类解析与接口地址拼接",
+            ),
+        ),
         VersionEntry(
             version = "1.3.2.0",
             date = "2026-10-13",

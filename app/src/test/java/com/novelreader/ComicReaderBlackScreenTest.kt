@@ -121,6 +121,9 @@ private class FakeContentRepository(private val result: ContentResult) : Content
         type: SourceType,
     ): List<Pair<com.novelreader.domain.model.SourceInfo, List<com.novelreader.domain.model.ExploreCategory>>> = emptyList()
     override suspend fun explore(sourceId: String, url: String, page: Int): List<MediaItem> = emptyList()
+    override suspend fun exploreCategoriesOf(
+        sourceId: String,
+    ): List<com.novelreader.domain.model.ExploreCategory> = emptyList()
 }
 
 private class FakeProgressRepository : ProgressRepository {

@@ -37,4 +37,5 @@ enum class SourceFormat {
     LEGADO,    // 阅读(legado) 标准书源格式
     LOCAL,     // 本地 TXT 书（v1.2.0.0）
     VENERA,    // Venera 漫画源（`class X extends ComicSource`，WebView 运行时，v1.2.6.0）
+    MOONTV,    // MoonTV / LunaTV 采集源（苹果 CMS 接口，含 Base58 订阅配置，v1.3.3.0）
 }

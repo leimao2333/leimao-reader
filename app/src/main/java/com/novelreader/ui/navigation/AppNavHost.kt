@@ -77,6 +77,8 @@ fun AppNavHost(
                         it.progressRepository,
                         it.contentRepository,
                         it.localBookStore,
+                        it.sourceRepository,
+                        it.preferencesManager,
                     )
                 }
             )

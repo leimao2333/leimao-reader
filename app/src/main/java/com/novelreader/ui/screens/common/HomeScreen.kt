@@ -116,6 +116,11 @@ fun HomeScreen(
     val lastChapterMap by viewModel.lastChapterMap.collectAsState()
     val chapterCountMap by viewModel.chapterCountMap.collectAsState()
 
+    // 影视首页状态（v1.3.3.0，MoonTV 风格）
+    val videoHomeState by viewModel.videoHome.collectAsState()
+    // 视频 Tab 的两个视图：0=热门（影视首页），1=收藏（书架）
+    var videoSubTab by rememberSaveable { mutableIntStateOf(0) }
+
     // 书架分组（v1.3.0.0）
     val groupNames by viewModel.groupNames.collectAsState()
     val selectedGroup by viewModel.selectedGroup.collectAsState()
@@ -152,6 +157,11 @@ fun HomeScreen(
         0 -> SourceType.NOVEL
         1 -> SourceType.COMIC
         else -> SourceType.VIDEO
+    }
+
+    // 影视 Tab 首次进入 / 每次切回时刷新源列表并按需加载首屏
+    androidx.compose.runtime.LaunchedEffect(selectedTab) {
+        if (selectedTab == 2) viewModel.onVideoTabShown()
     }
 
     Scaffold(
@@ -205,8 +215,43 @@ fun HomeScreen(
 
                 Spacer(Modifier.height(8.dp))
 
+                // 视频 Tab：热门（影视首页）/ 收藏 双视图切换
+                if (selectedTab == 2) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        androidx.compose.material3.FilterChip(
+                            selected = videoSubTab == 0,
+                            onClick = { videoSubTab = 0 },
+                            label = { Text("热门") },
+                        )
+                        androidx.compose.material3.FilterChip(
+                            selected = videoSubTab == 1,
+                            onClick = { videoSubTab = 1 },
+                            label = { Text("收藏") },
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                }
+
+                val showVideoHome = selectedTab == 2 && videoSubTab == 0
+                if (showVideoHome) {
+                    // 影视首页（MoonTV 风格）：源选择 + 分类 + 海报墙（v1.3.3.0）
+                    com.novelreader.ui.screens.video.VideoHomeContent(
+                        state = videoHomeState,
+                        onSelectSource = viewModel::selectVideoSource,
+                        onSelectCategory = viewModel::selectVideoCategory,
+                        onItemClick = onOpenVideoItem,
+                        onRefresh = viewModel::refreshVideoHome,
+                        onLoadMore = viewModel::loadMoreVideo,
+                        onOpenSearch = onOpenVideoSearch,
+                    )
+                }
+
                 // 书架内容（合并后的主内容区）
-                BookshelfContent(
+                if (!showVideoHome) BookshelfContent(
                     books = books,
                     currentType = currentType,
                     progressMap = progressMap,

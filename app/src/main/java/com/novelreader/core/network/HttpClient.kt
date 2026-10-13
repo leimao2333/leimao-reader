@@ -51,8 +51,20 @@ object HttpClient {
      * @param url 目标地址
      * @param headers 额外请求头（如 Referer、Cookie）
      * @param charset 指定字符集，null 则自动检测
+     * @param timeoutMs 自定义连接/读取超时（毫秒）；null 用全局默认（15s / 90s）。
+     *        采集类接口（MoonTV / 苹果 CMS）动辄几十上百个站点，需要有界超时，
+     *        避免个别死站点把整轮搜索拖到分钟级。
+     * @param retry 是否启用自动重试；采集类请求建议传 false——
+     *        默认重试 3 次会让「站点不可达」这类确定性失败变成数倍等待，
+     *        影视首页/分类浏览会长时间空转。
      */
-    fun get(url: String, headers: Map<String, String> = emptyMap(), charset: String? = null): String {
+    fun get(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+        charset: String? = null,
+        timeoutMs: Long? = null,
+        retry: Boolean = true,
+    ): String {
         val builder = Request.Builder()
             .url(url)
             .header("User-Agent", DEFAULT_USER_AGENT)
@@ -60,7 +72,7 @@ object HttpClient {
         // 注意：不要手动设置 Accept-Encoding，让 OkHttp 透明处理 gzip 解压
         headers.forEach { (k, v) -> builder.header(k, v) }
 
-        return execute(builder.build(), charset)
+        return execute(builder.build(), charset, timeoutMs, retry)
     }
 
     /**
@@ -94,8 +106,18 @@ object HttpClient {
     }
 
     /** 统一执行请求并按字符集解码响应体 */
-    private fun execute(request: Request, charset: String?): String {
-        client.newCall(request).execute().use { response: Response ->
+    private fun execute(
+        request: Request,
+        charset: String?,
+        timeoutMs: Long? = null,
+        retry: Boolean = true,
+    ): String {
+        val call = if (timeoutMs == null) {
+            client.newCall(request)
+        } else {
+            clientWithTimeout(timeoutMs, retry).newCall(request)
+        }
+        call.execute().use { response: Response ->
             if (!response.isSuccessful) {
                 throw NetworkException("请求失败: ${response.code} ${request.url}")
             }
@@ -108,6 +130,28 @@ object HttpClient {
             return decode(bytes, charset ?: contentTypeCharset)
         }
     }
+
+    /**
+     * 带自定义超时的客户端（按「超时值 + 是否重试」缓存）。
+     *
+     * `newBuilder()` 复用同一个连接池与调度器，不会额外占用连接资源；
+     * 缓存避免为每次请求新建客户端（OkHttp 官方建议共享实例）。
+     *
+     * @param retry false 时移除 [RetryInterceptor]，让「站点不可达」快速失败
+     *        （采集类接口站点数量多，逐个重试 3 次会让整轮请求慢到不可用）。
+     */
+    private val timeoutClients = ConcurrentHashMap<String, OkHttpClient>()
+
+    private fun clientWithTimeout(timeoutMs: Long, retry: Boolean = true): OkHttpClient =
+        timeoutClients.getOrPut("$timeoutMs|$retry") {
+            client.newBuilder()
+                .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                .apply {
+                    if (!retry) interceptors().removeAll { it is RetryInterceptor }
+                }
+                .build()
+        }
 
     /**
      * 下载文件到本地，带进度回调。

@@ -241,4 +241,13 @@ class ContentRepositoryImpl(
             runCatching { adapter.explore(url, page) }.getOrDefault(emptyList())
                 .map { it.copy(sourceName = it.sourceName.ifBlank { adapter.info.name }) }
         }
+
+    override suspend fun exploreCategoriesOf(
+        sourceId: String,
+    ): List<com.novelreader.domain.model.ExploreCategory> = withContext(Dispatchers.IO) {
+        val adapter = resolveAdapter(sourceId) ?: return@withContext emptyList()
+        // 故意不吞异常：影视首页据此区分「源不可达」与「源没有分类」，
+        // 前者应立刻给出提示，而不是再白等一轮列表请求的超时。
+        adapter.exploreCategories()
+    }
 }

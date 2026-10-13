@@ -28,6 +28,10 @@ class HomeViewModel(
     private val progressRepository: ProgressRepository,
     private val contentRepository: ContentRepository,
     private val localBookStore: com.novelreader.core.local.LocalBookStore? = null,
+    /** 视频源列表（影视首页用，v1.3.3.0） */
+    private val sourceRepository: com.novelreader.domain.repository.SourceRepository? = null,
+    /** 记忆影视首页所选源 */
+    private val preferencesManager: com.novelreader.core.preferences.PreferencesManager? = null,
 ) : ViewModel() {
 
     /** 本地 TXT 导入结果提示（首页 Toast 展示） */
@@ -208,4 +212,156 @@ class HomeViewModel(
     }
 
     private fun itemKey(item: MediaItem): String = "${item.sourceId}:${item.id}"
+
+    // ===== 影视首页（v1.3.3.0，对标 MoonTV 主页）=====
+
+    /**
+     * 影视首页状态。
+     *
+     * 只服务于「视频」Tab：源选择 + 一级分类 + 海报墙（分页）。
+     */
+    data class VideoHomeState(
+        val sources: List<com.novelreader.domain.model.SourceInfo> = emptyList(),
+        val currentSourceId: String = "",
+        val categories: List<com.novelreader.domain.model.ExploreCategory> = emptyList(),
+        /** 当前分类 id（空串 = 全部） */
+        val selectedCategory: String = "",
+        val items: List<MediaItem> = emptyList(),
+        val loading: Boolean = false,
+        val loadingMore: Boolean = false,
+        val hasMore: Boolean = true,
+        val error: String? = null,
+    ) {
+        val currentSourceName: String
+            get() = sources.firstOrNull { it.id == currentSourceId }?.name.orEmpty()
+    }
+
+    private val _videoHome = MutableStateFlow(VideoHomeState())
+    val videoHome: StateFlow<VideoHomeState> = _videoHome.asStateFlow()
+
+    /** 已加载到第几页（分页游标） */
+    private var videoPage = 1
+    private var videoJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * 进入影视 Tab 时调用：刷新源列表（无网络开销），
+     * 源变化或尚无内容时自动加载首屏。幂等，可重复调用。
+     */
+    fun onVideoTabShown() {
+        viewModelScope.launch {
+            val repo = sourceRepository ?: return@launch
+            val sources = runCatching { repo.getSourcesByType(SourceType.VIDEO) }
+                .getOrDefault(emptyList())
+                .filter { it.enabled }
+            val saved = runCatching { preferencesManager?.getVideoHomeSource().orEmpty() }.getOrDefault("")
+            val state = _videoHome.value
+            val current = sources.firstOrNull { it.id == saved }?.id
+                ?: state.currentSourceId.takeIf { id -> sources.any { it.id == id } }
+                ?: sources.firstOrNull()?.id.orEmpty()
+            val sourceChanged = current != state.currentSourceId
+            _videoHome.value = state.copy(
+                sources = sources,
+                currentSourceId = current,
+                categories = if (sourceChanged) emptyList() else state.categories,
+                items = if (sourceChanged) emptyList() else state.items,
+                selectedCategory = if (sourceChanged) "" else state.selectedCategory,
+            )
+            if (sourceChanged || _videoHome.value.items.isEmpty()) {
+                loadVideoHome(reset = true)
+            }
+        }
+    }
+
+    /** 切换影视首页的源 */
+    fun selectVideoSource(sourceId: String) {
+        if (sourceId == _videoHome.value.currentSourceId) return
+        _videoHome.value = _videoHome.value.copy(
+            currentSourceId = sourceId,
+            categories = emptyList(),
+            selectedCategory = "",
+            items = emptyList(),
+        )
+        viewModelScope.launch { runCatching { preferencesManager?.setVideoHomeSource(sourceId) } }
+        loadVideoHome(reset = true)
+    }
+
+    /** 切换分类（空串 = 全部） */
+    fun selectVideoCategory(categoryId: String) {
+        if (categoryId == _videoHome.value.selectedCategory) return
+        _videoHome.value = _videoHome.value.copy(
+            selectedCategory = categoryId,
+            items = emptyList(),
+            hasMore = true,
+        )
+        loadVideoHome(reset = true)
+    }
+
+    /** 下拉刷新 */
+    fun refreshVideoHome() = loadVideoHome(reset = true)
+
+    /** 触底加载下一页 */
+    fun loadMoreVideo() {
+        val s = _videoHome.value
+        if (s.loading || s.loadingMore || !s.hasMore) return
+        loadVideoHome(reset = false)
+    }
+
+    private fun loadVideoHome(reset: Boolean) {
+        val sourceId = _videoHome.value.currentSourceId
+        if (sourceId.isBlank()) {
+            _videoHome.value = _videoHome.value.copy(
+                loading = false,
+                loadingMore = false,
+                error = "还没有可用的视频源，去「源管理 → 导入源」添加",
+            )
+            return
+        }
+        videoJob?.cancel()
+        videoJob = viewModelScope.launch {
+            if (reset) videoPage = 0
+            val nextPage = videoPage + 1
+            _videoHome.value = _videoHome.value.copy(
+                loading = reset,
+                loadingMore = !reset,
+                error = null,
+            )
+
+            // 分类只在首屏 / 换源时拉取（适配器内部有缓存）
+            var categoriesUnreachable = false
+            val categories = if (reset && _videoHome.value.categories.isEmpty()) {
+                runCatching { contentRepository.exploreCategoriesOf(sourceId) }.getOrElse {
+                    // 分类接口都打不通，说明源当前不可达；再去拉列表只会白等一轮超时
+                    categoriesUnreachable = true
+                    emptyList()
+                }
+            } else {
+                _videoHome.value.categories
+            }
+
+            if (categoriesUnreachable && reset) {
+                _videoHome.value = _videoHome.value.copy(
+                    loading = false,
+                    loadingMore = false,
+                    error = "连接不上该视频源，请检查网络或换个源试试",
+                )
+                return@launch
+            }
+
+            val category = _videoHome.value.selectedCategory
+            val items = runCatching { contentRepository.explore(sourceId, category, nextPage) }
+                .getOrDefault(emptyList())
+
+            videoPage = nextPage
+            val current = _videoHome.value
+            val merged = if (reset) items else current.items + items
+            _videoHome.value = current.copy(
+                categories = categories,
+                items = merged.distinctBy { "${it.sourceId}:${it.id}" },
+                loading = false,
+                loadingMore = false,
+                hasMore = items.isNotEmpty(),
+                error = if (reset && items.isEmpty()) "没有取到内容，可能是源暂时不可用或该分类为空" else null,
+            )
+        }
+    }
 }

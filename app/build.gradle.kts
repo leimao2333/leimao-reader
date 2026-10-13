@@ -111,6 +111,10 @@ dependencies {
     // ---- 视频播放 ----
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
+    // HLS（m3u8）流播放必需：ExoPlayer 播放 .m3u8 时通过反射加载
+    // androidx.media3.exoplayer.hls.HlsMediaSource$Factory，缺此模块会
+    // ClassNotFoundException 直接闪退（采集站视频几乎都是 HLS 流）。
+    implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
 
     // ---- DataStore 偏好设置 ----
     implementation("androidx.datastore:datastore-preferences:1.1.1")

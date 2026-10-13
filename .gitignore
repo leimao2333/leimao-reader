@@ -20,3 +20,7 @@ Thumbs.db
 
 # GitHub 认证 token（本地私密，勿提交）
 .github_token
+
+# 本地调试产物（设备数据备份 / 崩溃日志）
+backup-app-data/
+crashlogs/

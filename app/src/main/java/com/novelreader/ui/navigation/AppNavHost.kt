@@ -591,7 +591,11 @@ fun AppNavHost(
                 ?: return@composable
             val viewModel: VideoPlayerViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
-                    VideoPlayerViewModel(it.contentRepository, it.progressRepository)
+                    VideoPlayerViewModel(
+                        it.contentRepository,
+                        it.progressRepository,
+                        it.preferencesManager,
+                    )
                 }
             )
             VideoPlayerScreen(

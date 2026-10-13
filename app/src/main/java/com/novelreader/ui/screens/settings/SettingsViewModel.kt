@@ -68,6 +68,23 @@ class SettingsViewModel(
     private val _searchConcurrency = MutableStateFlow(PreferencesManager.DEFAULT_SEARCH_CONCURRENCY)
     val searchConcurrency: StateFlow<Int> = _searchConcurrency.asStateFlow()
 
+    // ===== 视频播放（v1.5.0） =====
+    /** 进入播放页默认全屏 */
+    private val _videoFullscreenDefault = MutableStateFlow(false)
+    val videoFullscreenDefault: StateFlow<Boolean> = _videoFullscreenDefault.asStateFlow()
+
+    /** 长按倍速档位（×10） */
+    private val _videoLongPressSpeed = MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_LONG_PRESS_SPEED)
+    val videoLongPressSpeed: StateFlow<Int> = _videoLongPressSpeed.asStateFlow()
+
+    /** 双击快进步长（秒） */
+    private val _videoDoubleTapSeek = MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_DOUBLE_TAP_SEEK)
+    val videoDoubleTapSeek: StateFlow<Int> = _videoDoubleTapSeek.asStateFlow()
+
+    /** 播完自动连播下一集 */
+    private val _videoAutoNext = MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_AUTO_NEXT)
+    val videoAutoNext: StateFlow<Boolean> = _videoAutoNext.asStateFlow()
+
     init {
         observePrefs()
     }
@@ -90,6 +107,18 @@ class SettingsViewModel(
         }
         viewModelScope.launch {
             preferencesManager.searchConcurrencyFlow.collect { _searchConcurrency.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.videoFullscreenDefaultFlow.collect { _videoFullscreenDefault.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.videoLongPressSpeedFlow.collect { _videoLongPressSpeed.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.videoDoubleTapSeekFlow.collect { _videoDoubleTapSeek.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.videoAutoNextFlow.collect { _videoAutoNext.value = it }
         }
     }
 
@@ -120,5 +149,22 @@ class SettingsViewModel(
 
     fun setSearchConcurrency(value: Int) {
         viewModelScope.launch { preferencesManager.setSearchConcurrency(value) }
+    }
+
+    // ===== 视频播放（v1.5.0） =====
+    fun setVideoFullscreenDefault(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setVideoFullscreenDefault(value) }
+    }
+
+    fun setVideoLongPressSpeed(value: Int) {
+        viewModelScope.launch { preferencesManager.setVideoLongPressSpeed(value) }
+    }
+
+    fun setVideoDoubleTapSeek(value: Int) {
+        viewModelScope.launch { preferencesManager.setVideoDoubleTapSeek(value) }
+    }
+
+    fun setVideoAutoNext(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setVideoAutoNext(value) }
     }
 }

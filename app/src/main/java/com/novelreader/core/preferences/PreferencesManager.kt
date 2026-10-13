@@ -130,6 +130,18 @@ class PreferencesManager(private val context: Context) {
         // ===== 视频 =====
         val KEY_VIDEO_AUTO_PLAY = booleanPreferencesKey("video_auto_play")
 
+        // ----- v1.5.0 播放器交互（全屏 / 长按快进 / 手势） -----
+        /** 进入播放页默认全屏（横屏沉浸式） */
+        val KEY_VIDEO_FULLSCREEN_DEFAULT = booleanPreferencesKey("video_fullscreen_default")
+        /** 长按倍速档位（×10 存储：15=1.5x，20=2.0x，30=3.0x） */
+        val KEY_VIDEO_LONG_PRESS_SPEED = intPreferencesKey("video_long_press_speed")
+        /** 双击快进步长（秒，5~60） */
+        val KEY_VIDEO_DOUBLE_TAP_SEEK = intPreferencesKey("video_double_tap_seek")
+        /** 常规播放倍速（×100 存储：100=1.0x），用于记忆上次倍速 */
+        val KEY_VIDEO_SPEED = intPreferencesKey("video_speed")
+        /** 播完自动连播下一集 */
+        val KEY_VIDEO_AUTO_NEXT = booleanPreferencesKey("video_auto_next")
+
         // ===== 搜索 =====
         /** 并行搜索线程数（并发搜索的源数量） */
         val KEY_SEARCH_CONCURRENCY = intPreferencesKey("search_concurrency")
@@ -169,6 +181,18 @@ class PreferencesManager(private val context: Context) {
         const val DEFAULT_FUZZY_SEARCH = true
         /** 搜索历史最大保留条数 */
         const val MAX_SEARCH_HISTORY = 20
+
+        // ----- 视频播放默认值（v1.5.0） -----
+        /** 默认不自动进全屏（跟随设置） */
+        const val DEFAULT_VIDEO_FULLSCREEN_DEFAULT = false
+        /** 默认长按倍速 3.0x */
+        const val DEFAULT_VIDEO_LONG_PRESS_SPEED = 30
+        /** 默认双击快进步长 10 秒 */
+        const val DEFAULT_VIDEO_DOUBLE_TAP_SEEK = 10
+        /** 默认常规倍速 1.0x */
+        const val DEFAULT_VIDEO_SPEED = 100
+        /** 默认播完连播下一集 */
+        const val DEFAULT_VIDEO_AUTO_NEXT = false
         /** 搜索历史分隔符（历史记录用单个字符串存储，分隔符分隔） */
         private const val HISTORY_SEPARATOR = "\u001F"
     }
@@ -434,6 +458,47 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setVideoAutoPlay(value: Boolean) {
         context.dataStore.edit { it[KEY_VIDEO_AUTO_PLAY] = value }
+    }
+
+    // ----- v1.5.0 播放器交互 -----
+    /** 进入播放页默认全屏 */
+    val videoFullscreenDefaultFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_VIDEO_FULLSCREEN_DEFAULT] ?: DEFAULT_VIDEO_FULLSCREEN_DEFAULT }
+
+    suspend fun setVideoFullscreenDefault(value: Boolean) {
+        context.dataStore.edit { it[KEY_VIDEO_FULLSCREEN_DEFAULT] = value }
+    }
+
+    /** 长按倍速档位（×10） */
+    val videoLongPressSpeedFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_VIDEO_LONG_PRESS_SPEED] ?: DEFAULT_VIDEO_LONG_PRESS_SPEED }
+
+    suspend fun setVideoLongPressSpeed(value: Int) {
+        context.dataStore.edit { it[KEY_VIDEO_LONG_PRESS_SPEED] = value.coerceIn(10, 50) }
+    }
+
+    /** 双击快进步长（秒） */
+    val videoDoubleTapSeekFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_VIDEO_DOUBLE_TAP_SEEK] ?: DEFAULT_VIDEO_DOUBLE_TAP_SEEK }
+
+    suspend fun setVideoDoubleTapSeek(value: Int) {
+        context.dataStore.edit { it[KEY_VIDEO_DOUBLE_TAP_SEEK] = value.coerceIn(5, 60) }
+    }
+
+    /** 常规播放倍速（×100） */
+    val videoSpeedFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_VIDEO_SPEED] ?: DEFAULT_VIDEO_SPEED }
+
+    suspend fun setVideoSpeed(value: Int) {
+        context.dataStore.edit { it[KEY_VIDEO_SPEED] = value.coerceIn(25, 500) }
+    }
+
+    /** 播完连播下一集 */
+    val videoAutoNextFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_VIDEO_AUTO_NEXT] ?: DEFAULT_VIDEO_AUTO_NEXT }
+
+    suspend fun setVideoAutoNext(value: Boolean) {
+        context.dataStore.edit { it[KEY_VIDEO_AUTO_NEXT] = value }
     }
 
     // ===== 搜索 =====

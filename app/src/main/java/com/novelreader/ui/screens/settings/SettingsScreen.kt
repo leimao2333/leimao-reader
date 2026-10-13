@@ -83,6 +83,10 @@ fun SettingsScreen(
     val novelBgIndex by viewModel.novelBgIndex.collectAsState()
     val comicPageMode by viewModel.comicPageMode.collectAsState()
     val searchConcurrency by viewModel.searchConcurrency.collectAsState()
+    val videoFullscreenDefault by viewModel.videoFullscreenDefault.collectAsState()
+    val videoLongPressSpeed by viewModel.videoLongPressSpeed.collectAsState()
+    val videoDoubleTapSeek by viewModel.videoDoubleTapSeek.collectAsState()
+    val videoAutoNext by viewModel.videoAutoNext.collectAsState()
 
     Scaffold(
         snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
@@ -199,6 +203,59 @@ fun SettingsScreen(
                 valueRange = 1f..16f,
                 steps = 15,
             )
+
+            Spacer(Modifier.height(24.dp))
+
+            // ===== 视频播放（v1.5.0） =====
+            SectionTitle("视频播放")
+            SettingRow(
+                title = "进入即全屏",
+                subtitle = "打开视频时直接横屏沉浸式播放",
+            ) {
+                Switch(
+                    checked = videoFullscreenDefault,
+                    onCheckedChange = { viewModel.setVideoFullscreenDefault(it) },
+                )
+            }
+            SettingRow(
+                title = "长按倍速",
+                subtitle = "长按右半屏以该倍速快进，左半屏连续快退（松手恢复）",
+            ) {
+                Row {
+                    listOf(15 to "1.5x", 20 to "2.0x", 30 to "3.0x").forEach { (value, label) ->
+                        PageModeChip(
+                            label = label,
+                            selected = videoLongPressSpeed == value,
+                            onClick = { viewModel.setVideoLongPressSpeed(value) },
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                }
+            }
+            SettingRow(
+                title = "双击快进步长",
+                subtitle = "双击左 / 右半屏快退 / 快进的秒数",
+            ) {
+                Row {
+                    listOf(5, 10, 15, 30).forEach { sec ->
+                        PageModeChip(
+                            label = "${sec}s",
+                            selected = videoDoubleTapSeek == sec,
+                            onClick = { viewModel.setVideoDoubleTapSeek(sec) },
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                }
+            }
+            SettingRow(
+                title = "播完连播下一集",
+                subtitle = "本集播放结束后自动播放下一集",
+            ) {
+                Switch(
+                    checked = videoAutoNext,
+                    onCheckedChange = { viewModel.setVideoAutoNext(it) },
+                )
+            }
 
             Spacer(Modifier.height(24.dp))
 

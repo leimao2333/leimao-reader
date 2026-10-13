@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.3.8.1"
+    const val CURRENT_VERSION = "1.3.8.2"
 
     /**
      * 更新日志。
@@ -25,6 +25,13 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.3.8.2",
+            date = "2026-10-13",
+            changes = listOf(
+                "**修复播放视频闪退**：崩溃日志显示播放 .m3u8 时抛出 `ClassNotFoundException: HlsMediaSource\$Factory` —— ExoPlayer 播放 HLS 流时通过反射加载 HLS 源工厂，但此前只引入了 `media3-exoplayer` 与 `media3-ui`，**漏掉了 `media3-exoplayer-hls` 模块**，导致播放 HLS 视频必然闪退。现已补上该依赖，播放视频恢复正常",
+            ),
+        ),
         VersionEntry(
             version = "1.3.8.1",
             date = "2026-10-13",

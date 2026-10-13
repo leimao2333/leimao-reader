@@ -199,7 +199,9 @@ private fun VideoSectionsContent(
                     }
                 }
 
-                items(state.rows, key = { it.categoryId }) { row ->
+                // key 用「分类id+标题」保证唯一：聚合模式下多个源的分类 url 可能重复
+                // （如空 url / 相同分类地址），此前只用 categoryId 会撞 key 导致闪退
+                items(state.rows, key = { "${it.categoryId}::${it.title}" }) { row ->
                     Column {
                         SectionHeader(
                             title = row.title,
@@ -364,7 +366,8 @@ private fun VideoGridContent(
                         label = { Text("全部") },
                     )
                 }
-                items(state.categories, key = { it.url }) { category ->
+                // key 加标题防撞：聚合模式下不同分类可能共享同一 url（如数字 id 相同）
+                items(state.categories, key = { "${it.url}::${it.title}" }) { category ->
                     FilterChip(
                         selected = state.selectedCategory == category.url,
                         onClick = { onSelectCategory(category.url) },

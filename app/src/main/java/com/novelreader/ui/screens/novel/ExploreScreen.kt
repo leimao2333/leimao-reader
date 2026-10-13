@@ -5,29 +5,27 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -36,134 +34,161 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novelreader.domain.model.ExploreCategory
 import com.novelreader.domain.model.MediaItem
-import com.novelreader.domain.model.SourceInfo
 import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.ui.components.MediaItemCard
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * 发现页 ViewModel（v1.2.3.0 对标 legado 发现）。
+ * 发现页 ViewModel（v1.3.11.0 聚合式发现）。
  *
- * 数据流：已启用源中筛出配置了 exploreUrl 的源 → 选源 → 选分类 →
- * 按分类地址拉取列表（{{page}} 分页，「加载更多」追加）。
+ * 对标影视首页的聚合式源：不再让用户手动挑单个源（书源失效比例高），
+ * 而是自动探测所有存活源 → 合并分类（同名去重）→ 每个分类跨源聚合内容去重。
+ * 顶部额外加一个「推荐」区（聚合各源带「推荐/热门/排行」语义的分类）。
+ *
+ * 小说 / 漫画通过 [type] 天然隔离：`exploreSources(type)` 只返回该类型的源，
+ * 两个发现页的源与内容互不重合。
  */
 class ExploreViewModel(
     private val contentRepository: ContentRepository,
     private val type: SourceType,
 ) : ViewModel() {
 
-    /** 源 + 其发现分类 */
-    data class SourceEntry(val info: SourceInfo, val categories: List<ExploreCategory>)
+    /** 合并去重后的分类（跨源同名合并，保序） */
+    private val _categories = MutableStateFlow<List<ExploreCategory>>(emptyList())
+    val categories: StateFlow<List<ExploreCategory>> = _categories.asStateFlow()
 
-    private val _sources = MutableStateFlow<List<SourceEntry>>(emptyList())
-    val sources: StateFlow<List<SourceEntry>> = _sources.asStateFlow()
+    /** 存活源数量（顶栏展示「聚合 N 个源」） */
+    private val _aliveCount = MutableStateFlow(0)
+    val aliveCount: StateFlow<Int> = _aliveCount.asStateFlow()
 
-    private val _selectedSource = MutableStateFlow<SourceEntry?>(null)
-    val selectedSource: StateFlow<SourceEntry?> = _selectedSource.asStateFlow()
-
+    /** 当前选中的分类（null = 推荐区） */
     private val _selectedCategory = MutableStateFlow<ExploreCategory?>(null)
     val selectedCategory: StateFlow<ExploreCategory?> = _selectedCategory.asStateFlow()
 
+    /** 推荐区内容（跨源聚合） */
+    private val _recommended = MutableStateFlow<List<MediaItem>>(emptyList())
+    val recommended: StateFlow<List<MediaItem>> = _recommended.asStateFlow()
+
+    /** 选中分类的聚合内容 */
     private val _results = MutableStateFlow<List<MediaItem>>(emptyList())
     val results: StateFlow<List<MediaItem>> = _results.asStateFlow()
 
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
-    private val _loadingMore = MutableStateFlow(false)
-    val loadingMore: StateFlow<Boolean> = _loadingMore.asStateFlow()
-
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
-    private var page = 1
-    private var canLoadMore = true
     private var loadJob: kotlinx.coroutines.Job? = null
+
+    /** 会话内缓存：分类名 → 各（源id, 该源该分类的 url） */
+    private var catPlan: Map<String, List<Pair<String, String>>>? = null
 
     init {
         refresh()
     }
 
-    /** 重新枚举有发现分类的源；默认选中第一个源的第一个分类 */
+    /** 重新探测存活源 + 合并分类 + 加载推荐区 */
     fun refresh() {
-        viewModelScope.launch {
-            _loading.value = true
-            val entries = runCatching { contentRepository.exploreSources(type) }
-                .getOrDefault(emptyList())
-                .map { SourceEntry(it.first, it.second) }
-            _sources.value = entries
-            _loading.value = false
-            if (entries.isNotEmpty()) {
-                selectSource(entries.first())
-            } else {
-                _selectedSource.value = null
-                _selectedCategory.value = null
-                _results.value = emptyList()
-            }
-        }
-    }
-
-    fun selectSource(entry: SourceEntry) {
-        _selectedSource.value = entry
-        entry.categories.firstOrNull()?.let { selectCategory(it) }
-            ?: run {
-                _selectedCategory.value = null
-                _results.value = emptyList()
-            }
-    }
-
-    fun selectCategory(category: ExploreCategory) {
-        _selectedCategory.value = category
-        page = 1
-        canLoadMore = true
+        catPlan = null
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
             _loading.value = true
             _error.value = null
-            val src = _selectedSource.value
-            val list = if (src == null) emptyList() else runCatching {
-                contentRepository.explore(src.info.id, category.url, 1)
-            }.onFailure { _error.value = it.message ?: "加载失败" }
+
+            // 1) 探测存活源（有发现分类且能拉到内容）
+            val allSources = runCatching { contentRepository.exploreSources(type) }
                 .getOrDefault(emptyList())
-            _results.value = list
-            canLoadMore = list.isNotEmpty()
+            if (allSources.isEmpty()) {
+                _loading.value = false
+                _aliveCount.value = 0
+                _categories.value = emptyList()
+                _recommended.value = emptyList()
+                _results.value = emptyList()
+                return@launch
+            }
+
+            // 2) 合并分类（同名去重，但每个源保留自己的分类 url）
+            // 结构：分类名 → 各（源id, 该源该分类的 url）
+            val plan = LinkedHashMap<String, MutableList<Pair<String, String>>>()
+            for ((src, cats) in allSources) {
+                for (cat in cats) {
+                    if (cat.title.isBlank()) continue
+                    plan.getOrPut(cat.title) { mutableListOf() }.add(src.id to cat.url)
+                }
+            }
+            catPlan = plan
+            _categories.value = plan.map { (title, entries) ->
+                ExploreCategory(title, entries.firstOrNull()?.second.orEmpty())
+            }
+            _aliveCount.value = allSources.size
+
+            // 3) 加载推荐区：聚合各源「推荐/热门/排行」语义分类
+            val recommendCats = plan.filterKeys { it.isRecommendLike() }
+            _recommended.value = if (recommendCats.isNotEmpty()) {
+                aggregate(recommendCats.keys.toList())
+            } else {
+                // 没有推荐类分类时，用第一个分类兜底
+                plan.keys.firstOrNull()?.let { aggregate(listOf(it)) } ?: emptyList()
+            }
+
+            // 4) 默认选中第一个分类（或推荐区为空时选第一个）
+            _selectedCategory.value = _categories.value.firstOrNull()
+            _selectedCategory.value?.let { loadCategory(it) }
+
             _loading.value = false
         }
     }
 
-    /** 加载下一页（追加，按 detailUrl 去重） */
-    fun loadMore() {
-        val src = _selectedSource.value ?: return
-        val category = _selectedCategory.value ?: return
-        if (_loading.value || _loadingMore.value || !canLoadMore) return
-        _loadingMore.value = true
-        viewModelScope.launch {
-            val next = page + 1
-            val list = runCatching {
-                contentRepository.explore(src.info.id, category.url, next)
-            }.getOrDefault(emptyList())
-            if (list.isEmpty()) {
-                canLoadMore = false
-            } else {
-                page = next
-                val seen = _results.value.mapTo(HashSet()) { it.detailUrl.ifBlank { it.id + it.title } }
-                _results.value = _results.value + list.filter {
-                    seen.add(it.detailUrl.ifBlank { it.id + it.title })
-                }
-            }
-            _loadingMore.value = false
+    /** 选中分类（传 null 回推荐区） */
+    fun selectCategory(category: ExploreCategory?) {
+        if (category == _selectedCategory.value) return
+        _selectedCategory.value = category
+        if (category != null) loadCategory(category)
+    }
+
+    private fun loadCategory(category: ExploreCategory) {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
+            _loading.value = true
+            _results.value = aggregate(listOf(category.title))
+            _loading.value = false
         }
+    }
+
+    /** 跨源聚合某分类名的内容（去重） */
+    private suspend fun aggregate(categoryTitles: List<String>): List<MediaItem> {
+        val plan = catPlan ?: return emptyList()
+        val entries = categoryTitles.flatMap { plan[it].orEmpty() }
+        if (entries.isEmpty()) return emptyList()
+        val merged = coroutineScope {
+            entries.map { (srcId, url) -> async {
+                runCatching { contentRepository.explore(srcId, url, 1) }
+                    .getOrDefault(emptyList())
+            } }.awaitAll().flatten()
+        }
+        val seen = LinkedHashSet<String>()
+        return merged.filter { seen.add("${it.sourceId}:${it.id}") }
     }
 }
 
+/** 判断分类名是否带「推荐/热门/排行」语义 */
+private fun String.isRecommendLike(): Boolean =
+    contains("推荐") || contains("热门") || contains("排行") || contains("精选") ||
+        contains("榜单") || contains("人气")
+
 /**
- * 发现页（v1.2.3.0 对标 legado）。
+ * 发现页（v1.3.11.0 聚合式）。
  *
- * 顶部：返回 + 源选择 + 分类选择；下方结果列表（复用 MediaItemCard）+ 加载更多。
+ * 顶部：返回 + 标题 + 「聚合 N 个源」+ 刷新；
+ * 下方：分类 chips（首个为「推荐」），内容区按选中分类展示聚合结果。
  */
 @Composable
 fun ExploreScreen(
@@ -172,20 +197,15 @@ fun ExploreScreen(
     onItemClick: (MediaItem) -> Unit,
     onBack: () -> Unit,
 ) {
-    val sources by viewModel.sources.collectAsState()
-    val selectedSource by viewModel.selectedSource.collectAsState()
+    val categories by viewModel.categories.collectAsState()
     val selectedCategory by viewModel.selectedCategory.collectAsState()
+    val recommended by viewModel.recommended.collectAsState()
     val results by viewModel.results.collectAsState()
+    val aliveCount by viewModel.aliveCount.collectAsState()
     val loading by viewModel.loading.collectAsState()
-    val loadingMore by viewModel.loadingMore.collectAsState()
     val error by viewModel.error.collectAsState()
 
-    var sourceMenuOpen by remember { mutableStateOf(false) }
-    var categoryMenuOpen by remember { mutableStateOf(false) }
-
     Column(modifier = Modifier.fillMaxSize()) {
-        // 顶部两行：第一行 返回 + 标题；第二行 源/分类两个下拉各占一半。
-        // 此前四个控件挤一行，源名(120.dp)+分类(110.dp)固定宽度在窄屏上溢出重合。
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -198,114 +218,74 @@ fun ExploreScreen(
             Text(
                 text = title,
                 style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f),
             )
+            if (aliveCount > 0) {
+                Text(
+                    text = "聚合 $aliveCount 个源",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            IconButton(onClick = viewModel::refresh) {
+                Icon(Icons.Filled.Refresh, contentDescription = "刷新")
+            }
         }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // 源选择（占一半宽，超长省略）
-            Box(modifier = Modifier.weight(1f)) {
-                TextButton(onClick = { sourceMenuOpen = true }) {
-                    Text(
-                        text = selectedSource?.info?.name ?: "选择书源",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    Icon(Icons.Filled.ExpandMore, contentDescription = null)
-                }
-                DropdownMenu(expanded = sourceMenuOpen, onDismissRequest = { sourceMenuOpen = false }) {
-                    if (sources.isEmpty()) {
-                        DropdownMenuItem(text = { Text("没有支持发现的源") }, onClick = {})
-                    }
-                    sources.forEach { entry ->
-                        DropdownMenuItem(
-                            text = { Text(entry.info.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            onClick = {
-                                sourceMenuOpen = false
-                                viewModel.selectSource(entry)
-                            },
-                        )
-                    }
-                }
-            }
 
-            // 分类选择（占一半宽，超长省略）
-            Box(modifier = Modifier.weight(1f)) {
-                TextButton(
-                    enabled = selectedSource != null,
-                    onClick = { categoryMenuOpen = true },
-                ) {
-                    Text(
-                        text = selectedCategory?.title ?: "分类",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
+        // 分类 chips：首个「推荐」，其余为合并分类
+        if (categories.isNotEmpty()) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 12.dp),
+            ) {
+                item {
+                    FilterChip(
+                        selected = selectedCategory == null,
+                        onClick = { viewModel.selectCategory(null) },
+                        label = { Text("推荐") },
                     )
-                    Icon(Icons.Filled.ExpandMore, contentDescription = null)
                 }
-                DropdownMenu(expanded = categoryMenuOpen, onDismissRequest = { categoryMenuOpen = false }) {
-                    selectedSource?.categories?.forEach { cat ->
-                        DropdownMenuItem(
-                            text = { Text(cat.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            onClick = {
-                                categoryMenuOpen = false
-                                viewModel.selectCategory(cat)
-                            },
-                        )
-                    }
+                items(categories, key = { it.title }) { cat ->
+                    FilterChip(
+                        selected = selectedCategory?.title == cat.title,
+                        onClick = { viewModel.selectCategory(cat) },
+                        label = { Text(cat.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    )
                 }
             }
+            Spacer(Modifier.height(8.dp))
         }
 
         when {
             loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
-            sources.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    text = "当前类型的书源没有配置发现地址\n（源 JSON 需包含 exploreUrl / ruleExplore）",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            error != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(text = error ?: "", color = MaterialTheme.colorScheme.error)
-            }
-            results.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    text = "该分类暂无内容",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            else -> LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(vertical = 8.dp),
-            ) {
-                items(results, key = { it.detailUrl.ifBlank { it.id + it.title } }) { item ->
-                    MediaItemCard(
-                        item = item,
-                        onClick = { onItemClick(item) },
-                        onRead = { onItemClick(item) },
+            error != null && results.isEmpty() && recommended.isEmpty() ->
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(text = error ?: "", color = MaterialTheme.colorScheme.error)
+                }
+            categories.isEmpty() && recommended.isEmpty() ->
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        text = "当前类型的书源没有配置发现地址\n（源 JSON 需包含 exploreUrl / ruleExplore）",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { viewModel.loadMore() }
-                            .padding(vertical = 14.dp),
-                        contentAlignment = Alignment.Center,
+            else -> {
+                val display = if (selectedCategory == null) recommended else results
+                if (display.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("该分类暂无内容", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(vertical = 8.dp),
                     ) {
-                        if (loadingMore) {
-                            CircularProgressIndicator(modifier = Modifier.padding(4.dp))
-                        } else {
-                            Text(
-                                text = "加载更多",
-                                color = MaterialTheme.colorScheme.primary,
-                                style = MaterialTheme.typography.bodyMedium,
+                        items(display, key = { "${it.sourceId}:${it.id}" }) { item ->
+                            MediaItemCard(
+                                item = item,
+                                onClick = { onItemClick(item) },
+                                onRead = { onItemClick(item) },
                             )
                         }
                     }

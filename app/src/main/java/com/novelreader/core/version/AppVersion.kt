@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.3.10.0"
+    const val CURRENT_VERSION = "1.3.11.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,16 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.3.11.0",
+            date = "2026-10-13",
+            changes = listOf(
+                "**修复视频首页划到底闪退**：崩溃日志显示 `Key \"24\" was already used` —— 聚合模式下多个源的分类可能共享同一地址（数字 id 撞车），分区与分类 chips 的 LazyColumn/LazyRow key 直接用它导致重复。现 key 统一改为「地址::标题」组合，真机连划到底验证不再闪退",
+                "**小说 / 漫画发现页聚合式源**：发现页不再手动挑单个源（书源失效比例高），改为自动聚合所有存活源 → 合并分类（同名去重）→ 每个分类跨源聚合内容去重；顶部新增「**推荐**」区（聚合各源带「推荐/热门/排行/精选」语义的分类）。小说与漫画按类型天然隔离，两个发现页的源与内容互不重合",
+                "**移除视频发现入口**：视频 Tab 的「发现」与首页聚合浏览作用完全重合，直接移除（顶栏少一个图标）；小说 / 漫画的发现保留",
+                "**播放加载与缓冲提示增强**：初次加载显示「正在加载…」+ 转圈；播放中缓冲时中央显示转圈 + 「缓冲中 N%」（按已缓冲 / 总时长计算），底部操作栏同步提示，卡顿时不再黑屏无反馈",
+            ),
+        ),
         VersionEntry(
             version = "1.3.10.0",
             date = "2026-10-13",

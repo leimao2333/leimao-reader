@@ -383,10 +383,45 @@ fun VideoPlayerScreen(
 
             // ===== 初次加载 / 错误 =====
             if (loading) {
-                CircularProgressIndicator(
+                Column(
                     modifier = Modifier.align(Alignment.Center),
-                    color = Color.White,
-                )
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    CircularProgressIndicator(color = Color.White)
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = "正在加载…",
+                        color = Color.White.copy(alpha = 0.85f),
+                        fontSize = 13.sp,
+                    )
+                }
+            }
+
+            // ===== 缓冲中（播放中卡顿 / 切集后加载）=====
+            if (!loading && playback.isBuffering) {
+                Column(
+                    modifier = Modifier.align(Alignment.Center),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(34.dp),
+                        color = Color.White,
+                        strokeWidth = 3.dp,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    // 缓冲进度：已缓冲 / 总时长
+                    val buffered = playback.bufferedMs
+                    val duration = playback.durationMs
+                    Text(
+                        text = if (duration > 0 && buffered > 0) {
+                            "缓冲中 ${(buffered * 100 / duration).coerceIn(0, 100)}%"
+                        } else {
+                            "缓冲中…"
+                        },
+                        color = Color.White.copy(alpha = 0.85f),
+                        fontSize = 12.sp,
+                    )
+                }
             }
             error?.let { msg ->
                 Column(

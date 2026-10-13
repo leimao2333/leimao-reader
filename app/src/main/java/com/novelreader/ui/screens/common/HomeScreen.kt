@@ -174,8 +174,12 @@ fun HomeScreen(
             TopAppBar(
                 title = { Text(tabs[selectedTab].label) },
                 actions = {
-                    IconButton(onClick = { onOpenExplore(currentType) }) {
-                        Icon(Icons.Filled.Explore, contentDescription = "发现")
+                    // 发现入口：视频 tab 的发现与首页作用重合（都是聚合浏览），
+                    // 仅小说 / 漫画保留发现入口（v1.3.11.0）
+                    if (currentType != SourceType.VIDEO) {
+                        IconButton(onClick = { onOpenExplore(currentType) }) {
+                            Icon(Icons.Filled.Explore, contentDescription = "发现")
+                        }
                     }
                     IconButton(onClick = onOpenRss) {
                         Icon(Icons.Filled.RssFeed, contentDescription = "订阅")

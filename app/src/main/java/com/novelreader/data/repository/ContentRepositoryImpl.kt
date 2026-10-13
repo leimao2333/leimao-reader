@@ -236,9 +236,17 @@ class ContentRepositoryImpl(
         }
 
     override suspend fun explore(sourceId: String, url: String, page: Int): List<MediaItem> =
+        exploreFiltered(sourceId, url, page, emptyMap())
+
+    override suspend fun exploreFiltered(
+        sourceId: String,
+        url: String,
+        page: Int,
+        filters: Map<String, String>,
+    ): List<MediaItem> =
         withContext(Dispatchers.IO) {
             val adapter = resolveAdapter(sourceId) ?: return@withContext emptyList()
-            runCatching { adapter.explore(url, page) }.getOrDefault(emptyList())
+            runCatching { adapter.exploreFilter(url, page, filters) }.getOrDefault(emptyList())
                 .map { it.copy(sourceName = it.sourceName.ifBlank { adapter.info.name }) }
         }
 

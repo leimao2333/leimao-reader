@@ -131,10 +131,30 @@ class MoonTvSourceAdapter(
         return list
     }
 
-    override suspend fun explore(url: String, page: Int): List<MediaItem> {
+    override suspend fun explore(url: String, page: Int): List<MediaItem> =
+        exploreFilter(url, page, emptyMap())
+
+    /**
+     * 分类浏览（支持片库筛选）。
+     *
+     * 苹果 CMS 的 `ac=detail` 筛选参数：
+     * - `t`     分类 id（空串 = 全部）
+     * - `area`  地区（如「大陆」「美国」）
+     * - `year`  年份（如「2024」）
+     * - `order` 排序（`time` 最新 / `hits` 最热 / `score` 评分）
+     *
+     * 值为空的参数不提交（等价于「不限」）；源不支持某个参数时通常只是忽略它，
+     * 不会报错，所以这里不需要为「源不支持筛选」做额外降级。
+     */
+    override suspend fun exploreFilter(
+        url: String,
+        page: Int,
+        filters: Map<String, String>,
+    ): List<MediaItem> {
         val params = buildList {
             add("ac" to "detail")
             if (url.isNotBlank()) add("t" to url)
+            filters.forEach { (key, value) -> if (value.isNotBlank()) add(key to value) }
             add("pg" to page.toString())
         }
         val json = runCatching { request(params) }.getOrNull() ?: return emptyList()

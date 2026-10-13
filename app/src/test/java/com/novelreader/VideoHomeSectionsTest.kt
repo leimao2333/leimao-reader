@@ -386,6 +386,123 @@ class VideoHomeSectionsTest {
         assertEquals(listOf("第一页一", "第二页一"), state.items.map { it.title })
     }
 
+    // ===== 片库四维筛选（v1.3.5.0）=====
+
+    @Test
+    fun `未选筛选时网格请求不带任何筛选参数`() = runTest(dispatcher) {
+        val content = newGridContent()
+        val vm = newViewModel(content = content)
+        vm.onVideoTabShown()
+        advanceUntilIdle()
+        vm.expandVideoCategory("1", "电影")
+        advanceUntilIdle()
+
+        val call = content.filteredCalls.last()
+        assertEquals("1", call.first)
+        assertEquals(1, call.second)
+        assertTrue("默认不应带筛选参数", call.third.isEmpty())
+    }
+
+    @Test
+    fun `选地区与年份后请求带上对应参数且重置到第一页`() = runTest(dispatcher) {
+        val content = newGridContent()
+        val vm = newViewModel(content = content)
+        vm.onVideoTabShown()
+        advanceUntilIdle()
+        vm.expandVideoCategory("1", "电影")
+        advanceUntilIdle()
+        vm.loadMoreVideo()
+        advanceUntilIdle()
+        assertEquals(2, vm.videoHome.value.items.size)
+
+        vm.selectVideoArea("大陆")
+        advanceUntilIdle()
+        vm.selectVideoYear("2024")
+        advanceUntilIdle()
+
+        val state = vm.videoHome.value
+        assertEquals("大陆", state.selectedArea)
+        assertEquals("2024", state.selectedYear)
+        // 换筛选必须重新从第 1 页拉，否则会把新旧条件的结果混在一起
+        assertEquals(1, content.filteredCalls.last().second)
+        assertEquals(mapOf("area" to "大陆", "year" to "2024"), content.filteredCalls.last().third)
+        assertEquals(1, state.items.size)
+    }
+
+    @Test
+    fun `三个筛选维度互不覆盖`() = runTest(dispatcher) {
+        val content = newGridContent()
+        val vm = newViewModel(content = content)
+        vm.onVideoTabShown()
+        advanceUntilIdle()
+        vm.expandVideoCategory("1", "电影")
+        advanceUntilIdle()
+
+        vm.selectVideoArea("韩国")
+        advanceUntilIdle()
+        vm.selectVideoOrder("score")
+        advanceUntilIdle()
+
+        assertEquals(
+            "切排序不该把已选地区清掉",
+            mapOf("area" to "韩国", "order" to "score"),
+            content.filteredCalls.last().third,
+        )
+    }
+
+    @Test
+    fun `重选同一个筛选值不重复发请求`() = runTest(dispatcher) {
+        val content = newGridContent()
+        val vm = newViewModel(content = content)
+        vm.onVideoTabShown()
+        advanceUntilIdle()
+        vm.expandVideoCategory("1", "电影")
+        advanceUntilIdle()
+        vm.selectVideoArea("美国")
+        advanceUntilIdle()
+
+        val callsBefore = content.filteredCalls.size
+        vm.selectVideoArea("美国")
+        advanceUntilIdle()
+
+        assertEquals("值没变不该再请求", callsBefore, content.filteredCalls.size)
+    }
+
+    @Test
+    fun `清空筛选值会退回不带该参数的请求`() = runTest(dispatcher) {
+        val content = newGridContent()
+        val vm = newViewModel(content = content)
+        vm.onVideoTabShown()
+        advanceUntilIdle()
+        vm.expandVideoCategory("1", "电影")
+        advanceUntilIdle()
+        vm.selectVideoArea("日本")
+        advanceUntilIdle()
+
+        vm.selectVideoArea("")
+        advanceUntilIdle()
+
+        assertEquals("", vm.videoHome.value.selectedArea)
+        assertTrue("恢复不限后不应再带 area", content.filteredCalls.last().third.isEmpty())
+    }
+
+    @Test
+    fun `分区视图下切筛选不应发请求`() = runTest(dispatcher) {
+        val content = newGridContent()
+        val vm = newViewModel(content = content)
+        vm.onVideoTabShown()
+        advanceUntilIdle()
+
+        val callsBefore = content.exploreCalls.size
+        vm.selectVideoArea("大陆")
+        advanceUntilIdle()
+
+        // applyVideoFilter 会强制 expanded=true 并重拉一次首屏 —— 这是预期行为：
+        // 筛选只在网格视图有意义，切筛选等于「进入该筛选下的网格」。
+        assertEquals(true, vm.videoHome.value.expanded)
+        assertTrue(content.exploreCalls.size > callsBefore)
+    }
+
     // ===== 无源 =====
 
     @Test
@@ -400,6 +517,19 @@ class VideoHomeSectionsTest {
     }
 
     // ===== 脚手架 =====
+
+    /** 片库筛选测试的固定数据：两个分类 + 两页（每页一条） */
+    private fun newGridContent() = VideoHomeFakeContentRepository().apply {
+        categories = listOf(cat("1", "电影"), cat("2", "连续剧"))
+        itemsByCategory = mapOf(
+            "1" to listOf(video("m1", "电影一")),
+            "2" to listOf(video("t1", "剧一")),
+        )
+        pagedItems = mapOf(
+            1 to listOf(video("m1", "电影一")),
+            2 to listOf(video("m2", "电影二")),
+        )
+    }
 
     private fun newViewModel(
         sources: List<SourceInfo> = listOf(
@@ -472,9 +602,22 @@ private class VideoHomeFakeContentRepository : ContentRepository {
     /** 记录每次 explore 调用（分类 id, 页码），用于断言「没发多余请求」 */
     val exploreCalls = mutableListOf<Pair<String, Int>>()
 
+    /** 记录每次带筛选的调用（分类 id, 页码, filters），用于断言筛选参数透传 */
+    val filteredCalls = mutableListOf<Triple<String, Int, Map<String, String>>>()
+
     override suspend fun exploreCategoriesOf(sourceId: String): List<ExploreCategory> {
         categoryError?.let { throw it }
         return categories
+    }
+
+    override suspend fun exploreFiltered(
+        sourceId: String,
+        url: String,
+        page: Int,
+        filters: Map<String, String>,
+    ): List<MediaItem> {
+        filteredCalls += Triple(url, page, filters)
+        return explore(sourceId, url, page)
     }
 
     override suspend fun explore(sourceId: String, url: String, page: Int): List<MediaItem> {

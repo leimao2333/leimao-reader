@@ -53,6 +53,19 @@ interface SourceAdapter {
      * @param url 分类地址（可能含 {{page}} 等占位符）
      */
     suspend fun explore(url: String, page: Int = 1): List<MediaItem> = emptyList()
+
+    /**
+     * 带筛选的发现（v1.3.5.0 片库四维筛选）。
+     *
+     * 默认**忽略** [filters] 直接走 [explore]；支持筛选的源自行覆写
+     * （如苹果 CMS 的 `area` / `year` / `order` 参数）。
+     * [filters] 里值为空串的项一律不提交，等价于「不限」。
+     */
+    suspend fun exploreFilter(
+        url: String,
+        page: Int = 1,
+        filters: Map<String, String> = emptyMap(),
+    ): List<MediaItem> = explore(url, page)
 }
 
 /**

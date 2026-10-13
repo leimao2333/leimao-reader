@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.3.4.0"
+    const val CURRENT_VERSION = "1.3.5.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,16 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.3.5.0",
+            date = "2026-10-13",
+            changes = listOf(
+                "**片库四维筛选**：影视分类页新增 **地区 / 年份 / 排序** 三个下拉，与原有的**分类** chips 组成完整的四维筛选。筛选值会翻译成苹果 CMS 的 `area` / `year` / `order` 参数随请求下发，各维度**互不覆盖**（切排序不会把已选地区清掉），切换任一维度都会**重置回第一页**再重新拉取，触底分页也会一直带着当前筛选条件",
+                "**筛选状态一眼可见**：下拉按钮在未筛选时显示维度名（「地区」/「年份」/「排序」），已筛选时用高亮底色显示所选值（如「韩国」「2024」「评分」），并带勾选标记",
+                "**年份选项按当前年动态生成**（当前年往前 11 年），不写死列表——否则过几年就选不到最新年份；排序提供 最新 / 最热 / 评分，对应采集接口的 `time` / `hits` / `score`",
+                "新增 **19 条离线单测**：`VideoFiltersTest`（年份动态生成与跨年、参数只组装非空维度、空白值视为不限、按钮文案回退）与 `VideoHomeSectionsTest` 补充的筛选链路用例（默认不带筛选参数、筛选后重置分页且累积生效、三维互不覆盖、重选同值不重复请求、清空筛选退回不带参数）",
+            ),
+        ),
         VersionEntry(
             version = "1.3.4.0",
             date = "2026-10-13",

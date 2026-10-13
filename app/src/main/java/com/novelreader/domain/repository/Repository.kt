@@ -96,6 +96,19 @@ interface ContentRepository {
     suspend fun explore(sourceId: String, url: String, page: Int): List<MediaItem>
 
     /**
+     * 按发现分类 + 筛选条件拉取列表（v1.3.5.0 片库四维筛选）。
+     *
+     * [filters] 目前由影视模块使用，键为苹果 CMS 参数名（`area` / `year` / `order`），
+     * 值为空串的项不提交。默认空 map = 等价于 [explore]。
+     */
+    suspend fun exploreFiltered(
+        sourceId: String,
+        url: String,
+        page: Int,
+        filters: Map<String, String> = emptyMap(),
+    ): List<MediaItem> = explore(sourceId, url, page)
+
+    /**
      * 取**单个源**的发现分类（v1.3.3.0 影视首页按当前源加载分类）。
      *
      * 与 [exploreSources] 不同：只查一个源，避免影视首页在源较多时

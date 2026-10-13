@@ -2,6 +2,7 @@ package com.novelreader.ui.screens.common
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.novelreader.core.util.VideoFilters
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
@@ -264,6 +265,12 @@ class HomeViewModel(
         val categories: List<com.novelreader.domain.model.ExploreCategory> = emptyList(),
         /** 当前分类 id（空串 = 全部） */
         val selectedCategory: String = "",
+        /** 片库筛选：地区（空串 = 不限） */
+        val selectedArea: String = "",
+        /** 片库筛选：年份（空串 = 不限） */
+        val selectedYear: String = "",
+        /** 片库筛选：排序（空串 = 源默认；`time` 最新 / `hits` 最热 / `score` 评分） */
+        val selectedOrder: String = "",
         /** 网格视图内容 */
         val items: List<MediaItem> = emptyList(),
         /** 分区视图内容 */
@@ -386,11 +393,37 @@ class HomeViewModel(
         loadVideoHome(reset = true)
     }
 
+    // ===== 片库四维筛选（v1.3.5.0）=====
+    //
+    // 分类维度见 selectVideoCategory；以下三个维度共用一套「改值 → 清列表 → 重拉首屏」流程。
+    // 三个维度互不影响：切地区不该把已选年份清掉，所以只改自己那一项。
+
+    /** 切换地区（空串 = 不限） */
+    fun selectVideoArea(area: String) = applyVideoFilter { it.copy(selectedArea = area) }
+
+    /** 切换年份（空串 = 不限） */
+    fun selectVideoYear(year: String) = applyVideoFilter { it.copy(selectedYear = year) }
+
+    /** 切换排序（空串 = 源默认） */
+    fun selectVideoOrder(order: String) = applyVideoFilter { it.copy(selectedOrder = order) }
+
+    /**
+     * 应用一次筛选变更：值没变就直接返回（避免重复请求），
+     * 变了就清空列表、重置分页并回到网格视图重拉首屏。
+     */
+    private fun applyVideoFilter(transform: (VideoHomeState) -> VideoHomeState) {
+        val current = _videoHome.value
+        val next = transform(current)
+        if (next == current) return
+        _videoHome.value = next.copy(expanded = true, items = emptyList(), hasMore = true)
+        loadVideoHome(reset = true)
+    }
+
     /**
      * 只重算「继续观看」，不触发任何网络请求。
      *
      * 场景：从播放页 / 详情页返回首页时，观看进度刚变过，
-     * 而这一块只在「首次进页 / 下拉刷新 / 切源」时重建，不刷新就会看不到刚看的那部片。
+     * 而这一块只在「首次进页 / 下拉刷新 / 切源」时重建，不刷新就看不到刚看的那部片。
      */
     fun refreshContinueWatching() {
         viewModelScope.launch {
@@ -401,7 +434,8 @@ class HomeViewModel(
     }
 
     /** 下拉刷新（分区视图连「继续观看」一起刷新） */
-    fun refreshVideoHome() {        if (!_videoHome.value.expanded) {
+    fun refreshVideoHome() {
+        if (!_videoHome.value.expanded) {
             viewModelScope.launch {
                 _videoHome.value =
                     _videoHome.value.copy(continueWatching = buildContinueWatching(_videoHome.value.sources))
@@ -547,19 +581,22 @@ class HomeViewModel(
         )
     }
 
-    /** 网格视图：单分类海报墙 + 触底分页 */
+    /** 网格视图：单分类海报墙 + 触底分页（带片库筛选参数） */
     private suspend fun loadVideoGrid(sourceId: String, reset: Boolean) {
         if (reset) videoPage = 0
         val nextPage = videoPage + 1
-        _videoHome.value = _videoHome.value.copy(
-            loading = reset,
-            loadingMore = !reset,
-            error = null,
+        val snapshot = _videoHome.value
+        val category = snapshot.selectedCategory
+        val filters = VideoFilters.toFilterMap(
+            area = snapshot.selectedArea,
+            year = snapshot.selectedYear,
+            order = snapshot.selectedOrder,
         )
+        _videoHome.value = snapshot.copy(loading = reset, loadingMore = !reset, error = null)
 
-        val category = _videoHome.value.selectedCategory
-        val items = runCatching { contentRepository.explore(sourceId, category, nextPage) }
-            .getOrDefault(emptyList())
+        val items = runCatching {
+            contentRepository.exploreFiltered(sourceId, category, nextPage, filters)
+        }.getOrDefault(emptyList())
 
         videoPage = nextPage
         val current = _videoHome.value

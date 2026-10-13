@@ -237,11 +237,14 @@ fun HomeScreen(
 
                 val showVideoHome = selectedTab == 2 && videoSubTab == 0
                 if (showVideoHome) {
-                    // 影视首页（MoonTV 风格）：继续观看 + 分类分区横滑 / 分类网格（v1.3.4.0）
+                    // 影视首页（MoonTV 风格）：继续观看 + 分类分区横滑 / 分类网格 + 四维筛选（v1.3.5.0）
                     com.novelreader.ui.screens.video.VideoHomeContent(
                         state = videoHomeState,
                         onSelectSource = viewModel::selectVideoSource,
                         onSelectCategory = viewModel::selectVideoCategory,
+                        onSelectArea = viewModel::selectVideoArea,
+                        onSelectYear = viewModel::selectVideoYear,
+                        onSelectOrder = viewModel::selectVideoOrder,
                         onExpandCategory = viewModel::expandVideoCategory,
                         onCollapseCategory = viewModel::collapseVideoCategory,
                         onItemClick = onOpenVideoItem,

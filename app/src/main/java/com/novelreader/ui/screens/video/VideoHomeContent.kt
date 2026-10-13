@@ -34,10 +34,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -57,6 +60,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -65,6 +69,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
+import com.novelreader.core.util.VideoFilters
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceInfo
 import com.novelreader.ui.components.CoverPlaceholderLetter
@@ -85,6 +90,9 @@ fun VideoHomeContent(
     state: HomeViewModel.VideoHomeState,
     onSelectSource: (String) -> Unit,
     onSelectCategory: (String) -> Unit,
+    onSelectArea: (String) -> Unit,
+    onSelectYear: (String) -> Unit,
+    onSelectOrder: (String) -> Unit,
     onExpandCategory: (String, String) -> Unit,
     onCollapseCategory: () -> Unit,
     onItemClick: (MediaItem) -> Unit,
@@ -101,6 +109,9 @@ fun VideoHomeContent(
                 state = state,
                 onBack = onCollapseCategory,
                 onSelectCategory = onSelectCategory,
+                onSelectArea = onSelectArea,
+                onSelectYear = onSelectYear,
+                onSelectOrder = onSelectOrder,
                 onOpenPicker = { pickerOpen = true },
                 onItemClick = onItemClick,
                 onRefresh = onRefresh,
@@ -322,6 +333,9 @@ private fun VideoGridContent(
     state: HomeViewModel.VideoHomeState,
     onBack: () -> Unit,
     onSelectCategory: (String) -> Unit,
+    onSelectArea: (String) -> Unit,
+    onSelectYear: (String) -> Unit,
+    onSelectOrder: (String) -> Unit,
     onOpenPicker: () -> Unit,
     onItemClick: (MediaItem) -> Unit,
     onRefresh: () -> Unit,
@@ -382,6 +396,18 @@ private fun VideoGridContent(
             Spacer(Modifier.height(8.dp))
         }
 
+        // 地区 / 年份 / 排序三个维度用下拉（v1.3.5.0）。分类维度保留上面的 chips：
+        // 分类可能有十几个且是最常用的切换，chips 一点即达比下拉快一倍。
+        FilterDropdownRow(
+            selectedArea = state.selectedArea,
+            selectedYear = state.selectedYear,
+            selectedOrder = state.selectedOrder,
+            onSelectArea = onSelectArea,
+            onSelectYear = onSelectYear,
+            onSelectOrder = onSelectOrder,
+        )
+        Spacer(Modifier.height(8.dp))
+
         when {
             state.loading -> {
                 GridSkeleton()
@@ -420,6 +446,106 @@ private fun VideoGridContent(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+// ============================== 筛选栏 ==============================
+
+/**
+ * 片库筛选行：地区 / 年份 / 排序（分类维度由上面的 chips 承担，见 [VideoGridContent]）。
+ *
+ * 年份按**当前年**动态生成，不写死列表 —— 否则过几年就选不到最新年份了。
+ */
+@Composable
+private fun FilterDropdownRow(
+    selectedArea: String,
+    selectedYear: String,
+    selectedOrder: String,
+    onSelectArea: (String) -> Unit,
+    onSelectYear: (String) -> Unit,
+    onSelectOrder: (String) -> Unit,
+) {
+    val areaOptions = remember { VideoFilters.areas() }
+    val yearOptions = remember {
+        VideoFilters.years(java.util.Calendar.getInstance().get(java.util.Calendar.YEAR))
+    }
+    val orderOptions = remember { VideoFilters.orders() }
+
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        item { FilterDropdown("地区", areaOptions, selectedArea, onSelectArea) }
+        item { FilterDropdown("年份", yearOptions, selectedYear, onSelectYear) }
+        item { FilterDropdown("排序", orderOptions, selectedOrder, onSelectOrder) }
+    }
+}
+
+/**
+ * 单个筛选下拉。
+ *
+ * 未筛选时按钮显示维度名（「地区」/「年份」/「排序」），已筛选时用 primaryContainer
+ * 高亮并显示所选值 —— 这样一眼能看出当前生效了哪几维筛选。
+ */
+@Composable
+private fun FilterDropdown(
+    label: String,
+    options: List<VideoFilters.Option>,
+    selected: String,
+    onSelect: (String) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    val active = selected.isNotBlank()
+    val container =
+        if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+    val content =
+        if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+
+    Box {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(16.dp))
+                .background(container)
+                .clickable { open = true }
+                .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = VideoFilters.labelOf(options, selected, label),
+                style = MaterialTheme.typography.labelLarge,
+                color = content,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Icon(
+                Icons.Filled.ArrowDropDown,
+                contentDescription = null,
+                tint = content,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(option.label) },
+                    onClick = {
+                        open = false
+                        // 重选当前项不必再请求一次（ViewModel 里也有幂等判断，这里少一次数据流抖动）
+                        if (option.value != selected) onSelect(option.value)
+                    },
+                    trailingIcon = {
+                        if (option.value == selected) {
+                            Icon(
+                                Icons.Filled.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    },
+                )
             }
         }
     }

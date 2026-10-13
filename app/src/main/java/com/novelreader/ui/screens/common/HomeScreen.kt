@@ -133,11 +133,14 @@ fun HomeScreen(
     var gridMode by rememberSaveable { mutableIntStateOf(0) }
 
     // 每次回到前台时刷新（进度可能已变化）
+    // key 里带上 selectedTab：观察者闭包会捕获它，只用 lifecycleOwner 作 key 会读到旧值
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner, selectedTab) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshProgress()
+                // 影视 Tab：播放页返回后「继续观看」要立刻反映刚看过的片
+                if (selectedTab == 2) viewModel.refreshContinueWatching()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -215,34 +218,32 @@ fun HomeScreen(
 
                 Spacer(Modifier.height(8.dp))
 
-                // 视频 Tab：热门（影视首页）/ 收藏 双视图切换
+                // 视频 Tab：首页（多分区）/ 收藏 双视图切换
+                // v1.3.4.0 起改用 MoonTV 式胶囊切换（灰色药丸 + 滑动指示块）
                 if (selectedTab == 2) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp),
+                        contentAlignment = Alignment.Center,
                     ) {
-                        androidx.compose.material3.FilterChip(
-                            selected = videoSubTab == 0,
-                            onClick = { videoSubTab = 0 },
-                            label = { Text("热门") },
-                        )
-                        androidx.compose.material3.FilterChip(
-                            selected = videoSubTab == 1,
-                            onClick = { videoSubTab = 1 },
-                            label = { Text("收藏") },
+                        com.novelreader.ui.components.CapsuleSwitch(
+                            options = listOf("首页", "收藏"),
+                            selectedIndex = videoSubTab,
+                            onSelect = { videoSubTab = it },
                         )
                     }
-                    Spacer(Modifier.height(4.dp))
                 }
 
                 val showVideoHome = selectedTab == 2 && videoSubTab == 0
                 if (showVideoHome) {
-                    // 影视首页（MoonTV 风格）：源选择 + 分类 + 海报墙（v1.3.3.0）
+                    // 影视首页（MoonTV 风格）：继续观看 + 分类分区横滑 / 分类网格（v1.3.4.0）
                     com.novelreader.ui.screens.video.VideoHomeContent(
                         state = videoHomeState,
                         onSelectSource = viewModel::selectVideoSource,
                         onSelectCategory = viewModel::selectVideoCategory,
+                        onExpandCategory = viewModel::expandVideoCategory,
+                        onCollapseCategory = viewModel::collapseVideoCategory,
                         onItemClick = onOpenVideoItem,
                         onRefresh = viewModel::refreshVideoHome,
                         onLoadMore = viewModel::loadMoreVideo,

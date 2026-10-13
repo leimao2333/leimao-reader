@@ -130,10 +130,16 @@ data class RecentReading(
     val detailUrl: String = itemId,
     /** 最后阅读的章节标题 */
     val chapterTitle: String,
+    /** 最后阅读的章节地址（视频续播定位用，v1.3.4.0） */
+    val chapterUrl: String = "",
     /** 章节索引 */
     val chapterIndex: Int = 0,
     /** 章节总数（用于计算已读百分比；0 表示未知） */
     val totalChapter: Int = 0,
+    /** 视频：上次播放位置（毫秒）——「继续观看」进度条用（v1.3.4.0） */
+    val playPositionMs: Long = 0,
+    /** 视频：总时长（毫秒，0 = 未知）——「继续观看」进度条分母（v1.3.4.0） */
+    val durationMs: Long = 0,
     /** 更新时间戳 */
     val updatedAt: Long = 0L,
 )

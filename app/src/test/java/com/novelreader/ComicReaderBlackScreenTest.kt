@@ -135,6 +135,7 @@ private class FakeProgressRepository : ProgressRepository {
         chapterIndex: Int,
         textPosition: Int,
         playPositionMs: Long,
+        durationMs: Long,
         itemType: String,
         itemTitle: String,
         itemCover: String?,

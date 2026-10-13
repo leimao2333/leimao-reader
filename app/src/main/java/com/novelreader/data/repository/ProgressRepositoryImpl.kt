@@ -22,6 +22,7 @@ class ProgressRepositoryImpl(
         chapterIndex: Int,
         textPosition: Int,
         playPositionMs: Long,
+        durationMs: Long,
         itemType: String,
         itemTitle: String,
         itemCover: String?,
@@ -33,7 +34,10 @@ class ProgressRepositoryImpl(
             ProgressEntity(
                 sourceId = sourceId,
                 itemId = itemId,
-                itemType = itemType,
+                // 统一存小写：与 books.type、历史迁移里的数据保持一致。
+                // 调用方传的是 SourceType.name（大写），此前直接落库导致
+                // 「按类型查最近阅读」因大小写不匹配而恒为空。
+                itemType = itemType.lowercase(),
                 itemTitle = itemTitle,
                 itemCover = itemCover,
                 itemAuthor = itemAuthor,
@@ -44,6 +48,7 @@ class ProgressRepositoryImpl(
                 textPosition = textPosition,
                 pageIndex = pageIndex,
                 playPositionMs = playPositionMs,
+                durationMs = durationMs,
             )
         )
     }
@@ -56,6 +61,7 @@ class ProgressRepositoryImpl(
             chapterIndex = entity.chapterIndex,
             textPosition = entity.textPosition,
             playPositionMs = entity.playPositionMs,
+            durationMs = entity.durationMs,
             pageIndex = entity.pageIndex,
             updatedAt = entity.updatedAt,
             totalChapter = entity.totalChapter,
@@ -83,8 +89,11 @@ class ProgressRepositoryImpl(
                 type = SourceType.fromString(row.type ?: "") ?: SourceType.NOVEL,
                 detailUrl = row.detailUrl ?: row.itemId,
                 chapterTitle = row.chapterTitle,
+                chapterUrl = row.chapterUrl,
                 chapterIndex = row.chapterIndex,
                 totalChapter = row.totalChapter,
+                playPositionMs = row.playPositionMs,
+                durationMs = row.durationMs,
                 updatedAt = row.updatedAt,
             )
         }

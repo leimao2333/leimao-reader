@@ -7,6 +7,8 @@ import com.novelreader.domain.model.ExploreCategory
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceAdapter
 import com.novelreader.domain.model.SourceInfo
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * MoonTV / LunaTV 采集源适配器（苹果 CMS maccms10 接口）。
@@ -41,6 +43,33 @@ class MoonTvSourceAdapter(
             retry = false,
         )
 
+    // ===== 详情响应复用 =====
+    //
+    // 打开详情页会**并发**触发 detail() 与 chapterList()，两者请求的是同一个
+    // `?ac=detail&ids=N`。原本是两次独立请求，任一失败就会出现「简介有、选集空」
+    // 或反过来的半残页面（弱网下实测复现）。这里用互斥锁把并发调用收敛成一次请求，
+    // 第二个调用直接复用第一个的结果。
+    //
+    // 带 TTL 是为了不长期返回过期剧集表：只在「同一部片、短时间内」
+    // （典型场景就是详情页那两次背靠背调用）复用。
+    private val detailMutex = Mutex()
+    private var cachedDetailId: String? = null
+    private var cachedDetailJson: String? = null
+    private var cachedDetailAt = 0L
+
+    private suspend fun detailJson(id: String): String = detailMutex.withLock {
+        val now = System.currentTimeMillis()
+        val cached = cachedDetailJson
+        if (cached != null && cachedDetailId == id && now - cachedDetailAt < DETAIL_CACHE_TTL_MS) {
+            return@withLock cached
+        }
+        val json = request(listOf("ac" to "detail", "ids" to id))
+        cachedDetailId = id
+        cachedDetailJson = json
+        cachedDetailAt = now
+        json
+    }
+
     companion object {
         /**
          * 采集接口超时（毫秒）。
@@ -49,6 +78,9 @@ class MoonTvSourceAdapter(
          * 个别死站点把搜索拖到分钟级；这里收紧到 12s，保证有界等待。
          */
         const val REQUEST_TIMEOUT_MS = 12_000L
+
+        /** 详情响应复用窗口：覆盖详情页那次「detail + 选集」的背靠背调用即可 */
+        const val DETAIL_CACHE_TTL_MS = 30_000L
     }
 
     override suspend fun search(keyword: String, page: Int): List<MediaItem> {
@@ -59,9 +91,7 @@ class MoonTvSourceAdapter(
     }
 
     override suspend fun detail(item: MediaItem): MediaItem {
-        val json = runCatching {
-            request(listOf("ac" to "detail", "ids" to item.id))
-        }.getOrNull() ?: return item
+        val json = runCatching { detailJson(item.id) }.getOrNull() ?: return item
         val full = MacCmsParser.findItem(json, item.id, info.id, info.name) ?: return item
         // 用详情补全封面 / 简介 / 备注，但保留原 id 与来源信息
         return full.copy(
@@ -74,9 +104,7 @@ class MoonTvSourceAdapter(
     }
 
     override suspend fun chapterList(item: MediaItem): List<ChapterItem> {
-        val json = runCatching {
-            request(listOf("ac" to "detail", "ids" to item.id))
-        }.getOrNull() ?: return emptyList()
+        val json = runCatching { detailJson(item.id) }.getOrNull() ?: return emptyList()
         return MacCmsParser.episodesOf(json, item.id).mapIndexed { i, ep ->
             ChapterItem(
                 id = "$i",

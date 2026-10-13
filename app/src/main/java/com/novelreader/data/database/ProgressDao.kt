@@ -38,19 +38,25 @@ interface ProgressDao {
      */
     @Query(
         """
-        SELECT p.sourceId, p.itemId, p.chapterTitle, p.chapterIndex, p.totalChapter, p.updatedAt,
+        SELECT p.sourceId, p.itemId, p.chapterTitle, p.chapterUrl, p.chapterIndex, p.totalChapter,
+               p.updatedAt, p.playPositionMs, p.durationMs,
                IFNULL(NULLIF(p.itemTitle, ''), b.title) AS title,
                IFNULL(NULLIF(p.itemCover, ''), b.cover) AS cover,
                IFNULL(NULLIF(p.itemAuthor, ''), b.author) AS author,
                IFNULL(NULLIF(p.itemType, ''), b.type) AS type, b.detailUrl
         FROM (
-            SELECT sourceId, itemId, chapterTitle, chapterIndex, totalChapter, itemType, itemTitle,
-                   itemCover, itemAuthor, MAX(updatedAt) AS updatedAt
+            SELECT sourceId, itemId, chapterTitle, chapterUrl, chapterIndex, totalChapter,
+                   itemType, itemTitle, itemCover, itemAuthor, playPositionMs, durationMs,
+                   MAX(updatedAt) AS updatedAt
             FROM progress
             GROUP BY sourceId, itemId
         ) p
         LEFT JOIN books b ON b.sourceId = p.sourceId AND b.itemId = p.itemId
-        WHERE :type = '' OR IFNULL(NULLIF(p.itemType, ''), b.type) = :type
+        WHERE :type = ''
+              -- 大小写必须归一：progress.itemType 由保存路径写成 "VIDEO"（SourceType.name），
+              -- 而 books.type 与历史迁移里的数据是小写 "video"。直接等值比较会永远匹配不上，
+              -- 导致按类型取「最近观看 / 最近阅读」恒为空（v1.3.4.0 修复）。
+              OR UPPER(IFNULL(NULLIF(p.itemType, ''), b.type)) = UPPER(:type)
         ORDER BY p.updatedAt DESC
         """
     )
@@ -74,4 +80,10 @@ data class RecentReadingRow(
     val author: String?,
     val type: String?,
     val detailUrl: String?,
+    /** 最后阅读的章节地址（视频续播定位用） */
+    val chapterUrl: String = "",
+    /** 视频：上次播放位置（毫秒）——「继续观看」进度条用 */
+    val playPositionMs: Long = 0,
+    /** 视频：总时长（毫秒，0 = 未知）——「继续观看」进度条分母 */
+    val durationMs: Long = 0,
 )

@@ -55,6 +55,8 @@ interface ProgressRepository {
         chapterIndex: Int = 0,
         textPosition: Int = 0,
         playPositionMs: Long = 0,
+        /** 视频：总时长（毫秒，0 = 未知）——「继续观看」进度条分母（v1.3.4.0） */
+        durationMs: Long = 0,
         itemType: String = "",
         itemTitle: String = "",
         itemCover: String? = null,
@@ -87,6 +89,8 @@ data class ReadingProgress(
     val chapterIndex: Int = 0,
     val textPosition: Int = 0,
     val playPositionMs: Long = 0,
+    /** 视频：总时长（毫秒，0 = 未知） */
+    val durationMs: Long = 0,
     /** 翻页模式：上次退出时的页码（0 起） */
     val pageIndex: Int = 0,
     /** 最后更新时间戳（书架按最近阅读排序用） */

@@ -15,7 +15,10 @@ import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.ProgressRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -374,11 +377,25 @@ class VideoPlayerViewModel(
 
     // ==================== 进度落盘 ====================
 
-    private fun saveProgress() {
+    /**
+     * 「退出时最后一次落盘」专用作用域。
+     *
+     * 不能用 [viewModelScope]：`onDispose` 之后 ViewModel 马上被 clear，
+     * 作用域取消会把正在进行的写入直接掐掉——于是「看几秒就退出」
+     * 什么都不会记，下次也进不了「继续观看」。
+     *
+     * 故意不 cancel：写入是一次性短任务，跑完即可被回收，不需要跟随 VM 结束。
+     */
+    private val finalSaveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private fun saveProgress(detached: Boolean = false) {
         val item = currentItem ?: return
         val episode = currentEpisode ?: return
-        val pos = player?.currentPosition ?: 0L
-        viewModelScope.launch {
+        val player = player ?: return
+        val pos = player.currentPosition
+        val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: 0L
+        val scope = if (detached) finalSaveScope else viewModelScope
+        scope.launch {
             progressRepository.saveProgress(
                 sourceId = item.sourceId,
                 itemId = item.id,
@@ -386,6 +403,7 @@ class VideoPlayerViewModel(
                 chapterTitle = episode.title,
                 chapterIndex = episode.index,
                 playPositionMs = pos,
+                durationMs = duration,
                 itemType = SourceType.VIDEO.name,
                 itemTitle = item.title,
                 itemCover = item.cover,
@@ -395,14 +413,15 @@ class VideoPlayerViewModel(
         }
     }
 
-    /** 保存当前播放进度（供退出时调用） */
+    /** 保存当前播放进度（供退出时调用；脱离 viewModelScope 以免被取消） */
     fun saveCurrentProgress() {
-        saveProgress()
+        saveProgress(detached = true)
     }
 
     private fun startTicker() {
         tickerJob?.cancel()
         tickerJob = viewModelScope.launch {
+            var sinceSave = 0L
             while (isActive) {
                 val player = player ?: break
                 val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: 0L
@@ -418,6 +437,13 @@ class VideoPlayerViewModel(
                         isBuffering = player.playbackState == Player.STATE_BUFFERING,
                     )
                 }
+                // 播放中周期性落盘（v1.3.4.0）：此前只在切集 / 退出时保存，
+                // 进程被杀 / 崩溃 / 被系统回收时进度就丢了，「继续观看」会退回上一集。
+                sinceSave += TICK_MS
+                if (player.isPlaying && sinceSave >= SAVE_INTERVAL_MS) {
+                    sinceSave = 0L
+                    saveProgress()
+                }
                 delay(TICK_MS)
             }
         }
@@ -427,7 +453,6 @@ class VideoPlayerViewModel(
         super.onCleared()
         tickerJob?.cancel()
         boostJob?.cancel()
-        saveCurrentProgress()
         player?.release()
         player = null
     }
@@ -435,6 +460,8 @@ class VideoPlayerViewModel(
     companion object {
         /** 状态轮询间隔 */
         private const val TICK_MS = 400L
+        /** 播放中落盘间隔（毫秒） */
+        private const val SAVE_INTERVAL_MS = 10_000L
         /** 长按快退：每步回退的毫秒数 */
         private const val REWIND_STEP_MS = 1_000L
         /** 长按快退：步进间隔 */

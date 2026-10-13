@@ -246,6 +246,47 @@ class MoonTvSourceTest {
         assertFalse(MacCmsParser.isOk("<html>502</html>"))
     }
 
+    // ===== 详情元信息（v1.3.4.0 详情页补全）=====
+
+    @Test
+    fun `详情响应带出年份评分地区与主创`() {
+        val item = MacCmsParser.findItem(SAMPLE_DETAIL_JSON, "2002", "src", "演示源")!!
+        assertEquals("2002", item.id)
+        assertEquals("2025", item.extras["year"])
+        assertEquals("8.5", item.extras["score"])
+        assertEquals("大陆", item.extras["area"])
+        assertEquals("国语", item.extras["lang"])
+        assertEquals("连续剧", item.extras["typeName"])
+        assertEquals("张三,李四", item.extras["actor"])
+        assertEquals("王五", item.extras["director"])
+        assertEquals("更新至第12集", item.extras["remarks"])
+    }
+
+    @Test
+    fun `完整简介只在详情响应里带出`() {
+        // 详情响应带 vod_play_url → 带出未截断的完整简介（已去 HTML）
+        val detail = MacCmsParser.findItem(SAMPLE_DETAIL_JSON, "2002", "src", "源")!!
+        val content = detail.extras["content"]
+        assertNotNull("详情响应应带出完整简介", content)
+        assertTrue(content!!.contains("完整简介正文"))
+        assertFalse("简介不应残留 HTML 标签", content.contains("<p>"))
+
+        // 列表/搜索响应不带 vod_play_url → 不带 content，避免导航参数被 2KB 简介撑大
+        val list = MacCmsParser.parseList(SAMPLE_LIST_JSON, "src", "源").first()
+        assertNull("列表响应不应带出完整简介", list.extras["content"])
+        // desc 仍然截断到 200 字，列表卡片够用
+        assertTrue(list.desc!!.length <= 200)
+    }
+
+    @Test
+    fun `缺少元信息时不产生空键`() {
+        val item = MacCmsParser.parseList(SAMPLE_LIST_JSON, "src", "源").first()
+        // 样例列表无这些字段：要么不存在该键，要么为空串，取值方按空处理
+        assertTrue(item.extras["actor"].orEmpty().isEmpty())
+        assertTrue(item.extras["director"].orEmpty().isEmpty())
+        assertTrue(item.extras["year"].orEmpty().isEmpty())
+    }
+
     companion object {
         /** Base58 编码的 MoonTV 配置（含一个缺 api 的无效条目） */
         private const val SAMPLE_CONFIG_B58 =
@@ -275,6 +316,30 @@ class MoonTvSourceTest {
   "class": [
     { "type_id": 1, "type_pid": 0, "type_name": "电影" },
     { "type_id": 10, "type_pid": 1, "type_name": "动作片" }
+  ]
+}"""
+
+        /** 一份典型的苹果 CMS「详情」响应（含完整元信息与播放地址） */
+        private const val SAMPLE_DETAIL_JSON = """{
+  "code": 1,
+  "list": [
+    {
+      "vod_id": 2002,
+      "vod_name": "示例连续剧",
+      "vod_pic": "https://img.test/b.jpg",
+      "vod_remarks": "更新至第12集",
+      "type_name": "连续剧",
+      "vod_year": "2025",
+      "vod_score": "8.5",
+      "vod_area": "大陆",
+      "vod_lang": "国语",
+      "vod_actor": "张三,李四",
+      "vod_director": "王五",
+      "vod_blurb": "这是列表用的短简介",
+      "vod_content": "<p>这是完整简介正文，长度超过短简介，用于验证详情页取的是 content 而不是被截断的 blurb。</p>",
+      "vod_play_from": "线路A",
+      "vod_play_url": "第01集${'$'}https://play.test/a1.m3u8#第02集${'$'}https://play.test/a2.m3u8"
+    }
   ]
 }"""
     }

@@ -167,6 +167,18 @@ object MacCmsParser {
                 put("score", str(o, "vod_score"))
                 put("area", str(o, "vod_area"))
                 put("playFrom", str(o, "vod_play_from"))
+                // v1.3.4.0：详情页要展示的元信息，此前解析了却没往外传
+                put("actor", str(o, "vod_actor"))
+                put("director", str(o, "vod_director"))
+                put("lang", str(o, "vod_lang"))
+                put("typeName", str(o, "type_name"))
+                put("total", str(o, "vod_total"))
+                // 详情接口才带 vod_play_url；用它区分「完整简介」是否值得带出 ——
+                // 搜索/列表响应不带，免得把 2KB 简介塞进导航参数里
+                if (str(o, "vod_play_url").isNotBlank()) {
+                    val full = stripHtml(str(o, "vod_content"))
+                    if (full.isNotBlank()) put("content", full)
+                }
             },
         )
     }

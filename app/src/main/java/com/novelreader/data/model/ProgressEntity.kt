@@ -43,6 +43,13 @@ data class ProgressEntity(
     val pageIndex: Int = 0,
     /** 视频：播放进度（毫秒） */
     val playPositionMs: Long = 0,
+    /**
+     * 视频：总时长（毫秒，0 = 未知）。
+     *
+     * 「继续观看」要像 MoonTV 那样画一条时间进度条，就必须知道分母。
+     * 播放器在 ticker 里能拿到这个值，顺手落盘比事后反推可靠（v1.3.4.0）。
+     */
+    val durationMs: Long = 0,
     /** 更新时间戳 */
     val updatedAt: Long = System.currentTimeMillis(),
 )

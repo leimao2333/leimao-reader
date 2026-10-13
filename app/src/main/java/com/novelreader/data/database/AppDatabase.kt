@@ -28,7 +28,7 @@ import com.novelreader.data.model.SourceEntity
         RssFeedEntity::class,
         RssArticleEntity::class,
     ],
-    version = 11,
+    version = 12,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -258,6 +258,20 @@ abstract class AppDatabase : RoomDatabase() {
                     "CREATE UNIQUE INDEX IF NOT EXISTS index_rss_articles_feedId_guid " +
                         "ON rss_articles (feedId, guid)"
                 )
+            }
+        }
+
+        /**
+         * v11 -> v12：progress 表新增 durationMs 列（视频总时长，v1.3.4.0「继续观看」）。
+         *
+         * 「继续观看」卡片要画时间进度条（`playPositionMs / durationMs`），
+         * 而此前只存了进度、没存总时长，分母缺失只能退回集数比例。
+         * 存量数据无从回填（旧记录没采过时长），默认 0 = 未知，
+         * 前端按 0 处理即回退为「集数进度」，不影响展示。
+         */
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE progress ADD COLUMN durationMs INTEGER NOT NULL DEFAULT 0")
             }
         }
 

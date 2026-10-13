@@ -43,6 +43,19 @@ object MacCmsParser {
             .filter { it.second.isNotEmpty() }
             .joinToString("&") { (k, v) -> "$k=" + urlEncode(v) }
         if (query.isEmpty()) return base
+
+        // 「?url=」反代站（如 `https://pz.xxx/?url=https://采集站/api.php/provide/vod`）：
+        // 采集参数必须**编码后追加进 url 参数值**，拼在外层会命中反代的 System Error。
+        // 已实测：拼外层返回 HTML 错误页，编码进 url 值才返回正确的采集 JSON。
+        val urlParamIdx = base.indexOf("?url=")
+        if (urlParamIdx >= 0) {
+            val prefix = base.substring(0, urlParamIdx + 5) // 含 "?url="
+            val target = base.substring(urlParamIdx + 5)
+            // 目标地址自身可能已带 query（如 .../provide/vod?ac=list），用 & 追加
+            val joined = target + (if (target.contains('?')) "&" else "?") + query
+            return prefix + urlEncode(joined)
+        }
+
         return base + (if (base.contains('?')) "&" else "?") + query
     }
 

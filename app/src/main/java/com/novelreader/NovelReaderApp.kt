@@ -31,6 +31,8 @@ class NovelReaderApp : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
+        // 崩溃日志落盘：闪退堆栈写 files/crash/，供排查无法复现的崩溃（如采集源播放闪退）
+        com.novelreader.core.crash.CrashHandler.install(this)
         container = AppContainer(this)
 
         // 后台恢复源

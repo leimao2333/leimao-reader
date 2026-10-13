@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.3.8.0"
+    const val CURRENT_VERSION = "1.3.8.1"
 
     /**
      * 更新日志。
@@ -25,6 +25,17 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.3.8.1",
+            date = "2026-10-13",
+            changes = listOf(
+                "**LunaTV 采集源全面检修**：实测排查 `LunaTV-config` 全部 69 个站点的接口响应与播放地址格式，修复两类真实缺陷",
+                "**「?url=」反代站修复**：配置里的反代站（如 `pz.v88.qzz.io/?url=...`）此前把采集参数拼在链接外层，反代直接返回 System Error 错误页 —— 现已改为把参数**编码进 url 值内部**（实测返回正确 JSON），`bdzy1.com` / `lovedan.net` 等反代源恢复可用",
+                "**播放地址协议校验**：解析异常时可能拿到 HTML 片段 / 相对路径等非法地址，现在只有 http(s) 地址才交给播放器，非法地址直接提示「请换一条线路」；`//host/xxx.m3u8` 协议相对地址自动按站点协议补全",
+                "**全局崩溃日志落盘**：新增 `CrashHandler`，任何未捕获异常的堆栈会写入应用私有目录 `files/crash/`（保留最近 10 份），再难复现的闪退也能拿到现场堆栈精确定位",
+                "新增 2 条离线单测：反代参数编码、播放地址协议校验与补全",
+            ),
+        ),
         VersionEntry(
             version = "1.3.8.0",
             date = "2026-10-13",

@@ -154,8 +154,7 @@ class MoonTvSourceTest {
     // ===== 苹果 CMS 接口解析 =====
 
     @Test
-    fun `拼接接口地址`() {
-        assertEquals(
+    fun `拼接接口地址`() {        assertEquals(
             "https://a.test/api.php/provide/vod?ac=detail&wd=%E5%85%B3%E9%94%AE%E8%AF%8D&pg=2",
             MacCmsParser.buildUrl(
                 "https://a.test/api.php/provide/vod",
@@ -172,6 +171,77 @@ class MoonTvSourceTest {
             "https://a.test/vod?ac=detail",
             MacCmsParser.buildUrl("https://a.test/vod", listOf("ac" to "detail", "t" to "")),
         )
+    }
+
+    @Test
+    fun `反代站的参数编码进 url 值而非拼在外层`() {
+        // LunaTV-config 里的反代站：参数拼外层会命中反代 System Error（已实测），
+        // 必须把采集参数编码后追加进 url 参数值
+        val url = MacCmsParser.buildUrl(
+            "https://pz.v88.qzz.io/?url=https://api.apibdzy.com/api.php/provide/vod",
+            listOf("ac" to "videolist", "pg" to "1"),
+        )
+        assertEquals(
+            "https://pz.v88.qzz.io/?url=" +
+                "https%3A%2F%2Fapi.apibdzy.com%2Fapi.php%2Fprovide%2Fvod%3Fac%3Dvideolist%26pg%3D1",
+            url,
+        )
+        // 目标地址自带 query 时用 & 追加
+        val url2 = MacCmsParser.buildUrl(
+            "https://pz.v88.qzz.io/?url=https://a.test/vod?ac=list",
+            listOf("pg" to "2"),
+        )
+        assertEquals(
+            "https://pz.v88.qzz.io/?url=" +
+                "https%3A%2F%2Fa.test%2Fvod%3Fac%3Dlist%26pg%3D2",
+            url2,
+        )
+    }
+
+    @Test
+    fun `播放地址协议校验与协议相对地址补全`() = kotlinx.coroutines.runBlocking {
+        val site = com.novelreader.source.moontv.MoonTvSite(
+            key = "test.local",
+            name = "测试",
+            api = "https://test.local/api.php/provide/vod",
+            detail = "https://test.local",
+        )
+        val info = com.novelreader.domain.model.SourceInfo(
+            id = "moontv_test.local",
+            name = "测试",
+            type = SourceType.VIDEO,
+            format = SourceFormat.MOONTV,
+        )
+        val adapter = MoonTvSourceAdapter(info, site)
+
+        fun ep(url: String) = com.novelreader.domain.model.ChapterItem(
+            id = "0", title = "第1集", url = url, index = 0, sourceId = info.id,
+        )
+
+        // 正常 http(s) 地址原样通过
+        assertEquals(
+            "https://cdn.test/v/index.m3u8",
+            adapter.content(ep("https://cdn.test/v/index.m3u8")).videoUrl,
+        )
+        assertEquals(
+            "http://cdn.test/v/index.m3u8",
+            adapter.content(ep("http://cdn.test/v/index.m3u8")).videoUrl,
+        )
+        // 协议相对地址（//host/xxx）按 detail 的协议补全
+        assertEquals(
+            "https://cdn.test/v/index.m3u8",
+            adapter.content(ep("//cdn.test/v/index.m3u8")).videoUrl,
+        )
+        // 空白与首尾空格容错
+        assertEquals(
+            "https://cdn.test/v/index.m3u8",
+            adapter.content(ep("  https://cdn.test/v/index.m3u8 ")).videoUrl,
+        )
+        // 非 http 地址（解析异常产物，如 HTML 片段 / 相对路径）拒绝并报错
+        for (bad in listOf("/videos/2026/index.m3u8", "ftp://x/y", "<html>bad", "")) {
+            val err = runCatching { adapter.content(ep(bad)) }.exceptionOrNull()
+            assertTrue("非法地址应报错：$bad", err != null)
+        }
     }
 
     @Test

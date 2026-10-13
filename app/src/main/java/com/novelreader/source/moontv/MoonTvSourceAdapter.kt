@@ -136,8 +136,21 @@ class MoonTvSourceAdapter(
         }
     }
 
-    override suspend fun content(chapter: ChapterItem): ContentResult =
-        ContentResult.video(chapter.url)
+    override suspend fun content(chapter: ChapterItem): ContentResult {
+        var url = chapter.url.trim()
+        // 协议相对地址（//host/xxx.m3u8，部分采集站这么写）补全协议
+        if (url.startsWith("//")) {
+            val detailBase = site.detail.takeIf { it.startsWith("http") }
+            val scheme = detailBase?.substringBefore("://") ?: "https"
+            url = "$scheme:$url"
+        }
+        // 只有 http(s) 地址才交给播放器：解析异常时可能拿到 HTML 片段 /
+        // 相对路径等非法 URI，直接报友好错误，避免不可控的播放器行为
+        if (!(url.startsWith("http://") || url.startsWith("https://"))) {
+            throw IllegalStateException("该线路的播放地址无效，请换一条线路")
+        }
+        return ContentResult.video(url)
+    }
 
     override suspend fun test(): Boolean = runCatching {
         MacCmsParser.isOk(request(listOf("ac" to "list", "pg" to "1")))

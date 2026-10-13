@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -185,7 +184,8 @@ fun ExploreScreen(
     var categoryMenuOpen by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // 顶部：返回 + 标题 + 源/分类两个下拉
+        // 顶部两行：第一行 返回 + 标题；第二行 源/分类两个下拉各占一半。
+        // 此前四个控件挤一行，源名(120.dp)+分类(110.dp)固定宽度在窄屏上溢出重合。
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -199,16 +199,21 @@ fun ExploreScreen(
                 text = title,
                 style = MaterialTheme.typography.titleMedium,
             )
-            Spacer(Modifier.width(12.dp))
-
-            // 源选择
-            Box {
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 源选择（占一半宽，超长省略）
+            Box(modifier = Modifier.weight(1f)) {
                 TextButton(onClick = { sourceMenuOpen = true }) {
                     Text(
                         text = selectedSource?.info?.name ?: "选择书源",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.width(120.dp),
+                        modifier = Modifier.weight(1f, fill = false),
                     )
                     Icon(Icons.Filled.ExpandMore, contentDescription = null)
                 }
@@ -228,8 +233,8 @@ fun ExploreScreen(
                 }
             }
 
-            // 分类选择
-            Box {
+            // 分类选择（占一半宽，超长省略）
+            Box(modifier = Modifier.weight(1f)) {
                 TextButton(
                     enabled = selectedSource != null,
                     onClick = { categoryMenuOpen = true },
@@ -238,7 +243,7 @@ fun ExploreScreen(
                         text = selectedCategory?.title ?: "分类",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.width(110.dp),
+                        modifier = Modifier.weight(1f, fill = false),
                     )
                     Icon(Icons.Filled.ExpandMore, contentDescription = null)
                 }

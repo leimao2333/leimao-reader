@@ -218,7 +218,7 @@ fun HomeScreen(
 
                 Spacer(Modifier.height(8.dp))
 
-                // 视频 Tab：首页（多分区）/ 收藏 双视图切换
+                // 视频 Tab：首页（多分区）/ 短剧（竖屏沉浸）/ 收藏 三视图切换
                 // v1.3.4.0 起改用 MoonTV 式胶囊切换（灰色药丸 + 滑动指示块）
                 if (selectedTab == 2) {
                     Box(
@@ -228,14 +228,18 @@ fun HomeScreen(
                         contentAlignment = Alignment.Center,
                     ) {
                         com.novelreader.ui.components.CapsuleSwitch(
-                            options = listOf("首页", "收藏"),
+                            options = listOf("首页", "短剧", "收藏"),
                             selectedIndex = videoSubTab,
-                            onSelect = { videoSubTab = it },
+                            onSelect = {
+                                videoSubTab = it
+                                if (it == 1) viewModel.onShortDramaShown()
+                            },
                         )
                     }
                 }
 
                 val showVideoHome = selectedTab == 2 && videoSubTab == 0
+                val showShortDrama = selectedTab == 2 && videoSubTab == 1
                 if (showVideoHome) {
                     // 影视首页（MoonTV 风格）：继续观看 + 分类分区横滑 / 分类网格 + 四维筛选（v1.3.5.0）
                     com.novelreader.ui.screens.video.VideoHomeContent(
@@ -254,8 +258,24 @@ fun HomeScreen(
                     )
                 }
 
+                if (showShortDrama) {
+                    // 短剧频道（v1.3.9.0）：竖屏沉浸上下滑，聚合各源「短剧」分类
+                    val dramaState by viewModel.shortDrama.collectAsState()
+                    val dramaPlayback by viewModel.dramaPlayback.collectAsState()
+                    com.novelreader.ui.screens.video.ShortDramaScreen(
+                        state = dramaState,
+                        playback = dramaPlayback,
+                        onBack = { videoSubTab = 0 },
+                        onRefresh = viewModel::refreshShortDrama,
+                        onLoadMore = viewModel::loadMoreShortDrama,
+                        onResolveEpisode = viewModel::resolveDramaEpisode,
+                        onNextEpisode = viewModel::nextDramaEpisode,
+                        onOpenDetail = onOpenVideoItem,
+                    )
+                }
+
                 // 书架内容（合并后的主内容区）
-                if (!showVideoHome) BookshelfContent(
+                if (!showVideoHome && !showShortDrama) BookshelfContent(
                     books = books,
                     currentType = currentType,
                     progressMap = progressMap,

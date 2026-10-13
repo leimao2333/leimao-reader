@@ -167,6 +167,20 @@ private fun VideoSectionsContent(
             )
         }
 
+        // 非致命提示（如「已自动切换到某源」）：有内容时也显示，随下次手动换源清除
+        state.notice?.let { notice ->
+            item(key = "notice") {
+                Text(
+                    text = notice,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+        }
+
         val error = state.error
         when {
             state.loading -> {

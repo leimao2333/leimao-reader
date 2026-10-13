@@ -46,7 +46,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * 发现页 ViewModel（v1.3.11.0 聚合式发现）。
+ * 发现页 ViewModel（v1.4.2.0 聚合式发现）。
  *
  * 对标影视首页的聚合式源：不再让用户手动挑单个源（书源失效比例高），
  * 而是自动探测所有存活源 → 合并分类（同名去重）→ 每个分类跨源聚合内容去重。
@@ -185,7 +185,7 @@ private fun String.isRecommendLike(): Boolean =
         contains("榜单") || contains("人气")
 
 /**
- * 发现页（v1.3.11.0 聚合式）。
+ * 发现页（v1.4.2.0 聚合式）。
  *
  * 顶部：返回 + 标题 + 「聚合 N 个源」+ 刷新；
  * 下方：分类 chips（首个为「推荐」），内容区按选中分类展示聚合结果。

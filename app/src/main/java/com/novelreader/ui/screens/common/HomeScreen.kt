@@ -175,7 +175,7 @@ fun HomeScreen(
                 title = { Text(tabs[selectedTab].label) },
                 actions = {
                     // 发现入口：视频 tab 的发现与首页作用重合（都是聚合浏览），
-                    // 仅小说 / 漫画保留发现入口（v1.3.11.0）
+                    // 仅小说 / 漫画保留发现入口（v1.4.2.0）
                     if (currentType != SourceType.VIDEO) {
                         IconButton(onClick = { onOpenExplore(currentType) }) {
                             Icon(Icons.Filled.Explore, contentDescription = "发现")

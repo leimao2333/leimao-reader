@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.3.11.0"
+    const val CURRENT_VERSION = "1.4.2.0"
 
     /**
      * 更新日志。
@@ -26,7 +26,7 @@ object AppVersion {
      */
     val CHANGELOG: List<VersionEntry> = listOf(
         VersionEntry(
-            version = "1.3.11.0",
+            version = "1.4.2.0",
             date = "2026-10-13",
             changes = listOf(
                 "**修复视频首页划到底闪退**：崩溃日志显示 `Key \"24\" was already used` —— 聚合模式下多个源的分类可能共享同一地址（数字 id 撞车），分区与分类 chips 的 LazyColumn/LazyRow key 直接用它导致重复。现 key 统一改为「地址::标题」组合，真机连划到底验证不再闪退",

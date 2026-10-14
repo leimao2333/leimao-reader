@@ -40,6 +40,8 @@ class HomeViewModel(
     private val sourceRepository: com.novelreader.domain.repository.SourceRepository? = null,
     /** 记忆影视首页所选源 */
     private val preferencesManager: com.novelreader.core.preferences.PreferencesManager? = null,
+    /** 影视首页 / 频道内容磁盘缓存（v1.5.7.0「加载一次之后固定」，测试可传 null） */
+    private val videoCache: com.novelreader.data.cache.VideoHomeCache? = null,
 ) : ViewModel() {
 
     /** 本地 TXT 导入结果提示（首页 Toast 展示） */
@@ -350,12 +352,11 @@ class HomeViewModel(
             // 「继续观看」来自本地进度表，与所选源无关，每次进页都刷新
             val continueItems = buildContinueWatching(sources)
             _videoHome.value = next.copy(continueWatching = continueItems)
-            // 缓存门控（v1.5.0.0 起改为会话内永久复用）：内容已加载且源没变就
-            // 直接复用，不再重新探测源 + 拉内容——进出视频 Tab / 从播放页返回
-            // 都是秒开。刷新只靠**下拉刷新**（refreshVideoHome）与**切源**：
-            // 下拉刷新直接走 loadVideoHome 不受门控；切源会清空 rows 使
-            // loaded=false 挡住门控。想看新内容下拉即可。
-            if (sourceChanged || !next.loaded) {
+            // 缓存门控（v1.5.0.0 起改为会话内永久复用；v1.5.7.0 落盘跨会话复用）：
+            // 内存没有内容时先读磁盘缓存直接上屏，不自动发网络请求——
+            // 冷启动秒开，重新拉取只靠**刷新按钮**（refreshVideoHome）与**切源 / 筛选 /
+            // 分类切换**。缓存作废（无缓存 / 源集变化）才自动加载一次。
+            if (!next.loaded && !hydrateHomeFromCache()) {
                 loadVideoHome(reset = true)
             }
         }
@@ -645,6 +646,7 @@ class HomeViewModel(
             error = if (rows.isEmpty()) "没有取到内容，可能是各源暂时不可用，稍后再试" else null,
             loadedAtMs = if (rows.isNotEmpty()) System.currentTimeMillis() else 0L,
         )
+        if (rows.isNotEmpty()) saveHomeCache()
     }
 
     /**
@@ -692,6 +694,136 @@ class HomeViewModel(
             error = if (reset && fetched.isEmpty()) "没有取到内容，可能是源暂时不可用或该分类为空" else null,
             loadedAtMs = if (reset && fetched.isNotEmpty()) System.currentTimeMillis() else current.loadedAtMs,
         )
+    }
+
+    // ===== 内容磁盘缓存（v1.5.7.0「加载一次之后固定」）=====
+    //
+    // 进入视频页（含冷启动）先读缓存直接上屏，不自动发请求；重新拉取只靠刷新按钮、
+    // 切源、换分类 / 筛选。缓存 payload 带启用视频源 id 集合，源集变了（导入 /
+    // 删除 / 启停）旧聚合不再成立，缓存作废、自动重新加载一次。
+
+    private val cacheGson = com.google.gson.Gson()
+
+    /** 首页分区缓存 payload */
+    private data class HomeCachePayload(
+        val sourceIds: List<String> = emptyList(),
+        val currentSourceId: String = "",
+        val rows: List<VideoRow> = emptyList(),
+        val categories: List<ExploreCategory> = emptyList(),
+        val availableSources: List<String> = emptyList(),
+    )
+
+    /** 频道（短剧 / 电影 / 动漫）缓存 payload */
+    private data class ChannelCachePayload(
+        val sourceIds: List<String> = emptyList(),
+        val categories: List<String> = emptyList(),
+        val selectedCategory: String = "",
+        val items: List<MediaItem> = emptyList(),
+    )
+
+    private fun homeCacheKey() = "home"
+
+    private fun channelCacheKey(channel: VideoChannel) = "channel_${channel.name}"
+
+    /**
+     * 当前启用视频源 id 集合（缓存有效性校验的基准）。
+     *
+     * `_videoHome.sources` 只有进过视频 Tab 才有值；冷启动直接落在某个频道上时
+     * 还是空的，退化为查仓库（等源恢复完成再读）。
+     */
+    private suspend fun currentEnabledVideoIds(): Set<String> {
+        _videoHome.value.sources.takeIf { it.isNotEmpty() }?.let { list ->
+            return list.map { it.id }.toSet()
+        }
+        return runCatching {
+            sourceRepository?.awaitRestored()
+            sourceRepository?.getSourcesByType(SourceType.VIDEO)
+                .orEmpty()
+                .filter { it.enabled }
+        }.getOrDefault(emptyList()).map { it.id }.toSet()
+    }
+
+    /** 从磁盘恢复首页分区内容；返回是否恢复成功（有缓存、源集一致、rows 非空） */
+    private suspend fun hydrateHomeFromCache(): Boolean {
+        val cache = videoCache ?: return false
+        val raw = runCatching { cache.load(homeCacheKey()) }.getOrNull() ?: return false
+        val payload = runCatching {
+            cacheGson.fromJson(raw, HomeCachePayload::class.java)
+        }.getOrNull() ?: return false
+        if (payload.sourceIds.isEmpty() || payload.rows.isEmpty()) return false
+        if (payload.sourceIds.toSet() != currentEnabledVideoIds()) return false
+        val s = _videoHome.value
+        _videoHome.value = s.copy(
+            currentSourceId = payload.currentSourceId
+                .takeIf { id -> s.sources.any { it.id == id } }
+                ?: s.currentSourceId,
+            rows = payload.rows,
+            categories = payload.categories,
+            availableSources = payload.availableSources.ifEmpty { payload.sourceIds },
+            loading = false,
+            loadingMore = false,
+            error = null,
+        )
+        return true
+    }
+
+    /** 首页加载成功后落盘（失败静默，缓存只是加速） */
+    private suspend fun saveHomeCache() {
+        val cache = videoCache ?: return
+        val s = _videoHome.value
+        if (s.rows.isEmpty() || s.sources.isEmpty()) return
+        runCatching {
+            cache.save(
+                homeCacheKey(),
+                cacheGson.toJson(
+                    HomeCachePayload(
+                        sourceIds = currentEnabledVideoIds().toList(),
+                        currentSourceId = s.currentSourceId,
+                        rows = s.rows,
+                        categories = s.categories,
+                        availableSources = s.availableSources,
+                    ),
+                ),
+            )
+        }
+    }
+
+    /** 从磁盘恢复频道内容；返回是否恢复成功 */
+    private suspend fun hydrateChannelFromCache(channel: VideoChannel): Boolean {
+        val cache = videoCache ?: return false
+        val raw = runCatching { cache.load(channelCacheKey(channel)) }.getOrNull() ?: return false
+        val p = runCatching {
+            cacheGson.fromJson(raw, ChannelCachePayload::class.java)
+        }.getOrNull() ?: return false
+        if (p.items.isEmpty() || p.categories.isEmpty()) return false
+        if (p.sourceIds.toSet() != currentEnabledVideoIds()) return false
+        stateOf(channel).value = VideoChannelState(
+            categories = p.categories,
+            selectedCategory = p.selectedCategory.takeIf { it in p.categories }
+                ?: p.categories.first(),
+            items = p.items,
+        )
+        return true
+    }
+
+    /** 频道内容变化（首屏 / 翻页）后落盘 */
+    private suspend fun saveChannelCache(channel: VideoChannel) {
+        val cache = videoCache ?: return
+        val st = stateOf(channel).value
+        if (st.items.isEmpty() || st.categories.isEmpty()) return
+        runCatching {
+            cache.save(
+                channelCacheKey(channel),
+                cacheGson.toJson(
+                    ChannelCachePayload(
+                        sourceIds = currentEnabledVideoIds().toList(),
+                        categories = st.categories,
+                        selectedCategory = st.selectedCategory,
+                        items = st.items,
+                    ),
+                ),
+            )
+        }
     }
 
     // ===== 短剧频道（v1.3.9.0，对标抖音式竖屏沉浸短剧流） =====
@@ -795,8 +927,13 @@ class HomeViewModel(
 
     private fun onChannelShown(channel: VideoChannel) {
         val st = stateOf(channel).value
-        if (!st.loading && !st.loaded && st.error == null) {
-            loadChannel(channel, reset = true)
+        if (st.loading || st.loaded) return
+        viewModelScope.launch {
+            // v1.5.7.0「加载一次之后固定」：内存没有内容时先读磁盘缓存（冷启动秒开），
+            // 命中就不发请求；无缓存 / 源集变了才自动探测加载。刷新按钮始终可强制重拉。
+            if (!hydrateChannelFromCache(channel)) {
+                loadChannel(channel, reset = true)
+            }
         }
     }
 
@@ -814,7 +951,9 @@ class HomeViewModel(
         rt.plan = null
         rt.pages.clear()
         rt.exhausted.clear()
-        stateOf(channel).value = VideoChannelState(loading = true)
+        // 刷新不清空已有内容（v1.5.7.0）：探测 + 拉取要几秒，把旧内容顶成转圈
+        // 就是「一按刷新页面空白」；等新数据回来后 reset 加载会整体替换
+        stateOf(channel).value = stateOf(channel).value.copy(loading = true, error = null)
         loadChannel(channel, reset = true)
     }
 
@@ -924,6 +1063,8 @@ class HomeViewModel(
                 loadingMore = false,
                 error = if (reset && fetched.isEmpty()) "该分类暂无内容" else null,
             )
+            // 内容有变化就落盘（首屏 / 翻页都算），下次冷启动直接上屏这批
+            if (fetched.isNotEmpty()) saveChannelCache(channel)
         }
     }
 

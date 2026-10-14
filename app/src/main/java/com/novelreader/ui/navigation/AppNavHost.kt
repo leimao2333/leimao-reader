@@ -79,6 +79,7 @@ fun AppNavHost(
                         it.localBookStore,
                         it.sourceRepository,
                         it.preferencesManager,
+                        it.videoHomeCache,
                     )
                 }
             )

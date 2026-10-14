@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.5.6.0"
+    const val CURRENT_VERSION = "1.5.7.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.5.7.0",
+            date = "2026-10-14",
+            changes = listOf(
+                "**影视首页 / 电影 / 动漫 / 短剧频道：加载一次之后固定** —— 内容成功加载后落盘缓存，冷启动（每次打开 App）进视频页直接上屏上次内容、秒开零请求，不再每次都空白等加载；重新拉取只靠**刷新按钮**（以及切源、换分类 / 筛选这些明确意图），启用源集合变化（导入 / 删除 / 启停源）时旧缓存自动作废、重新加载一次",
+                "**刷新不再清空已有内容**：点刷新或重新进入时保留旧内容继续展示，加载完成整体替换，顶部只出现一个小圈指示；骨架屏 / 转圈只在真的没有任何内容时出现",
+                "**修掉返回 / 切 Tab 回来时自动翻页**：此前从详情页返回或切 Tab 回来，海报墙没滚动也会按「可见位置接近底部」自动加载下一页，内容凭空变多、白耗请求；现在只有真的滚动过才预加载",
+            ),
+        ),
         VersionEntry(
             version = "1.5.6.0",
             date = "2026-10-14",

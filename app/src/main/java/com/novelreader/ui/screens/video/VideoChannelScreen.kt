@@ -2,6 +2,7 @@ package com.novelreader.ui.screens.video
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -50,6 +52,7 @@ import coil.compose.SubcomposeAsyncImageContent
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.ui.components.CoverPlaceholderLetter
 import com.novelreader.ui.screens.common.HomeViewModel
+import kotlinx.coroutines.launch
 
 /**
  * 视频频道页（v1.5.0.0 从短剧频道泛化，短剧 / 电影 / 动漫三频道共用）。
@@ -89,6 +92,11 @@ fun VideoChannelScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            // 静默刷新指示：细圈代替整页转圈（v1.5.7.0，刷新不再清空旧内容）
+            if (state.loading) {
+                Spacer(Modifier.width(10.dp))
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            }
             IconButton(onClick = onRefresh) {
                 Icon(Icons.Filled.Refresh, contentDescription = "刷新")
             }
@@ -113,9 +121,12 @@ fun VideoChannelScreen(
 
         // ===== 内容 =====
         when {
-            state.loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
+            // 加载中但已有内容：保留旧内容继续展示（v1.5.7.0），转圈只在真空白时出现，
+            // 否则一刷新页面就被顶成空白——看起来像「每次进入视频页面都是空白」
+            state.loading && state.items.isEmpty() ->
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
 
             state.items.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -138,11 +149,20 @@ fun VideoChannelScreen(
                 val gridState = rememberLazyGridState()
                 val itemCount by rememberUpdatedState(state.items.size)
 
-                // 触底预加载：滚动到最后 4 个条目时拉下一页
+                // 触底预加载：滚动到最后 4 个条目时拉下一页。
+                // 必须以「用户真的滚动过」为前提（v1.5.7.0）：从详情页返回 / 切 Tab 回来时
+                // LazyGridState 恢复到原位，此前初始可见索引一满足条件就自动翻页，
+                // 内容凭空变多、白耗请求，也违背「加载一次之后固定」。
                 LaunchedEffect(gridState) {
+                    var userScrolled = false
+                    launch {
+                        gridState.interactionSource.interactions.collect {
+                            if (it is DragInteraction.Start) userScrolled = true
+                        }
+                    }
                     snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
                         .collect { last ->
-                            if (last >= 0 && last >= itemCount - 4) onLoadMore()
+                            if (userScrolled && last >= 0 && last >= itemCount - 4) onLoadMore()
                         }
                 }
 

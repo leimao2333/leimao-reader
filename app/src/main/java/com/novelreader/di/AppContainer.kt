@@ -70,6 +70,13 @@ class AppContainer(context: Context) {
         com.novelreader.source.venera.VeneraEngine(appContext)
     }
 
+    /** 影视首页 / 频道内容磁盘缓存（v1.5.7.0「加载一次之后固定」） */
+    val videoHomeCache: com.novelreader.data.cache.VideoHomeCache by lazy {
+        com.novelreader.data.cache.VideoHomeCache(
+            java.io.File(appContext.filesDir, "video_home"),
+        )
+    }
+
     val sourceManager: SourceManager by lazy {
         SourceManager(veneraEngine)
     }

@@ -7,6 +7,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -74,6 +75,7 @@ import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceInfo
 import com.novelreader.ui.components.CoverPlaceholderLetter
 import com.novelreader.ui.screens.common.HomeViewModel
+import kotlinx.coroutines.launch
 
 /**
  * 影视首页内容区（v1.3.3.0 初版，v1.3.4.0 改为 MoonTV 式多分区）。
@@ -164,7 +166,9 @@ private fun VideoSectionsContent(
 
         val error = state.error
         when {
-            state.loading -> {
+            // 加载中但已有内容：保留旧内容继续展示（v1.5.7.0），骨架屏只在真空白时出现，
+            // 否则一刷新页面就被顶成灰卡——看起来像「每次进入视频页面都是空白」
+            state.loading && state.rows.isEmpty() -> {
                 items(count = 2, key = { "skeleton-$it" }) {
                     SectionSkeleton()
                 }
@@ -302,6 +306,14 @@ private fun SourceHeaderRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            // 有内容时的静默刷新指示：细圈代替整页骨架（v1.5.7.0）
+            if (state.loading) {
+                Spacer(Modifier.width(8.dp))
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 2.dp,
+                )
+            }
         }
         IconButton(onClick = onRefresh) {
             Icon(Icons.Filled.Refresh, contentDescription = "刷新")
@@ -327,11 +339,20 @@ private fun VideoGridContent(
     val gridState = rememberLazyGridState()
     val itemCount by rememberUpdatedState(state.items.size)
 
-    // 触底分页：滚动到最后 4 个条目时预取下一页
+    // 触底分页：滚动到最后 4 个条目时预取下一页。
+    // 必须以「用户真的滚动过」为前提（v1.5.7.0）：从详情页返回 / 切 Tab 回来时
+    // LazyGridState 恢复到原位，此前初始可见索引一满足条件就自动翻页，
+    // 内容凭空变多、白耗请求，也违背「加载一次之后固定」。
     LaunchedEffect(gridState) {
+        var userScrolled = false
+        launch {
+            gridState.interactionSource.interactions.collect {
+                if (it is DragInteraction.Start) userScrolled = true
+            }
+        }
         snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
             .collect { last ->
-                if (last >= 0 && last >= itemCount - 4) onLoadMore()
+                if (userScrolled && last >= 0 && last >= itemCount - 4) onLoadMore()
             }
     }
 
@@ -391,7 +412,7 @@ private fun VideoGridContent(
         Spacer(Modifier.height(8.dp))
 
         when {
-            state.loading -> {
+            state.loading && state.items.isEmpty() -> {
                 GridSkeleton()
             }
 

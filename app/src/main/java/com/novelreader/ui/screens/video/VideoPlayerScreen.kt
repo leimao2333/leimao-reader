@@ -2,12 +2,20 @@ package com.novelreader.ui.screens.video
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.media.AudioManager
+import android.net.Uri
+import android.os.Build
+import android.util.Rational
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -51,6 +59,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -104,6 +115,7 @@ fun VideoPlayerScreen(
     val context = LocalContext.current
     val view = LocalView.current
     val activity = remember(context) { context.findActivity() }
+    val lifecycleOwner = LocalLifecycleOwner.current
     val audioManager = remember(context) {
         context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     }
@@ -122,6 +134,33 @@ fun VideoPlayerScreen(
     val speedTesting by viewModel.speedTesting.collectAsState()
     val qualityTracks by viewModel.qualityTracks.collectAsState()
     val selectedQuality by viewModel.selectedQuality.collectAsState()
+    val subtitleUri by viewModel.subtitleUri.collectAsState()
+    val subtitleEnabled by viewModel.subtitleEnabled.collectAsState()
+    val subtitleName by viewModel.subtitleName.collectAsState()
+
+    // 外挂字幕文件选择器（v1.4.6.0）：SAF 选 srt/vtt/ass/ssa
+    val subtitlePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri: Uri? ->
+        if (uri != null) {
+            // 读取文件名用于展示；失败则用「外挂字幕」兜底
+            val name = runCatching {
+                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (idx >= 0) cursor.getString(idx) else null
+                    } else null
+                }
+            }.getOrNull()
+            // 取持久读权限，避免离开页面后失效
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+            viewModel.loadSubtitle(uri, name)
+        }
+    }
 
     // 创建并绑定 ExoPlayer（生命周期由 Composable 管理）
     val player = remember {
@@ -154,6 +193,13 @@ fun VideoPlayerScreen(
     // 短剧横屏切换（默认竖屏；点全屏按钮切横屏，再点切回竖屏）
     var shortDramaLandscape by remember { mutableStateOf(false) }
     var fullscreenInited by remember { mutableStateOf(false) }
+    // 是否处于画中画（PIP）模式（v1.4.6.0）：PIP 中隐藏全部控制层与浮层
+    var inPip by remember { mutableStateOf(false) }
+    // 订阅全局 PIP 状态（由 MainActivity 的 onPictureInPictureModeChanged 广播）
+    val globalInPip by com.novelreader.MainActivity.inPip.collectAsState()
+    LaunchedEffect(globalInPip) {
+        inPip = globalInPip
+    }
     var controlsVisible by remember { mutableStateOf(true) }
     var episodesOpen by remember { mutableStateOf(false) }
     // 「选集 / 换源」双 Tab 的当前 Tab（v1.3.6.0）；窗口态与全屏浮层共用同一个下标
@@ -169,6 +215,40 @@ fun VideoPlayerScreen(
             fullscreenInited = true
             fullscreenInited = true
         }
+    }
+
+    // ===== 画中画（PIP，v1.4.6.0）=====
+    // 播放中切后台（ON_STOP）→ 自动进入小窗；回到前台（ON_START）→ 退出小窗并回到全屏。
+    // 用户点小窗上的「返回」按钮 → 系统回调 onPictureInPictureModeChanged(false)。
+    val pipSupported = remember { Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && activity?.packageManager?.hasSystemFeature(android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE) == true }
+    DisposableEffect(lifecycleOwner, pipSupported) {
+        if (!pipSupported) return@DisposableEffect onDispose {}
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> {
+                    // 播放中才进 PIP（暂停/未加载时不打扰用户）
+                    if (viewModel.state.value.isPlaying && !inPip) {
+                        enterPip(activity)
+                    }
+                }
+                Lifecycle.Event.ON_START -> {
+                    // 回到前台：如果还在 PIP 里则退出
+                    if (inPip && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        try {
+                            activity?.let { a ->
+                                if (a.isInPictureInPictureMode) {
+                                    // moveTaskToBack 会让系统退出 PIP 并回到正常 activity
+                                    // 实际退出由系统 onPictureInPictureModeChanged 回调触发
+                                }
+                            }
+                        } catch (_: Throwable) {}
+                    }
+                }
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     // ===== 全屏：系统栏 =====
@@ -574,7 +654,7 @@ fun VideoPlayerScreen(
 
             // ===== 自定义控制层 =====
             VideoControlsOverlay(
-                visible = controlsVisible,
+                visible = controlsVisible && !inPip,
                 title = item.title,
                 subtitle = episodeTitle,
                 isPlaying = playback.isPlaying,
@@ -601,10 +681,15 @@ fun VideoPlayerScreen(
                 selectedQuality = selectedQuality,
                 onSelectQuality = { viewModel.selectQuality(it) },
                 onResetQuality = { viewModel.resetQuality() },
+                subtitleName = subtitleName,
+                subtitleEnabled = subtitleEnabled,
+                onLoadSubtitle = { subtitlePicker.launch(arrayOf("*/*")) },
+                onToggleSubtitle = { viewModel.toggleSubtitle() },
+                onClearSubtitle = { viewModel.clearSubtitle() },
             )
 
             // ===== 短剧底部常驻栏（红果式：选集按钮 + 剧名 + 集数）=====
-            if (isShortDrama) {
+            if (isShortDrama && !inPip) {
                 val curIdx = episodesList.indexOfFirst { it.url == currentEpisodeUrl }
                     .let { if (it >= 0) it else 0 }
                 Row(
@@ -661,7 +746,7 @@ fun VideoPlayerScreen(
             // ===== 选集 / 换源 浮层（短剧用红果式，普通视频用双 Tab 面板）=====
             if (isShortDrama) {
                 ShortDramaEpisodeOverlay(
-                    visible = episodesOpen,
+                    visible = episodesOpen && !inPip,
                     episodes = episodesList,
                     currentUrl = currentEpisodeUrl,
                     lines = lines,
@@ -675,7 +760,7 @@ fun VideoPlayerScreen(
                 )
             } else {
                 EpisodeLinePickerOverlay(
-                    visible = episodesOpen,
+                    visible = episodesOpen && !inPip,
                     tab = sheetTab,
                     onTabChange = { sheetTab = it },
                     episodes = episodesList,
@@ -747,4 +832,24 @@ private fun Context.findActivity(): Activity? {
         ctx = ctx.baseContext
     }
     return null
+}
+
+/**
+ * 进入画中画（PIP）小窗。
+ *
+ * 视频比例优先取当前播放器宽高比，未知则回退 16:9。
+ * Android 8.0（API 26）及以上才支持；低版本静默忽略。
+ */
+private fun enterPip(activity: Activity?) {
+    val a = activity ?: return
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+    if (a.isInPictureInPictureMode) return
+    try {
+        val params = PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(16, 9))
+            .build()
+        a.enterPictureInPictureMode(params)
+    } catch (_: Throwable) {
+        // 个别厂商 ROM 可能不支持，静默降级为普通后台
+    }
 }

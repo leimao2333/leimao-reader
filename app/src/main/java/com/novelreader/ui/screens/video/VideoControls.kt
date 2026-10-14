@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.HighQuality
+import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
@@ -112,6 +113,11 @@ fun BoxScope.VideoControlsOverlay(
     selectedQuality: QualityTrack? = null,
     onSelectQuality: (QualityTrack) -> Unit = {},
     onResetQuality: () -> Unit = {},
+    subtitleName: String? = null,
+    subtitleEnabled: Boolean = false,
+    onLoadSubtitle: () -> Unit = {},
+    onToggleSubtitle: () -> Unit = {},
+    onClearSubtitle: () -> Unit = {},
 ) {
     val duration = durationMs.coerceAtLeast(0L)
 
@@ -330,6 +336,66 @@ fun BoxScope.VideoControlsOverlay(
                 )
 
                 Spacer(Modifier.weight(1f))
+
+                // 外挂字幕（v1.4.6.0）：加载本地 srt/vtt，开关显示
+                Box {
+                    var subtitleMenuOpen by remember { mutableStateOf(false) }
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable { subtitleMenuOpen = true }
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Filled.ClosedCaption,
+                            contentDescription = "字幕",
+                            tint = if (subtitleName != null && subtitleEnabled) Color(0xFF4CAF50) else Color.White,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = if (subtitleName == null) "字幕" else "字幕",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = subtitleMenuOpen,
+                        onDismissRequest = { subtitleMenuOpen = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(subtitleName?.let { "加载新字幕" } ?: "加载字幕") },
+                            onClick = {
+                                onLoadSubtitle()
+                                subtitleMenuOpen = false
+                            },
+                        )
+                        if (subtitleName != null) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (subtitleEnabled) "关闭字幕" else "开启字幕",
+                                        fontWeight = if (subtitleEnabled) FontWeight.Normal else FontWeight.Bold,
+                                    )
+                                },
+                                onClick = {
+                                    onToggleSubtitle()
+                                    subtitleMenuOpen = false
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("移除字幕", color = Color(0xFFFF6B6B)) },
+                                onClick = {
+                                    onClearSubtitle()
+                                    subtitleMenuOpen = false
+                                },
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.width(4.dp))
 
                 // 清晰度（仅多码率源显示）
                 if (qualityTracks.isNotEmpty()) {

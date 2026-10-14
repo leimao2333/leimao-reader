@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.4.5.0"
+    const val CURRENT_VERSION = "1.4.6.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,14 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.4.6.0",
+            date = "2026-10-14",
+            changes = listOf(
+                "**画中画（PIP）小窗播放**（V2）：视频播放中按 Home 键或切后台，自动进入悬浮小窗继续播放（Android 8.0+），回前台自动恢复、也可点小窗的放大/关闭按钮退出。小窗中隐藏应用内控制层与选集浮层，由系统提供播放控制，不影响其它应用操作",
+                "**外挂字幕加载**（V1）：播放器控制层新增「字幕」入口，可从本地选择 srt / vtt / ass / ssa 字幕文件，加载后立即显示并支持随时开关、移除（加载/移除均从原播放位置续播，不打断观看）。采集站普遍不提供字幕接口，故采用本地外挂字幕方案",
+            ),
+        ),
         VersionEntry(
             version = "1.4.5.0",
             date = "2026-10-14",

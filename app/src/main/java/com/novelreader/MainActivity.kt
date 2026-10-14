@@ -1,5 +1,6 @@
 package com.novelreader
 
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -9,6 +10,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import com.novelreader.ui.navigation.AppNavHost
 import com.novelreader.ui.theme.NovelReaderTheme
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * 主 Activity，承载 Compose UI。
@@ -16,6 +19,20 @@ import com.novelreader.ui.theme.NovelReaderTheme
  * 主题的日夜间模式由 DataStore 中的全局设置驱动。
  */
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        /**
+         * 全局画中画（PIP）状态（v1.4.6.0）。
+         *
+         * 视频播放页订阅它，在进入/退出小窗时隐藏/恢复控制层。
+         * 用 companion StateFlow 而非 Compose 局部状态，是因为
+         * onPictureInPictureModeChanged 回调只发生在 Activity 层，
+         * 需要把它「广播」给当前任意正在播放页里的 Composable。
+         */
+        private val _inPip = MutableStateFlow(false)
+        val inPip: StateFlow<Boolean> = _inPip
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -47,5 +64,14 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    /** 进入/退出画中画时同步全局状态（v1.4.6.0） */
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: android.content.res.Configuration,
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        _inPip.value = isInPictureInPictureMode
     }
 }

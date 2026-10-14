@@ -2,14 +2,17 @@ package com.novelreader.ui.screens.video
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import android.net.Uri
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.common.Format
 import androidx.media3.common.Tracks
 import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -159,10 +162,28 @@ class VideoPlayerViewModel(
     private val _selectedQuality = MutableStateFlow<QualityTrack?>(null)
     val selectedQuality: StateFlow<QualityTrack?> = _selectedQuality.asStateFlow()
 
+    // ==================== 外挂字幕（v1.4.6.0） ====================
+
+    /** 当前加载的字幕文件（本地 SAF Uri），null = 未加载 */
+    private val _subtitleUri = MutableStateFlow<Uri?>(null)
+    val subtitleUri: StateFlow<Uri?> = _subtitleUri.asStateFlow()
+
+    /** 字幕是否开启（false = 加载但关闭显示） */
+    private val _subtitleEnabled = MutableStateFlow(true)
+    val subtitleEnabled: StateFlow<Boolean> = _subtitleEnabled.asStateFlow()
+
+    /** 字幕文件名（仅用于展示） */
+    private val _subtitleName = MutableStateFlow<String?>(null)
+    val subtitleName: StateFlow<String?> = _subtitleName.asStateFlow()
+
     private var currentItem: NovelMediaItem? = null
     private var currentEpisode: ChapterItem? = null
     private var tickerJob: Job? = null
     private var boostJob: Job? = null
+
+    /** 缓存最近一次播放的地址与请求头（外挂字幕重载时复用） */
+    private var lastVideoUrl: String? = null
+    private var lastVideoHeaders: Map<String, String> = emptyMap()
 
     /** 常规倍速（长按加速结束后恢复到此值） */
     private var normalSpeed: Float = 1f
@@ -333,6 +354,135 @@ class VideoPlayerViewModel(
         _selectedQuality.value = null
     }
 
+    // ==================== 外挂字幕（v1.4.6.0） ====================
+
+    /**
+     * 根据当前字幕状态构建 MediaItem。
+     *
+     * 有字幕时用 [MediaItem.SubtitleConfiguration] 附加一条 side-loaded 文本轨道，
+     * 由 Media3 在 prepare 时解析（支持 SRT / WebVTT）。字幕 URI 是本地 SAF 地址，
+     * 走 `content://` scheme，DefaultDataSource 可直接读取。
+     */
+    private fun buildMediaItem(url: String): MediaItem {
+        val builder = MediaItem.Builder().setUri(url)
+        val subUri = _subtitleUri.value
+        if (subUri != null) {
+            val mime = subtitleMimeType(subUri)
+            val label = _subtitleName.value ?: "外挂字幕"
+            val sub = MediaItem.SubtitleConfiguration.Builder(subUri)
+                .setMimeType(mime)
+                .setLanguage("und")
+                .setLabel(label)
+                .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                .build()
+            builder.setSubtitleConfigurations(listOf(sub))
+        }
+        return builder.build()
+    }
+
+    /** 根据文件扩展名推断字幕 MIME 类型（srt → application/x-subrip，vtt → text/vtt） */
+    private fun subtitleMimeType(uri: Uri): String {
+        val path = uri.lastPathSegment?.lowercase() ?: return MimeTypes.APPLICATION_SUBRIP
+        return when {
+            path.endsWith(".vtt") -> MimeTypes.TEXT_VTT
+            path.endsWith(".ass") || path.endsWith(".ssa") -> MimeTypes.TEXT_SSA
+            else -> MimeTypes.APPLICATION_SUBRIP
+        }
+    }
+
+    /**
+     * 加载外挂字幕文件并立即生效（保留当前播放位置）。
+     *
+     * side-loaded 字幕必须在 MediaItem 里声明，所以需要重建媒体并重新 prepare。
+     * 为不打断观看，先记下当前位置，重建后 seek 回去。
+     */
+    fun loadSubtitle(uri: Uri, name: String?) {
+        val player = player ?: return
+        val url = lastVideoUrl ?: run {
+            _message.value = "请先播放视频"
+            return
+        }
+        val position = player.currentPosition
+        val wasPlaying = player.isPlaying
+
+        _subtitleUri.value = uri
+        _subtitleName.value = name
+        _subtitleEnabled.value = true
+
+        // 重建媒体（带字幕轨道）并从原位置续播
+        val mediaItem = buildMediaItem(url)
+        if (lastVideoHeaders.isNotEmpty()) {
+            val httpFactory = DefaultHttpDataSource.Factory()
+                .setUserAgent("NovelReader/1.0")
+                .setDefaultRequestProperties(lastVideoHeaders)
+                .setAllowCrossProtocolRedirects(true)
+            val mediaSourceFactory = DefaultMediaSourceFactory(httpFactory)
+            player.setMediaSource(mediaSourceFactory.createMediaSource(mediaItem))
+        } else {
+            player.setMediaItem(mediaItem)
+        }
+        player.prepare()
+        player.setPlaybackSpeed(normalSpeed)
+        applySubtitleEnabled()
+        if (position > 0) player.seekTo(position)
+        if (wasPlaying) player.play()
+
+        _message.value = "已加载字幕：${name ?: "外挂字幕"}"
+    }
+
+    /** 移除字幕（重建媒体，去掉字幕轨道，保留播放位置） */
+    fun clearSubtitle() {
+        val player = player ?: return
+        val url = lastVideoUrl ?: return
+        if (_subtitleUri.value == null) return
+        val position = player.currentPosition
+        val wasPlaying = player.isPlaying
+
+        _subtitleUri.value = null
+        _subtitleName.value = null
+        _subtitleEnabled.value = false
+
+        val mediaItem = buildMediaItem(url)
+        if (lastVideoHeaders.isNotEmpty()) {
+            val httpFactory = DefaultHttpDataSource.Factory()
+                .setUserAgent("NovelReader/1.0")
+                .setDefaultRequestProperties(lastVideoHeaders)
+                .setAllowCrossProtocolRedirects(true)
+            val mediaSourceFactory = DefaultMediaSourceFactory(httpFactory)
+            player.setMediaSource(mediaSourceFactory.createMediaSource(mediaItem))
+        } else {
+            player.setMediaItem(mediaItem)
+        }
+        player.prepare()
+        player.setPlaybackSpeed(normalSpeed)
+        if (position > 0) player.seekTo(position)
+        if (wasPlaying) player.play()
+
+        _message.value = "已移除字幕"
+    }
+
+    /** 切换字幕显示开关（不重建媒体，仅切换文本轨道启用状态） */
+    fun toggleSubtitle() {
+        _subtitleEnabled.value = !_subtitleEnabled.value
+        applySubtitleEnabled()
+        _message.value = if (_subtitleEnabled.value) "字幕已开启" else "字幕已关闭"
+    }
+
+    /**
+     * 应用字幕开关到播放器：启用时选中文本轨道，关闭时禁用。
+     *
+     * Media3 通过 [TrackSelectionParameters] 的 disabled track types 控制。
+     * 关闭文本轨道类型即隐藏字幕；重新启用则恢复默认文本轨道选择。
+     */
+    private fun applySubtitleEnabled() {
+        val p = player ?: return
+        val enabled = _subtitleEnabled.value
+        val params = p.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !enabled)
+            .build()
+        p.trackSelectionParameters = params
+    }
+
     fun init(item: NovelMediaItem, episodes: List<ChapterItem>, episode: ChapterItem) {
         currentItem = item
         _episodes.value = episodes
@@ -412,7 +562,11 @@ class VideoPlayerViewModel(
         _qualityTracks.value = emptyList()
         _selectedQuality.value = null
 
-        val mediaItem = MediaItem.Builder().setUri(url).build()
+        // 缓存当前播放地址与请求头（外挂字幕重载时复用，见 loadSubtitle）
+        lastVideoUrl = url
+        lastVideoHeaders = headers
+
+        val mediaItem = buildMediaItem(url)
 
         // 防盗链请求头：通过 DefaultHttpDataSource.Factory 注入
         if (headers.isNotEmpty()) {
@@ -429,6 +583,7 @@ class VideoPlayerViewModel(
 
         player.prepare()
         player.setPlaybackSpeed(normalSpeed)
+        applySubtitleEnabled()
         _error.value = null
         _state.update { it.copy(positionMs = 0L, durationMs = 0L, bufferedMs = 0L) }
 

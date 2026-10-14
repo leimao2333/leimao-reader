@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.5.5.4"
+    const val CURRENT_VERSION = "1.5.6.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.5.6.0",
+            date = "2026-10-14",
+            changes = listOf(
+                "**聚合源包一键导入（一条链接导入全部源）**：新增「聚合源包清单」（`all.json`，`leimaoPack` 格式）支持 —— 粘贴一条清单网址，App 按清单逐个下载里面的源包（legado 书源 / MoonTV 采集源 / Venera 源索引），把四类源**合并成一份勾选列表**，确认一次全部入库，不用再分几次导入、也不必分别记住几条链接",
+                "此前导入链路一次只识别一种格式（legado 数组 / MoonTV 配置 / Venera 索引），所以聚合源只能拆成 3 条链接；现在把「多文件下载 + 合并候选」交给 App 完成：清单里的相对路径按清单自身地址解析（换镜像 / 换分支不用改内容），Venera 索引仍会先列出候选、确认勾选后再逐个下载源码",
+                "**单个源包失败不中断**：某个源包下载失败或格式不合法时跳过它继续导入其余包，并在提示里点名是哪个包；用「从文件选择」导入清单时会明确提示改用网址导入（文件方式拿不到清单地址，解析不了相对路径）",
+            ),
+        ),
         VersionEntry(
             version = "1.5.5.4",
             date = "2026-10-14",

@@ -1,0 +1,14 @@
+[
+  {
+    "name": "测试漫画源一",
+    "fileName": "one.js",
+    "key": "one",
+    "version": "1.0"
+  },
+  {
+    "name": "测试漫画源二",
+    "fileName": "two.js",
+    "key": "two",
+    "version": "1.1"
+  }
+]

@@ -6,6 +6,7 @@ import com.novelreader.domain.model.SourceInfo
 import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.SourceRepository
 import com.novelreader.data.repository.SourceRepositoryImpl
+import com.novelreader.source.loader.SourcePack
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -142,6 +143,13 @@ class SourceManageViewModel(
             _loading.value = true
             _message.value = null
             try {
+                // 聚合源包清单（leimaoPack）：本身不是源，必须联网逐个下载子包，
+                // 文件方式拿不到清单 URL 就无法解析相对路径（v1.5.6.0）
+                if (SourcePack.parse(rawContent) != null) {
+                    _message.value = "这是聚合源包清单（all.json），请改用「粘贴网址」方式导入" +
+                        "（清单里的源包要按清单地址逐个下载）"
+                    return@launch
+                }
                 // v1.4.7.0「可选添加」：先解析出候选源列表；v1.5.3.0 起单源也弹框确认
                 val candidates = sourceRepository.previewImport(rawContent, fileName)
                 val skipped = sourceRepositoryImpl?.lastImportSkipped() ?: 0
@@ -171,21 +179,21 @@ class SourceManageViewModel(
     val importCandidates: StateFlow<List<SourceInfo>> = _importCandidates.asStateFlow()
 
     /**
-     * Venera index 批量导入的待下载条目（v1.5.3.0）。
+     * 待下载 / 待注册的 Venera 索引批次（v1.5.3.0）。
      *
-     * index.json 只是清单（不含 .js 源码），需要逐个下载 .js 才能注册。
-     * 这里缓存「勾选对话框弹出前」的 indexUrl + 全部条目，用户确认勾选后再下载注册。
-     * 非空表示当前候选对话框属于「Venera index 批量导入」模式（与 previewCache 模式区分）。
+     * `index.json` 只是清单（不含 .js 源码），需要逐个下载 .js 才能注册。
+     * 这里缓存「勾选对话框弹出前」的：(索引 URL, 全部条目)。
+     * 空表示当前候选里没有 Venera 索引（普通预览缓存模式）；
+     * 聚合包导入时可能同时含普通候选与 Venera 索引（两者在一次确认中一起注册）。
      */
-    private var veneraIndexPending: Pair<String, List<VeneraIndexEntry>>? = null
+    private var veneraPending: List<Pair<String, List<com.novelreader.source.venera.VeneraIndex.Entry>>> =
+        emptyList()
 
-    /** Venera index.json 里的单条候选（含下载 .js 所需的文件名与元信息） */
-    private data class VeneraIndexEntry(
-        val fileName: String,
-        val key: String,
-        val name: String,
-        val version: String,
-    )
+    /** 聚合包里已下载的子包（相对路径 + 绝对地址 + 内容） */
+    private data class PackFile(val rel: String, val url: String, val content: String)
+
+    /** Venera 索引批量注册结果 */
+    private data class VeneraImportResult(val ok: Int, val failures: List<String>)
 
     /** 用户在对话框中的勾选状态（sourceId 集合） */
     private val _selectedImportIds = MutableStateFlow<Set<String>>(emptySet())
@@ -220,36 +228,41 @@ class SourceManageViewModel(
         val ids = _selectedImportIds.value
         if (ids.isEmpty()) {
             _importCandidates.value = emptyList()
-            veneraIndexPending = null
+            veneraPending = emptyList()
             return
         }
-        // Venera index 批量导入模式：按勾选 id 下载 .js 再注册
-        val pending = veneraIndexPending
-        if (pending != null) {
-            viewModelScope.launch {
-                _importingSelected.value = true
-                try {
-                    downloadVeneraSelected(pending.first, pending.second, ids)
-                } finally {
-                    _importingSelected.value = false
-                    _importCandidates.value = emptyList()
-                    veneraIndexPending = null
-                }
-            }
-            return
-        }
-        // 常规（previewCache）模式：按 id 取回已解析的源注册
+        val venera = veneraPending
         viewModelScope.launch {
             _importingSelected.value = true
             try {
-                val n = sourceRepository.importSelected(ids)
-                _message.value = "已添加 $n 个源"
+                var added = 0
+                val failures = mutableListOf<String>()
+
+                // 已解析的候选（普通预览缓存）：按勾选 id 取回注册
+                runCatching { sourceRepository.importSelected(ids) }
+                    .onSuccess { added += it }
+                    .onFailure { failures += it.message ?: "添加失败" }
+
+                // Venera 索引：先按勾选下载 .js 再注册（与上面合并成一次「已添加 N 个源」）
+                if (venera.isNotEmpty()) {
+                    val result = downloadVeneraSelected(venera, ids)
+                    added += result.ok
+                    failures += result.failures
+                }
+
+                _message.value = buildString {
+                    append("已添加 $added 个源")
+                    if (failures.isNotEmpty()) {
+                        append("；失败 ${failures.size} 个：")
+                        append(failures.take(3).joinToString("，"))
+                        if (failures.size > 3) append(" 等")
+                    }
+                }
                 _importCandidates.value = emptyList()
                 refresh()
-            } catch (e: Exception) {
-                _message.value = "添加失败：${e.message}"
             } finally {
                 _importingSelected.value = false
+                veneraPending = emptyList()
             }
         }
     }
@@ -258,7 +271,7 @@ class SourceManageViewModel(
     fun cancelImportCandidates() {
         _importCandidates.value = emptyList()
         _selectedImportIds.value = emptySet()
-        veneraIndexPending = null
+        veneraPending = emptyList()
     }
 
     /**
@@ -301,10 +314,17 @@ class SourceManageViewModel(
                         tmpFile.delete()
                     }
                 }
+                // 聚合源包清单（leimaoPack）：一条链接导入全部源（v1.5.6.0）
+                val manifest = SourcePack.parse(content)
+                if (manifest != null) {
+                    importPack(url, manifest)
+                    return@launch
+                }
+
                 // Venera 源索引（index.json）：内容只是清单，需要逐个下载 .js 再导入
-                val veneraIndex = parseVeneraIndex(content)
-                if (veneraIndex != null) {
-                    importVeneraIndex(url, veneraIndex)
+                val veneraEntries = com.novelreader.source.venera.VeneraIndex.parse(content)
+                if (veneraEntries != null) {
+                    importVeneraIndex(url, veneraEntries)
                     return@launch
                 }
 
@@ -336,19 +356,85 @@ class SourceManageViewModel(
     }
 
     /**
-     * 解析 Venera 源索引（`[{name, fileName, key, version}]`）。
+     * 聚合源包导入（v1.5.6.0）：**一条链接 → 全部源**。
      *
-     * 这是 Venera 源集合的 index.json 格式：它不是源本身，
-     * 每个条目对应同目录下的一个 .js 源文件，需要逐个下载后再导入。
+     * 清单（见 [SourcePack]）本身不是源，只是一串同目录下的源包文件名，所以这里：
+     * 1. 逐个下载子包（带「第 i/n 个」进度），单个失败不中断（计入提示）
+     * 2. 拆包 —— Venera 索引只是清单（不含 .js 源码）留到确认后再下载；
+     *    其余文件（legado / MoonTV）交给 [SourceRepository.previewImportBatch] 一次解析
+     * 3. 两类候选合并成**一份**勾选列表，用户确认一次全部入库
+     *
+     * @param packUrl 清单自身 URL（子包相对路径按它的目录解析）
      */
-    private fun parseVeneraIndex(content: String): com.google.gson.JsonArray? {
-        val trimmed = content.trim()
-        if (!trimmed.startsWith("[")) return null
-        return runCatching {
-            val arr = com.google.gson.JsonParser.parseString(trimmed).asJsonArray
-            val first = arr.firstOrNull()?.takeIf { it.isJsonObject }?.asJsonObject ?: return null
-            if (first.has("fileName") && first.has("key")) arr else null
-        }.getOrNull()
+    private suspend fun importPack(packUrl: String, manifest: SourcePack.Manifest) {
+        val total = manifest.files.size.coerceAtLeast(1)
+        val files = mutableListOf<PackFile>()
+        val failedPacks = mutableListOf<String>()
+
+        manifest.files.forEachIndexed { i, rel ->
+            _message.value = "正在下载源包 ${i + 1}/$total：$rel"
+            _downloadProgress.value = i.toFloat() / total
+            val fileUrl = SourcePack.resolveUrl(packUrl, rel)
+            if (fileUrl == null) {
+                failedPacks += "$rel（地址无法解析）"
+                return@forEachIndexed
+            }
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    com.novelreader.core.network.HttpClient.get(fileUrl, timeoutMs = PACK_FILE_TIMEOUT_MS)
+                }
+            }.onSuccess { files += PackFile(rel, fileUrl, it) }
+                .onFailure { failedPacks += "$rel（${it.message ?: "下载失败"}）" }
+        }
+        _downloadProgress.value = 1f
+
+        // 拆包：Venera 索引不含源码，其余文件直接解析
+        val veneraBatches = mutableListOf<Pair<String, List<com.novelreader.source.venera.VeneraIndex.Entry>>>()
+        val plainFiles = mutableListOf<com.novelreader.domain.model.SourceFileContent>()
+        files.forEach { f ->
+            val entries = com.novelreader.source.venera.VeneraIndex.parse(f.content)
+            if (entries != null) {
+                // 索引的相对目录 = 索引自身 URL 的目录（下载 .js 时按它拼接）
+                if (entries.isNotEmpty()) veneraBatches += f.url to entries
+            } else {
+                plainFiles += com.novelreader.domain.model.SourceFileContent(
+                    fileName = remoteFileName(f.url),
+                    content = f.content,
+                )
+            }
+        }
+
+        val batch = sourceRepository.previewImportBatch(plainFiles)
+        val veneraCandidates = veneraBatches.flatMap { (_, entries) ->
+            entries.map { com.novelreader.source.venera.VeneraIndex.toSourceInfo(it) }
+        }
+        val candidates = batch.sources + veneraCandidates
+        val problems = failedPacks + batch.failedFiles
+
+        if (candidates.isEmpty()) {
+            _message.value = buildString {
+                append("聚合包未解析到有效源")
+                if (problems.isNotEmpty()) {
+                    append("：")
+                    append(problems.take(3).joinToString("，"))
+                }
+            }
+            return
+        }
+
+        veneraPending = veneraBatches
+        _importCandidates.value = candidates
+        _message.value = buildString {
+            append("聚合包「${manifest.name.ifBlank { "未命名" }}」")
+            append("共 ${candidates.size} 个源（${manifest.files.size} 个源包），请勾选要添加的")
+            if (batch.skippedEntries > 0) {
+                append("；另有 ${batch.skippedEntries} 个条目解析失败已跳过")
+            }
+            if (problems.isNotEmpty()) {
+                append("；${problems.size} 个源包失败：")
+                append(problems.take(3).joinToString("，"))
+            }
+        }
     }
 
     /**
@@ -357,79 +443,58 @@ class SourceManageViewModel(
      * index.json 只是清单（不含 .js 源码），先解析出全部候选条目让用户勾选，
      * 确认后再逐个下载 .js 注册（见 [downloadVeneraSelected]）。
      */
-    private fun importVeneraIndex(indexUrl: String, arr: com.google.gson.JsonArray) {
-        val entries = mutableListOf<VeneraIndexEntry>()
-        arr.forEach { el ->
-            val obj = el.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEach
-            val fileName = obj.get("fileName")?.asString ?: return@forEach
-            val key = obj.get("key")?.asString ?: fileName.substringBeforeLast(".")
-            val name = obj.get("name")?.asString ?: key
-            val version = obj.get("version")?.asString ?: ""
-            entries += VeneraIndexEntry(fileName = fileName, key = key, name = name, version = version)
-        }
+    private fun importVeneraIndex(
+        indexUrl: String,
+        entries: List<com.novelreader.source.venera.VeneraIndex.Entry>,
+    ) {
         if (entries.isEmpty()) {
             _message.value = "未解析到有效的 Venera 源清单"
             return
         }
-
-        // 构建候选 SourceInfo（id 由文件名推导，与下载注册时一致）
-        val candidates = entries.map { e ->
-            SourceInfo(
-                id = com.novelreader.source.venera.VeneraSourceId.fromFileName(e.fileName)
-                    ?: ("venera_" + e.fileName.substringBeforeLast(".")),
-                name = e.name.ifBlank { e.key.ifBlank { e.fileName } },
-                type = SourceType.COMIC,
-                version = e.version.ifBlank { "venera" },
-                author = e.key,
-                desc = "",
-                baseUrl = "",
-                format = com.novelreader.domain.model.SourceFormat.VENERA,
-                category = "漫画",
-            )
-        }
-        veneraIndexPending = indexUrl to entries
+        // 候选 SourceInfo 的 id 由文件名推导，与下载注册时一致（见 VeneraIndex.toSourceInfo）
+        val candidates = entries.map { com.novelreader.source.venera.VeneraIndex.toSourceInfo(it) }
+        veneraPending = listOf(indexUrl to entries)
         _importCandidates.value = candidates
         _message.value = "解析出 ${candidates.size} 个 Venera 源，请勾选要添加的"
     }
 
     /**
-     * 下载勾选的 Venera 源 .js 并注册（v1.5.3.0）。
+     * 下载勾选的 Venera 源 .js 并注册（v1.5.3.0；v1.5.6.0 支持「多个索引批次」= 聚合包）。
      *
      * 只在用户于候选对话框勾选并确认后调用，只下载勾选的条目。
+     * 不再自己设置提示消息 / 刷新列表 —— 由调用方与普通候选合并成一条结果消息。
      */
     private suspend fun downloadVeneraSelected(
-        indexUrl: String,
-        entries: List<VeneraIndexEntry>,
+        batches: List<Pair<String, List<com.novelreader.source.venera.VeneraIndex.Entry>>>,
         selectedIds: Set<String>,
-    ) {
-        val dir = indexUrl.substringBeforeLast('/', "")
+    ): VeneraImportResult {
+        val selected = batches.flatMap { (indexUrl, entries) ->
+            val dir = indexUrl.substringBeforeLast('/', "")
+            entries.filter { it.id != null && it.id in selectedIds }.map { dir to it }
+        }
+        if (selected.isEmpty()) return VeneraImportResult(0, emptyList())
+
         var ok = 0
         val failures = mutableListOf<String>()
         val batchIds = mutableSetOf<String>()
 
-        val selected = entries.filter { e ->
-            val id = com.novelreader.source.venera.VeneraSourceId.fromFileName(e.fileName)
-            id in selectedIds
-        }
-
-        selected.forEachIndexed { i, e ->
-            val id = com.novelreader.source.venera.VeneraSourceId.fromFileName(e.fileName)
-                ?: return@forEachIndexed
-            val sourceFileName = "$id.venera"
+        selected.forEachIndexed { i, (dir, entry) ->
+            val id = entry.id ?: return@forEachIndexed
             batchIds += id
 
-            _message.value = "正在导入 Venera 源 ${i + 1}/${selected.size}：${e.name}"
-            _downloadProgress.value = i.toFloat() / selected.size.coerceAtLeast(1)
+            _message.value = "正在导入 Venera 源 ${i + 1}/${selected.size}：${entry.name}"
+            _downloadProgress.value = i.toFloat() / selected.size
 
             runCatching {
                 val code = withContext(Dispatchers.IO) {
-                    com.novelreader.core.network.HttpClient.get("$dir/${e.fileName}")
+                    com.novelreader.core.network.HttpClient.get("$dir/${entry.fileName}")
                 }
-                sourceRepository.importSource(code, sourceFileName)
+                // 文件名用 "${id}.venera"，与启动恢复时构造的名字一致（见 VeneraSourceId）
+                sourceRepository.importSource(code, "$id.venera")
             }.onSuccess {
                 ok++
             }.onFailure {
-                failures += "${e.name}（${it.message}）"
+                failures += "${entry.name}（${it.message}）"
             }
         }
 
@@ -442,15 +507,7 @@ class SourceManageViewModel(
                 .forEach { sourceRepository.deleteSource(it.id) }
         }
 
-        _message.value = buildString {
-            append("Venera 源导入完成：成功 $ok/${selected.size}")
-            if (failures.isNotEmpty()) {
-                append("；失败 ${failures.size} 个：")
-                append(failures.take(3).joinToString("，"))
-                if (failures.size > 3) append(" 等")
-            }
-        }
-        refresh()
+        return VeneraImportResult(ok, failures)
     }
 
     /** 删除源 */
@@ -836,3 +893,10 @@ enum class SourceSortOrder(val label: String) {
     CATEGORY("分类"),
     ENABLED("启用状态"),
 }
+
+/**
+ * 聚合包单个子包的下载超时。
+ *
+ * 聚合包里的 legado 包动辄 1MB+，默认 20s 读取超时在弱网下不够（v1.5.6.0）。
+ */
+private const val PACK_FILE_TIMEOUT_MS = 60_000L

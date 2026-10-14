@@ -27,6 +27,8 @@ object SourceValidator {
         val isVeneraIndex: Boolean = false,
         /** 是否为 MoonTV / LunaTV 采集源配置（含 Base58 订阅，导入后得到多个视频源，v1.3.3.0） */
         val isMoonTvConfig: Boolean = false,
+        /** 是否为聚合源包清单（leimaoPack，本身不是源，需逐个下载子包，v1.5.6.0） */
+        val isSourcePack: Boolean = false,
     )
 
     /**
@@ -38,21 +40,28 @@ object SourceValidator {
             return Result(false, "源内容为空")
         }
 
+        // 0.0 聚合源包清单（leimaoPack，v1.5.6.0）：
+        //     内容是一串源包文件名，本身不是源，需逐个下载子包再合并候选。
+        //     必须排在最前 —— 它是最「specific」的形态（魔数字段），
+        //     否则会被当成普通 JSON 源报「缺少源名称」。
+        com.novelreader.source.loader.SourcePack.parse(content)?.let { manifest ->
+            return Result(
+                true,
+                "检测到聚合源包清单（共 ${manifest.files.size} 个源包）",
+                null,
+                isSourcePack = true,
+            )
+        }
+
         // 0. Venera 源索引（index.json）：内容是 [{name,fileName,key,version}]，
         //    本身不是源，需要按 fileName 逐个下载再导入
-        if (content.startsWith("[") && content.contains("fileName")) {
-            runCatching {
-                val arr = com.google.gson.JsonParser.parseString(content).asJsonArray
-                val first = arr.firstOrNull()?.takeIf { it.isJsonObject }?.asJsonObject
-                if (first != null && first.has("fileName") && first.has("key")) {
-                    return Result(
-                        true,
-                        "检测到 Venera 源索引（共 ${arr.size()} 个源）",
-                        SourceFormat.VENERA,
-                        isVeneraIndex = true,
-                    )
-                }
-            }
+        com.novelreader.source.venera.VeneraIndex.parse(content)?.let { entries ->
+            return Result(
+                true,
+                "检测到 Venera 源索引（共 ${entries.size} 个源）",
+                SourceFormat.VENERA,
+                isVeneraIndex = true,
+            )
         }
 
         // 0.1 MoonTV / LunaTV 采集源配置（v1.3.3.0）

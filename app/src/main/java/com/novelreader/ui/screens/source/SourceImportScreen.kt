@@ -103,7 +103,8 @@ fun SourceImportScreen(
         ) {
             Text(
                 text = "支持 阅读(legado) 书源 / Venera 漫画源 / MoonTV·LunaTV 采集源 / 自研 JSON、JS 源；\n" +
-                    "粘贴网址（Venera 的 index.json、MoonTV 订阅的 .txt 或 ?format=2 链接）可批量导入",
+                    "粘贴网址（聚合源包清单 all.json、Venera 的 index.json、MoonTV 订阅的 .txt 或 ?format=2 链接）可批量导入\n" +
+                    "聚合源包清单（all.json）会一次下载清单内全部源包，列出所有源供一次勾选",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

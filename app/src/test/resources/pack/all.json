@@ -1,0 +1,10 @@
+{
+  "leimaoPack": 1,
+  "name": "测试聚合源包",
+  "version": "1.0",
+  "files": [
+    "legado-a.json",
+    "video-b.json",
+    "venera/index.json"
+  ]
+}

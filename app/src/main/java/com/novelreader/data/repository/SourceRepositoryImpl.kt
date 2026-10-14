@@ -79,6 +79,44 @@ class SourceRepositoryImpl(
             parsed.map { it.info }
         }
 
+    /**
+     * 批量解析多个源文件（聚合包导入用，v1.5.6.0）。
+     *
+     * 候选缓存只清空一次，各文件结果累积到同一份缓存 —— 这是「一条链接导入全部源」
+     * 的关键：用户在一个对话框里跨包勾选，确认后由 [importSelected] 按 id 取回注册。
+     * 单个文件解析失败不中断整包（计入 [SourceImportBatch.failedFiles]）。
+     */
+    override suspend fun previewImportBatch(
+        files: List<com.novelreader.domain.model.SourceFileContent>,
+    ): com.novelreader.domain.model.SourceImportBatch =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            previewCache.clear()
+            val sources = mutableListOf<SourceInfo>()
+            val failedFiles = mutableListOf<String>()
+            var skipped = 0
+
+            files.forEach { file ->
+                runCatching { sourceManager.previewImport(file.content, file.fileName) }
+                    .onSuccess { parsed ->
+                        skipped += sourceManager.lastImportSkipped
+                        parsed.forEach { previewCache[it.info.id] = it }
+                        sources += parsed.map { it.info }
+                    }
+                    .onFailure {
+                        android.util.Log.w(
+                            "SourceImport",
+                            "聚合包文件「${file.fileName}」解析失败：${it.message}",
+                        )
+                        failedFiles += file.fileName
+                    }
+            }
+            com.novelreader.domain.model.SourceImportBatch(
+                sources = sources,
+                failedFiles = failedFiles,
+                skippedEntries = skipped,
+            )
+        }
+
     override suspend fun importSelected(ids: Set<String>): Int =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             val selected = ids.mapNotNull { previewCache[it] }

@@ -1,0 +1,23 @@
+[
+  {
+    "bookSourceName": "测试小说甲",
+    "bookSourceUrl": "https://novel-a.example.com",
+    "bookSourceType": 0,
+    "bookSourceGroup": "小说",
+    "searchUrl": "https://novel-a.example.com/search?q={{key}}"
+  },
+  {
+    "bookSourceName": "测试小说乙",
+    "bookSourceUrl": "https://novel-b.example.com",
+    "bookSourceType": 0,
+    "bookSourceGroup": "小说",
+    "searchUrl": "https://novel-b.example.com/search?q={{key}}"
+  },
+  {
+    "bookSourceName": "测试漫画甲",
+    "bookSourceUrl": "https://comic-a.example.com",
+    "bookSourceType": 2,
+    "bookSourceGroup": "漫画",
+    "searchUrl": "https://comic-a.example.com/search?q={{key}}"
+  }
+]

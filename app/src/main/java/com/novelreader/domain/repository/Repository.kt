@@ -32,6 +32,19 @@ interface SourceRepository {
     suspend fun previewImport(rawContent: String, fileName: String? = null): List<SourceInfo>
 
     /**
+     * 批量解析多个源文件（聚合包导入用，v1.5.6.0）。
+     *
+     * 与 [previewImport] 的区别：候选缓存**只在开头清空一次**，各文件结果累积，
+     * 用户可在一份勾选列表里跨文件挑选；连调 [previewImport] 只有最后一个文件的
+     * 候选能注册（每次都 `clear()`）。
+     *
+     * @param files 已下载好的各子包（文件名 + 内容）
+     * @return 合并后的候选列表 + 失败/跳过统计
+     */
+    suspend fun previewImportBatch(files: List<com.novelreader.domain.model.SourceFileContent>):
+        com.novelreader.domain.model.SourceImportBatch
+
+    /**
      * 批量注册用户勾选的源（v1.4.7.0「可选添加」）。
      *
      * @param selected 勾选源的 [SourceInfo.id] 集合（id 来自 [previewImport] 返回结果）

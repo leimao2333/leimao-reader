@@ -1,0 +1,13 @@
+{
+  "api_site": {
+    "video-a.example.com": {
+      "name": "测试影视甲",
+      "api": "https://video-a.example.com/api.php/provide/vod",
+      "detail": "https://video-a.example.com"
+    },
+    "video-b.example.com": {
+      "name": "测试影视乙",
+      "api": "https://video-b.example.com/api.php/provide/vod"
+    }
+  }
+}

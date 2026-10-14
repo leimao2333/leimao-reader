@@ -581,6 +581,11 @@ private class VideoHomeFakeSourceRepository(private val sources: List<SourceInfo
     override suspend fun previewImport(rawContent: String, fileName: String?): List<SourceInfo> =
         emptyList()
 
+    override suspend fun previewImportBatch(
+        files: List<com.novelreader.domain.model.SourceFileContent>,
+    ): com.novelreader.domain.model.SourceImportBatch =
+        com.novelreader.domain.model.SourceImportBatch(emptyList())
+
     override suspend fun importSelected(ids: Set<String>): Int = 0
 
     override suspend fun deleteSource(sourceId: String) = Unit

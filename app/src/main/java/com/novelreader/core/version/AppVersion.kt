@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.5.1.0"
+    const val CURRENT_VERSION = "1.5.2.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,13 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.5.2.0",
+            date = "2026-10-14",
+            changes = listOf(
+                "**刷新改为按钮触发，去掉下拉刷新手势**：下拉刷新手势在列表滚动时太灵敏、容易误触发，现移除下拉手势，刷新统一由页面顶部的「刷新」按钮完成（视频首页 / 电影 / 动漫 / 短剧频道都有），列表滚动不再受干扰",
+            ),
+        ),
         VersionEntry(
             version = "1.5.1.0",
             date = "2026-10-14",

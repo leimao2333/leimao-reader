@@ -276,83 +276,59 @@ fun HomeScreen(
                 val showShortDrama = selectedTab == 2 && videoSubTab == 3
                 if (showVideoHome) {
                     // 影视首页（MoonTV 风格）：继续观看 + 分类分区横滑 / 分类网格 + 四维筛选（v1.3.5.0）
-                    // v1.5.0.0：包下拉刷新容器（内容已加载时进出 Tab 秒开，刷新靠下拉）
-                    com.novelreader.ui.components.PullToRefreshBox(
-                        refreshing = videoHomeState.loading,
-                        onRefresh = { viewModel.refreshVideoHome() },
-                        modifier = Modifier.fillMaxSize(),
-                    ) {
-                        com.novelreader.ui.screens.video.VideoHomeContent(
-                            state = videoHomeState,
-                            onSelectCategory = viewModel::selectVideoCategory,
-                            onSelectArea = viewModel::selectVideoArea,
-                            onSelectYear = viewModel::selectVideoYear,
-                            onSelectOrder = viewModel::selectVideoOrder,
-                            onExpandCategory = viewModel::expandVideoCategory,
-                            onCollapseCategory = viewModel::collapseVideoCategory,
-                            onItemClick = onOpenVideoItem,
-                            onRefresh = viewModel::refreshVideoHome,
-                            onLoadMore = viewModel::loadMoreVideo,
-                            onOpenSearch = onOpenVideoSearch,
-                        )
-                    }
+                    // v1.5.1.0：去掉下拉刷新容器，刷新仅靠顶部刷新按钮（下拉手势太灵敏，容易误触发）
+                    com.novelreader.ui.screens.video.VideoHomeContent(
+                        state = videoHomeState,
+                        onSelectCategory = viewModel::selectVideoCategory,
+                        onSelectArea = viewModel::selectVideoArea,
+                        onSelectYear = viewModel::selectVideoYear,
+                        onSelectOrder = viewModel::selectVideoOrder,
+                        onExpandCategory = viewModel::expandVideoCategory,
+                        onCollapseCategory = viewModel::collapseVideoCategory,
+                        onItemClick = onOpenVideoItem,
+                        onRefresh = viewModel::refreshVideoHome,
+                        onLoadMore = viewModel::loadMoreVideo,
+                        onOpenSearch = onOpenVideoSearch,
+                    )
                 }
 
                 if (showMovieChannel) {
-                    // 电影频道（v1.5.0.0：分类 Tab + 海报网格 + 触底分页 + 下拉刷新）
+                    // 电影频道（v1.5.0.0：分类 Tab + 海报网格 + 触底分页；v1.5.1.0 刷新仅靠顶部按钮）
                     val channelState by viewModel.movieChannel.collectAsState()
-                    com.novelreader.ui.components.PullToRefreshBox(
-                        refreshing = channelState.loading,
+                    com.novelreader.ui.screens.video.VideoChannelScreen(
+                        title = "电影",
+                        state = channelState,
+                        onSelectCategory = viewModel::selectMovieChannelCategory,
+                        onLoadMore = viewModel::loadMoreMovieChannel,
                         onRefresh = { viewModel.refreshMovieChannel() },
-                        modifier = Modifier.fillMaxSize(),
-                    ) {
-                        com.novelreader.ui.screens.video.VideoChannelScreen(
-                            title = "电影",
-                            state = channelState,
-                            onSelectCategory = viewModel::selectMovieChannelCategory,
-                            onLoadMore = viewModel::loadMoreMovieChannel,
-                            onRefresh = { viewModel.refreshMovieChannel() },
-                            onOpenDetail = onOpenVideoItem,
-                        )
-                    }
+                        onOpenDetail = onOpenVideoItem,
+                    )
                 }
 
                 if (showAnimeChannel) {
                     // 动漫频道（v1.5.0.0：同上结构）
                     val channelState by viewModel.animeChannel.collectAsState()
-                    com.novelreader.ui.components.PullToRefreshBox(
-                        refreshing = channelState.loading,
+                    com.novelreader.ui.screens.video.VideoChannelScreen(
+                        title = "动漫",
+                        state = channelState,
+                        onSelectCategory = viewModel::selectAnimeChannelCategory,
+                        onLoadMore = viewModel::loadMoreAnimeChannel,
                         onRefresh = { viewModel.refreshAnimeChannel() },
-                        modifier = Modifier.fillMaxSize(),
-                    ) {
-                        com.novelreader.ui.screens.video.VideoChannelScreen(
-                            title = "动漫",
-                            state = channelState,
-                            onSelectCategory = viewModel::selectAnimeChannelCategory,
-                            onLoadMore = viewModel::loadMoreAnimeChannel,
-                            onRefresh = { viewModel.refreshAnimeChannel() },
-                            onOpenDetail = onOpenVideoItem,
-                        )
-                    }
+                        onOpenDetail = onOpenVideoItem,
+                    )
                 }
 
                 if (showShortDrama) {
                     // 短剧频道（红果式：分类 Tab + 竖屏海报网格）
                     val dramaState by viewModel.shortDrama.collectAsState()
-                    com.novelreader.ui.components.PullToRefreshBox(
-                        refreshing = dramaState.loading,
+                    com.novelreader.ui.screens.video.VideoChannelScreen(
+                        title = "短剧",
+                        state = dramaState,
+                        onSelectCategory = viewModel::selectShortDramaCategory,
+                        onLoadMore = viewModel::loadMoreShortDrama,
                         onRefresh = { viewModel.refreshShortDrama() },
-                        modifier = Modifier.fillMaxSize(),
-                    ) {
-                        com.novelreader.ui.screens.video.VideoChannelScreen(
-                            title = "短剧",
-                            state = dramaState,
-                            onSelectCategory = viewModel::selectShortDramaCategory,
-                            onLoadMore = viewModel::loadMoreShortDrama,
-                            onRefresh = { viewModel.refreshShortDrama() },
-                            onOpenDetail = onOpenShortDrama,
-                        )
-                    }
+                        onOpenDetail = onOpenShortDrama,
+                    )
                 }
 
                 // 书架内容（合并后的主内容区）

@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.5.2.0"
+    const val CURRENT_VERSION = "1.5.3.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,13 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.5.3.0",
+            date = "2026-10-14",
+            changes = listOf(
+                "**修复小说 / 漫画源导入无选择框**：此前只有「解析出多个源」才弹勾选框，单个小说源（legado 单源）、单个漫画源（Venera 单源）会直接导入、不弹框；Venera 的 index.json 批量导入更是完全绕过勾选直接下载注册。现统一为：**所有导入（单源 / 多源 / Venera 清单）都先弹出「选择要添加的源」勾选框**，单源默认勾选、点「添加」确认，多源可逐个勾选，Venera 清单确认后才下载勾选的 .js",
+            ),
+        ),
         VersionEntry(
             version = "1.5.2.0",
             date = "2026-10-14",

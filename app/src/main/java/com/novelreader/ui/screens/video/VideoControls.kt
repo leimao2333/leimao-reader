@@ -34,11 +34,12 @@ import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -107,6 +108,7 @@ fun BoxScope.VideoControlsOverlay(
     onPrev: () -> Unit,
     onNext: () -> Unit,
     onToggleFullscreen: () -> Unit,
+    onToggleOrientation: () -> Unit,
     onOpenEpisodes: () -> Unit,
     qualityTracks: List<QualityTrack> = emptyList(),
     selectedQuality: QualityTrack? = null,
@@ -394,33 +396,37 @@ fun BoxScope.VideoControlsOverlay(
 
                 Spacer(Modifier.width(4.dp))
 
-                // 清晰度（仅多码率源显示）
+                // 横竖切换（旋转）：全屏时在横屏 / 竖屏之间切换
+                IconButton(onClick = onToggleOrientation) {
+                    Icon(
+                        Icons.Filled.ScreenRotation,
+                        contentDescription = "横竖切换",
+                        tint = Color.White,
+                    )
+                }
+
+                Spacer(Modifier.width(2.dp))
+
+                // 更多菜单：清晰度（仅多码率源）收纳进这里，不再常驻底部操作栏
                 if (qualityTracks.isNotEmpty()) {
                     Box {
-                        Row(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .clickable { qualityMenuOpen = true }
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
+                        IconButton(onClick = { qualityMenuOpen = true }) {
                             Icon(
-                                Icons.Filled.HighQuality,
-                                contentDescription = "清晰度",
+                                Icons.Filled.MoreVert,
+                                contentDescription = "更多",
                                 tint = Color.White,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                text = selectedQuality?.label ?: "自动",
-                                color = Color.White,
-                                fontSize = 13.sp,
                             )
                         }
                         DropdownMenu(
                             expanded = qualityMenuOpen,
                             onDismissRequest = { qualityMenuOpen = false },
                         ) {
+                            Text(
+                                text = "清晰度",
+                                color = Color.White.copy(alpha = 0.6f),
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            )
                             DropdownMenuItem(
                                 text = {
                                     Text(
@@ -449,7 +455,6 @@ fun BoxScope.VideoControlsOverlay(
                             }
                         }
                     }
-                    Spacer(Modifier.width(4.dp))
                 }
 
                 IconButton(onClick = onToggleFullscreen) {

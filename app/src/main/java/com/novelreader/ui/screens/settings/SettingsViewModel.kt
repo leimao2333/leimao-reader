@@ -200,6 +200,10 @@ class SettingsViewModel(
     private val _videoVerticalSwipeSwitch = MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_VERTICAL_SWIPE_SWITCH)
     val videoVerticalSwipeSwitch: StateFlow<Boolean> = _videoVerticalSwipeSwitch.asStateFlow()
 
+    /** 小窗播放（PIP）开关（v1.5.1.0，默认关闭） */
+    private val _videoPipEnabled = MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_PIP_ENABLED)
+    val videoPipEnabled: StateFlow<Boolean> = _videoPipEnabled.asStateFlow()
+
     init {
         observePrefs()
         observeWebDav()
@@ -255,6 +259,9 @@ class SettingsViewModel(
         }
         viewModelScope.launch {
             preferencesManager.videoVerticalSwipeSwitchFlow.collect { _videoVerticalSwipeSwitch.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.videoPipEnabledFlow.collect { _videoPipEnabled.value = it }
         }
     }
 
@@ -314,5 +321,9 @@ class SettingsViewModel(
 
     fun setVideoVerticalSwipeSwitch(value: Boolean) {
         viewModelScope.launch { preferencesManager.setVideoVerticalSwipeSwitch(value) }
+    }
+
+    fun setVideoPipEnabled(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setVideoPipEnabled(value) }
     }
 }

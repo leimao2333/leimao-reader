@@ -737,7 +737,32 @@ class HomeViewModel(
     ) {
         SHORT_DRAMA("短剧", listOf("短剧")),
         MOVIE("电影", listOf("电影")),
-        ANIME("动漫", listOf("动漫", "动画", "番剧")),
+        ANIME("动漫", listOf("动漫", "动画", "番剧"));
+
+        /**
+         * 分类名是否属于本频道。
+         *
+         * 比单纯 `contains(keyword)` 更精准：分类名含关键词，但要排除「解说 / 剪辑 /
+         * 预告 / 花絮 / 混剪 / 片花 / 合集 / 经典回顾」这类非正片栏目，
+         * 否则「电影」频道会混入「电影解说」「微电影解说」，「动漫」混入「动漫剪辑」。
+         */
+        fun matchesCategory(title: String): Boolean {
+            if (title.isBlank()) return false
+            if (CATEGORY_EXCLUDE_WORDS.any { title.contains(it) }) return false
+            return keywords.any { title.contains(it) }
+        }
+
+        /**
+         * 分类 Tab 排序权重（越小越靠前）。
+         *
+         * 0 = 纯正片分类（分类名就是关键词本身，如「电影」「动漫」「动画」）；
+         * 1 = 带修饰的正片分类（如「国产动漫」「日本动漫」「最新电影」）；
+         * 2 = 其余（更宽泛的匹配项）。保证「胡乱排」变成稳定、可预期的顺序。
+         */
+        fun categoryRank(title: String): Int = when {
+            keywords.any { title == it } -> 0
+            else -> 1
+        }
     }
 
     /** 频道运行时（各自独立的聚合计划缓存 / 分页游标 / 任务） */
@@ -937,12 +962,14 @@ class HomeViewModel(
                 val cats = runCatching {
                     withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) { contentRepository.exploreCategoriesOf(src.id) }
                 }.getOrNull().orEmpty()
-                    .filter { cat -> channel.keywords.any { kw -> cat.title.contains(kw) } }
+                    .filter { cat -> channel.matchesCategory(cat.title) }
                 cats.map { cat -> cat.title to (src to cat.url) }
             } }.awaitAll().flatten()
         }
+        // 分类 Tab 排序：正片分类优先（纯「电影/动漫」等排最前），解说/剪辑类靠后，
+        // 同一分类名下跨源聚合。避免分类顺序随源探测先后而「胡乱排」。
         val grouped = LinkedHashMap<String, MutableList<Pair<com.novelreader.domain.model.SourceInfo, String>>>()
-        for ((title, entry) in found) {
+        for ((title, entry) in found.sortedBy { (title, _) -> channel.categoryRank(title) }) {
             grouped.getOrPut(title) { mutableListOf() }.add(entry)
         }
         rt.plan = grouped
@@ -972,5 +999,15 @@ class HomeViewModel(
 
         /** 短剧标记（extras key）：值为 "1" 时播放页默认竖屏 + 红果式选集 */
         const val EXTRA_SHORT_DRAMA = "isShortDrama"
+
+        /**
+         * 频道分类的排除词：分类名含这些词即视为「非正片」栏目，不进电影 / 动漫 / 短剧频道。
+         * 覆盖「解说 / 剪辑 / 预告 / 花絮 / 混剪 / 片花 / 合集 / 经典回顾 / 片段」等，
+         * 避免「电影」频道混入「电影解说」、「动漫」混入「动漫剪辑」。
+         */
+        private val CATEGORY_EXCLUDE_WORDS = listOf(
+            "解说", "剪辑", "预告", "花絮", "混剪", "片花", "合集", "片段",
+            "经典回顾", "吐槽", "评论", "盘点", "榜单", "排行榜",
+        )
     }
 }

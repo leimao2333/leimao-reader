@@ -92,6 +92,7 @@ fun SettingsScreen(
     val videoDoubleTapSeek by viewModel.videoDoubleTapSeek.collectAsState()
     val videoAutoNext by viewModel.videoAutoNext.collectAsState()
     val videoVerticalSwipeSwitch by viewModel.videoVerticalSwipeSwitch.collectAsState()
+    val videoPipEnabled by viewModel.videoPipEnabled.collectAsState()
 
     Scaffold(
         snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
@@ -294,6 +295,15 @@ fun SettingsScreen(
                 Switch(
                     checked = videoVerticalSwipeSwitch,
                     onCheckedChange = { viewModel.setVideoVerticalSwipeSwitch(it) },
+                )
+            }
+            SettingRow(
+                title = "小窗播放",
+                subtitle = "播放中切到后台时自动进入画中画小窗（默认关闭）",
+            ) {
+                Switch(
+                    checked = videoPipEnabled,
+                    onCheckedChange = { viewModel.setVideoPipEnabled(it) },
                 )
             }
 

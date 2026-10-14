@@ -85,10 +85,15 @@ fun PullToRefreshBox(
         label = "pullOffset",
     )
 
-    // nestedScroll：内容滚到顶后，向下的 drag 由本容器消费做下拉
+    // nestedScroll：用 onPostScroll 承接下拉。
+    // onPostScroll 只在子内容（Lazy 列表）消费完剩余量之后才被调用——
+    // 列表未到顶时向下的 drag 会被列表正常消费用于滚动，不经过这里；
+    // 只有当列表已滚到顶、继续下拉的「剩余量」才会进入 onPostScroll 变成下拉刷新位移。
+    // （此前用 onPreScroll 会在列表未到顶时就抢走向下 drag，导致正常向上翻页被吞、
+    //   且轻微下拉就误触发刷新。）
     val connection = remember(triggerPx, maxPullPx) {
         object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
                 if (currentRefreshing) return Offset.Zero
                 if (available.y > 0f) {
                     // 新拖动取消待执行的回弹（连续微拖动可累积触发）

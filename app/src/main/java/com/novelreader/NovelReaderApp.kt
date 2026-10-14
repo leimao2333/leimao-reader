@@ -3,6 +3,8 @@ package com.novelreader
 import android.app.Application
 import coil.ImageLoader
 import coil.ImageLoaderFactory
+import coil.disk.DiskCache
+import coil.memory.MemoryCache
 import com.novelreader.core.image.ImageDecryptInterceptor
 import com.novelreader.di.AppContainer
 import kotlinx.coroutines.CoroutineScope
@@ -62,6 +64,23 @@ class NovelReaderApp : Application(), ImageLoaderFactory {
                     .addInterceptor(com.novelreader.core.image.CoverDefaultsInterceptor())
                     .build()
             }
-            .crossfade(true)
+            // 内存缓存：占应用堆 25%（漫画 / 封面长图解码后很大，缓存越多翻页越快）
+            .memoryCache {
+                MemoryCache.Builder(this)
+                    .maxSizePercent(0.25)
+                    .build()
+            }
+            // 磁盘缓存：封面 / 漫画图落盘，二次进入与翻回上一页免网络
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(cacheDir.resolve("image_cache"))
+                    .maxSizeBytes(512L * 1024 * 1024)
+                    .build()
+            }
+            // 硬件位图 + 渐进式解码：首帧更快、内存更省。
+            // 需变换（如漫画「分段乱序」还原）的请求已在 ComicImage 里显式 allowHardware(false)，
+            // 不会与这里冲突。
+            .respectCacheHeaders(false)
+            .crossfade(200)
             .build()
 }

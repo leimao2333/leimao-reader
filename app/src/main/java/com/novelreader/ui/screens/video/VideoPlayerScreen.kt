@@ -198,6 +198,8 @@ fun VideoPlayerScreen(
     var isFullscreen by remember { mutableStateOf(isShortDrama) }
     // 短剧横屏切换（默认竖屏；点全屏按钮切横屏，再点切回竖屏）
     var shortDramaLandscape by remember { mutableStateOf(false) }
+    // 普通视频全屏时的横竖方向（v1.5.1.0）：默认横屏，点「旋转」切竖屏
+    var videoLandscape by remember { mutableStateOf(true) }
     var fullscreenInited by remember { mutableStateOf(false) }
     // 是否处于画中画（PIP）模式（v1.4.6.0）：PIP 中隐藏全部控制层与浮层
     var inPip by remember { mutableStateOf(false) }
@@ -225,17 +227,19 @@ fun VideoPlayerScreen(
         }
     }
 
-    // ===== 画中画（PIP，v1.4.6.0）=====
-    // 播放中切后台（ON_STOP）→ 自动进入小窗；回到前台（ON_START）→ 退出小窗并回到全屏。
+    // ===== 画中画（PIP，v1.4.6.0；v1.5.1.0 加开关，默认关闭）=====
+    // 播放中切后台（ON_STOP）→ 仅当「小窗播放」开关开启时进入小窗；否则保持普通后台。
+    // 回到前台（ON_START）→ 退出小窗并回到全屏。
     // 用户点小窗上的「返回」按钮 → 系统回调 onPictureInPictureModeChanged(false)。
     val pipSupported = remember { Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && activity?.packageManager?.hasSystemFeature(android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE) == true }
+    val currentPipEnabled by rememberUpdatedState(prefs.pipEnabled)
     DisposableEffect(lifecycleOwner, pipSupported) {
         if (!pipSupported) return@DisposableEffect onDispose {}
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_STOP -> {
-                    // 播放中才进 PIP（暂停/未加载时不打扰用户）
-                    if (viewModel.state.value.isPlaying && !inPip) {
+                    // 播放中 + 小窗开关开启才进 PIP（暂停/未加载/开关关闭时不打扰用户）
+                    if (viewModel.state.value.isPlaying && !inPip && currentPipEnabled) {
                         enterPip(activity)
                     }
                 }
@@ -273,12 +277,13 @@ fun VideoPlayerScreen(
     }
 
     // ===== 全屏：屏幕方向 =====
-    // 短剧全屏 = 竖屏沉浸（可切横屏）；普通视频全屏 = 横屏
-    LaunchedEffect(isFullscreen, isShortDrama, shortDramaLandscape) {
+    // 短剧全屏 = 竖屏沉浸（可切横屏）；普通视频全屏 = 横屏（可切竖屏）
+    LaunchedEffect(isFullscreen, isShortDrama, shortDramaLandscape, videoLandscape) {
         activity?.requestedOrientation = when {
             isShortDrama && shortDramaLandscape -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             isShortDrama -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-            isFullscreen -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            isFullscreen && videoLandscape -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            isFullscreen -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
             else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
@@ -341,8 +346,8 @@ fun VideoPlayerScreen(
 
     val seekStepMs = prefs.doubleTapSeekSec * 1000L
 
-    // 横屏全屏判定（上下滑切上下集用）：普通视频全屏，或短剧横屏
-    val isLandscapeFullscreen = if (isShortDrama) shortDramaLandscape else isFullscreen
+    // 横屏全屏判定（上下滑切上下集用）：短剧横屏，或普通视频横屏全屏（全屏但切竖屏时不算横屏）
+    val isLandscapeFullscreen = if (isShortDrama) shortDramaLandscape else (isFullscreen && videoLandscape)
     // rememberUpdatedState：让 pointerInput(Unit) 的闭包读到最新值（v1.4.7.0）
     val currentIsLandscapeFullscreen by rememberUpdatedState(isLandscapeFullscreen)
     val currentVerticalSwipeSwitch by rememberUpdatedState(prefs.verticalSwipeSwitch)
@@ -744,6 +749,17 @@ fun VideoPlayerScreen(
                 onToggleFullscreen = {
                     if (isShortDrama) shortDramaLandscape = !shortDramaLandscape
                     else isFullscreen = !isFullscreen
+                },
+                onToggleOrientation = {
+                    if (isShortDrama) {
+                        shortDramaLandscape = !shortDramaLandscape
+                    } else if (!isFullscreen) {
+                        // 窗口态点旋转：先进入全屏（默认横屏）
+                        isFullscreen = true
+                        videoLandscape = true
+                    } else {
+                        videoLandscape = !videoLandscape
+                    }
                 },
                 onOpenEpisodes = { episodesOpen = true },
                 qualityTracks = qualityTracks,

@@ -150,6 +150,8 @@ class PreferencesManager(private val context: Context) {
         val KEY_VIDEO_AUTO_NEXT = booleanPreferencesKey("video_auto_next")
         /** 横屏全屏上下滑切换上下集（v1.4.7.0） */
         val KEY_VIDEO_VERTICAL_SWIPE_SWITCH = booleanPreferencesKey("video_vertical_swipe_switch")
+        /** 小窗播放（PIP）开关（v1.5.1.0，默认关闭；关闭时切后台不进入画中画） */
+        val KEY_VIDEO_PIP_ENABLED = booleanPreferencesKey("video_pip_enabled")
 
         // ----- v1.3.3.0 影视首页（MoonTV 风格）-----
         /** 影视首页当前使用的视频源 id（记忆上次选择） */
@@ -222,6 +224,8 @@ class PreferencesManager(private val context: Context) {
         const val DEFAULT_VIDEO_AUTO_NEXT = false
         /** 默认开启横屏上下滑切集 */
         const val DEFAULT_VIDEO_VERTICAL_SWIPE_SWITCH = true
+        /** 默认关闭小窗播放（PIP） */
+        const val DEFAULT_VIDEO_PIP_ENABLED = false
         /** 默认视频 Tab 频道栏目：0=首页 */
         const val DEFAULT_VIDEO_CHANNEL_INDEX = 0
         /** 搜索历史分隔符（历史记录用单个字符串存储，分隔符分隔） */
@@ -596,6 +600,14 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setVideoVerticalSwipeSwitch(value: Boolean) {
         context.dataStore.edit { it[KEY_VIDEO_VERTICAL_SWIPE_SWITCH] = value }
+    }
+
+    /** 小窗播放（PIP）开关（v1.5.1.0，默认关闭） */
+    val videoPipEnabledFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_VIDEO_PIP_ENABLED] ?: DEFAULT_VIDEO_PIP_ENABLED }
+
+    suspend fun setVideoPipEnabled(value: Boolean) {
+        context.dataStore.edit { it[KEY_VIDEO_PIP_ENABLED] = value }
     }
 
     // ----- v1.3.3.0 影视首页 -----

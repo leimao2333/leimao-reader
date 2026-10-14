@@ -81,6 +81,8 @@ data class VideoPrefs(
     val autoNext: Boolean = false,
     /** 横屏全屏上下滑切换上下集（v1.4.7.0） */
     val verticalSwipeSwitch: Boolean = true,
+    /** 小窗播放（PIP）开关（v1.5.1.0，默认关闭） */
+    val pipEnabled: Boolean = false,
     /** 是否已完成首次读取（UI 依据此判断能否应用"默认全屏"） */
     val loaded: Boolean = false,
 )
@@ -183,6 +185,12 @@ class VideoPlayerViewModel(
     private var tickerJob: Job? = null
     private var boostJob: Job? = null
 
+    /** 预取任务（切集时取消，避免旧集预取覆盖新集） */
+    private var prefetchJob: Job? = null
+
+    /** 下一集播放地址预缓存：episode.url → (videoUrl, headers)。切集命中时秒起，无需再等解析。 */
+    private val prefetchCache = mutableMapOf<String, Pair<String, Map<String, String>>>()
+
     /** 缓存最近一次播放的地址与请求头（外挂字幕重载时复用） */
     private var lastVideoUrl: String? = null
     private var lastVideoHeaders: Map<String, String> = emptyMap()
@@ -200,6 +208,7 @@ class VideoPlayerViewModel(
                 savedSpeed = preferencesManager.videoSpeedFlow.first() / 100f,
                 autoNext = preferencesManager.videoAutoNextFlow.first(),
                 verticalSwipeSwitch = preferencesManager.videoVerticalSwipeSwitchFlow.first(),
+                pipEnabled = preferencesManager.videoPipEnabledFlow.first(),
                 loaded = true,
             )
             _prefs.value = loaded
@@ -231,6 +240,11 @@ class VideoPlayerViewModel(
             launch {
                 preferencesManager.videoVerticalSwipeSwitchFlow.collect { v ->
                     _prefs.update { it.copy(verticalSwipeSwitch = v) }
+                }
+            }
+            launch {
+                preferencesManager.videoPipEnabledFlow.collect { v ->
+                    _prefs.update { it.copy(pipEnabled = v) }
                 }
             }
             launch {
@@ -538,6 +552,15 @@ class VideoPlayerViewModel(
         _episodeTitle.value = episode.title
         _currentEpisodeUrl.value = episode.url
         endSpeedBoost()
+        // 命中预缓存：直接用缓存地址起播，跳过解析（切下一集时秒起）
+        prefetchCache[episode.url]?.let { (url, headers) ->
+            _loading.value = false
+            _error.value = null
+            _videoUrl.value = url
+            play(url, headers, restoreProgress, seekToMs)
+            schedulePrefetchNext()
+            return
+        }
         viewModelScope.launch {
             _loading.value = true
             _error.value = null
@@ -549,12 +572,35 @@ class VideoPlayerViewModel(
                     } else {
                         _videoUrl.value = url
                         play(url, result.videoHeaders, restoreProgress, seekToMs)
+                        schedulePrefetchNext()
                     }
                 }
                 .onFailure { e ->
                     _error.value = e.message ?: "加载失败"
                 }
             _loading.value = false
+        }
+    }
+
+    /**
+     * 预取下一集播放地址（v1.5.1.0 预缓存）。
+     *
+     * 当前集起播后，后台把下一集的地址解析出来放进 [prefetchCache]，
+     * 用户点「下一集」或连播时命中缓存直接起播，消除「切集 → 解析 → prepare」的等待。
+     * 预取是纯增强：失败 / 超时静默，绝不影响当前播放。
+     */
+    private fun schedulePrefetchNext() {
+        prefetchJob?.cancel()
+        val next = peekNext() ?: return
+        if (prefetchCache.containsKey(next.url)) return
+        prefetchJob = viewModelScope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) { contentRepository.content(next) }
+            }.getOrNull()
+            val url = result?.videoUrl
+            if (!url.isNullOrEmpty()) {
+                prefetchCache[next.url] = url to result.videoHeaders
+            }
         }
     }
 
@@ -763,6 +809,7 @@ class VideoPlayerViewModel(
         saveProgress() // 换源前先把当前线路的进度落盘
         _currentLineIndex.value = index
         _episodes.value = target.chapters
+        prefetchCache.clear() // 换线路后集地址全变，清空预缓存避免命中脏数据
         loadEpisode(next, restoreProgress = false, seekToMs = position)
         _message.value = "已切换到「${target.name}」${next.title}"
     }
@@ -910,6 +957,7 @@ class VideoPlayerViewModel(
         super.onCleared()
         tickerJob?.cancel()
         boostJob?.cancel()
+        prefetchJob?.cancel()
         player?.release()
         player = null
     }

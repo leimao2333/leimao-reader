@@ -84,6 +84,8 @@ fun SettingsScreen(
     val novelFontSize by viewModel.novelFontSize.collectAsState()
     val novelBgIndex by viewModel.novelBgIndex.collectAsState()
     val comicPageMode by viewModel.comicPageMode.collectAsState()
+    val comicPreloadCount by viewModel.comicPreloadCount.collectAsState()
+    val comicPreloadWifiOnly by viewModel.comicPreloadWifiOnly.collectAsState()
     val searchConcurrency by viewModel.searchConcurrency.collectAsState()
     val videoFullscreenDefault by viewModel.videoFullscreenDefault.collectAsState()
     val videoLongPressSpeed by viewModel.videoLongPressSpeed.collectAsState()
@@ -183,6 +185,32 @@ fun SettingsScreen(
                     label = "左右翻页",
                     selected = comicPageMode == 1,
                     onClick = { viewModel.setComicPageMode(1) },
+                )
+            }
+
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = "预加载张数：$comicPreloadCount",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = "阅读时提前加载后续图片的张数，越大越流畅但更耗流量",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Slider(
+                value = comicPreloadCount.toFloat(),
+                onValueChange = { viewModel.setComicPreloadCount(it.toInt()) },
+                valueRange = 1f..8f,
+                steps = 6,
+            )
+            SettingRow(
+                title = "仅在 WiFi 下预加载",
+                subtitle = "移动网络下不提前加载，节省流量",
+            ) {
+                Switch(
+                    checked = comicPreloadWifiOnly,
+                    onCheckedChange = { viewModel.setComicPreloadWifiOnly(it) },
                 )
             }
 

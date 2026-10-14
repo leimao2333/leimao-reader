@@ -83,6 +83,35 @@ class ComicReaderViewModel(
             state
         }
 
+    /** 预加载张数（1~8，默认 4；C5） */
+    val preloadCount: StateFlow<Int> = preferences.comicPreloadCountFlow
+        .let { flow ->
+            val state = MutableStateFlow(com.novelreader.core.preferences.PreferencesManager.DEFAULT_COMIC_PRELOAD_COUNT)
+            viewModelScope.launch { flow.collectLatest { state.value = it } }
+            state
+        }
+
+    /** 仅 WiFi 下预加载（C5） */
+    val preloadWifiOnly: StateFlow<Boolean> = preferences.comicPreloadWifiOnlyFlow
+        .let { flow ->
+            val state = MutableStateFlow(false)
+            viewModelScope.launch { flow.collectLatest { state.value = it } }
+            state
+        }
+
+    /** 横屏双页（左右翻页模式下横屏并排两页；C3） */
+    val landscapeDoublePage: StateFlow<Boolean> = preferences.comicLandscapeDoublePageFlow
+        .let { flow ->
+            val state = MutableStateFlow(true)
+            viewModelScope.launch { flow.collectLatest { state.value = it } }
+            state
+        }
+
+    /** 横屏双页开关 */
+    fun setLandscapeDoublePage(value: Boolean) {
+        viewModelScope.launch { preferences.setComicLandscapeDoublePage(value) }
+    }
+
     /** 当前页索引（左右翻页模式用） */
     private val _currentPage = MutableStateFlow(0)
     val currentPage: StateFlow<Int> = _currentPage.asStateFlow()

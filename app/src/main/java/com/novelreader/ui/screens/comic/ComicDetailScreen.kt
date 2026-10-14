@@ -70,6 +70,13 @@ fun ComicDetailScreen(
     val visibleChapters = remember(chapters, chapterDesc) {
         if (chapterDesc) chapters.asReversed().toList() else chapters
     }
+    // C4 目录分卷：从章节标题解析卷号分组；解析不出卷结构时退回扁平列表
+    val groupedChapters = remember(visibleChapters) {
+        ComicChapterVolume.groupByVolume(visibleChapters)
+    }
+    val volumeStructured = remember(visibleChapters) {
+        ComicChapterVolume.isVolumeStructured(visibleChapters)
+    }
 
     val listState = rememberLazyListState()
     // 切换正/倒序后滚到章节标题处，让顺序变化立即可见
@@ -230,21 +237,40 @@ fun ComicDetailScreen(
                 }
             }
 
-            items(visibleChapters, key = { "${it.index}_${it.url}" }) { chapter ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onChapterClick(chapter) }
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                ) {
-                    Text(
-                        text = chapter.title,
-                        style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+            // C4 目录分卷：按卷分组展示（卷头 + 卷内章节），解析不出卷结构时退回扁平列表。
+            for ((volumeName, volumeChapters) in groupedChapters) {
+                if (volumeStructured) {
+                    item(key = "volume_$volumeName") {
+                        Text(
+                            text = "$volumeName（${volumeChapters.size}）",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .background(
+                                    MaterialTheme.colorScheme.surfaceVariant,
+                                    RoundedCornerShape(4.dp),
+                                )
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                        )
+                    }
                 }
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                items(volumeChapters, key = { "${it.index}_${it.url}" }) { chapter ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onChapterClick(chapter) }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                    ) {
+                        Text(
+                            text = chapter.title,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                }
             }
         }
 

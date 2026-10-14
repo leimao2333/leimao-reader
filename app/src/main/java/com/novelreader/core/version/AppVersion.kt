@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.4.4.0"
+    const val CURRENT_VERSION = "1.4.5.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.4.5.0",
+            date = "2026-10-14",
+            changes = listOf(
+                "**漫画横屏双页 + 方向锁定**（C3）：左右翻页模式下，设备横屏时自动并排展示两页（封面式双页阅读），竖屏或上下滚动模式保持单页；设置面板新增「横屏双页」开关与「锁定方向」开关，锁定后旋转设备不改变屏幕方向、退出阅读自动恢复",
+                "**漫画目录分卷展示**（C4）：目录页自动识别章节标题里的卷号（支持「第1卷」「第一卷」「Vol.3」等阿拉伯 / 中文数字写法），按卷分组展示并标注各卷话数；解析不出卷结构时退回原有扁平列表，不影响任何源",
+                "**漫画预加载策略可调**（C5）：设置页新增「预加载张数」滑块（1~8 张）与「仅在 WiFi 下预加载」开关，按需平衡流畅度与流量；阅读时按配置预加载后续图片",
+            ),
+        ),
         VersionEntry(
             version = "1.4.4.0",
             date = "2026-10-14",

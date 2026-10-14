@@ -127,6 +127,12 @@ class PreferencesManager(private val context: Context) {
         // ===== 漫画阅读 =====
         /** 翻页方式：0=上下滚动，1=左右翻页 */
         val KEY_COMIC_PAGE_MODE = intPreferencesKey("comic_page_mode")
+        /** 预加载张数（向前预加载的图片数量，1~8，默认 4；v1.4.5.0 C5） */
+        val KEY_COMIC_PRELOAD_COUNT = intPreferencesKey("comic_preload_count")
+        /** 仅在 WiFi 下预加载（v1.4.5.0 C5） */
+        val KEY_COMIC_PRELOAD_WIFI_ONLY = booleanPreferencesKey("comic_preload_wifi_only")
+        /** 横屏双页（左右翻页模式下，横屏时并排展示两页；v1.4.5.0 C3） */
+        val KEY_COMIC_LANDSCAPE_DOUBLE_PAGE = booleanPreferencesKey("comic_landscape_double_page")
 
         // ===== 视频 =====
         val KEY_VIDEO_AUTO_PLAY = booleanPreferencesKey("video_auto_play")
@@ -192,6 +198,8 @@ class PreferencesManager(private val context: Context) {
         const val DEFAULT_SEARCH_CONCURRENCY = 6
         /** 并行搜索线程数上限 */
         const val MAX_SEARCH_CONCURRENCY = 16
+        /** 默认漫画预加载张数 */
+        const val DEFAULT_COMIC_PRELOAD_COUNT = 4
         /** 模糊搜索默认开启 */
         const val DEFAULT_FUZZY_SEARCH = true
         /** 搜索历史最大保留条数 */
@@ -499,6 +507,30 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setComicPageMode(value: Int) {
         context.dataStore.edit { it[KEY_COMIC_PAGE_MODE] = value }
+    }
+
+    /** 预加载张数（1~8，默认 4） */
+    val comicPreloadCountFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_COMIC_PRELOAD_COUNT] ?: DEFAULT_COMIC_PRELOAD_COUNT }
+
+    suspend fun setComicPreloadCount(value: Int) {
+        context.dataStore.edit { it[KEY_COMIC_PRELOAD_COUNT] = value.coerceIn(1, 8) }
+    }
+
+    /** 仅在 WiFi 下预加载 */
+    val comicPreloadWifiOnlyFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_COMIC_PRELOAD_WIFI_ONLY] ?: false }
+
+    suspend fun setComicPreloadWifiOnly(value: Boolean) {
+        context.dataStore.edit { it[KEY_COMIC_PRELOAD_WIFI_ONLY] = value }
+    }
+
+    /** 横屏双页（左右翻页模式下，横屏并排两页） */
+    val comicLandscapeDoublePageFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_COMIC_LANDSCAPE_DOUBLE_PAGE] ?: true }
+
+    suspend fun setComicLandscapeDoublePage(value: Boolean) {
+        context.dataStore.edit { it[KEY_COMIC_LANDSCAPE_DOUBLE_PAGE] = value }
     }
 
     // ===== 视频 =====

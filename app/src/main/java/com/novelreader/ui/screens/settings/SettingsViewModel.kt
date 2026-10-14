@@ -167,6 +167,14 @@ class SettingsViewModel(
     private val _comicPageMode = MutableStateFlow(0)
     val comicPageMode: StateFlow<Int> = _comicPageMode.asStateFlow()
 
+    /** 漫画预加载张数（1~8，默认 4；C5） */
+    private val _comicPreloadCount = MutableStateFlow(PreferencesManager.DEFAULT_COMIC_PRELOAD_COUNT)
+    val comicPreloadCount: StateFlow<Int> = _comicPreloadCount.asStateFlow()
+
+    /** 漫画仅 WiFi 下预加载（C5） */
+    private val _comicPreloadWifiOnly = MutableStateFlow(false)
+    val comicPreloadWifiOnly: StateFlow<Boolean> = _comicPreloadWifiOnly.asStateFlow()
+
     /** 并行搜索线程数 */
     private val _searchConcurrency = MutableStateFlow(PreferencesManager.DEFAULT_SEARCH_CONCURRENCY)
     val searchConcurrency: StateFlow<Int> = _searchConcurrency.asStateFlow()
@@ -221,6 +229,12 @@ class SettingsViewModel(
             preferencesManager.comicPageModeFlow.collect { _comicPageMode.value = it }
         }
         viewModelScope.launch {
+            preferencesManager.comicPreloadCountFlow.collect { _comicPreloadCount.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.comicPreloadWifiOnlyFlow.collect { _comicPreloadWifiOnly.value = it }
+        }
+        viewModelScope.launch {
             preferencesManager.searchConcurrencyFlow.collect { _searchConcurrency.value = it }
         }
         viewModelScope.launch {
@@ -260,6 +274,14 @@ class SettingsViewModel(
 
     fun setComicPageMode(value: Int) {
         viewModelScope.launch { preferencesManager.setComicPageMode(value) }
+    }
+
+    fun setComicPreloadCount(value: Int) {
+        viewModelScope.launch { preferencesManager.setComicPreloadCount(value) }
+    }
+
+    fun setComicPreloadWifiOnly(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setComicPreloadWifiOnly(value) }
     }
 
     fun setSearchConcurrency(value: Int) {

@@ -40,6 +40,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -100,6 +101,9 @@ fun ComicReaderScreen(
     val chapterCount by viewModel.chapterCount.collectAsState()
     val hasPrevChapter by viewModel.hasPrevChapter.collectAsState()
     val hasNextChapter by viewModel.hasNextChapter.collectAsState()
+    val preloadCount by viewModel.preloadCount.collectAsState()
+    val preloadWifiOnly by viewModel.preloadWifiOnly.collectAsState()
+    val landscapeDoublePage by viewModel.landscapeDoublePage.collectAsState()
 
     LaunchedEffect(item, chapter) {
         viewModel.init(item, chapters, chapter)
@@ -107,9 +111,18 @@ fun ComicReaderScreen(
 
     // 进入/切换章节后，先预热前几张图片
     val context = LocalContext.current
-    LaunchedEffect(images, imageHeaders, imageScripts) {
-        images.take(PRELOAD_INITIAL).forEach { preloadImage(context, it, imageHeaders, imageScripts[it]) }
+    // 是否允许预加载：未开启「仅 WiFi」时总是允许；开启时仅在 WiFi 下允许
+    val canPreload = !preloadWifiOnly ||
+        com.novelreader.core.util.NetworkStatus.isWifi(context)
+    LaunchedEffect(images, imageHeaders, imageScripts, preloadCount, canPreload) {
+        if (!canPreload) return@LaunchedEffect
+        images.take(preloadCount).forEach { preloadImage(context, it, imageHeaders, imageScripts[it]) }
     }
+
+    // C3 横屏双页：仅左右翻页模式 + 开启横屏双页 + 设备处于横屏时生效
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+    val doublePage = landscapeDoublePage && pageMode == 1 && isLandscape
 
     // 统一菜单：顶部栏（返回 / 章节名 / 设置）+ 设置面板 + 底部章节条，
     // 三者由「点击画面」统一呼出与收起；默认隐藏，图片占满整屏。
@@ -124,6 +137,32 @@ fun ComicReaderScreen(
 
     // 当前是否有图片处于「放大」状态：放大时锁住翻页 / 滚动，专心查看细节
     val zoomed = remember { mutableStateOf(false) }
+
+    // C3 方向锁定：锁定后设备旋转不改变屏幕方向，退出阅读页自动恢复
+    val orientationLocked = remember { mutableStateOf(false) }
+    val activity = remember(context) { (context as? android.content.ContextWrapper)?.let { ctx ->
+        var c: android.content.Context? = ctx
+        while (c is android.content.ContextWrapper) {
+            if (c is android.app.Activity) return@let c
+            c = c.baseContext
+        }
+        null
+    } }
+    androidx.compose.runtime.DisposableEffect(orientationLocked.value, activity) {
+        val act = activity
+        if (orientationLocked.value && act != null) {
+            val current = act.resources.configuration.orientation
+            act.requestedOrientation =
+                if (current == android.content.res.Configuration.ORIENTATION_LANDSCAPE) {
+                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                } else {
+                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                }
+        }
+        onDispose {
+            act?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
 
     // 应用是 edge-to-edge（targetSdk 35）绘制：系统状态栏 / 手势条会盖在内容之上。
     // 顶部栏与底部章节条必须避开系统栏区域，否则：
@@ -189,6 +228,8 @@ fun ComicReaderScreen(
                     bottomContentPadding = barTotalHeight,
                     zoomed = zoomed.value,
                     onZoomChanged = { zoomed.value = it },
+                    preloadCount = preloadCount,
+                    canPreload = canPreload,
                 )
             }
             else -> {
@@ -205,6 +246,9 @@ fun ComicReaderScreen(
                     onNextChapter = { viewModel.nextChapter() },
                     zoomed = zoomed.value,
                     onZoomChanged = { zoomed.value = it },
+                    preloadCount = preloadCount,
+                    canPreload = canPreload,
+                    doublePage = doublePage,
                 )
             }
         }
@@ -275,6 +319,52 @@ fun ComicReaderScreen(
                         PageModeButton("上下滚动", pageMode == 0) { viewModel.setPageMode(0) }
                         Spacer(Modifier.width(12.dp))
                         PageModeButton("左右翻页", pageMode == 1) { viewModel.setPageMode(1) }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    // C3 横屏双页开关
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "横屏双页",
+                                color = Color.White,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                "横屏时左右翻页并排展示两页",
+                                color = Color(0xFF9E9E9E),
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                        Switch(
+                            checked = landscapeDoublePage,
+                            onCheckedChange = { viewModel.setLandscapeDoublePage(it) },
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    // C3 方向锁定开关
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "锁定方向",
+                                color = Color.White,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                "旋转设备不改变屏幕方向，退出阅读自动恢复",
+                                color = Color(0xFF9E9E9E),
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                        Switch(
+                            checked = orientationLocked.value,
+                            onCheckedChange = { orientationLocked.value = it },
+                        )
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
@@ -391,6 +481,8 @@ private fun VerticalScrollReader(
     bottomContentPadding: Dp,
     zoomed: Boolean,
     onZoomChanged: (Boolean) -> Unit,
+    preloadCount: Int,
+    canPreload: Boolean,
 ) {
     val listState = rememberLazyListState()
     val context = LocalContext.current
@@ -401,10 +493,11 @@ private fun VerticalScrollReader(
         listState.scrollToItem(0)
     }
 
-    // 预加载：当前可见项之后的 [PRELOAD_AHEAD] 张
-    LaunchedEffect(listState.firstVisibleItemIndex, images, headers, scripts) {
+    // 预加载：当前可见项之后的 [preloadCount] 张
+    LaunchedEffect(listState.firstVisibleItemIndex, images, headers, scripts, preloadCount, canPreload) {
+        if (!canPreload) return@LaunchedEffect
         val start = listState.firstVisibleItemIndex + 1
-        for (i in start until (start + PRELOAD_AHEAD).coerceAtMost(images.size)) {
+        for (i in start until (start + preloadCount).coerceAtMost(images.size)) {
             if (i >= 0) preloadImage(context, images[i], headers, scripts[images[i]])
         }
     }
@@ -466,34 +559,56 @@ private fun HorizontalPagerReader(
     onNextChapter: () -> Unit = {},
     zoomed: Boolean,
     onZoomChanged: (Boolean) -> Unit,
+    preloadCount: Int,
+    canPreload: Boolean,
+    doublePage: Boolean,
 ) {
-    // 不再额外插「章末引导页」：末页继续拖 / 首页往前拖 由 edgeOverscroll 直接切话，
-    // 与滚动模式的边界行为保持一致
-    val pageCount = images.size.coerceAtLeast(1)
+    // C3 双页模式：每屏并排展示两张图（左图 = 偶数下标），页数 = ceil(n/2)。
+    // currentPage 语义统一为「左侧图片下标」（单页模式即图片下标），进度/翻页逻辑不受影响。
+    val pageCount = if (doublePage) (images.size + 1) / 2 else images.size
+    val pageCountSafe = pageCount.coerceAtLeast(1)
+
+    // 外部 currentPage（图片下标）→ pager 页下标
+    val currentPagerPage = if (doublePage) {
+        (currentPage.coerceIn(0, images.size - 1).coerceAtLeast(0)) / 2
+    } else {
+        currentPage.coerceIn(0, pageCountSafe - 1)
+    }
+
     val pagerState = rememberPagerState(
-        initialPage = currentPage.coerceIn(0, pageCount - 1),
-        pageCount = { pageCount },
+        initialPage = currentPagerPage.coerceIn(0, pageCountSafe - 1),
+        pageCount = { pageCountSafe },
     )
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     // 同步外部 currentPage 与 pager 状态
-    LaunchedEffect(currentPage) {
-        if (pagerState.currentPage != currentPage.coerceAtMost(images.size - 1).coerceAtLeast(0)) {
-            pagerState.animateScrollToPage(currentPage.coerceAtMost(images.size - 1).coerceAtLeast(0))
+    LaunchedEffect(currentPage, doublePage) {
+        val target = if (doublePage) {
+            (currentPage.coerceIn(0, images.size - 1).coerceAtLeast(0)) / 2
+        } else {
+            currentPage.coerceAtMost(images.size - 1).coerceAtLeast(0)
+        }
+        if (pagerState.currentPage != target) {
+            pagerState.animateScrollToPage(target)
         }
     }
 
-    // 用户滑动翻页时，回写 currentPage（引导页不计入图片页码）
-    LaunchedEffect(pagerState.currentPage) {
+    // 用户滑动翻页时，回写 currentPage（双页模式回写左图下标）
+    LaunchedEffect(pagerState.currentPage, doublePage) {
         val page = pagerState.currentPage
-        if (page < images.size) onPageChange(page)
+        val imgIdx = if (doublePage) page * 2 else page
+        if (imgIdx < images.size) onPageChange(imgIdx)
     }
 
-    // 预加载相邻页
-    LaunchedEffect(pagerState.currentPage, images, headers, scripts) {
-        val cur = pagerState.currentPage
-        for (i in (cur - 1)..(cur + 1)) {
+    // 预加载相邻页（双页模式翻一页前进两图）
+    LaunchedEffect(pagerState.currentPage, images, headers, scripts, preloadCount, canPreload, doublePage) {
+        if (!canPreload) return@LaunchedEffect
+        val page = pagerState.currentPage
+        val step = if (doublePage) 2 else 1
+        val startImg = page * step
+        val ahead = ((preloadCount - 1).coerceAtLeast(0)) * step
+        for (i in (startImg - step)..(startImg + ahead)) {
             if (i in images.indices) preloadImage(context, images[i], headers, scripts[images[i]])
         }
     }
@@ -509,11 +624,13 @@ private fun HorizontalPagerReader(
                 resetKey = chapterIndex,
                 vertical = false,
                 canScrollBackward = { pagerState.currentPage > 0 && !zoomed },
-                canScrollForward = { pagerState.currentPage < pageCount - 1 && !zoomed },
+                canScrollForward = { pagerState.currentPage < pageCountSafe - 1 && !zoomed },
                 onOverscrollStart = onPrevChapter,
                 onOverscrollEnd = onNextChapter,
             ),
     ) { page ->
+        val leftImg = if (doublePage) page * 2 else page
+        val rightImg = if (doublePage) leftImg + 1 else -1
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -527,7 +644,7 @@ private fun HorizontalPagerReader(
                     },
                     onCenter = onTap,
                     onRight = {
-                        if (pagerState.currentPage < images.size - 1) {
+                        if (pagerState.currentPage < pageCountSafe - 1) {
                             scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
                         } else {
                             onNextChapter()
@@ -536,15 +653,43 @@ private fun HorizontalPagerReader(
                 ),
             contentAlignment = Alignment.Center,
         ) {
-            ZoomableComicImage(
-                url = images.getOrNull(page) ?: "",
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.FillWidth,
-                placeholderModifier = Modifier.fillMaxSize(),
-                headers = headers,
-                script = scripts[images.getOrNull(page) ?: ""],
-                onZoomStateChanged = onZoomChanged,
-            )
+            if (doublePage) {
+                // 双页并排：左右各占一半，各用 FillWidth 适配（保持图片原始比例）
+                Row(modifier = Modifier.fillMaxSize()) {
+                    ZoomableComicImage(
+                        url = images.getOrNull(leftImg) ?: "",
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxSize(),
+                        contentScale = ContentScale.Fit,
+                        placeholderModifier = Modifier.fillMaxSize(),
+                        headers = headers,
+                        script = scripts[images.getOrNull(leftImg) ?: ""],
+                        onZoomStateChanged = onZoomChanged,
+                    )
+                    ZoomableComicImage(
+                        url = images.getOrNull(rightImg) ?: "",
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxSize(),
+                        contentScale = ContentScale.Fit,
+                        placeholderModifier = Modifier.fillMaxSize(),
+                        headers = headers,
+                        script = scripts[images.getOrNull(rightImg) ?: ""],
+                        onZoomStateChanged = onZoomChanged,
+                    )
+                }
+            } else {
+                ZoomableComicImage(
+                    url = images.getOrNull(page) ?: "",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.FillWidth,
+                    placeholderModifier = Modifier.fillMaxSize(),
+                    headers = headers,
+                    script = scripts[images.getOrNull(page) ?: ""],
+                    onZoomStateChanged = onZoomChanged,
+                )
+            }
         }
     }
 }
@@ -807,10 +952,6 @@ private fun PageModeButton(
             .padding(horizontal = 16.dp, vertical = 8.dp),
     )
 }
-
-/** 预加载常量 */
-private const val PRELOAD_INITIAL = 4
-private const val PRELOAD_AHEAD = 2
 
 /** 图片加载日志标签（排查「图片加载失败」时用 logcat 过滤它） */
 private const val IMAGE_LOG_TAG = "ComicImage"

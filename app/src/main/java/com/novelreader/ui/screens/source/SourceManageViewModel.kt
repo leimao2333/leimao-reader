@@ -815,11 +815,10 @@ class SourceManageViewModel(
         applyManualOrder(reordered)
     }
 
-    /** 把当前列表顺序写入手动排序序号并持久化 */
-    private fun applyManualOrder(reordered: List<SourceInfo>) {
+    /** 把当前列表顺序写入手动排序序号并持久化（不直接覆盖内存列表，走 Room Flow 刷新） */
+    fun applyManualOrder(reordered: List<SourceInfo>) {
         viewModelScope.launch {
             sourceRepository.reorderSources(reordered.map { it.id })
-            _sources.value = reordered
         }
     }
 

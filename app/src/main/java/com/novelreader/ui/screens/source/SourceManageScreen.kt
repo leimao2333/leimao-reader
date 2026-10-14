@@ -1,8 +1,10 @@
 package com.novelreader.ui.screens.source
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,12 +18,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowDownward
-import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.ViewList
@@ -51,7 +54,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -65,7 +71,7 @@ import com.novelreader.domain.model.SourceType
  * 展示已导入的源列表，支持启用/禁用、删除，并通过浮动按钮进入导入页。
  * 支持类型/分类筛选、排序、列表/表格两种视图。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun SourceManageScreen(
     viewModel: SourceManageViewModel,
@@ -137,7 +143,10 @@ fun SourceManageScreen(
         else grouped[selectedCategory] ?: emptyList()
     }
     val displayedSources = remember(categoryFiltered, sortOrder) {
-        viewModel.sortSources(categoryFiltered, sortOrder)
+        // 手动排序模式下强制展示全部源：拖拽排序需要看到完整列表才有意义，
+        // 否则筛选会把部分源排除在外，拖拽持久化时会把它们的手动序号清空（v1.5.9.0）。
+        val base = if (sortOrder == SourceSortOrder.MANUAL) sources else categoryFiltered
+        viewModel.sortSources(base, sortOrder)
     }
 
     Scaffold(
@@ -459,16 +468,89 @@ fun SourceManageScreen(
                 } else {
                     val loginStates by viewModel.loginStates.collectAsState()
                     val loggingIn by viewModel.loggingIn.collectAsState()
+                    val manualMode = sortOrder == SourceSortOrder.MANUAL
+                    val lazyListState = rememberLazyListState()
+                    val density = LocalDensity.current
+
+                    // 手动排序模式下的实时顺序（拖拽过程中在本地交换，松手后持久化）。
+                    // 当外部 displayedSources 变化时重置（例如刚切到手动模式、或拖拽松手后刷新）。
+                    var manualList by remember(displayedSources) { mutableStateOf(displayedSources) }
+                    // 当前正在拖拽的项在 manualList 中的索引（null = 未拖拽）
+                    var draggingIndex by remember { mutableStateOf<Int?>(null) }
+                    // 累计垂直位移（用于判断何时与相邻项交换）
+                    var dragAccum by remember { mutableStateOf(0f) }
+
+                    // 拖拽结束：把 manualList 的最终顺序持久化
+                    fun commitDragOrder() {
+                        if (manualList != displayedSources) {
+                            viewModel.applyManualOrder(manualList)
+                        }
+                    }
+
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
+                        state = lazyListState,
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        items(displayedSources, key = { it.id }) { source ->
+                        itemsIndexed(manualList, key = { _, it -> it.id }) { index, source ->
+                            val isDragging = draggingIndex == index
+                            // 手动模式下用「长按拖动」手势；其它模式保持原有的长按进多选
+                            val dragModifier = if (manualMode) {
+                                Modifier.pointerInput(index, manualList) {
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = {
+                                            draggingIndex = index
+                                            dragAccum = 0f
+                                        },
+                                        onDragEnd = {
+                                            commitDragOrder()
+                                            draggingIndex = null
+                                            dragAccum = 0f
+                                        },
+                                        onDragCancel = {
+                                            draggingIndex = null
+                                            dragAccum = 0f
+                                        },
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+                                            val currentIdx = draggingIndex ?: return@detectDragGesturesAfterLongPress
+                                            dragAccum += dragAmount.y
+                                            // 用当前拖拽项的实际高度作为交换阈值（含间距）
+                                            val itemInfo = lazyListState.layoutInfo.visibleItemsInfo
+                                                .firstOrNull { it.index == currentIdx }
+                                            val itemHeight = itemInfo?.size ?: 0
+                                            val spacingPx = with(density) { 8.dp.toPx() }
+                                            val threshold = (itemHeight + spacingPx)
+                                                .takeIf { it > 0f }
+                                                ?: with(density) { 88.dp.toPx() }
+                                            while (dragAccum > threshold && currentIdx < manualList.size - 1) {
+                                                val newList = manualList.toMutableList()
+                                                val moved = newList.removeAt(currentIdx)
+                                                newList.add(currentIdx + 1, moved)
+                                                manualList = newList
+                                                draggingIndex = currentIdx + 1
+                                                dragAccum -= threshold
+                                            }
+                                            while (dragAccum < -threshold && currentIdx > 0) {
+                                                val newList = manualList.toMutableList()
+                                                val moved = newList.removeAt(currentIdx)
+                                                newList.add(currentIdx - 1, moved)
+                                                manualList = newList
+                                                draggingIndex = currentIdx - 1
+                                                dragAccum += threshold
+                                            }
+                                        },
+                                    )
+                                }
+                            } else {
+                                Modifier
+                            }
+
                             SourceCard(
                                 source = source,
-                                selectionMode = selectionMode,
-                                selected = source.id in selectedIds,
+                                selectionMode = if (manualMode) false else selectionMode,
+                                selected = if (manualMode) false else source.id in selectedIds,
                                 testStatus = when {
                                     source.id in testing -> SourceTestStatus.TESTING
                                     testResults[source.id] == true -> SourceTestStatus.OK
@@ -477,9 +559,9 @@ fun SourceManageScreen(
                                 },
                                 loggedIn = loginStates[source.id] == true,
                                 loggingIn = source.id in loggingIn,
-                                manualMode = sortOrder == SourceSortOrder.MANUAL,
-                                onMoveUp = { viewModel.moveSourceUp(source.id) },
-                                onMoveDown = { viewModel.moveSourceDown(source.id) },
+                                manualMode = manualMode,
+                                dragging = isDragging,
+                                dragHandleModifier = dragModifier,
                                 onToggle = { viewModel.toggleEnabled(source) },
                                 onEdit = { viewModel.openEditSource(source) },
                                 onDelete = { viewModel.deleteSource(source) },
@@ -968,18 +1050,21 @@ private fun SourceCard(
     loggingIn: Boolean = false,
     /** 点击「登录」按钮（仅 Venera 源） */
     onLogin: () -> Unit = {},
-    /** 手动排序模式（v1.5.8.0）：显示上移 / 下移按钮 */
+    /** 手动排序模式（v1.5.8.0；v1.5.9.0 起为拖拽）：显示拖拽把手 */
     manualMode: Boolean = false,
-    /** 上移一位 */
-    onMoveUp: () -> Unit = {},
-    /** 下移一位 */
-    onMoveDown: () -> Unit = {},
+    /** 是否正在被拖拽（拖拽中提升阴影） */
+    dragging: Boolean = false,
+    /** 拖拽把手的手势 modifier（在 ReorderableItemScope 内构造，v1.5.9.0） */
+    dragHandleModifier: Modifier = Modifier,
 ) {
     val cardModifier = Modifier
         .fillMaxWidth()
         .then(
             if (selectionMode) {
                 Modifier.clickable(onClick = onSelectToggle)
+            } else if (manualMode) {
+                // 手动模式：整卡长按拖动（手势在 dragHandleModifier 里），点击保持可切换
+                Modifier.then(dragHandleModifier)
             } else {
                 Modifier.combinedClickable(onClick = {}, onLongClick = onLongClick)
             }
@@ -993,6 +1078,11 @@ private fun SourceCard(
         } else {
             androidx.compose.material3.CardDefaults.cardColors()
         },
+        elevation = if (dragging) {
+            androidx.compose.material3.CardDefaults.cardElevation(defaultElevation = 8.dp)
+        } else {
+            androidx.compose.material3.CardDefaults.cardElevation()
+        },
     ) {
         Row(
             modifier = Modifier
@@ -1000,6 +1090,15 @@ private fun SourceCard(
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (manualMode) {
+                // 拖拽把手（视觉提示，长按整卡即可拖动，v1.5.9.0）
+                Icon(
+                    imageVector = Icons.Filled.DragHandle,
+                    contentDescription = "拖动排序",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(end = 4.dp),
+                )
+            }
             if (selectionMode) {
                 androidx.compose.material3.Checkbox(
                     checked = selected,
@@ -1055,15 +1154,6 @@ private fun SourceCard(
                 }
             }
             if (!selectionMode) {
-                // 手动排序模式：上移 / 下移按钮（v1.5.8.0）
-                if (manualMode) {
-                    IconButton(onClick = onMoveUp, enabled = true) {
-                        Icon(Icons.Filled.ArrowUpward, contentDescription = "上移")
-                    }
-                    IconButton(onClick = onMoveDown, enabled = true) {
-                        Icon(Icons.Filled.ArrowDownward, contentDescription = "下移")
-                    }
-                }
                 Switch(checked = source.enabled, onCheckedChange = { onToggle() })
                 // Venera 源：登录按钮（v1.3.0.0）
                 if (source.format == SourceFormat.VENERA) {

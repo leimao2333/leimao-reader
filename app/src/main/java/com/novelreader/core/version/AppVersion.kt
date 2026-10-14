@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.5.8.0"
+    const val CURRENT_VERSION = "1.5.9.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,14 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.5.9.0",
+            date = "2026-10-14",
+            changes = listOf(
+                "**源管理手动排序改为拖拽**：手动模式下源卡片左侧出现拖拽把手，长按卡片即可上下拖动调整顺序，拖动中实时预览位置、松手自动保存（替代上一版的「上移 / 下移」按钮，操作更直观顺畅）",
+                "手动排序模式下自动展示全部源（忽略当前的类型 / 分类 / 关键词筛选），保证拖拽看到的、排序的就是完整列表，避免筛选导致部分源的手动序号被意外清空",
+            ),
+        ),
         VersionEntry(
             version = "1.5.8.0",
             date = "2026-10-14",

@@ -146,9 +146,14 @@ class NovelSearchViewModel(
                 results.map { item ->
                     async {
                         semaphore.withPermit {
-                            val chapters = runCatching { contentRepository.chapterList(item) }
-                                .getOrDefault(emptyList())
-                            if (chapters.isEmpty()) {
+                            // 单条验证 8s 有界超时：验证只是「剔除 0 章死链」的辅助手段，
+                            // 超时（null）视为「未验证」保留条目，只有明确拿到「0 章」才剔除。
+                            val chapters = runCatching {
+                                kotlinx.coroutines.withTimeoutOrNull(8_000L) {
+                                    contentRepository.chapterList(item)
+                                }
+                            }.getOrNull()
+                            if (chapters != null && chapters.isEmpty()) {
                                 // 该条目 0 章，从当前结果中剔除
                                 val key = "${item.sourceId}|${item.id}"
                                 _state.value = _state.value.copy(

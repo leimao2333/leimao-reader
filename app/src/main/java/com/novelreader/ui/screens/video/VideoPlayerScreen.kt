@@ -514,9 +514,12 @@ fun VideoPlayerScreen(
             // ===== 初次加载 / 缓冲（合并为单一加载指示器，避免两个圈重叠/闪烁） =====
             // loading = 解析地址 + prepare 阶段；isBuffering = prepare 后卡顿/切集缓冲。
             // 两者共用同一个圈，loading 优先显示「正在加载」，否则显示「缓冲中」。
+            // 控制栏可见时整体上移，避免压在播放/暂停按钮上（v1.4.8.0）。
             if (loading || playback.isBuffering) {
                 Column(
-                    modifier = Modifier.align(Alignment.Center),
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(bottom = if (controlsVisible) 92.dp else 0.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     CircularProgressIndicator(

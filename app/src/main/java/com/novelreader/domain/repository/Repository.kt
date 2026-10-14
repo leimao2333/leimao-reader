@@ -39,6 +39,14 @@ interface SourceRepository {
      */
     suspend fun importSelected(ids: Set<String>): Int
 
+    /**
+     * 等待启动时的源恢复完成（v1.4.8.0 冷启动竞态防护）。
+     *
+     * 恢复已完成时立即返回；未完成则挂起直到恢复结束（无论成败都放行）。
+     * 首页/搜索等在启动早期读取源列表的入口应先调用本方法，避免拿到空源列表。
+     */
+    suspend fun awaitRestored()
+
     /** 删除一个源 */
     suspend fun deleteSource(sourceId: String)
 

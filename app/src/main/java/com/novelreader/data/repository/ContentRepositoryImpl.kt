@@ -12,6 +12,7 @@ import com.novelreader.source.manager.SourceManager
 import com.novelreader.source.search.FuzzyMatch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.filter
@@ -55,13 +56,18 @@ class ContentRepositoryImpl(
             val adapters = sourceManager.getEnabledSourcesByType(type)
                 .mapNotNull { sourceManager.getAdapter(it.id) }
 
-            val results = mutableListOf<MediaItem>()
-            for (adapter in adapters) {
-                runCatching {
-                    results.addAll(adapter.search(keyword, page))
-                } // 单个源失败不影响其他源
+            // 并发搜索（8 路）：此前串行逐源请求，一个死源就要等满它的超时，
+            // 几十个源串起来是分钟级（v1.4.8.0 改并发，单源失败不影响其他源）。
+            val semaphore = Semaphore(8)
+            coroutineScope {
+                adapters.map { adapter ->
+                    async {
+                        semaphore.withPermit {
+                            runCatching { adapter.search(keyword, page) }.getOrDefault(emptyList())
+                        }
+                    }
+                }.awaitAll().flatten()
             }
-            results
         }
 
     override fun searchWithProgress(
@@ -234,13 +240,19 @@ class ContentRepositoryImpl(
         type: SourceType,
     ): List<Pair<SourceInfo, List<com.novelreader.domain.model.ExploreCategory>>> =
         withContext(Dispatchers.IO) {
-            sourceManager.getEnabledSourcesByType(type)
-                .mapNotNull { info ->
-                    sourceManager.getAdapter(info.id)?.let { adapter ->
-                        val cats = runCatching { adapter.exploreCategories() }.getOrDefault(emptyList())
-                        if (cats.isEmpty()) null else info to cats
+            // 并发枚举各源分类（8 路）：个别源的分类规则要发网络请求，串行会拖累整页。
+            val infos = sourceManager.getEnabledSourcesByType(type)
+            val semaphore = Semaphore(8)
+            coroutineScope {
+                infos.map { info -> async {
+                    semaphore.withPermit {
+                        sourceManager.getAdapter(info.id)?.let { adapter ->
+                            val cats = runCatching { adapter.exploreCategories() }.getOrDefault(emptyList())
+                            if (cats.isEmpty()) null else info to cats
+                        }
                     }
-                }
+                } }.awaitAll().filterNotNull()
+            }
         }
 
     override suspend fun explore(sourceId: String, url: String, page: Int): List<MediaItem> =

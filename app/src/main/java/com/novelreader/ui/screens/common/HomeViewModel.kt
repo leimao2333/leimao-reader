@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * 首页 ViewModel（合并书架 + 最近阅读）。
@@ -153,13 +154,19 @@ class HomeViewModel(
         }
     }
 
-    /** 重新加载书架条目的阅读进度（回前台时调用，进度可能已变化） */
+    /** 重新加载书架条目的阅读进度（回前台时调用，进度可能已变化）。
+     *  并发查询（此前串行逐条，书多时累积延迟；v1.4.8.0 改并发）。 */
     fun refreshProgress() {
         viewModelScope.launch {
-            val map = mutableMapOf<String, ReadingProgress>()
-            _books.value.forEach { item ->
-                val p = progressRepository.getProgress(item.sourceId, item.id)
-                if (p != null) map[itemKey(item)] = p
+            val books = _books.value
+            if (books.isEmpty()) {
+                _progressMap.value = emptyMap()
+                return@launch
+            }
+            val map = coroutineScope {
+                books.map { item -> async {
+                    progressRepository.getProgress(item.sourceId, item.id)?.let { itemKey(item) to it }
+                } }.awaitAll().filterNotNull().toMap()
             }
             _progressMap.value = map
         }
@@ -313,6 +320,9 @@ class HomeViewModel(
     fun onVideoTabShown() {
         viewModelScope.launch {
             val repo = sourceRepository ?: return@launch
+            // 冷启动竞态防护：源恢复（restoreSources）是异步的，若不等它完成就查源，
+            // 首次进视频 Tab 会拿到空列表并显示「还没有可用的视频源」（v1.4.8.0）。
+            runCatching { repo.awaitRestored() }
             val sources = runCatching { repo.getSourcesByType(SourceType.VIDEO) }
                 .getOrDefault(emptyList())
                 .filter { it.enabled }
@@ -525,8 +535,14 @@ class HomeViewModel(
      * 而是**自动探测所有可用源 → 合并它们的分类（同名合并）→ 每个分类聚合各源内容去重**。
      * 死源在探测阶段直接跳过，不再有「选到死源空屏」的问题。
      *
-     * 请求量控制：存活源取前 [MAX_AGGREGATE_SOURCES] 个，分类合并后取前 [MAX_VIDEO_ROWS] 个，
-     * 每个分类并发拉各源内容（[ROWS_CONCURRENCY] 路），单源超时由仓库层兜底。
+     * 请求量控制：存活源取前 [MAX_AGGREGATE_SOURCES] 个，分类合并后取前 [MAX_VIDEO_ROWS] 个。
+     *
+     * v1.4.8.0 加载提速：
+     * - 探测改**单请求优先**（拉分类即判活），且整轮探测 8s 有界超时——此前死源会
+     *   「分类失败再补一次内容探测」串行两个 12s，首页要等全部探测完才开始拉内容；
+     * - 分类在探测阶段**顺带取到**，不再逐源串行重拉一遍；
+     * - 各分类行**全部并发**且**每完成一行就先上屏**——此前 3 行一轮串行等待，
+     *   最坏 2×单行耗时，用户盯着骨架屏干等。
      */
     private suspend fun loadVideoSections(sourceId: String) {
         _videoHome.value = _videoHome.value.copy(loading = true, loadingMore = false, error = null)
@@ -539,16 +555,24 @@ class HomeViewModel(
             return
         }
 
-        // 1) 探测存活源（能拉到分类的源；分类为空的源退化为一次内容请求探测）
-        val alive = coroutineScope {
+        // 1) 探测存活源：单请求优先（能拉到分类即活），分类为空/失败再退化一次内容探测；
+        //    每个源独立有界超时，确认存活就增量刷新可用源列表。
+        val alive = java.util.Collections.synchronizedList(mutableListOf<com.novelreader.domain.model.SourceInfo>())
+        val catsBySource = java.util.concurrent.ConcurrentHashMap<String, List<ExploreCategory>>()
+        coroutineScope {
             all.take(MAX_AGGREGATE_SOURCES).map { src -> async {
-                val alive = runCatching {
-                    contentRepository.exploreCategoriesOf(src.id).isNotEmpty()
-                }.getOrDefault(false) || runCatching {
-                    contentRepository.explore(src.id, "", 1).isNotEmpty()
-                }.getOrDefault(false)
-                if (alive) src else null
-            } }.awaitAll().filterNotNull()
+                val cats = runCatching {
+                    withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) { contentRepository.exploreCategoriesOf(src.id) }
+                }.getOrNull().orEmpty()
+                val ok = cats.isNotEmpty() || runCatching {
+                    withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) { contentRepository.explore(src.id, "", 1).isNotEmpty() }
+                }.getOrNull() == true
+                if (ok) {
+                    if (cats.isNotEmpty()) catsBySource[src.id] = cats
+                    alive.add(src)
+                    _videoHome.value = _videoHome.value.copy(availableSources = alive.toList().map { it.id })
+                }
+            } }.awaitAll()
         }
         if (alive.isEmpty()) {
             _videoHome.value = _videoHome.value.copy(
@@ -558,10 +582,8 @@ class HomeViewModel(
             return
         }
 
-        // 2) 拉各存活源的分类，按标题合并去重（保序）
-        val allCats = alive.flatMap { src ->
-            runCatching { contentRepository.exploreCategoriesOf(src.id) }.getOrDefault(emptyList())
-        }
+        // 2) 合并各存活源的分类（探测阶段已顺带取到），按标题去重保序
+        val allCats = alive.flatMap { catsBySource[it.id].orEmpty() }
         val mergedCats = LinkedHashMap<String, ExploreCategory>()
         for (cat in allCats) if (cat.title.isNotBlank() && cat.title !in mergedCats) {
             mergedCats[cat.title] = cat
@@ -573,33 +595,35 @@ class HomeViewModel(
             mergedCats.values.take(MAX_VIDEO_ROWS).map { it.url to it.title }
         }
 
-        // 3) 每个分类：并发拉各存活源该分类的内容，合并去重
-        val rows = mutableListOf<VideoRow>()
-        for (chunk in plan.chunked(ROWS_CONCURRENCY)) {
-            val results = coroutineScope {
-                chunk.map { (catUrl, title) -> async {
-                    val merged = coroutineScope {
-                        alive.map { src -> async {
-                            runCatching { contentRepository.explore(src.id, catUrl, 1) }
-                                .getOrDefault(emptyList())
-                        } }.awaitAll().flatten()
-                    }
-                    val seen = LinkedHashSet<String>()
-                    val dedup = merged.filter { seen.add("${it.sourceId}:${it.id}") }
-                    Triple(catUrl, title, dedup)
-                } }.awaitAll()
-            }
-            for ((catUrl, title, items) in results) {
-                if (items.isNotEmpty()) rows += VideoRow(catUrl, title, items)
-            }
+        // 3) 每个分类并发拉各存活源该分类的内容，合并去重；每完成一行先上屏
+        val rows = java.util.Collections.synchronizedList(mutableListOf<VideoRow>())
+        coroutineScope {
+            plan.mapIndexed { _, (catUrl, title) -> async {
+                val merged = coroutineScope {
+                    alive.map { src -> async {
+                        runCatching {
+                            withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) { contentRepository.explore(src.id, catUrl, 1) }
+                        }.getOrNull().orEmpty()
+                    } }.awaitAll().flatten()
+                }
+                val seen = LinkedHashSet<String>()
+                val dedup = merged.filter { seen.add("${it.sourceId}:${it.id}") }
+                if (dedup.isNotEmpty()) {
+                    rows.add(VideoRow(catUrl, title, dedup))
+                    _videoHome.value = _videoHome.value.copy(
+                        loading = false,
+                        rows = rows.toList().sortedBy { r -> plan.indexOfFirst { it.first == r.categoryId } },
+                    )
+                }
+            } }.awaitAll()
         }
 
         _videoHome.value = _videoHome.value.copy(
             loading = false,
             loadingMore = false,
             categories = mergedCats.values.toList(),
-            rows = rows,
-            availableSources = alive.map { it.id },
+            rows = rows.toList().sortedBy { r -> plan.indexOfFirst { it.first == r.categoryId } },
+            availableSources = alive.toList().map { it.id },
             error = if (rows.isEmpty()) "没有取到内容，可能是各源暂时不可用，稍后再试" else null,
         )
     }
@@ -811,8 +835,8 @@ class HomeViewModel(
         /** 聚合模式最多探测几个源（实测约 1/3 存活，探测 12 个足够凑出可用源） */
         private const val MAX_AGGREGATE_SOURCES = 12
 
-        /** 分区并发拉取路数 */
-        private const val ROWS_CONCURRENCY = 3
+        /** 单个源探测 / 分类行内容请求的有界超时（毫秒）——死源快速失败，不拖累整页 */
+        private const val SOURCE_PROBE_TIMEOUT_MS = 10_000L
 
         /** 「继续观看」最多展示条数 */
         private const val MAX_CONTINUE_ITEMS = 12

@@ -41,7 +41,6 @@ import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -200,16 +199,14 @@ fun BoxScope.VideoControlsOverlay(
                     .clickable(onClick = onTogglePlay),
                 contentAlignment = Alignment.Center,
             ) {
-                if (isBuffering) {
-                    CircularProgressIndicator(color = Color.White, strokeWidth = 3.dp)
-                } else {
-                    Icon(
-                        if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                        contentDescription = if (isPlaying) "暂停" else "播放",
-                        tint = Color.White,
-                        modifier = Modifier.size(38.dp),
-                    )
-                }
+                // 缓冲状态由播放层中央的单一加载指示器呈现，这里保持播放/暂停图标，
+                // 避免控制栏与中央指示器同时出现两个圈。
+                Icon(
+                    if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    contentDescription = if (isPlaying) "暂停" else "播放",
+                    tint = Color.White,
+                    modifier = Modifier.size(38.dp),
+                )
             }
             Spacer(Modifier.width(28.dp))
             IconButton(

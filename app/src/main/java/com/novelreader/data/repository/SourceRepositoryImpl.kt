@@ -9,6 +9,8 @@ import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.SourceRepository
 import com.novelreader.source.manager.SourceManager
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 /**
@@ -28,6 +30,13 @@ class SourceRepositoryImpl(
 
     override suspend fun getSourcesByType(type: SourceType): List<SourceInfo> =
         sourceManager.getSourcesByType(type)
+
+    /** 等待启动时的源恢复完成（冷启动竞态防护，v1.4.8.0） */
+    override suspend fun awaitRestored() {
+        if (!sourceManager.restoredFlow.value) {
+            sourceManager.restoredFlow.filter { it }.first()
+        }
+    }
 
     /** 观察所有源（响应式） */
     fun observeSources(): Flow<List<SourceInfo>> =

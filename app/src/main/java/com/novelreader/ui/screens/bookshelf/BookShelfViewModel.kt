@@ -8,6 +8,9 @@ import com.novelreader.domain.repository.BookRepository
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.ProgressRepository
 import com.novelreader.domain.repository.ReadingProgress
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -78,10 +81,11 @@ class BookShelfViewModel(
         viewModelScope.launch {
             bookRepository.observeBookshelf().collectLatest { list ->
                 _books.value = list
-                val map = mutableMapOf<String, ReadingProgress>()
-                list.forEach { item ->
-                    val p = progressRepository.getProgress(item.sourceId, item.id)
-                    if (p != null) map[itemKey(item)] = p
+                // 并发查询进度（此前串行逐条，书多时累积延迟；v1.4.8.0 改并发）
+                val map = coroutineScope {
+                    list.map { item -> async {
+                        progressRepository.getProgress(item.sourceId, item.id)?.let { itemKey(item) to it }
+                    } }.awaitAll().filterNotNull().toMap()
                 }
                 _progressMap.value = map
             }

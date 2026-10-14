@@ -573,6 +573,8 @@ private class VideoHomeFakeSourceRepository(private val sources: List<SourceInfo
     override suspend fun getSourcesByType(type: SourceType): List<SourceInfo> =
         sources.filter { it.type == type }
 
+    override suspend fun awaitRestored() { /* 测试假实现：恢复瞬时完成 */ }
+
     override suspend fun importSource(rawContent: String, fileName: String?): List<SourceInfo> =
         emptyList()
 

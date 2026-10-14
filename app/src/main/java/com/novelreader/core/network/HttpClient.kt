@@ -33,7 +33,9 @@ object HttpClient {
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(90, TimeUnit.SECONDS)
+            // 20s：章节页 / 列表页的正常响应远小于此；此前 90s 会让死源把
+            // 跨源搜索 / 换源 / 首页聚合拖到分钟级（v1.4.8.0 收紧）。
+            .readTimeout(20, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .cookieJar(MemoryCookieJar())
             .addInterceptor(RetryInterceptor(MAX_RETRY))
@@ -51,19 +53,19 @@ object HttpClient {
      * @param url 目标地址
      * @param headers 额外请求头（如 Referer、Cookie）
      * @param charset 指定字符集，null 则自动检测
-     * @param timeoutMs 自定义连接/读取超时（毫秒）；null 用全局默认（15s / 90s）。
+     * @param timeoutMs 自定义连接/读取超时（毫秒）；null 用全局默认（15s / 20s）。
      *        采集类接口（MoonTV / 苹果 CMS）动辄几十上百个站点，需要有界超时，
      *        避免个别死站点把整轮搜索拖到分钟级。
-     * @param retry 是否启用自动重试；采集类请求建议传 false——
-     *        默认重试 3 次会让「站点不可达」这类确定性失败变成数倍等待，
-     *        影视首页/分类浏览会长时间空转。
+     * @param retry 是否启用自动重试；**默认 false** —— 跨源搜索 / 换源 / 首页聚合
+     *        会遍历大量源，逐个重试 3 次会把「站点不可达」的确定性失败放大成数倍等待
+     *        （v1.4.8.0 起默认关闭，确有需要的调用方显式传 true）。
      */
     fun get(
         url: String,
         headers: Map<String, String> = emptyMap(),
         charset: String? = null,
         timeoutMs: Long? = null,
-        retry: Boolean = true,
+        retry: Boolean = false,
     ): String {
         val builder = Request.Builder()
             .url(url)
@@ -127,7 +129,7 @@ object HttpClient {
         request: Request,
         charset: String?,
         timeoutMs: Long? = null,
-        retry: Boolean = true,
+        retry: Boolean = false,
     ): String {
         val call = if (timeoutMs == null) {
             client.newCall(request)

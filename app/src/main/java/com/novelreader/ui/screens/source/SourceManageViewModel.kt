@@ -576,6 +576,22 @@ class SourceManageViewModel(
         }
     }
 
+    /** 一键删除所有已检出失效的源（v1.5.5.0） */
+    fun deleteFailedSources() {
+        val failed = _testResults.value.filterValues { !it }.keys
+        if (failed.isEmpty()) {
+            _message.value = "尚未检测到失效源，请先「检测可用性」"
+            return
+        }
+        viewModelScope.launch {
+            failed.forEach { sourceRepository.deleteSource(it) }
+            _message.value = "已删除 ${failed.size} 个失效源"
+            // 清除这些源的检测结果，避免残留「失效」标记
+            _testResults.value = _testResults.value.filterKeys { it !in failed }
+            refresh()
+        }
+    }
+
     /** 清除检测结果 */
     fun clearTestResults() {
         _testResults.value = emptyMap()

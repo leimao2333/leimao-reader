@@ -92,6 +92,8 @@ fun SourceManageScreen(
     val selectedIds = remember { androidx.compose.runtime.mutableStateListOf<String>() }
     // 正在登录的 Venera 源（非空弹出登录对话框，v1.3.0.0）
     var loginTarget by remember { mutableStateOf<SourceInfo?>(null) }
+    // 删除失效源二次确认（v1.5.5.0）
+    var confirmDeleteFailed by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { viewModel.observe() }
 
@@ -356,6 +358,10 @@ fun SourceManageScreen(
                         enabled = failedCount > 0 && !testRunning,
                         onClick = { viewModel.disableFailedSources() },
                     ) { Text("禁用失效") }
+                    TextButton(
+                        enabled = failedCount > 0 && !testRunning,
+                        onClick = { confirmDeleteFailed = true },
+                    ) { Text("删除失效", color = MaterialTheme.colorScheme.error) }
                 }
                 // 检测进度条（v1.4.7.0）
                 if (testProgress != null) {
@@ -376,6 +382,32 @@ fun SourceManageScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                }
+
+                // 删除失效源二次确认（v1.5.5.0）
+                if (confirmDeleteFailed) {
+                    val deleteCount = testResults.count { !it.value }
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { confirmDeleteFailed = false },
+                        title = { Text("删除失效源") },
+                        text = {
+                            Text(
+                                text = "确定删除 $deleteCount 个已检出的失效源吗？此操作不可撤销。",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    confirmDeleteFailed = false
+                                    viewModel.deleteFailedSources()
+                                },
+                            ) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { confirmDeleteFailed = false }) { Text("取消") }
+                        },
+                    )
                 }
 
                 // 书源 URL 一键更新（v1.3.0.0 对标 legado）

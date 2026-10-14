@@ -196,6 +196,7 @@ fun NovelDetailScreen(
                         onOpenChangeSource = viewModel::openChangeSource,
                         download = download,
                         onDownload = viewModel::downloadBook,
+                        onCancelDownload = viewModel::cancelDownload,
                         onOpenCacheDialog = { showCacheDialog = true },
                         onAuthorClick = onSearchAuthor,
                         hasProgress = hasProgress,
@@ -453,6 +454,7 @@ private fun DetailHeader(
     onOpenChangeSource: () -> Unit = {},
     download: com.novelreader.core.download.DownloadState? = null,
     onDownload: () -> Unit = {},
+    onCancelDownload: () -> Unit = {},
     onOpenCacheDialog: () -> Unit = {},
     onAuthorClick: ((String) -> Unit)? = null,
     hasProgress: Boolean = false,
@@ -587,11 +589,22 @@ private fun DetailHeader(
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = "下载中… ${(state.progress * 100).toInt()}%",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "下载中… ${(state.progress * 100).toInt()}%",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "取消",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .clickable(onClick = onCancelDownload)
+                                .padding(4.dp),
+                        )
+                    }
                 }
                 state.message?.let {
                     Text(

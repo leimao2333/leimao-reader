@@ -146,5 +146,6 @@ private class FakeProgressRepository : ProgressRepository {
 
     override suspend fun getProgress(sourceId: String, itemId: String): ReadingProgress? = null
     override suspend fun removeProgress(sourceId: String, itemId: String) = Unit
+    override suspend fun clearAllProgress() = Unit
     override suspend fun recentReadings(type: SourceType?): List<RecentReading> = emptyList()
 }

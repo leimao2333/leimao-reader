@@ -72,6 +72,10 @@ class ProgressRepositoryImpl(
         progressDao.delete(sourceId, itemId)
     }
 
+    override suspend fun clearAllProgress() {
+        progressDao.clearAll()
+    }
+
     override suspend fun recentReadings(type: SourceType?): List<RecentReading> {
         val typeKey = when (type) {
             SourceType.NOVEL -> "novel"

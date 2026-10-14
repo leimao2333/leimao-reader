@@ -39,6 +39,7 @@ object Routes {
 
     // ===== 通用 =====
     const val BOOKSHELF = "bookshelf"          // 书架/收藏
+    const val HISTORY = "history"              // 阅读历史（v1.4.3.0）
 
     // ===== RSS 订阅（v1.3.1.0）=====
     const val RSS = "rss"                              // 订阅列表 + 文章流

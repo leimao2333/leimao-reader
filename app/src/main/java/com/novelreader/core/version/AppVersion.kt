@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.4.3.0"
+    const val CURRENT_VERSION = "1.4.4.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,14 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.4.4.0",
+            date = "2026-10-14",
+            changes = listOf(
+                "**阅读历史独立页**（N1）：首页顶栏新增「历史」入口，独立页面按类型（全部 / 小说 / 漫画 / 视频）筛选所有阅读 / 播放记录，展示封面、标题、最后章节与相对时间；点击任意一条直接续读 / 续播到上次位置。支持长按进入多选、批量删除与「清空全部」",
+                "**全书下载断点续传**（N4）：下载整本小说改为逐章处理并实时更新进度（已完成章节数 / 总章节数），已缓存的章节直接读本地、跳过网络；下载中可随时「取消」，已完成的章节保留在缓存里，下次重新下载自动从断点继续、不再从头重拉整本",
+            ),
+        ),
         VersionEntry(
             version = "1.4.3.0",
             date = "2026-10-14",

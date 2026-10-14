@@ -13,6 +13,7 @@ import com.novelreader.domain.repository.ContentRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -149,32 +150,84 @@ class NovelDetailViewModel(
         }
     }
 
-    /** 下载整本小说（拼接所有章节正文） */
+    /**
+     * 下载整本小说（拼接所有章节正文为单个 txt）。
+     *
+     * 断点续传（v1.4.3.0）：逐章处理时优先读章节缓存——已缓存的章节直接取本地，
+     * 未缓存的拉取后顺手写入缓存。这样中途取消 / 失败后，已完成的章节仍在缓存里，
+     * 下次重新下载会自动跳过、从断点继续，不会从头重拉整本。
+     *
+     * 进度按「已完成章节数 / 总章节数」实时更新；已缓存章节也计入进度（视为已完成）。
+     */
+    private var downloadJob: kotlinx.coroutines.Job? = null
+
     fun downloadBook() {
         val item = _detail.value ?: return
         val manager = downloadManager ?: return
         val chapters = _chapters.value
-        viewModelScope.launch {
+        val cache = chapterCacheRepository
+        if (chapters.isEmpty()) {
+            _download.value = DownloadState(isDownloading = false, success = false, message = "目录为空，无法下载")
+            return
+        }
+        downloadJob?.cancel()
+        downloadJob = viewModelScope.launch {
             _download.value = DownloadState(isDownloading = true, progress = 0f)
+            // 先统计已缓存章节数（断点续传的起点）
+            val alreadyCached = if (cache != null) {
+                runCatching { cache.cachedIndices(item.sourceId, item.id) }.getOrDefault(emptySet())
+            } else emptySet()
             runCatching {
                 val sb = StringBuilder()
-                chapters.forEachIndexed { index, chapter ->
-                    val content = contentRepository.content(chapter)
-                    content.novelText?.let {
-                        sb.append(chapter.title).append("\n\n").append(it).append("\n\n")
+                var done = 0
+                for (chapter in chapters) {
+                    // 响应取消：下载被取消时立即停止，已完成的章节已写入缓存可续传
+                    if (!isActive) {
+                        throw kotlinx.coroutines.CancellationException("下载取消")
                     }
+                    // 已缓存 → 直接读缓存；未缓存 → 网络拉取并写缓存
+                    val text = if (chapter.index in alreadyCached && cache != null) {
+                        runCatching { cache.getCached(item.sourceId, item.id, chapter.index) }.getOrNull()
+                    } else {
+                        val fetched = contentRepository.content(chapter).novelText
+                        if (!fetched.isNullOrBlank() && cache != null) {
+                            runCatching {
+                                cache.saveCache(item, chapter.index, chapter.title, chapter.url, fetched)
+                            }
+                        }
+                        fetched
+                    }
+                    if (!text.isNullOrBlank()) {
+                        sb.append(chapter.title).append("\n\n").append(text).append("\n\n")
+                    }
+                    done++
                     _download.value = DownloadState(
                         isDownloading = true,
-                        progress = if (chapters.isNotEmpty()) (index + 1f) / chapters.size else 1f,
+                        progress = done.toFloat() / chapters.size,
                     )
                 }
                 sb.toString()
             }.onSuccess { text ->
                 manager.download(item, ContentResult.novel(text)).collect { _download.value = it }
             }.onFailure { e ->
-                _download.value = DownloadState(isDownloading = false, success = false, message = "下载失败：${e.message}")
+                if (e is kotlinx.coroutines.CancellationException) {
+                    _download.value = DownloadState(
+                        isDownloading = false,
+                        success = false,
+                        message = "下载已取消（已缓存章节保留，可重新下载续传）",
+                    )
+                } else {
+                    _download.value = DownloadState(isDownloading = false, success = false, message = "下载失败：${e.message}")
+                }
             }
         }
+    }
+
+    /** 取消下载（已完成的章节已写入缓存，下次下载可续传） */
+    fun cancelDownload() {
+        downloadJob?.cancel()
+        downloadJob = null
+        _download.value = DownloadState(isDownloading = false, success = false, message = "下载已取消（已缓存章节保留，可重新下载续传）")
     }
 
     // ===== 批量离线缓存（v1.2.3.0） =====

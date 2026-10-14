@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayCircle
@@ -90,6 +91,8 @@ fun HomeScreen(
     onContinueReading: (MediaItem, List<ChapterItem>, ChapterItem?) -> Unit,
     /** 打开短剧（直达竖屏播放，v1.3.10.0） */
     onOpenShortDrama: (MediaItem) -> Unit = {},
+    /** 打开阅读历史（v1.4.3.0） */
+    onOpenHistory: () -> Unit = {},
 ) {
     val importMessage by viewModel.importMessage.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -183,6 +186,9 @@ fun HomeScreen(
                     }
                     IconButton(onClick = onOpenRss) {
                         Icon(Icons.Filled.RssFeed, contentDescription = "订阅")
+                    }
+                    IconButton(onClick = onOpenHistory) {
+                        Icon(Icons.Filled.History, contentDescription = "阅读历史")
                     }
                     IconButton(onClick = onOpenSources) {
                         Icon(Icons.Filled.Source, contentDescription = "源管理")

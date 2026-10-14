@@ -126,4 +126,23 @@ class ProgressRecentReadingsTest {
         assertEquals(24, row.totalChapter)
         assertEquals(SourceType.VIDEO, row.type)
     }
+
+    @Test
+    fun `清空全部进度后列表为空`() = runBlocking {
+        insertRaw("v", "VIDEO")
+        insertRaw("n", "NOVEL")
+        assertEquals(2, repo.recentReadings(null).size)
+        repo.clearAllProgress()
+        assertEquals(0, repo.recentReadings(null).size)
+    }
+
+    @Test
+    fun `删除单条进度只影响该条`() = runBlocking {
+        insertRaw("a", "VIDEO")
+        insertRaw("b", "NOVEL")
+        repo.removeProgress("s", "a")
+        val rest = repo.recentReadings(null)
+        assertEquals(1, rest.size)
+        assertEquals("b", rest[0].itemId)
+    }
 }

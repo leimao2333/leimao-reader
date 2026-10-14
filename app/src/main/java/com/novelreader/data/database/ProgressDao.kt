@@ -25,6 +25,14 @@ interface ProgressDao {
     suspend fun delete(sourceId: String, itemId: String)
 
     /**
+     * 清空全部进度记录（阅读历史「清空全部」用）。
+     *
+     * 批量删除指定条目在仓库层循环调用 [delete] 即可，无需额外 SQL。
+     */
+    @Query("DELETE FROM progress")
+    suspend fun clearAll()
+
+    /**
      * 最近阅读列表：progress 表按更新时间倒序，左连接 books 表补充封面等字段。
      * 返回 [RecentReadingRow]（POJO 投影，非实体表）。
      *

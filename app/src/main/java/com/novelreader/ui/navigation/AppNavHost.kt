@@ -109,6 +109,7 @@ fun AppNavHost(
                 onOpenVideoSearch = { navController.navigate(Routes.videoSearch()) },
                 onOpenExplore = { type -> navController.navigate(Routes.explore(type)) },
                 onOpenRss = { navController.navigate(Routes.RSS) },
+                onOpenHistory = { navController.navigate(Routes.HISTORY) },
                 onContinueReading = { item, chapters, target ->
                     NavCache.putChapters(item, chapters)
                     val index = target?.index?.coerceAtLeast(0) ?: 0
@@ -203,6 +204,68 @@ fun AppNavHost(
                                 navController.navigate(Routes.comicReader(item, index))
                             com.novelreader.domain.model.SourceType.VIDEO ->
                                 navController.navigate(Routes.videoPlayer(item, index))
+                        }
+                    }
+                },
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        // ===== 阅读历史（v1.4.3.0）=====
+        composable(Routes.HISTORY) {
+            val viewModel: com.novelreader.ui.screens.history.HistoryViewModel = viewModel(
+                factory = NovelViewModelFactory(container) {
+                    com.novelreader.ui.screens.history.HistoryViewModel(it.progressRepository)
+                }
+            )
+            val scope = androidx.compose.runtime.rememberCoroutineScope()
+            com.novelreader.ui.screens.history.HistoryScreen(
+                viewModel = viewModel,
+                onContinue = { r ->
+                    // 从历史记录重建 MediaItem，继续阅读/播放
+                    val item = com.novelreader.domain.model.MediaItem(
+                        id = r.itemId,
+                        title = r.title,
+                        cover = r.cover,
+                        author = r.author,
+                        type = r.type,
+                        detailUrl = r.detailUrl,
+                        sourceId = r.sourceId,
+                        sourceName = "",
+                    )
+                    scope.launch {
+                        val chapters = runCatching {
+                            container.contentRepository.chapterList(item)
+                        }.getOrDefault(emptyList())
+                        if (chapters.isEmpty()) {
+                            // 拉不到目录则退回详情页
+                            when (r.type) {
+                                com.novelreader.domain.model.SourceType.NOVEL ->
+                                    navController.navigate(Routes.novelDetail(item))
+                                com.novelreader.domain.model.SourceType.COMIC ->
+                                    navController.navigate(Routes.comicDetail(item))
+                                com.novelreader.domain.model.SourceType.VIDEO ->
+                                    navController.navigate(Routes.videoDetail(item))
+                            }
+                            return@launch
+                        }
+                        NavCache.putChapters(item, chapters)
+                        // 按记录章节定位：优先地址匹配，其次序号
+                        val index = if (r.chapterUrl.isNotBlank()) {
+                            chapters.indexOfFirst { it.url == r.chapterUrl }
+                                .let { if (it >= 0) it else -1 }
+                        } else -1
+                        val target = if (index >= 0) index
+                        else chapters.indexOfFirst { it.index == r.chapterIndex }
+                            .let { if (it >= 0) it else r.chapterIndex }
+                        val pos = target.coerceIn(0, chapters.size - 1)
+                        when (r.type) {
+                            com.novelreader.domain.model.SourceType.NOVEL ->
+                                navController.navigate(Routes.novelReader(item, pos))
+                            com.novelreader.domain.model.SourceType.COMIC ->
+                                navController.navigate(Routes.comicReader(item, pos))
+                            com.novelreader.domain.model.SourceType.VIDEO ->
+                                navController.navigate(Routes.videoPlayer(item, pos))
                         }
                     }
                 },

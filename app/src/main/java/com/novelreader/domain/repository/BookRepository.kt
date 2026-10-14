@@ -71,6 +71,9 @@ interface ProgressRepository {
     /** 删除某条阅读记录（最近阅读长按移除） */
     suspend fun removeProgress(sourceId: String, itemId: String)
 
+    /** 清空全部阅读/播放历史（阅读历史页「清空全部」） */
+    suspend fun clearAllProgress()
+
     /**
      * 最近阅读列表（按更新时间倒序）。
      *

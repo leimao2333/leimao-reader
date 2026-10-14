@@ -79,6 +79,8 @@ data class VideoPrefs(
     val doubleTapSeekSec: Int = 10,
     val savedSpeed: Float = 1f,
     val autoNext: Boolean = false,
+    /** 横屏全屏上下滑切换上下集（v1.4.7.0） */
+    val verticalSwipeSwitch: Boolean = true,
     /** 是否已完成首次读取（UI 依据此判断能否应用"默认全屏"） */
     val loaded: Boolean = false,
 )
@@ -197,6 +199,7 @@ class VideoPlayerViewModel(
                 doubleTapSeekSec = preferencesManager.videoDoubleTapSeekFlow.first(),
                 savedSpeed = preferencesManager.videoSpeedFlow.first() / 100f,
                 autoNext = preferencesManager.videoAutoNextFlow.first(),
+                verticalSwipeSwitch = preferencesManager.videoVerticalSwipeSwitchFlow.first(),
                 loaded = true,
             )
             _prefs.value = loaded
@@ -223,6 +226,11 @@ class VideoPlayerViewModel(
             launch {
                 preferencesManager.videoAutoNextFlow.collect { v ->
                     _prefs.update { it.copy(autoNext = v) }
+                }
+            }
+            launch {
+                preferencesManager.videoVerticalSwipeSwitchFlow.collect { v ->
+                    _prefs.update { it.copy(verticalSwipeSwitch = v) }
                 }
             }
             launch {
@@ -689,6 +697,18 @@ class VideoPlayerViewModel(
     fun hasNext(): Boolean {
         val i = currentIndex
         return i >= 0 && i < _episodes.value.size - 1
+    }
+
+    /** 下一集（不切换，供横屏上下滑切集提示用，v1.4.7.0） */
+    fun peekNext(): ChapterItem? {
+        val i = currentIndex
+        return _episodes.value.getOrNull(i + 1)
+    }
+
+    /** 上一集（不切换，供横屏上下滑切集提示用，v1.4.7.0） */
+    fun peekPrev(): ChapterItem? {
+        val i = currentIndex
+        return if (i > 0) _episodes.value.getOrNull(i - 1) else null
     }
 
     fun playNext() {

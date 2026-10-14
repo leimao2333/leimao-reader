@@ -42,6 +42,8 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -57,6 +59,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.lifecycle.Lifecycle
@@ -92,6 +95,9 @@ private data class SeekPreview(val targetMs: Long, val deltaMs: Long)
 
 /** 竖滑亮度 / 音量指示 */
 private data class VerticalIndicator(val brightness: Boolean, val value: Float)
+
+/** 横屏上下滑切集提示（v1.4.7.0）：next = 是否下一集 */
+private data class SwitchEpisodeHint(val next: Boolean, val title: String)
 
 /**
  * 视频播放页（v1.3.2.0 交互重做，对齐 MoonTV / ArtPlayer 的操作习惯）。
@@ -207,6 +213,8 @@ fun VideoPlayerScreen(
     var ripple by remember { mutableStateOf<SeekRipple?>(null) }
     var seekPreview by remember { mutableStateOf<SeekPreview?>(null) }
     var verticalIndicator by remember { mutableStateOf<VerticalIndicator?>(null) }
+    // 横屏上下滑切集提示（v1.4.7.0）
+    var switchEpisodeHint by remember { mutableStateOf<SwitchEpisodeHint?>(null) }
 
     // 首帧后按设置决定是否直接全屏（短剧始终竖屏全屏，不受「默认全屏」设置影响）
     LaunchedEffect(prefs.loaded, prefs.fullscreenDefault) {
@@ -323,7 +331,21 @@ fun VideoPlayerScreen(
         }
     }
 
+    // 切集提示自动消失
+    LaunchedEffect(switchEpisodeHint) {
+        if (switchEpisodeHint != null) {
+            kotlinx.coroutines.delay(900)
+            switchEpisodeHint = null
+        }
+    }
+
     val seekStepMs = prefs.doubleTapSeekSec * 1000L
+
+    // 横屏全屏判定（上下滑切上下集用）：普通视频全屏，或短剧横屏
+    val isLandscapeFullscreen = if (isShortDrama) shortDramaLandscape else isFullscreen
+    // rememberUpdatedState：让 pointerInput(Unit) 的闭包读到最新值（v1.4.7.0）
+    val currentIsLandscapeFullscreen by rememberUpdatedState(isLandscapeFullscreen)
+    val currentVerticalSwipeSwitch by rememberUpdatedState(prefs.verticalSwipeSwitch)
 
     // 亮度读写
     fun currentBrightness(): Float {
@@ -392,6 +414,8 @@ fun VideoPlayerScreen(
                         var startPosMs = 0L
                         var startBrightness = 1f
                         var startVolume = 0
+                        // 横屏全屏时上下滑切集：累积位移 + 是否已触发（防止一次滑动连续切多集）
+                        var switchTriggered = false
                         val slop = viewConfiguration.touchSlop
 
                         detectDragGestures(
@@ -400,6 +424,7 @@ fun VideoPlayerScreen(
                                 totalDx = 0f
                                 totalDy = 0f
                                 dragStartX = offset.x
+                                switchTriggered = false
                                 startPosMs = viewModel.state.value.positionMs
                                 startBrightness = currentBrightness()
                                 startVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
@@ -423,24 +448,49 @@ fun VideoPlayerScreen(
                                         }
                                     }
                                     2 -> {
-                                        val fraction = -totalDy / size.height
-                                        if (dragStartX < size.width / 2f) {
-                                            val v = (startBrightness + fraction).coerceIn(0.02f, 1f)
-                                            applyBrightness(v)
-                                            verticalIndicator = VerticalIndicator(true, v)
+                                        // v1.4.7.0：横屏全屏时，上下滑切换上一集 / 下一集
+                                        if (currentIsLandscapeFullscreen && currentVerticalSwipeSwitch) {
+                                            val threshold = size.height * 0.22f
+                                            if (!switchTriggered && totalDy < -threshold) {
+                                                // 上滑 → 下一集
+                                                switchTriggered = true
+                                                val next = viewModel.peekNext()
+                                                if (next != null) {
+                                                    viewModel.playNext()
+                                                    switchEpisodeHint = SwitchEpisodeHint(true, next.title)
+                                                }
+                                                controlsVisible = false
+                                            } else if (!switchTriggered && totalDy > threshold) {
+                                                // 下滑 → 上一集
+                                                switchTriggered = true
+                                                val prev = viewModel.peekPrev()
+                                                if (prev != null) {
+                                                    viewModel.playPrev()
+                                                    switchEpisodeHint = SwitchEpisodeHint(false, prev.title)
+                                                }
+                                                controlsVisible = false
+                                            }
                                         } else {
-                                            val max = audioManager
-                                                .getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                                                .coerceAtLeast(1)
-                                            val v = (startVolume + fraction * max).roundToInt()
-                                                .coerceIn(0, max)
-                                            audioManager.setStreamVolume(
-                                                AudioManager.STREAM_MUSIC, v, 0
-                                            )
-                                            verticalIndicator =
-                                                VerticalIndicator(false, v / max.toFloat())
+                                            // 竖屏 / 窗口态：保留原有亮度 / 音量手势
+                                            val fraction = -totalDy / size.height
+                                            if (dragStartX < size.width / 2f) {
+                                                val v = (startBrightness + fraction).coerceIn(0.02f, 1f)
+                                                applyBrightness(v)
+                                                verticalIndicator = VerticalIndicator(true, v)
+                                            } else {
+                                                val max = audioManager
+                                                    .getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                                                    .coerceAtLeast(1)
+                                                val v = (startVolume + fraction * max).roundToInt()
+                                                    .coerceIn(0, max)
+                                                audioManager.setStreamVolume(
+                                                    AudioManager.STREAM_MUSIC, v, 0
+                                                )
+                                                verticalIndicator =
+                                                    VerticalIndicator(false, v / max.toFloat())
+                                            }
+                                            controlsVisible = false
                                         }
-                                        controlsVisible = false
                                     }
                                 }
                             },
@@ -461,24 +511,10 @@ fun VideoPlayerScreen(
                     },
             )
 
-            // ===== 初次加载 / 错误 =====
-            if (loading) {
-                Column(
-                    modifier = Modifier.align(Alignment.Center),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    CircularProgressIndicator(color = Color.White)
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        text = "正在加载…",
-                        color = Color.White.copy(alpha = 0.85f),
-                        fontSize = 13.sp,
-                    )
-                }
-            }
-
-            // ===== 缓冲中（播放中卡顿 / 切集后加载）=====
-            if (!loading && playback.isBuffering) {
+            // ===== 初次加载 / 缓冲（合并为单一加载指示器，避免两个圈重叠/闪烁） =====
+            // loading = 解析地址 + prepare 阶段；isBuffering = prepare 后卡顿/切集缓冲。
+            // 两者共用同一个圈，loading 优先显示「正在加载」，否则显示「缓冲中」。
+            if (loading || playback.isBuffering) {
                 Column(
                     modifier = Modifier.align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -488,16 +524,18 @@ fun VideoPlayerScreen(
                         color = Color.White,
                         strokeWidth = 3.dp,
                     )
-                    Spacer(Modifier.height(8.dp))
-                    // 缓冲进度：已缓冲 / 总时长
+                    Spacer(Modifier.height(10.dp))
                     val buffered = playback.bufferedMs
                     val duration = playback.durationMs
+                    val text = if (loading) {
+                        "正在加载…"
+                    } else if (duration > 0 && buffered > 0) {
+                        "缓冲中 ${(buffered * 100 / duration).coerceIn(0, 100)}%"
+                    } else {
+                        "缓冲中…"
+                    }
                     Text(
-                        text = if (duration > 0 && buffered > 0) {
-                            "缓冲中 ${(buffered * 100 / duration).coerceIn(0, 100)}%"
-                        } else {
-                            "缓冲中…"
-                        },
+                        text = text,
                         color = Color.White.copy(alpha = 0.85f),
                         fontSize = 12.sp,
                     )
@@ -647,6 +685,34 @@ fun VideoPlayerScreen(
                             text = "${(ind.value * 100).toInt().coerceIn(0, 100)}%",
                             color = Color.White,
                             fontSize = 12.sp,
+                        )
+                    }
+                }
+            }
+
+            // ===== 横屏上下滑切集提示（v1.4.7.0） =====
+            switchEpisodeHint?.let { hint ->
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .padding(horizontal = 18.dp, vertical = 10.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            if (hint.next) Icons.Filled.SkipNext else Icons.Filled.SkipPrevious,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = (if (hint.next) "下一集 · " else "上一集 · ") + hint.title,
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }

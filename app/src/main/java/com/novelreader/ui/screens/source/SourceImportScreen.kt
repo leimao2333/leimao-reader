@@ -211,6 +211,9 @@ fun SourceImportScreen(
             }
         }
     }
+
+    // ===== 可选添加对话框（v1.4.7.0）：解析出多个源时弹出勾选 =====
+    ImportCandidatesDialog(viewModel = viewModel)
 }
 
 /** 查询 Uri 对应的显示名称（文件名） */

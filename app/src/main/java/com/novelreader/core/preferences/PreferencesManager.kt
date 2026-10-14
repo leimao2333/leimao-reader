@@ -148,6 +148,8 @@ class PreferencesManager(private val context: Context) {
         val KEY_VIDEO_SPEED = intPreferencesKey("video_speed")
         /** 播完自动连播下一集 */
         val KEY_VIDEO_AUTO_NEXT = booleanPreferencesKey("video_auto_next")
+        /** 横屏全屏上下滑切换上下集（v1.4.7.0） */
+        val KEY_VIDEO_VERTICAL_SWIPE_SWITCH = booleanPreferencesKey("video_vertical_swipe_switch")
 
         // ----- v1.3.3.0 影视首页（MoonTV 风格）-----
         /** 影视首页当前使用的视频源 id（记忆上次选择） */
@@ -216,6 +218,8 @@ class PreferencesManager(private val context: Context) {
         const val DEFAULT_VIDEO_SPEED = 100
         /** 默认播完连播下一集 */
         const val DEFAULT_VIDEO_AUTO_NEXT = false
+        /** 默认开启横屏上下滑切集 */
+        const val DEFAULT_VIDEO_VERTICAL_SWIPE_SWITCH = true
         /** 搜索历史分隔符（历史记录用单个字符串存储，分隔符分隔） */
         private const val HISTORY_SEPARATOR = "\u001F"
     }
@@ -580,6 +584,14 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setVideoAutoNext(value: Boolean) {
         context.dataStore.edit { it[KEY_VIDEO_AUTO_NEXT] = value }
+    }
+
+    /** 横屏全屏上下滑切换上下集（v1.4.7.0） */
+    val videoVerticalSwipeSwitchFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_VIDEO_VERTICAL_SWIPE_SWITCH] ?: DEFAULT_VIDEO_VERTICAL_SWIPE_SWITCH }
+
+    suspend fun setVideoVerticalSwipeSwitch(value: Boolean) {
+        context.dataStore.edit { it[KEY_VIDEO_VERTICAL_SWIPE_SWITCH] = value }
     }
 
     // ----- v1.3.3.0 影视首页 -----

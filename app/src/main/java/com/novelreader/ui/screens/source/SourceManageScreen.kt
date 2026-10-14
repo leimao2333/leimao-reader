@@ -328,6 +328,8 @@ fun SourceManageScreen(
                 // 源有效性检测（自动筛选无用源）
                 val testResults by viewModel.testResults.collectAsState()
                 val testing by viewModel.testing.collectAsState()
+                val testProgress by viewModel.testProgress.collectAsState()
+                val testRunning by viewModel.testRunning.collectAsState()
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -337,7 +339,7 @@ fun SourceManageScreen(
                     val failedCount = testResults.count { !it.value }
                     Text(
                         text = when {
-                            testing.isNotEmpty() -> "正在检测…（剩余 ${testing.size}）"
+                            testRunning -> "正在检测…"
                             testResults.isEmpty() -> "尚未检测源可用性"
                             failedCount == 0 -> "检测完成：全部可用"
                             else -> "检测到 $failedCount 个疑似失效"
@@ -347,13 +349,33 @@ fun SourceManageScreen(
                         modifier = Modifier.weight(1f),
                     )
                     TextButton(
-                        enabled = testing.isEmpty(),
+                        enabled = !testRunning,
                         onClick = { viewModel.testSources(displayedSources) },
-                    ) { Text("检测可用性") }
+                    ) { Text(if (testRunning) "检测中" else "检测可用性") }
                     TextButton(
-                        enabled = failedCount > 0 && testing.isEmpty(),
+                        enabled = failedCount > 0 && !testRunning,
                         onClick = { viewModel.disableFailedSources() },
                     ) { Text("禁用失效") }
+                }
+                // 检测进度条（v1.4.7.0）
+                if (testProgress != null) {
+                    val (done, total) = testProgress!!
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 2.dp),
+                    ) {
+                        androidx.compose.material3.LinearProgressIndicator(
+                            progress = { if (total > 0) done.toFloat() / total else 0f },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = "$done / $total",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
 
                 // 书源 URL 一键更新（v1.3.0.0 对标 legado）
@@ -432,6 +454,9 @@ fun SourceManageScreen(
 
     // ===== 源规则编辑对话框 =====
     SourceEditDialog(viewModel = viewModel)
+
+    // ===== 可选添加对话框（v1.4.7.0） =====
+    ImportCandidatesDialog(viewModel = viewModel)
 
     // ===== Venera 登录对话框（v1.3.0.0）=====
     val loggingIn by viewModel.loggingIn.collectAsState()
@@ -534,6 +559,99 @@ private fun VeneraLoginDialog(
                     onClick = onDismiss,
                 ) { Text("取消") }
             }
+        },
+    )
+}
+
+/**
+ * 「可选添加」对话框（v1.4.7.0）。
+ *
+ * 当一份内容解析出多个源（legado 列表 / MoonTV 配置）时弹出，
+ * 让用户勾选要添加哪些源，而不是一股脑全部导入。
+ */
+@Composable
+internal fun ImportCandidatesDialog(viewModel: SourceManageViewModel) {
+    val candidates by viewModel.importCandidates.collectAsState()
+    val selectedIds by viewModel.selectedImportIds.collectAsState()
+    val importing by viewModel.importingSelected.collectAsState()
+
+    if (candidates.isEmpty()) return
+
+    androidx.compose.runtime.LaunchedEffect(candidates) {
+        viewModel.onImportCandidatesShown()
+    }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { if (!importing) viewModel.cancelImportCandidates() },
+        title = { Text("选择要添加的源") },
+        text = {
+            Column {
+                Text(
+                    text = "解析出 ${candidates.size} 个源，勾选要添加的：",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                // 全选 / 取消全选
+                TextButton(
+                    onClick = { viewModel.toggleSelectAllImportCandidates() },
+                    modifier = Modifier.align(Alignment.End),
+                ) {
+                    Text(if (selectedIds.size == candidates.size) "取消全选" else "全选")
+                }
+                // 候选源列表（可滚动）
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(360.dp),
+                ) {
+                    items(candidates, key = { it.id }) { src ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { viewModel.toggleImportCandidate(src.id) }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            androidx.compose.material3.Checkbox(
+                                checked = src.id in selectedIds,
+                                onCheckedChange = { viewModel.toggleImportCandidate(src.id) },
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = src.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = "${src.type.label()} · ${src.format.name}" +
+                                        (if (src.author.isNotBlank()) " · ${src.author}" else ""),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = selectedIds.isNotEmpty() && !importing,
+                onClick = { viewModel.confirmImportSelected() },
+            ) {
+                Text(if (importing) "添加中…" else "添加（${selectedIds.size}）")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                enabled = !importing,
+                onClick = { viewModel.cancelImportCandidates() },
+            ) { Text("取消") }
         },
     )
 }

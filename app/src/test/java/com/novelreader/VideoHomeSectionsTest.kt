@@ -576,6 +576,11 @@ private class VideoHomeFakeSourceRepository(private val sources: List<SourceInfo
     override suspend fun importSource(rawContent: String, fileName: String?): List<SourceInfo> =
         emptyList()
 
+    override suspend fun previewImport(rawContent: String, fileName: String?): List<SourceInfo> =
+        emptyList()
+
+    override suspend fun importSelected(ids: Set<String>): Int = 0
+
     override suspend fun deleteSource(sourceId: String) = Unit
     override suspend fun setSourceEnabled(sourceId: String, enabled: Boolean) = Unit
     override suspend fun getAdapter(sourceId: String): SourceAdapter? = null

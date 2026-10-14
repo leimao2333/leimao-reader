@@ -142,23 +142,89 @@ class SourceManageViewModel(
             _loading.value = true
             _message.value = null
             try {
-                val imported = sourceRepository.importSource(rawContent, fileName)
-                _message.value = buildString {
-                    if (imported.size == 1) {
+                // v1.4.7.0「可选添加」：先解析出候选源列表；多个源时弹勾选对话框，单源直接导入
+                val candidates = sourceRepository.previewImport(rawContent, fileName)
+                val skipped = sourceRepositoryImpl?.lastImportSkipped() ?: 0
+                if (candidates.size > 1) {
+                    _importCandidates.value = candidates
+                    _message.value = "解析出 ${candidates.size} 个源，请勾选要添加的" +
+                        (if (skipped > 0) "（另有 $skipped 个解析失败已跳过）" else "")
+                } else {
+                    val imported = sourceRepository.importSource(rawContent, fileName)
+                    _message.value = buildString {
                         append("导入成功：${imported[0].name}（${imported[0].type}）")
-                    } else {
-                        append("导入成功：${imported.size} 个源")
+                        if (skipped > 0) append("；另有 $skipped 个条目解析失败已跳过")
                     }
-                    val skipped = sourceRepositoryImpl?.lastImportSkipped() ?: 0
-                    if (skipped > 0) append("；另有 $skipped 个条目解析失败已跳过")
+                    refresh()
                 }
-                refresh()
             } catch (e: Exception) {
                 _message.value = "导入失败：${e.message}"
             } finally {
                 _loading.value = false
             }
         }
+    }
+
+    // ===== 可选添加（v1.4.7.0） =====
+
+    /** 待勾选的候选源列表（非空即弹出「可选添加」对话框） */
+    private val _importCandidates = MutableStateFlow<List<SourceInfo>>(emptyList())
+    val importCandidates: StateFlow<List<SourceInfo>> = _importCandidates.asStateFlow()
+
+    /** 用户在对话框中的勾选状态（sourceId 集合） */
+    private val _selectedImportIds = MutableStateFlow<Set<String>>(emptySet())
+    val selectedImportIds: StateFlow<Set<String>> = _selectedImportIds.asStateFlow()
+
+    /** 是否正在注册勾选的源 */
+    private val _importingSelected = MutableStateFlow(false)
+    val importingSelected: StateFlow<Boolean> = _importingSelected.asStateFlow()
+
+    /** 打开可选添加对话框时初始化勾选（默认全选） */
+    fun onImportCandidatesShown() {
+        _selectedImportIds.value = _importCandidates.value.map { it.id }.toSet()
+    }
+
+    /** 切换单个候选源的勾选状态 */
+    fun toggleImportCandidate(id: String) {
+        _selectedImportIds.value = if (id in _selectedImportIds.value) {
+            _selectedImportIds.value - id
+        } else {
+            _selectedImportIds.value + id
+        }
+    }
+
+    /** 全选 / 取消全选候选源 */
+    fun toggleSelectAllImportCandidates() {
+        val all = _importCandidates.value.map { it.id }.toSet()
+        _selectedImportIds.value = if (_selectedImportIds.value == all) emptySet() else all
+    }
+
+    /** 确认注册勾选的源 */
+    fun confirmImportSelected() {
+        val ids = _selectedImportIds.value
+        if (ids.isEmpty()) {
+            _importCandidates.value = emptyList()
+            return
+        }
+        viewModelScope.launch {
+            _importingSelected.value = true
+            try {
+                val n = sourceRepository.importSelected(ids)
+                _message.value = "已添加 $n 个源"
+                _importCandidates.value = emptyList()
+                refresh()
+            } catch (e: Exception) {
+                _message.value = "添加失败：${e.message}"
+            } finally {
+                _importingSelected.value = false
+            }
+        }
+    }
+
+    /** 取消可选添加 */
+    fun cancelImportCandidates() {
+        _importCandidates.value = emptyList()
+        _selectedImportIds.value = emptySet()
     }
 
     /**
@@ -208,9 +274,16 @@ class SourceManageViewModel(
                     return@launch
                 }
 
-                val imported = sourceRepository.importSource(content, remoteFileName(url))
-                _message.value = "从网址导入成功：${imported.size} 个源"
-                refresh()
+                // v1.4.7.0「可选添加」：先解析出候选；多个源时弹勾选对话框，单源直接导入
+                val candidates = sourceRepository.previewImport(content, remoteFileName(url))
+                if (candidates.size > 1) {
+                    _importCandidates.value = candidates
+                    _message.value = "解析出 ${candidates.size} 个源，请勾选要添加的"
+                } else {
+                    val imported = sourceRepository.importSource(content, remoteFileName(url))
+                    _message.value = "从网址导入成功：${imported.size} 个源"
+                    refresh()
+                }
             } catch (e: Exception) {
                 val reason = e.message ?: e.javaClass.simpleName
                 _message.value = if (reason.contains("timeout", true) || reason.contains("超时")) {
@@ -345,6 +418,14 @@ class SourceManageViewModel(
     private val _testResults = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     val testResults: StateFlow<Map<String, Boolean>> = _testResults.asStateFlow()
 
+    /** 检测进度：已完成数 / 总数（v1.4.7.0 进度条） */
+    private val _testProgress = MutableStateFlow<Pair<Int, Int>?>(null)
+    val testProgress: StateFlow<Pair<Int, Int>?> = _testProgress.asStateFlow()
+
+    /** 是否正在检测（整体） */
+    private val _testRunning = MutableStateFlow(false)
+    val testRunning: StateFlow<Boolean> = _testRunning.asStateFlow()
+
     /**
      * 批量检测源有效性。
      *
@@ -355,7 +436,11 @@ class SourceManageViewModel(
      */
     fun testSources(sources: List<SourceInfo> = _sources.value) {
         if (sources.isEmpty()) return
+        if (_testRunning.value) return
         viewModelScope.launch {
+            _testRunning.value = true
+            val total = sources.size
+            _testProgress.value = 0 to total
             // 必须在 IO 线程执行：test() 含网络请求与 Rhino JS，
             // 在主线程跑会卡死 UI 导致 ANR（实体机已复现）。
             val results = withContext(Dispatchers.IO) {
@@ -363,6 +448,7 @@ class SourceManageViewModel(
                 // 限流并发：全串行太慢（280 源 × 20s 上限），全并发耗尽内存；
                 // 用信号量限制最多 8 个源同时检测。
                 val semaphore = kotlinx.coroutines.sync.Semaphore(8)
+                val done = java.util.concurrent.atomic.AtomicInteger(0)
                 sources.map { source ->
                     launch {
                         semaphore.withPermit {
@@ -377,12 +463,16 @@ class SourceManageViewModel(
                             } ?: false
                             synchronized(map) { map[source.id] = ok }
                             _testing.value = _testing.value - source.id
+                            val d = done.incrementAndGet()
+                            _testProgress.value = d to total
                         }
                     }
                 }.joinAll()
                 map
             }
             _testResults.value = results.toMap()
+            _testProgress.value = null
+            _testRunning.value = false
             val failed = results.count { !it.value }
             _message.value = if (failed == 0) "检测完成：全部源可用"
             else "检测完成：${results.size} 个源中 $failed 个疑似失效"

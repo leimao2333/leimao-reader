@@ -1,0 +1,19 @@
+{
+  "api_site": {
+    "testsrc1": {
+      "api": "http://10.0.2.2:8899/api1.php",
+      "name": "测试源一",
+      "detail": "可选添加测试A"
+    },
+    "testsrc2": {
+      "api": "http://10.0.2.2:8899/api2.php",
+      "name": "测试源二",
+      "detail": "可选添加测试B"
+    },
+    "testsrc3": {
+      "api": "http://10.0.2.2:8899/api3.php",
+      "name": "测试源三",
+      "detail": "可选添加测试C"
+    }
+  }
+}

@@ -89,6 +89,19 @@ class SourceManager(
      * @return 导入的所有源（每个含其原始内容，供持久化）
      */
     fun importSource(rawContent: String, fileName: String? = null): List<ImportedSource> {
+        val parsed = previewImport(rawContent, fileName)
+        return registerParsed(parsed)
+    }
+
+    /**
+     * 解析源（不注册）。支持单个源或 legado 多源列表 / MoonTV 配置。
+     *
+     * 与 [importSource] 共享同一套解析逻辑，只是**不写入注册表**，
+     * 供「可选添加」流程先行列出候选源、用户勾选后再逐个注册（v1.4.7.0）。
+     *
+     * @return 解析出的所有源（每个含其原始内容，供后续注册 / 持久化）
+     */
+    fun previewImport(rawContent: String, fileName: String? = null): List<ImportedSource> {
         val validateResult = SourceValidator.validate(rawContent, fileName)
         if (!validateResult.valid) {
             throw IllegalArgumentException(validateResult.message)
@@ -115,13 +128,47 @@ class SourceManager(
         val loader = loaders[format]
             ?: throw IllegalArgumentException("不支持的源格式：$format")
         val info = loader.load(rawContent, fileName)
-
-        val parser = parsers[format]
-            ?: throw IllegalArgumentException("不支持的源格式：$format")
-        val adapter = parser.createAdapter(info, rawContent)
-
-        registerSource(info, adapter, rawContent)
         return listOf(ImportedSource(info, rawContent))
+    }
+
+    /**
+     * 注册一批已解析的源（每个都构建适配器并写入注册表）。
+     *
+     * [importSource] 与「可选添加」流程共用：前者全量注册，后者注册用户勾选的子集。
+     */
+    fun registerParsed(parsed: List<ImportedSource>): List<ImportedSource> {
+        parsed.forEach { (info, rawContent) ->
+            val adapter = buildAdapter(info, rawContent)
+            registerSource(info, adapter, rawContent)
+        }
+        return parsed
+    }
+
+    /** 根据已解析的源信息 + 原始内容构建适配器（注册前最后一步） */
+    private fun buildAdapter(info: SourceInfo, rawContent: String): SourceAdapter = when (info.format) {
+        SourceFormat.LEGADO -> {
+            val pairs = LegadoBookSource.parseListWithRaw(rawContent)
+            val src = pairs.firstOrNull()?.first
+                ?: throw IllegalArgumentException("无法解析源「${info.name}」的规则")
+            LegadoSourceAdapter(info, src)
+        }
+        SourceFormat.MOONTV -> {
+            val site = com.novelreader.source.moontv.MoonTvConfig.siteFromRaw(rawContent)
+                ?: com.novelreader.source.moontv.MoonTvConfig.parseConfig(rawContent).firstOrNull()
+                ?: throw IllegalArgumentException("无法解析源「${info.name}」的规则")
+            com.novelreader.source.moontv.MoonTvSourceAdapter(info, site)
+        }
+        SourceFormat.VENERA -> {
+            val engine = veneraEngine
+                ?: throw IllegalArgumentException("Venera 运行时不可用，无法导入该源")
+            engine.putSource(info.id, rawContent)
+            com.novelreader.source.venera.VeneraSourceAdapter(info, rawContent, engine)
+        }
+        else -> {
+            val parser = parsers[info.format]
+                ?: throw IllegalArgumentException("不支持的源格式：${info.format}")
+            parser.createAdapter(info, rawContent)
+        }
     }
 
     /** 导入 legado 书源（单个或列表） */
@@ -144,8 +191,6 @@ class SourceManager(
         val results = mutableListOf<ImportedSource>()
         pairs.forEachIndexed { index, (src, singleJson) ->
             val info = toSourceInfo(src, fileName, index)
-            val adapter = LegadoSourceAdapter(info, src)
-            registerSource(info, adapter, singleJson)
             results.add(ImportedSource(info, singleJson))
         }
         return results
@@ -181,20 +226,16 @@ class SourceManager(
                 format = SourceFormat.MOONTV,
                 category = "影视",
             )
-            val adapter = com.novelreader.source.moontv.MoonTvSourceAdapter(info, site)
             val raw = com.novelreader.source.moontv.MoonTvConfig.siteToRaw(site)
-            registerSource(info, adapter, raw)
             ImportedSource(info, raw)
         }
     }
 
     /** 导入 Venera 源（单个 .js 文件） */    private fun importVenera(code: String, fileName: String?): List<ImportedSource> {
-        val engine = veneraEngine
-            ?: throw IllegalArgumentException("Venera 运行时不可用，无法导入该源")
+        if (veneraEngine == null) {
+            throw IllegalArgumentException("Venera 运行时不可用，无法导入该源")
+        }
         val info = toVeneraInfo(code, fileName)
-        val adapter = com.novelreader.source.venera.VeneraSourceAdapter(info, code, engine)
-        engine.putSource(info.id, code)
-        registerSource(info, adapter, code)
         return listOf(ImportedSource(info, code))
     }
 

@@ -23,6 +23,22 @@ interface SourceRepository {
     /** 导入一个源（JSON / JS / legado 原始内容），返回导入的所有源 */
     suspend fun importSource(rawContent: String, fileName: String? = null): List<SourceInfo>
 
+    /**
+     * 解析源（不注册），返回解析出的候选源元信息（v1.4.7.0「可选添加」用）。
+     *
+     * 当一个内容展开成多个源时（legado 列表 / MoonTV 配置），先调用本方法拿到候选列表，
+     * 供用户在 UI 勾选要添加哪些，再通过 [importSelected] 批量注册勾选的源。
+     */
+    suspend fun previewImport(rawContent: String, fileName: String? = null): List<SourceInfo>
+
+    /**
+     * 批量注册用户勾选的源（v1.4.7.0「可选添加」）。
+     *
+     * @param selected 勾选源的 [SourceInfo.id] 集合（id 来自 [previewImport] 返回结果）
+     * @return 实际注册的源数量
+     */
+    suspend fun importSelected(ids: Set<String>): Int
+
     /** 删除一个源 */
     suspend fun deleteSource(sourceId: String)
 

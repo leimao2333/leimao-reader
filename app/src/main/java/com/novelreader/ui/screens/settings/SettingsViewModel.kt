@@ -196,6 +196,10 @@ class SettingsViewModel(
     private val _videoAutoNext = MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_AUTO_NEXT)
     val videoAutoNext: StateFlow<Boolean> = _videoAutoNext.asStateFlow()
 
+    /** 横屏全屏上下滑切换上下集（v1.4.7.0） */
+    private val _videoVerticalSwipeSwitch = MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_VERTICAL_SWIPE_SWITCH)
+    val videoVerticalSwipeSwitch: StateFlow<Boolean> = _videoVerticalSwipeSwitch.asStateFlow()
+
     init {
         observePrefs()
         observeWebDav()
@@ -248,6 +252,9 @@ class SettingsViewModel(
         }
         viewModelScope.launch {
             preferencesManager.videoAutoNextFlow.collect { _videoAutoNext.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.videoVerticalSwipeSwitchFlow.collect { _videoVerticalSwipeSwitch.value = it }
         }
     }
 
@@ -303,5 +310,9 @@ class SettingsViewModel(
 
     fun setVideoAutoNext(value: Boolean) {
         viewModelScope.launch { preferencesManager.setVideoAutoNext(value) }
+    }
+
+    fun setVideoVerticalSwipeSwitch(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setVideoVerticalSwipeSwitch(value) }
     }
 }

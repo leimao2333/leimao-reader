@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.4.6.0"
+    const val CURRENT_VERSION = "1.4.7.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,16 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.4.7.0",
+            date = "2026-10-14",
+            changes = listOf(
+                "**源导入支持可选添加**：导入含多个源的内容（legado 源列表 / MoonTV 配置 / Venera index.json）时，不再全部批量入库，而是先弹出**勾选对话框**列出解析出的全部候选源（默认全选），可逐个勾选或「全选 / 全不选」，确认后才添加勾选的源；文件导入与网址导入两条链路均生效",
+                "**源可用性检测进度条**：源管理「检测可用性」新增可视化进度条，实时显示「已完成 / 总数」，批量检测进度一目了然",
+                "**修复视频加载出现两个转圈**：播放页「正在加载」与「缓冲中」两个独立指示器此前会同时出现、叠成两个圈，现合并为单一指示器（加载优先、其次显示缓冲百分比）",
+                "**横屏全屏上下滑切集**：横屏全屏播放时上滑切下一集、下滑切上一集（替代原亮度 / 音量手势），切集前弹出「上一集 / 下一集 · 集名」提示；设置页「视频播放」新增「横屏上下滑切集」开关（默认开启，关闭后恢复亮度 / 音量手势）",
+            ),
+        ),
         VersionEntry(
             version = "1.4.6.0",
             date = "2026-10-14",

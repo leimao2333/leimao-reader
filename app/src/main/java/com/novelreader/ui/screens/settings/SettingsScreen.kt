@@ -91,6 +91,7 @@ fun SettingsScreen(
     val videoLongPressSpeed by viewModel.videoLongPressSpeed.collectAsState()
     val videoDoubleTapSeek by viewModel.videoDoubleTapSeek.collectAsState()
     val videoAutoNext by viewModel.videoAutoNext.collectAsState()
+    val videoVerticalSwipeSwitch by viewModel.videoVerticalSwipeSwitch.collectAsState()
 
     Scaffold(
         snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
@@ -284,6 +285,15 @@ fun SettingsScreen(
                 Switch(
                     checked = videoAutoNext,
                     onCheckedChange = { viewModel.setVideoAutoNext(it) },
+                )
+            }
+            SettingRow(
+                title = "横屏上下滑切集",
+                subtitle = "横屏全屏时上下滑切换上一集 / 下一集（关闭后恢复亮度 / 音量手势）",
+            ) {
+                Switch(
+                    checked = videoVerticalSwipeSwitch,
+                    onCheckedChange = { viewModel.setVideoVerticalSwipeSwitch(it) },
                 )
             }
 

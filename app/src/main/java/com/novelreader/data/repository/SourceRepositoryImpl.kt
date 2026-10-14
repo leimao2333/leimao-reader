@@ -58,6 +58,48 @@ class SourceRepositoryImpl(
             imported.map { it.info }
         }
 
+    /** 「可选添加」流程的候选缓存：sourceId -> 已解析但尚未注册的源（v1.4.7.0） */
+    private val previewCache = java.util.concurrent.ConcurrentHashMap<String, com.novelreader.source.manager.ImportedSource>()
+
+    override suspend fun previewImport(rawContent: String, fileName: String?): List<SourceInfo> =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val parsed = sourceManager.previewImport(rawContent, fileName)
+            // 存进候选缓存，供 importSelected 按 id 取回注册
+            previewCache.clear()
+            parsed.forEach { previewCache[it.info.id] = it }
+            parsed.map { it.info }
+        }
+
+    override suspend fun importSelected(ids: Set<String>): Int =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val selected = ids.mapNotNull { previewCache[it] }
+            if (selected.isEmpty()) {
+                previewCache.clear()
+                return@withContext 0
+            }
+            val registered = sourceManager.registerParsed(selected)
+            // 持久化勾选的源
+            registered.forEach { (info, content) ->
+                sourceDao.insert(
+                    SourceEntity(
+                        id = info.id,
+                        name = info.name,
+                        type = info.type.name.lowercase(),
+                        version = info.version,
+                        author = info.author,
+                        desc = info.desc,
+                        baseUrl = info.baseUrl,
+                        format = info.format.name.lowercase(),
+                        rawContent = content,
+                        enabled = info.enabled,
+                        category = info.category,
+                    )
+                )
+            }
+            previewCache.clear()
+            registered.size
+        }
+
     override suspend fun deleteSource(sourceId: String) {
         sourceManager.unregisterSource(sourceId)
         sourceDao.deleteById(sourceId)

@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.4.8.0"
+    const val CURRENT_VERSION = "1.4.9.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,13 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.4.9.0",
+            date = "2026-10-14",
+            changes = listOf(
+                "**视频首页不再每次进入都重新加载**：切到其它 Tab 或从播放 / 详情页返回时，只要内容已加载且在 3 分钟内，直接复用内存缓存，不再重新探测源 + 拉内容——此前每次进出都要重新探测一遍采集源（要等全部源超时，明显卡顿），现在秒开",
+            ),
+        ),
         VersionEntry(
             version = "1.4.8.0",
             date = "2026-10-14",

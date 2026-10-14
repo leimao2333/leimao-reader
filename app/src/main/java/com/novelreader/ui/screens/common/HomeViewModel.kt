@@ -297,6 +297,8 @@ class HomeViewModel(
         val notice: String? = null,
         /** 聚合模式下探测出的存活源 id 列表（分区视图加载时填充，网格视图复用） */
         val availableSources: List<String> = emptyList(),
+        /** 首屏内容最近一次成功加载的时间戳（毫秒）。用于短时间切 Tab / 返回时复用缓存，避免重拉。 */
+        val loadedAtMs: Long = 0L,
     ) {
         val currentSourceName: String
             get() = sources.firstOrNull { it.id == currentSourceId }?.name.orEmpty()
@@ -346,7 +348,12 @@ class HomeViewModel(
             // 「继续观看」来自本地进度表，与所选源无关，每次进页都刷新
             val continueItems = buildContinueWatching(sources)
             _videoHome.value = next.copy(continueWatching = continueItems)
-            if (sourceChanged || !next.loaded) {
+            // 缓存门控：内容已加载且未过期 → 直接复用，不再重新探测源 + 拉内容。
+            // 只有源变化 / 尚无内容 / 缓存过期才触发重拉（v1.4.9.0：避免每次切 Tab 或
+            // 从播放页返回都重新探测一遍采集源，探测要等全部源超时，明显卡顿）。
+            val fresh = !sourceChanged && next.loaded &&
+                (next.loadedAtMs > 0L && System.currentTimeMillis() - next.loadedAtMs < VIDEO_HOME_CACHE_TTL_MS)
+            if (!fresh) {
                 loadVideoHome(reset = true)
             }
         }
@@ -625,6 +632,7 @@ class HomeViewModel(
             rows = rows.toList().sortedBy { r -> plan.indexOfFirst { it.first == r.categoryId } },
             availableSources = alive.toList().map { it.id },
             error = if (rows.isEmpty()) "没有取到内容，可能是各源暂时不可用，稍后再试" else null,
+            loadedAtMs = if (rows.isNotEmpty()) System.currentTimeMillis() else 0L,
         )
     }
 
@@ -671,6 +679,7 @@ class HomeViewModel(
             loadingMore = false,
             hasMore = fetched.isNotEmpty(),
             error = if (reset && fetched.isEmpty()) "没有取到内容，可能是源暂时不可用或该分类为空" else null,
+            loadedAtMs = if (reset && fetched.isNotEmpty()) System.currentTimeMillis() else current.loadedAtMs,
         )
     }
 
@@ -837,6 +846,13 @@ class HomeViewModel(
 
         /** 单个源探测 / 分类行内容请求的有界超时（毫秒）——死源快速失败，不拖累整页 */
         private const val SOURCE_PROBE_TIMEOUT_MS = 10_000L
+
+        /**
+         * 首屏内容缓存有效期（毫秒）。切 Tab / 从播放·详情页返回时，若内容加载距今未超过
+         * 该时长，直接复用内存里的分区行，不再重新探测源 + 拉内容——采集站每轮探测要等
+         * 所有源超时，反复进出会明显卡顿。下拉刷新 / 切源 / 源变化不受此限制，仍强制重拉。
+         */
+        private const val VIDEO_HOME_CACHE_TTL_MS = 3 * 60_000L
 
         /** 「继续观看」最多展示条数 */
         private const val MAX_CONTINUE_ITEMS = 12

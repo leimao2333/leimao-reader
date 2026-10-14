@@ -28,4 +28,6 @@ data class SourceEntity(
     val createdAt: Long = System.currentTimeMillis(),
     /** 智能分类 */
     val category: String = "",
+    /** 手动排序序号（v1.5.8.0，0 = 未手动排序） */
+    val sortOrder: Int = 0,
 )

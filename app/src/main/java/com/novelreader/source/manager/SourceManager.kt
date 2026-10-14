@@ -333,6 +333,13 @@ class SourceManager(
         }
     }
 
+    /** 设置源的手动排序序号（v1.5.8.0） */
+    fun setSourceSortOrder(sourceId: String, sortOrder: Int) {
+        sourceMap[sourceId]?.let { info ->
+            sourceMap[sourceId] = info.copy(sortOrder = sortOrder)
+        }
+    }
+
     fun getAllSources(): List<SourceInfo> = sourceMap.values.toList()
 
     fun getEnabledSourcesByType(type: SourceType): List<SourceInfo> =

@@ -28,7 +28,7 @@ import com.novelreader.data.model.SourceEntity
         RssFeedEntity::class,
         RssArticleEntity::class,
     ],
-    version = 12,
+    version = 13,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -272,6 +272,18 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_11_12 = object : Migration(11, 12) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE progress ADD COLUMN durationMs INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * v12 -> v13：sources 表新增 sortOrder 列（手动排序序号，v1.5.8.0）。
+         *
+         * 默认 0 = 未手动排序，前端按自动排序回退；>0 时按数值升序排列。
+         * 存量数据无从得知手动顺序，默认 0 即可。
+         */
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sources ADD COLUMN sortOrder INTEGER NOT NULL DEFAULT 0")
             }
         }
 

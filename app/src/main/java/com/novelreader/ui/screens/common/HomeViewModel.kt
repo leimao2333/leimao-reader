@@ -6,7 +6,9 @@ import com.novelreader.core.util.VideoFilters
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.ExploreCategory
 import com.novelreader.domain.model.MediaItem
+import com.novelreader.domain.model.SourceInfo
 import com.novelreader.domain.model.SourceType
+import com.novelreader.source.category.isAdult
 import com.novelreader.domain.repository.BookRepository
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.ProgressRepository
@@ -236,6 +238,18 @@ class HomeViewModel(
     }
 
     private fun itemKey(item: MediaItem): String = "${item.sourceId}:${item.id}"
+
+    /**
+     * 当前源列表里的成人（18+）源 id 集合（v1.5.8.0）。
+     *
+     * 视频首页 / 频道聚合时，来自成人源的内容统一沉底，不抢占首屏位置。
+     */
+    private fun adultSourceIds(sources: List<SourceInfo>): Set<String> =
+        sources.filter { it.isAdult }.map { it.id }.toSet()
+
+    /** 把来自成人源的条目稳定沉底（保持原有相对顺序） */
+    private fun sinkAdults(items: List<MediaItem>, adultIds: Set<String>): List<MediaItem> =
+        if (adultIds.isEmpty()) items else items.sortedBy { it.sourceId in adultIds }
 
     // ===== 影视首页（v1.3.3.0 起步，v1.3.4.0 改为 MoonTV 式多分区）=====
 
@@ -576,10 +590,11 @@ class HomeViewModel(
 
         // 1) 探测存活源：单请求优先（能拉到分类即活），分类为空/失败再退化一次内容探测；
         //    每个源独立有界超时，确认存活就增量刷新可用源列表。
+        //    v1.5.8.0「尽量所有源都聚合」：不再截断前 N 个源，探测全部启用源（并发 + 有界超时兜底）。
         val alive = java.util.Collections.synchronizedList(mutableListOf<com.novelreader.domain.model.SourceInfo>())
         val catsBySource = java.util.concurrent.ConcurrentHashMap<String, List<ExploreCategory>>()
         coroutineScope {
-            all.take(MAX_AGGREGATE_SOURCES).map { src -> async {
+            all.map { src -> async {
                 val cats = runCatching {
                     withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) { contentRepository.exploreCategoriesOf(src.id) }
                 }.getOrNull().orEmpty()
@@ -601,8 +616,12 @@ class HomeViewModel(
             return
         }
 
+        // v1.5.8.0：存活源按「普通源优先、成人源沉底」排序，让成人内容不抢占首屏分区
+        val adultIds = adultSourceIds(_videoHome.value.sources)
+        val orderedAlive = alive.sortedBy { it.id in adultIds }
+
         // 2) 合并各存活源的分类（探测阶段已顺带取到），按标题去重保序
-        val allCats = alive.flatMap { catsBySource[it.id].orEmpty() }
+        val allCats = orderedAlive.flatMap { catsBySource[it.id].orEmpty() }
         val mergedCats = LinkedHashMap<String, ExploreCategory>()
         for (cat in allCats) if (cat.title.isNotBlank() && cat.title !in mergedCats) {
             mergedCats[cat.title] = cat
@@ -619,7 +638,7 @@ class HomeViewModel(
         coroutineScope {
             plan.mapIndexed { _, (catUrl, title) -> async {
                 val merged = coroutineScope {
-                    alive.map { src -> async {
+                    orderedAlive.map { src -> async {
                         runCatching {
                             withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) { contentRepository.explore(src.id, catUrl, 1) }
                         }.getOrNull().orEmpty()
@@ -627,8 +646,10 @@ class HomeViewModel(
                 }
                 val seen = LinkedHashSet<String>()
                 val dedup = merged.filter { seen.add("${it.sourceId}:${it.id}") }
-                if (dedup.isNotEmpty()) {
-                    rows.add(VideoRow(catUrl, title, dedup))
+                // v1.5.8.0：分区行内成人源内容沉底
+                val sunk = sinkAdults(dedup, adultIds)
+                if (sunk.isNotEmpty()) {
+                    rows.add(VideoRow(catUrl, title, sunk))
                     _videoHome.value = _videoHome.value.copy(
                         loading = false,
                         rows = rows.toList().sortedBy { r -> plan.indexOfFirst { it.first == r.categoryId } },
@@ -642,7 +663,7 @@ class HomeViewModel(
             loadingMore = false,
             categories = mergedCats.values.toList(),
             rows = rows.toList().sortedBy { r -> plan.indexOfFirst { it.first == r.categoryId } },
-            availableSources = alive.toList().map { it.id },
+            availableSources = orderedAlive.map { it.id },
             error = if (rows.isEmpty()) "没有取到内容，可能是各源暂时不可用，稍后再试" else null,
             loadedAtMs = if (rows.isNotEmpty()) System.currentTimeMillis() else 0L,
         )
@@ -686,8 +707,9 @@ class HomeViewModel(
         val current = _videoHome.value
         val seen = current.items.mapTo(HashSet()) { "${it.sourceId}:${it.id}" }
         val merged = if (reset) fetched else current.items + fetched
+        val adultIds = adultSourceIds(current.sources)
         _videoHome.value = current.copy(
-            items = merged.distinctBy { "${it.sourceId}:${it.id}" },
+            items = sinkAdults(merged.distinctBy { "${it.sourceId}:${it.id}" }, adultIds),
             loading = false,
             loadingMore = false,
             hasMore = fetched.isNotEmpty(),
@@ -1051,14 +1073,18 @@ class HomeViewModel(
 
             val current = flow.value
             val merged = if (reset) fetched else current.items + fetched
+            val adultIds = adultSourceIds(_videoHome.value.sources)
             flow.value = current.copy(
                 // 短剧条目打「短剧」标记：详情页 / 播放页据此默认竖屏播放 + 红果式选集
-                items = merged.distinctBy { "${it.sourceId}:${it.id}" }
-                    .map {
-                        if (channel == VideoChannel.SHORT_DRAMA) {
-                            it.copy(extras = it.extras + (EXTRA_SHORT_DRAMA to "1"))
-                        } else it
-                    },
+                items = sinkAdults(
+                    merged.distinctBy { "${it.sourceId}:${it.id}" }
+                        .map {
+                            if (channel == VideoChannel.SHORT_DRAMA) {
+                                it.copy(extras = it.extras + (EXTRA_SHORT_DRAMA to "1"))
+                            } else it
+                        },
+                    adultIds,
+                ),
                 loading = false,
                 loadingMore = false,
                 error = if (reset && fetched.isEmpty()) "该分类暂无内容" else null,
@@ -1096,8 +1122,11 @@ class HomeViewModel(
                         ?.filter { it.enabled }
                         .orEmpty()
                 }
-                all.take(MAX_AGGREGATE_SOURCES)
+                // v1.5.8.0「尽量所有源都聚合」：不截断，聚合全部启用源
+                all
             }
+            // v1.5.8.0：成人源沉底，让成人内容在频道聚合中靠后
+            .sortedBy { it.isAdult }
         val found = coroutineScope {
             sources.map { src -> async {
                 val cats = runCatching {
@@ -1120,11 +1149,16 @@ class HomeViewModel(
     private fun dramaKey(sourceId: String, catUrl: String) = "$sourceId|$catUrl"
 
     companion object {
-        /** 分区视图最多展示几排（MoonTV 首页 3 排；采集站分类多，取 6 排） */
-        private const val MAX_VIDEO_ROWS = 6
+        /** 分区视图最多展示几排（v1.5.8.0 从 6 提到 12，尽量展示所有聚合出的分类） */
+        private const val MAX_VIDEO_ROWS = 12
 
-        /** 聚合模式最多探测几个源（实测约 1/3 存活，探测 12 个足够凑出可用源） */
-        private const val MAX_AGGREGATE_SOURCES = 12
+        /**
+         * 聚合模式探测的源数量上限（v1.5.8.0 起不再截断，此常量仅作兜底防极端异常）。
+         *
+         * 历史：实测约 1/3 存活，曾取前 12 个；现改为「尽量所有源都聚合」，
+         * 探测全部启用源（并发 + 单源 10s 有界超时，死源快速失败不拖累整页）。
+         */
+        private const val MAX_AGGREGATE_SOURCES = 512
 
         /** 单个源探测 / 分类行内容请求的有界超时（毫秒）——死源快速失败，不拖累整页 */
         private const val SOURCE_PROBE_TIMEOUT_MS = 10_000L

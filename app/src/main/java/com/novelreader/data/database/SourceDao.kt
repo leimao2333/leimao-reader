@@ -32,6 +32,12 @@ interface SourceDao {
     @Query("UPDATE sources SET enabled = :enabled WHERE id = :id")
     suspend fun setEnabled(id: String, enabled: Boolean)
 
+    /**
+     * 更新单个源的手动排序序号（v1.5.8.0）。
+     */
+    @Query("UPDATE sources SET sortOrder = :sortOrder WHERE id = :id")
+    suspend fun setSortOrder(id: String, sortOrder: Int)
+
     @Delete
     suspend fun delete(source: SourceEntity)
 

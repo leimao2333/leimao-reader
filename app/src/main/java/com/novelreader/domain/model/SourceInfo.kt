@@ -26,6 +26,13 @@ data class SourceInfo(
     val enabled: Boolean = true,
     /** 智能分类（如 玄幻/都市/二次元/影视/综合 等） */
     val category: String = "",
+    /**
+     * 手动排序序号（v1.5.8.0）。
+     *
+     * 0 = 未手动排序（回退到自动排序）；>0 时按数值升序排列，
+     * 用于源管理页的「手动」排序模式（上移 / 下移）。
+     */
+    val sortOrder: Int = 0,
 )
 
 /**

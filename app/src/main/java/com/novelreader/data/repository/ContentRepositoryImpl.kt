@@ -90,6 +90,15 @@ class ContentRepositoryImpl(
 
         val total = adapters.size
 
+        // v1.5.8.0「优化搜索响应」：18+ 成人源排到搜索队列**末尾**，普通源先搜先上屏。
+        // 这样搜索响应更快、普通结果先出；成人源结果最后统一沉底。
+        // 同时记录成人源 id 集合，用于最终结果把成人内容沉底。
+        val adultSourceIds = adapters.map { it.first }
+            .filter { com.novelreader.source.category.SourceAdults.isAdult(it) }
+            .map { it.id }
+            .toSet()
+        val orderedAdapters = adapters.sortedBy { (info, _) -> info.id in adultSourceIds }
+
         // 初始状态：开始搜索
         emit(
             SearchState(
@@ -128,7 +137,7 @@ class ContentRepositoryImpl(
                 capacity = total.coerceAtLeast(1)
             )
 
-            val searchJobs = adapters.map { (info, adapter) ->
+            val searchJobs = orderedAdapters.map { (info, adapter) ->
                 async {
                     semaphore.withPermit {
                         val batch = runCatching { adapter.search(keyword, page) }
@@ -188,11 +197,13 @@ class ContentRepositoryImpl(
         }
 
         // 最终结果：统一做一次排序 / 过滤（模糊=相似度降序，精准=书名归一化一致）
-        val finalResults = if (fuzzyEnabled) {
+        val rankedResults = if (fuzzyEnabled) {
             FuzzyMatch.rank(results, keyword)
         } else {
             FuzzyMatch.exactRank(results, keyword)
         }
+        // v1.5.8.0：18+ 成人源的结果统一沉底（稳定排序，不打乱上面的匹配度顺序）
+        val finalResults = rankedResults.sortedBy { it.sourceId in adultSourceIds }
         emit(
             SearchState(
                 results = finalResults,

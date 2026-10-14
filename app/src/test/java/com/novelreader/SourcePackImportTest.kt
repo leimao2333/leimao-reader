@@ -258,6 +258,11 @@ private class FakeSourceDao : SourceDao {
         changed()
     }
 
+    override suspend fun setSortOrder(id: String, sortOrder: Int) {
+        rows[id]?.let { rows[id] = it.copy(sortOrder = sortOrder) }
+        changed()
+    }
+
     override suspend fun delete(source: SourceEntity) {
         rows.remove(source.id)
         changed()

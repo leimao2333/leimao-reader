@@ -6,6 +6,7 @@ import com.novelreader.domain.model.SourceInfo
 import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.SourceRepository
 import com.novelreader.data.repository.SourceRepositoryImpl
+import com.novelreader.source.category.isAdult
 import com.novelreader.source.loader.SourcePack
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -776,14 +777,51 @@ class SourceManageViewModel(
             .map { it.key }
 
     /** 按指定方式排序 */
-    fun sortSources(list: List<SourceInfo>, sortBy: SourceSortOrder): List<SourceInfo> =
-        when (sortBy) {
+    fun sortSources(list: List<SourceInfo>, sortBy: SourceSortOrder): List<SourceInfo> {
+        val base = when (sortBy) {
             SourceSortOrder.DEFAULT -> list
+            SourceSortOrder.MANUAL -> list.sortedWith(
+                compareBy<SourceInfo> { it.sortOrder == 0 }.thenBy { it.sortOrder }.thenBy { it.name }
+            )
             SourceSortOrder.NAME -> list.sortedBy { it.name }
             SourceSortOrder.TYPE -> list.sortedWith(compareBy({ it.type.name }, { it.name }))
             SourceSortOrder.CATEGORY -> list.sortedWith(compareBy({ it.category }, { it.name }))
             SourceSortOrder.ENABLED -> list.sortedByDescending { it.enabled }
         }
+        // 18+ 源沉底：手动模式下尊重用户显式顺序，其余自动排序一律把成人源排到最后
+        return if (sortBy == SourceSortOrder.MANUAL) base else base.sortedBy { it.isAdult }
+    }
+
+    /**
+     * 手动排序：把 [sourceId] 在 [list] 中上移一位（v1.5.8.0）。
+     *
+     * 手动排序按当前展示顺序重写整个列表的 sortOrder（1..n），
+     * 并持久化到数据库，重启后顺序保留。
+     */
+    fun moveSourceUp(sourceId: String) {
+        val list = _sources.value
+        val idx = list.indexOfFirst { it.id == sourceId }
+        if (idx <= 0) return
+        val reordered = list.toMutableList().apply { add(idx - 1, removeAt(idx)) }
+        applyManualOrder(reordered)
+    }
+
+    /** 手动排序：把 [sourceId] 下移一位（v1.5.8.0） */
+    fun moveSourceDown(sourceId: String) {
+        val list = _sources.value
+        val idx = list.indexOfFirst { it.id == sourceId }
+        if (idx < 0 || idx >= list.size - 1) return
+        val reordered = list.toMutableList().apply { add(idx + 1, removeAt(idx)) }
+        applyManualOrder(reordered)
+    }
+
+    /** 把当前列表顺序写入手动排序序号并持久化 */
+    private fun applyManualOrder(reordered: List<SourceInfo>) {
+        viewModelScope.launch {
+            sourceRepository.reorderSources(reordered.map { it.id })
+            _sources.value = reordered
+        }
+    }
 
     // ===== 书源 URL 一键更新（v1.3.0.0 对标 legado） =====
 
@@ -888,6 +926,7 @@ class SourceManageViewModel(
 /** 源排序方式 */
 enum class SourceSortOrder(val label: String) {
     DEFAULT("默认"),
+    MANUAL("手动"),
     NAME("名称"),
     TYPE("类型"),
     CATEGORY("分类"),

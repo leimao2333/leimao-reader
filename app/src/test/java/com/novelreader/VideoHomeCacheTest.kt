@@ -309,6 +309,8 @@ private class CacheTestSourceRepository(private val sources: List<SourceInfo>) :
     override suspend fun deleteSource(sourceId: String) = Unit
     override suspend fun deleteSources(ids: List<String>) = Unit
     override suspend fun setSourceEnabled(sourceId: String, enabled: Boolean) = Unit
+    override suspend fun setSourceSortOrder(sourceId: String, sortOrder: Int) = Unit
+    override suspend fun reorderSources(orderedIds: List<String>) = Unit
     override suspend fun getAdapter(sourceId: String): SourceAdapter? = null
     override suspend fun getRawContent(sourceId: String): String? = null
     override suspend fun updateSource(sourceId: String, rawContent: String): SourceInfo =

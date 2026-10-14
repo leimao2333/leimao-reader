@@ -19,6 +19,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Search
@@ -475,6 +477,9 @@ fun SourceManageScreen(
                                 },
                                 loggedIn = loginStates[source.id] == true,
                                 loggingIn = source.id in loggingIn,
+                                manualMode = sortOrder == SourceSortOrder.MANUAL,
+                                onMoveUp = { viewModel.moveSourceUp(source.id) },
+                                onMoveDown = { viewModel.moveSourceDown(source.id) },
                                 onToggle = { viewModel.toggleEnabled(source) },
                                 onEdit = { viewModel.openEditSource(source) },
                                 onDelete = { viewModel.deleteSource(source) },
@@ -963,6 +968,12 @@ private fun SourceCard(
     loggingIn: Boolean = false,
     /** 点击「登录」按钮（仅 Venera 源） */
     onLogin: () -> Unit = {},
+    /** 手动排序模式（v1.5.8.0）：显示上移 / 下移按钮 */
+    manualMode: Boolean = false,
+    /** 上移一位 */
+    onMoveUp: () -> Unit = {},
+    /** 下移一位 */
+    onMoveDown: () -> Unit = {},
 ) {
     val cardModifier = Modifier
         .fillMaxWidth()
@@ -1044,6 +1055,15 @@ private fun SourceCard(
                 }
             }
             if (!selectionMode) {
+                // 手动排序模式：上移 / 下移按钮（v1.5.8.0）
+                if (manualMode) {
+                    IconButton(onClick = onMoveUp, enabled = true) {
+                        Icon(Icons.Filled.ArrowUpward, contentDescription = "上移")
+                    }
+                    IconButton(onClick = onMoveDown, enabled = true) {
+                        Icon(Icons.Filled.ArrowDownward, contentDescription = "下移")
+                    }
+                }
                 Switch(checked = source.enabled, onCheckedChange = { onToggle() })
                 // Venera 源：登录按钮（v1.3.0.0）
                 if (source.format == SourceFormat.VENERA) {

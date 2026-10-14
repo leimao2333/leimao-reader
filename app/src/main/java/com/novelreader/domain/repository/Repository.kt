@@ -74,6 +74,19 @@ interface SourceRepository {
     /** 启用 / 禁用源 */
     suspend fun setSourceEnabled(sourceId: String, enabled: Boolean)
 
+    /**
+     * 设置单个源的手动排序序号（v1.5.8.0）。
+     */
+    suspend fun setSourceSortOrder(sourceId: String, sortOrder: Int)
+
+    /**
+     * 按给定 id 顺序批量重写手动排序序号（v1.5.8.0）。
+     *
+     * 传入列表的顺序即用户手动排好的顺序，内部按 `1..n` 依次赋序号。
+     * 不在列表里的源序号清 0（回退自动排序）。
+     */
+    suspend fun reorderSources(orderedIds: List<String>)
+
     /** 获取源对应的适配器（供后续调用 search/detail 等）；源不存在时返回 null */
     suspend fun getAdapter(sourceId: String): com.novelreader.domain.model.SourceAdapter?
 

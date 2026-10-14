@@ -166,6 +166,26 @@ class SourceRepositoryImpl(
         sourceDao.setEnabled(sourceId, enabled)
     }
 
+    override suspend fun setSourceSortOrder(sourceId: String, sortOrder: Int) {
+        sourceManager.setSourceSortOrder(sourceId, sortOrder)
+        sourceDao.setSortOrder(sourceId, sortOrder)
+    }
+
+    override suspend fun reorderSources(orderedIds: List<String>) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            // 批量重写序号：列表内按 1..n 赋值，其余清 0（回退自动排序）
+            val all = sourceManager.getAllSources().map { it.id }.toSet()
+            orderedIds.forEachIndexed { index, id ->
+                sourceManager.setSourceSortOrder(id, index + 1)
+                sourceDao.setSortOrder(id, index + 1)
+            }
+            (all - orderedIds.toSet()).forEach { id ->
+                sourceManager.setSourceSortOrder(id, 0)
+                sourceDao.setSortOrder(id, 0)
+            }
+        }
+    }
+
     override suspend fun getAdapter(sourceId: String): SourceAdapter? =
         sourceManager.getAdapter(sourceId)
 
@@ -212,6 +232,8 @@ class SourceRepositoryImpl(
                         sourceManager.importSource(entity.rawContent, "${entity.id}.${entity.format}")
                         // 恢复启用状态
                         sourceManager.setSourceEnabled(entity.id, entity.enabled)
+                        // 恢复手动排序序号（v1.5.8.0）
+                        sourceManager.setSourceSortOrder(entity.id, entity.sortOrder)
                     }.onFailure {
                         // 恢复失败不能完全静默：留日志便于排查「部分源不加载」（v1.3.0.0）
                         android.util.Log.w(
@@ -253,4 +275,5 @@ fun SourceEntity.toDomain(): SourceInfo = SourceInfo(
             SourceInfo(id = id, name = name, type = SourceType.fromString(type) ?: SourceType.NOVEL, author = author, desc = desc, baseUrl = baseUrl)
         )
     },
+    sortOrder = sortOrder,
 )

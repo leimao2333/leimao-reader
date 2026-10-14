@@ -33,6 +33,9 @@ class AppContainer(context: Context) {
     // ===== 基础设施 =====
     private val appContext = context.applicationContext
 
+    /** 应用上下文（供更新安装等需要 Context 的场景） */
+    val context: Context get() = appContext
+
     /** 数据库 */
     val database: AppDatabase by lazy {
         Room.databaseBuilder(

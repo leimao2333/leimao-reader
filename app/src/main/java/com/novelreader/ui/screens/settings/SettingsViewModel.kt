@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * 设置中心 ViewModel。
@@ -19,6 +20,7 @@ import kotlinx.coroutines.withContext
 class SettingsViewModel(
     private val preferencesManager: PreferencesManager,
     private val backupManager: com.novelreader.core.backup.BackupManager? = null,
+    private val appContext: android.content.Context? = null,
 ) : ViewModel() {
 
     /** 备份 / 恢复结果提示（UI 展示后自动消失） */
@@ -27,6 +29,90 @@ class SettingsViewModel(
 
     fun dismissBackupMessage() {
         _backupMessage.value = null
+    }
+
+    // ===== 应用更新（v1.5.4.0） =====
+
+    /** 更新检查状态：0=空闲 1=检查中 2=下载中 */
+    private val _updateBusy = MutableStateFlow(false)
+    val updateBusy: StateFlow<Boolean> = _updateBusy.asStateFlow()
+
+    /** 下载进度（0..1，未知总量时为 -1） */
+    private val _updateProgress = MutableStateFlow(-1f)
+    val updateProgress: StateFlow<Float> = _updateProgress.asStateFlow()
+
+    /** 发现新版本（非空即弹确认框） */
+    private val _updateInfo = MutableStateFlow<com.novelreader.core.update.UpdateChecker.UpdateInfo?>(null)
+    val updateInfo: StateFlow<com.novelreader.core.update.UpdateChecker.UpdateInfo?> = _updateInfo.asStateFlow()
+
+    /** 手动检查更新 */
+    fun checkUpdate() {
+        if (_updateBusy.value) return
+        viewModelScope.launch {
+            _updateBusy.value = true
+            _updateProgress.value = -1f
+            val info = withContext(Dispatchers.IO) {
+                com.novelreader.core.update.UpdateChecker.checkLatest(
+                    com.novelreader.core.version.AppVersion.CURRENT_VERSION,
+                )
+            }
+            if (info == null) {
+                _backupMessage.value = "已是最新版本（v${com.novelreader.core.version.AppVersion.CURRENT_VERSION}）"
+            } else {
+                _updateInfo.value = info
+            }
+            _updateBusy.value = false
+        }
+    }
+
+    /** 取消更新弹框 */
+    fun dismissUpdateInfo() {
+        _updateInfo.value = null
+    }
+
+    /** 下载并安装更新 */
+    fun downloadUpdate() {
+        val info = _updateInfo.value ?: return
+        val ctx = appContext ?: return
+        if (_updateBusy.value) return
+        viewModelScope.launch {
+            _updateBusy.value = true
+            _updateProgress.value = 0f
+            try {
+                val file = withContext(Dispatchers.IO) {
+                    val dir = ctx.cacheDir.resolve("update").apply { mkdirs() }
+                    val target = dir.resolve("leimao-reader-v${info.version}.apk")
+                    com.novelreader.core.update.UpdateChecker.downloadApk(
+                        info.apkUrl, target,
+                    ) { downloaded, total ->
+                        val pct = if (total > 0) downloaded.toFloat() / total else -1f
+                        _updateProgress.value = pct
+                    }
+                    target
+                }
+                _updateProgress.value = 1f
+                _updateInfo.value = null
+                installApk(ctx, file)
+            } catch (e: Exception) {
+                _backupMessage.value = "下载失败：${e.message ?: "未知错误"}"
+            } finally {
+                _updateBusy.value = false
+            }
+        }
+    }
+
+    /** 拉起系统安装 APK（需要应用有「安装未知来源应用」权限） */
+    private fun installApk(context: android.content.Context, file: File) {
+        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW)
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file,
+        )
+        intent.setDataAndType(uri, "application/vnd.android.package-archive")
+        intent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
     }
 
     /** 导出备份到 SAF Uri */

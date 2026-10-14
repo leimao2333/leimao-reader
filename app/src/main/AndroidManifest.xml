@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- 更新 APK 安装：Android 8.0+ 需要 REQUEST_INSTALL_PACKAGES -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:name=".NovelReaderApp"
@@ -35,5 +37,16 @@
                 <data android:scheme="novelreader" android:host="search" />
             </intent-filter>
         </activity>
+
+        <!-- 更新 APK 安装的 FileProvider（v1.5.4.0） -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.novelreader.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

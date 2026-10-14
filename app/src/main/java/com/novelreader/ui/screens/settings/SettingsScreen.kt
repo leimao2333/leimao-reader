@@ -94,6 +94,11 @@ fun SettingsScreen(
     val videoVerticalSwipeSwitch by viewModel.videoVerticalSwipeSwitch.collectAsState()
     val videoPipEnabled by viewModel.videoPipEnabled.collectAsState()
 
+    // 应用更新（v1.5.4.0）
+    val updateBusy by viewModel.updateBusy.collectAsState()
+    val updateProgress by viewModel.updateProgress.collectAsState()
+    val updateInfo by viewModel.updateInfo.collectAsState()
+
     Scaffold(
         snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
         topBar = {
@@ -391,6 +396,76 @@ fun SettingsScreen(
             ) {
                 TextButton(onClick = onOpenChangelog) { Text("更新日志") }
             }
+            SettingRow(
+                title = "检查更新",
+                subtitle = "从 GitHub 检测最新版本",
+            ) {
+                TextButton(
+                    onClick = { viewModel.checkUpdate() },
+                    enabled = !updateBusy,
+                ) {
+                    if (updateBusy && updateProgress < 0f) {
+                        androidx.compose.material3.CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Text("检查更新")
+                    }
+                }
+            }
+            // 下载进度（下载 APK 时显示）
+            if (updateBusy && updateProgress >= 0f) {
+                Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                    Text(
+                        text = if (updateProgress >= 1f) "下载完成，正在拉起安装…"
+                        else "正在下载更新… ${(updateProgress * 100).toInt()}%",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    androidx.compose.material3.LinearProgressIndicator(
+                        progress = { updateProgress.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+
+        // ===== 更新确认弹框（v1.5.4.0） =====
+        updateInfo?.let { info ->
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { viewModel.dismissUpdateInfo() },
+                title = { Text("发现新版本 v${info.version}") },
+                text = {
+                    Column {
+                        val body = info.body.trim()
+                        if (body.isNotEmpty()) {
+                            // 显示更新说明（截断过长内容）
+                            val brief = if (body.length > 300) body.take(300) + "…" else body
+                            Text(
+                                text = brief,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (info.apkSize > 0) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                text = "安装包大小：${"%.1f".format(info.apkSize / 1024f / 1024f)} MB",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.downloadUpdate() }) { Text("下载更新") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.dismissUpdateInfo() }) { Text("取消") }
+                },
+            )
         }
     }
 }

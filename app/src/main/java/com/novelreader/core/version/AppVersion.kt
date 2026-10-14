@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.5.3.0"
+    const val CURRENT_VERSION = "1.5.4.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,14 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.5.4.0",
+            date = "2026-10-14",
+            changes = listOf(
+                "**视频横屏手势三区分区**：横屏全屏时屏幕按起始位置分三段——左侧上下滑调亮度、右侧上下滑调音量、中间上下滑切换上一集 / 下一集（此前横屏只能切集，调亮度 / 音量得退出全屏）；竖屏 / 窗口态保持原来的左亮度 / 右音量手势不变",
+                "**手动检查更新**：设置页「关于」新增「检查更新」入口，从 GitHub Releases 检测最新版本（四段式版本号精确比对），发现新版本弹窗展示更新说明与安装包大小，点「下载更新」自动下载 APK 并拉起系统安装",
+            ),
+        ),
         VersionEntry(
             version = "1.5.3.0",
             date = "2026-10-14",

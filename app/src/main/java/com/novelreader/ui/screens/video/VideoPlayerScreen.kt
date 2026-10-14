@@ -453,27 +453,51 @@ fun VideoPlayerScreen(
                                         }
                                     }
                                     2 -> {
-                                        // v1.4.7.0：横屏全屏时，上下滑切换上一集 / 下一集
                                         if (currentIsLandscapeFullscreen && currentVerticalSwipeSwitch) {
-                                            val threshold = size.height * 0.22f
-                                            if (!switchTriggered && totalDy < -threshold) {
-                                                // 上滑 → 下一集
-                                                switchTriggered = true
-                                                val next = viewModel.peekNext()
-                                                if (next != null) {
-                                                    viewModel.playNext()
-                                                    switchEpisodeHint = SwitchEpisodeHint(true, next.title)
+                                            // v1.5.4.0：横屏全屏竖滑按起始位置三分区
+                                            // 左 1/3 调亮度、右 1/3 调音量、中间 1/3 切上下集
+                                            val leftZone = dragStartX < size.width / 3f
+                                            val rightZone = dragStartX >= size.width * 2f / 3f
+                                            if (leftZone || rightZone) {
+                                                val fraction = -totalDy / size.height
+                                                if (leftZone) {
+                                                    val v = (startBrightness + fraction).coerceIn(0.02f, 1f)
+                                                    applyBrightness(v)
+                                                    verticalIndicator = VerticalIndicator(true, v)
+                                                } else {
+                                                    val max = audioManager
+                                                        .getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                                                        .coerceAtLeast(1)
+                                                    val v = (startVolume + fraction * max).roundToInt()
+                                                        .coerceIn(0, max)
+                                                    audioManager.setStreamVolume(
+                                                        AudioManager.STREAM_MUSIC, v, 0
+                                                    )
+                                                    verticalIndicator =
+                                                        VerticalIndicator(false, v / max.toFloat())
                                                 }
                                                 controlsVisible = false
-                                            } else if (!switchTriggered && totalDy > threshold) {
-                                                // 下滑 → 上一集
-                                                switchTriggered = true
-                                                val prev = viewModel.peekPrev()
-                                                if (prev != null) {
-                                                    viewModel.playPrev()
-                                                    switchEpisodeHint = SwitchEpisodeHint(false, prev.title)
+                                            } else {
+                                                val threshold = size.height * 0.22f
+                                                if (!switchTriggered && totalDy < -threshold) {
+                                                    // 上滑 → 下一集
+                                                    switchTriggered = true
+                                                    val next = viewModel.peekNext()
+                                                    if (next != null) {
+                                                        viewModel.playNext()
+                                                        switchEpisodeHint = SwitchEpisodeHint(true, next.title)
+                                                    }
+                                                    controlsVisible = false
+                                                } else if (!switchTriggered && totalDy > threshold) {
+                                                    // 下滑 → 上一集
+                                                    switchTriggered = true
+                                                    val prev = viewModel.peekPrev()
+                                                    if (prev != null) {
+                                                        viewModel.playPrev()
+                                                        switchEpisodeHint = SwitchEpisodeHint(false, prev.title)
+                                                    }
+                                                    controlsVisible = false
                                                 }
-                                                controlsVisible = false
                                             }
                                         } else {
                                             // 竖屏 / 窗口态：保留原有亮度 / 音量手势

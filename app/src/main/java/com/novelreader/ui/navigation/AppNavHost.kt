@@ -313,7 +313,7 @@ fun AppNavHost(
         composable(Routes.SETTINGS) {
             val viewModel: SettingsViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
-                    SettingsViewModel(it.preferencesManager, it.backupManager)
+                    SettingsViewModel(it.preferencesManager, it.backupManager, container.context)
                 }
             )
             SettingsScreen(

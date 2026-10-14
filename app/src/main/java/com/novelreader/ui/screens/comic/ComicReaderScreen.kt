@@ -122,6 +122,9 @@ fun ComicReaderScreen(
         if (!menuVisible.value) showSettings.value = false
     }
 
+    // 当前是否有图片处于「放大」状态：放大时锁住翻页 / 滚动，专心查看细节
+    val zoomed = remember { mutableStateOf(false) }
+
     // 应用是 edge-to-edge（targetSdk 35）绘制：系统状态栏 / 手势条会盖在内容之上。
     // 顶部栏与底部章节条必须避开系统栏区域，否则：
     // - 顶部「设置」图标上半部落在状态栏里，点它没反应（实测 y=84 无效、y=140 生效）；
@@ -184,6 +187,8 @@ fun ComicReaderScreen(
                     onNextChapter = { viewModel.nextChapter() },
                     onTap = toggleMenu,
                     bottomContentPadding = barTotalHeight,
+                    zoomed = zoomed.value,
+                    onZoomChanged = { zoomed.value = it },
                 )
             }
             else -> {
@@ -198,9 +203,14 @@ fun ComicReaderScreen(
                     onTap = toggleMenu,
                     onPrevChapter = { viewModel.prevChapter() },
                     onNextChapter = { viewModel.nextChapter() },
+                    zoomed = zoomed.value,
+                    onZoomChanged = { zoomed.value = it },
                 )
             }
         }
+
+        // ===== 边缘竖滑调亮度 / 音量（C2）：覆盖在内容之上，只在左右边缘起手时响应 =====
+        ComicReaderEdgeGestures()
 
         // ===== 菜单 = 顶部栏 + 设置面板 + 底部章节条，由「点击画面」统一呼出 / 收起 =====
         // 此前顶部栏与底部章节条是常驻的，会一直压着图片；现在它们都属于菜单，
@@ -379,6 +389,8 @@ private fun VerticalScrollReader(
     onNextChapter: () -> Unit,
     onTap: () -> Unit,
     bottomContentPadding: Dp,
+    zoomed: Boolean,
+    onZoomChanged: (Boolean) -> Unit,
 ) {
     val listState = rememberLazyListState()
     val context = LocalContext.current
@@ -401,12 +413,12 @@ private fun VerticalScrollReader(
         state = listState,
         modifier = Modifier
             .fillMaxSize()
-            // 滚到底继续拖 → 下一话；滚到顶继续拖 → 上一话
+            // 放大查看细节时锁住滚动切话（图片平移由缩放组件自己消费，列表不再滚）
             .edgeOverscroll(
                 resetKey = chapterIndex,
                 vertical = true,
-                canScrollBackward = { listState.canScrollBackward },
-                canScrollForward = { listState.canScrollForward },
+                canScrollBackward = { listState.canScrollBackward && !zoomed },
+                canScrollForward = { listState.canScrollForward && !zoomed },
                 onOverscrollStart = onPrevChapter,
                 onOverscrollEnd = onNextChapter,
             )
@@ -419,7 +431,7 @@ private fun VerticalScrollReader(
         contentPadding = PaddingValues(bottom = bottomContentPadding),
     ) {
         itemsIndexed(images) { _, url ->
-            ComicImage(
+            ZoomableComicImage(
                 url = url,
                 // 不再给每张图加 vertical padding：黑底会从缝里透出来，
                 // 在条漫 / 分镜图上表现为一条条横向黑线。图片直接上下相接即为连续的一页。
@@ -430,6 +442,7 @@ private fun VerticalScrollReader(
                     .height(240.dp),
                 headers = headers,
                 script = scripts[url],
+                onZoomStateChanged = onZoomChanged,
             )
         }
     }
@@ -451,6 +464,8 @@ private fun HorizontalPagerReader(
     onTap: () -> Unit,
     onPrevChapter: () -> Unit = {},
     onNextChapter: () -> Unit = {},
+    zoomed: Boolean,
+    onZoomChanged: (Boolean) -> Unit,
 ) {
     // 不再额外插「章末引导页」：末页继续拖 / 首页往前拖 由 edgeOverscroll 直接切话，
     // 与滚动模式的边界行为保持一致
@@ -485,14 +500,16 @@ private fun HorizontalPagerReader(
 
     HorizontalPager(
         state = pagerState,
+        // 放大查看细节时禁止滑动翻页（缩放组件会自己吞掉拖动事件，这里双保险）
+        userScrollEnabled = !zoomed,
         modifier = Modifier
             .fillMaxSize()
             // 末页继续拖 → 下一话；首页往前拖 → 上一话
             .edgeOverscroll(
                 resetKey = chapterIndex,
                 vertical = false,
-                canScrollBackward = { pagerState.currentPage > 0 },
-                canScrollForward = { pagerState.currentPage < pageCount - 1 },
+                canScrollBackward = { pagerState.currentPage > 0 && !zoomed },
+                canScrollForward = { pagerState.currentPage < pageCount - 1 && !zoomed },
                 onOverscrollStart = onPrevChapter,
                 onOverscrollEnd = onNextChapter,
             ),
@@ -519,13 +536,14 @@ private fun HorizontalPagerReader(
                 ),
             contentAlignment = Alignment.Center,
         ) {
-            ComicImage(
+            ZoomableComicImage(
                 url = images.getOrNull(page) ?: "",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.FillWidth,
                 placeholderModifier = Modifier.fillMaxSize(),
                 headers = headers,
                 script = scripts[images.getOrNull(page) ?: ""],
+                onZoomStateChanged = onZoomChanged,
             )
         }
     }
@@ -642,7 +660,7 @@ private fun Modifier.edgeOverscroll(
  * 命中时挂一个 Coil transformation，让**解码后、进缓存前**就把图拼回正常顺序。
  */
 @Composable
-private fun ComicImage(
+internal fun ComicImage(
     url: String,
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.FillWidth,

@@ -136,7 +136,7 @@ class VideoHomeSectionsTest {
         assertTrue(state.rows.isEmpty())
         assertTrue(
             "应给出可读原因，实际=${state.error}",
-            state.error!!.contains("连接不上该视频源"),
+            state.error!!.contains("视频源都暂时无法连接"),
         )
     }
 

@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.4.2.0"
+    const val CURRENT_VERSION = "1.4.3.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,14 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.4.3.0",
+            date = "2026-10-14",
+            changes = listOf(
+                "**漫画双指缩放与双击放大**（C1）：图片不再只能整屏缩放，现支持双指捏合缩放（1x~4x）、双击在「1x ↔ 放大」间切换、放大后单指拖动查看细节，位移带边界约束不拖出空白。缩放状态逐页独立，翻页 / 切图自动复位；放大态下自动锁住翻页 / 滚动，缩回 1x 恢复",
+                "**漫画亮度 / 音量手势**（C2）：屏幕左边缘竖滑调亮度、右边缘竖滑调音量（对齐主流漫画 App），中间 2/3 区域保留给翻页 / 滚动 / 缩放，互不冲突。亮度直接改当前窗口（0.02~1.0，退出阅读器自动恢复原值），音量走系统媒体流；竖滑过程中对应边缘显示竖直指示条，抬手后自动消失",
+            ),
+        ),
         VersionEntry(
             version = "1.4.2.0",
             date = "2026-10-13",

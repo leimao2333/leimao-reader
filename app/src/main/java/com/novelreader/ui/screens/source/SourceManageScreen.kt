@@ -384,17 +384,28 @@ fun SourceManageScreen(
                     }
                 }
 
-                // 删除失效源二次确认（v1.5.5.0）
+                // 删除失效源二次确认（v1.5.5.0；v1.5.5.1 列出具体源名）
                 if (confirmDeleteFailed) {
-                    val deleteCount = testResults.count { !it.value }
+                    val failedNames = testResults.filterValues { !it }.keys.mapNotNull { id ->
+                        sources.firstOrNull { it.id == id }?.name ?: id
+                    }
                     androidx.compose.material3.AlertDialog(
                         onDismissRequest = { confirmDeleteFailed = false },
                         title = { Text("删除失效源") },
                         text = {
-                            Text(
-                                text = "确定删除 $deleteCount 个已检出的失效源吗？此操作不可撤销。",
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
+                            Column {
+                                Text(
+                                    text = "确定删除以下 ${failedNames.size} 个已检出的失效源吗？此操作不可撤销。",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    text = failedNames.take(10).joinToString("、") +
+                                        if (failedNames.size > 10) " 等" else "",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         },
                         confirmButton = {
                             TextButton(

@@ -583,11 +583,33 @@ class SourceManageViewModel(
             _message.value = "尚未检测到失效源，请先「检测可用性」"
             return
         }
+        // 删除前先解析出源名（删除后 sources 里就查不到了），供结果提示展示
+        val namesById = _sources.value.associate { it.id to it.name }
         viewModelScope.launch {
-            failed.forEach { sourceRepository.deleteSource(it) }
-            _message.value = "已删除 ${failed.size} 个失效源"
+            val deletedNames = mutableListOf<String>()
+            val failedIds = mutableListOf<String>()
+            // 必须在 IO 线程逐个删除：deleteSource 含内存缓存清理 + Room 写库；
+            // 每个源单独 try-catch，单个失败不中断整批、也不致崩溃（v1.5.5.1 闪退修复）。
+            withContext(Dispatchers.IO) {
+                failed.forEach { id ->
+                    runCatching { sourceRepository.deleteSource(id) }
+                        .onSuccess { deletedNames += namesById[id] ?: id }
+                        .onFailure { failedIds += namesById[id] ?: id }
+                }
+            }
             // 清除这些源的检测结果，避免残留「失效」标记
             _testResults.value = _testResults.value.filterKeys { it !in failed }
+            _message.value = buildString {
+                append("已删除 ${deletedNames.size} 个失效源")
+                if (deletedNames.isNotEmpty()) {
+                    append("：")
+                    append(deletedNames.take(5).joinToString("、"))
+                    if (deletedNames.size > 5) append(" 等")
+                }
+                if (failedIds.isNotEmpty()) {
+                    append("；${failedIds.size} 个删除失败：${failedIds.take(3).joinToString("、")}")
+                }
+            }
             refresh()
         }
     }

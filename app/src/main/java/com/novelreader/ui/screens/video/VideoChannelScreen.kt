@@ -52,18 +52,18 @@ import com.novelreader.ui.components.CoverPlaceholderLetter
 import com.novelreader.ui.screens.common.HomeViewModel
 
 /**
- * 短剧频道（v1.3.9.0，对标红果短剧：分类 Tab + 竖屏海报墙）。
+ * 视频频道页（v1.5.0.0 从短剧频道泛化，短剧 / 电影 / 动漫三频道共用）。
  *
- * 交互：
- * - 顶部横向分类 Tab（跨源聚合去重的「短剧」分类名）
- * - 下方 3 列竖版海报墙（3:4），点海报走现有影视详情页（看全部剧集 / 换源 / 播放）
- * - 触底自动加载该分类下一页（跨源聚合去重）
- *
- * 数据：HomeViewModel 聚合各源带「短剧」的分类 → 分类名作 Tab → 选中分类聚合各源海报。
+ * 对标红果短剧 / 各大视频 App 的频道页：
+ * - 顶部标题 + 聚合状态 + 刷新按钮
+ * - 横向分类 Tab（跨源聚合去重的分类名）
+ * - 3 列竖版海报墙（3:4），点海报走影视详情页（看全部剧集 / 换源 / 播放）
+ * - 触底自动加载该分类下一页（跨源聚合去重），空态可点按重试
  */
 @Composable
-fun ShortDramaScreen(
-    state: HomeViewModel.ShortDramaState,
+fun VideoChannelScreen(
+    title: String,
+    state: HomeViewModel.VideoChannelState,
     onSelectCategory: (String) -> Unit,
     onLoadMore: () -> Unit,
     onRefresh: () -> Unit,
@@ -78,7 +78,7 @@ fun ShortDramaScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "短剧",
+                text = title,
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f),
             )
@@ -120,7 +120,7 @@ fun ShortDramaScreen(
             state.items.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = state.error ?: "暂无短剧内容",
+                        text = state.error ?: "暂无${title}内容",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.clickable { onRefresh() },
@@ -155,7 +155,7 @@ fun ShortDramaScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     items(state.items, key = { "${it.sourceId}:${it.id}" }) { item ->
-                        DramaPosterCard(item = item, onClick = { onOpenDetail(item) })
+                        ChannelPosterCard(item = item, onClick = { onOpenDetail(item) })
                     }
                     if (state.loadingMore) {
                         item(span = { GridItemSpan(maxLineSpan) }) {
@@ -176,13 +176,13 @@ fun ShortDramaScreen(
 }
 
 /**
- * 短剧竖版海报卡：3:4 封面 + 播放角标 + 片名。
+ * 频道竖版海报卡：3:4 封面 + 播放角标 + 更新进度角标 + 片名。
  *
- * 红果短剧的竖版海报（3:4）比影视首页的横版（2:3）更贴近短剧竖屏比例，
- * 封面右下角放「播放」角标，片名一行省略。
+ * 竖版海报（3:4）比影视首页的横版（2:3）更适合频道网格浏览，
+ * 封面右下角放「播放」角标，左下角放更新进度（extras remarks，如「更新至第 12 集」）。
  */
 @Composable
-private fun DramaPosterCard(
+private fun ChannelPosterCard(
     item: MediaItem,
     onClick: () -> Unit,
 ) {

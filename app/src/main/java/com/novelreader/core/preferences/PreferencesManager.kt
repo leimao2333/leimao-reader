@@ -154,6 +154,8 @@ class PreferencesManager(private val context: Context) {
         // ----- v1.3.3.0 影视首页（MoonTV 风格）-----
         /** 影视首页当前使用的视频源 id（记忆上次选择） */
         val KEY_VIDEO_HOME_SOURCE = stringPreferencesKey("video_home_source")
+        /** 视频 Tab 频道栏目索引（v1.5.0.0）：0=首页 1=电影 2=动漫 3=短剧 4=收藏 */
+        val KEY_VIDEO_CHANNEL_INDEX = intPreferencesKey("video_channel_index")
 
         // ===== WebDav 云备份（v1.3.8.0） =====
         /** WebDav 服务器根地址（可带路径前缀），空表示未配置 */
@@ -220,6 +222,8 @@ class PreferencesManager(private val context: Context) {
         const val DEFAULT_VIDEO_AUTO_NEXT = false
         /** 默认开启横屏上下滑切集 */
         const val DEFAULT_VIDEO_VERTICAL_SWIPE_SWITCH = true
+        /** 默认视频 Tab 频道栏目：0=首页 */
+        const val DEFAULT_VIDEO_CHANNEL_INDEX = 0
         /** 搜索历史分隔符（历史记录用单个字符串存储，分隔符分隔） */
         private const val HISTORY_SEPARATOR = "\u001F"
     }
@@ -604,6 +608,17 @@ class PreferencesManager(private val context: Context) {
     }
 
     suspend fun getVideoHomeSource(): String = videoHomeSourceFlow.first()
+
+    /**
+     * 视频 Tab 频道栏目索引（v1.5.0.0）：0=首页 1=电影 2=动漫 3=短剧 4=收藏。
+     * 持久化，重启 App 后仍停留在上次的频道。
+     */
+    val videoChannelIndexFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_VIDEO_CHANNEL_INDEX] ?: DEFAULT_VIDEO_CHANNEL_INDEX }
+
+    suspend fun setVideoChannelIndex(value: Int) {
+        context.dataStore.edit { it[KEY_VIDEO_CHANNEL_INDEX] = value.coerceIn(0, 4) }
+    }
 
     // ===== 搜索 =====
     val searchConcurrencyFlow: Flow<Int> = context.dataStore.data

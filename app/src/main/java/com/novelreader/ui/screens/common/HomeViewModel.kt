@@ -14,10 +14,12 @@ import com.novelreader.domain.repository.ReadingProgress
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -348,12 +350,12 @@ class HomeViewModel(
             // 「继续观看」来自本地进度表，与所选源无关，每次进页都刷新
             val continueItems = buildContinueWatching(sources)
             _videoHome.value = next.copy(continueWatching = continueItems)
-            // 缓存门控：内容已加载且未过期 → 直接复用，不再重新探测源 + 拉内容。
-            // 只有源变化 / 尚无内容 / 缓存过期才触发重拉（v1.4.9.0：避免每次切 Tab 或
-            // 从播放页返回都重新探测一遍采集源，探测要等全部源超时，明显卡顿）。
-            val fresh = !sourceChanged && next.loaded &&
-                (next.loadedAtMs > 0L && System.currentTimeMillis() - next.loadedAtMs < VIDEO_HOME_CACHE_TTL_MS)
-            if (!fresh) {
+            // 缓存门控（v1.5.0.0 起改为会话内永久复用）：内容已加载且源没变就
+            // 直接复用，不再重新探测源 + 拉内容——进出视频 Tab / 从播放页返回
+            // 都是秒开。刷新只靠**下拉刷新**（refreshVideoHome）与**切源**：
+            // 下拉刷新直接走 loadVideoHome 不受门控；切源会清空 rows 使
+            // loaded=false 挡住门控。想看新内容下拉即可。
+            if (sourceChanged || !next.loaded) {
                 loadVideoHome(reset = true)
             }
         }
@@ -374,6 +376,15 @@ class HomeViewModel(
         )
         viewModelScope.launch { runCatching { preferencesManager?.setVideoHomeSource(sourceId) } }
         loadVideoHome(reset = true)
+    }
+
+    /** 读上次停留的视频频道栏目（v1.5.0.0 持久化） */
+    suspend fun getVideoChannelIndex(): Int =
+        runCatching { preferencesManager?.videoChannelIndexFlow?.first() }.getOrNull() ?: 0
+
+    /** 保存视频频道栏目 */
+    fun setVideoChannelIndex(index: Int) {
+        viewModelScope.launch { runCatching { preferencesManager?.setVideoChannelIndex(index) } }
     }
 
     /** 展开某个分类的网格视图（分区标题右侧「查看更多」） */
@@ -691,10 +702,15 @@ class HomeViewModel(
      * 数据 = 聚合所有「分类名含『短剧』」的可用源（实测豆瓣/茅台/iKun/电影天堂/猫眼/量子/360
      * 等 7 个活源都有短剧分类），短剧分类名作为顶部 Tab，选中分类后聚合各源该分类的海报。
      */
-    data class ShortDramaState(
+    /**
+     * 视频频道状态（短剧 / 电影 / 动漫三个频道共用，v1.5.0.0 从 ShortDramaState 泛化）。
+     *
+     * 结构对标红果短剧 / 各大视频 App 的频道页：分类 Tab + 海报网格 + 触底分页。
+     */
+    data class VideoChannelState(
         val loading: Boolean = false,
         val loadingMore: Boolean = false,
-        /** 短剧分类名（顶部 Tab，跨源去重保序） */
+        /** 分类名（顶部 Tab，跨源去重保序） */
         val categories: List<String> = emptyList(),
         /** 当前选中分类名（空 = 未选） */
         val selectedCategory: String = "",
@@ -705,105 +721,180 @@ class HomeViewModel(
         val loaded: Boolean get() = items.isNotEmpty()
     }
 
-    private val _shortDrama = MutableStateFlow(ShortDramaState())
-    val shortDrama: StateFlow<ShortDramaState> = _shortDrama.asStateFlow()
+    private val _shortDrama = MutableStateFlow(VideoChannelState())
+    val shortDrama: StateFlow<VideoChannelState> = _shortDrama.asStateFlow()
 
-    /** 短剧聚合计划：短剧分类名 → 各（源, 分类地址）；会话内缓存 */
-    private var dramaPlan: Map<String, List<Pair<com.novelreader.domain.model.SourceInfo, String>>>? = null
+    private val _movieChannel = MutableStateFlow(VideoChannelState())
+    val movieChannel: StateFlow<VideoChannelState> = _movieChannel.asStateFlow()
 
-    /** 各分类已拉到的页数与枯竭标记 */
-    private val dramaPages = mutableMapOf<String, Int>()
-    private val dramaExhausted = mutableSetOf<String>()
-    private var dramaJob: kotlinx.coroutines.Job? = null
+    private val _animeChannel = MutableStateFlow(VideoChannelState())
+    val animeChannel: StateFlow<VideoChannelState> = _animeChannel.asStateFlow()
+
+    /** 频道定义：入口 →（分类关键词, state, 打标用的频道名） */
+    private enum class VideoChannel(
+        val title: String,
+        val keywords: List<String>,
+    ) {
+        SHORT_DRAMA("短剧", listOf("短剧")),
+        MOVIE("电影", listOf("电影")),
+        ANIME("动漫", listOf("动漫", "动画", "番剧")),
+    }
+
+    /** 频道运行时（各自独立的聚合计划缓存 / 分页游标 / 任务） */
+    private class ChannelRuntime {
+        var plan: Map<String, List<Pair<com.novelreader.domain.model.SourceInfo, String>>>? = null
+        val pages = mutableMapOf<String, Int>()
+        val exhausted = mutableSetOf<String>()
+        var job: kotlinx.coroutines.Job? = null
+    }
+
+    private val channelRuntimes = mutableMapOf<VideoChannel, ChannelRuntime>()
+
+    private fun runtimeOf(channel: VideoChannel) =
+        channelRuntimes.getOrPut(channel) { ChannelRuntime() }
+
+    private fun stateOf(channel: VideoChannel): MutableStateFlow<VideoChannelState> = when (channel) {
+        VideoChannel.SHORT_DRAMA -> _shortDrama
+        VideoChannel.MOVIE -> _movieChannel
+        VideoChannel.ANIME -> _animeChannel
+    }
 
     /** 进入短剧 Tab：已有内容就不重复加载 */
-    fun onShortDramaShown() {
-        val st = _shortDrama.value
+    fun onShortDramaShown() = onChannelShown(VideoChannel.SHORT_DRAMA)
+
+    /** 进入电影 Tab */
+    fun onMovieChannelShown() = onChannelShown(VideoChannel.MOVIE)
+
+    /** 进入动漫 Tab */
+    fun onAnimeChannelShown() = onChannelShown(VideoChannel.ANIME)
+
+    private fun onChannelShown(channel: VideoChannel) {
+        val st = stateOf(channel).value
         if (!st.loading && !st.loaded && st.error == null) {
-            loadShortDrama(reset = true)
+            loadChannel(channel, reset = true)
         }
     }
 
     /** 刷新短剧（丢弃聚合计划重新探测） */
-    fun refreshShortDrama() {
-        dramaPlan = null
-        dramaPages.clear()
-        dramaExhausted.clear()
-        _shortDrama.value = ShortDramaState(loading = true)
-        loadShortDrama(reset = true)
+    fun refreshShortDrama() = refreshChannel(VideoChannel.SHORT_DRAMA)
+
+    /** 刷新电影频道 */
+    fun refreshMovieChannel() = refreshChannel(VideoChannel.MOVIE)
+
+    /** 刷新动漫频道 */
+    fun refreshAnimeChannel() = refreshChannel(VideoChannel.ANIME)
+
+    private fun refreshChannel(channel: VideoChannel) {
+        val rt = runtimeOf(channel)
+        rt.plan = null
+        rt.pages.clear()
+        rt.exhausted.clear()
+        stateOf(channel).value = VideoChannelState(loading = true)
+        loadChannel(channel, reset = true)
     }
 
     /** 切换短剧分类 Tab */
-    fun selectShortDramaCategory(category: String) {
-        val st = _shortDrama.value
+    fun selectShortDramaCategory(category: String) =
+        selectChannelCategory(VideoChannel.SHORT_DRAMA, category)
+
+    /** 切换电影频道分类 Tab */
+    fun selectMovieChannelCategory(category: String) =
+        selectChannelCategory(VideoChannel.MOVIE, category)
+
+    /** 切换动漫频道分类 Tab */
+    fun selectAnimeChannelCategory(category: String) =
+        selectChannelCategory(VideoChannel.ANIME, category)
+
+    private fun selectChannelCategory(channel: VideoChannel, category: String) {
+        val flow = stateOf(channel)
+        val st = flow.value
         if (category == st.selectedCategory) return
-        _shortDrama.value = st.copy(selectedCategory = category, items = emptyList())
-        loadShortDramaCategory(category, reset = true)
+        flow.value = st.copy(selectedCategory = category, items = emptyList())
+        loadChannelCategory(channel, category, reset = true)
     }
 
     /** 当前分类触底加载下一页 */
-    fun loadMoreShortDrama() {
-        val st = _shortDrama.value
+    fun loadMoreShortDrama() = loadMoreChannel(VideoChannel.SHORT_DRAMA)
+
+    /** 电影频道触底加载下一页 */
+    fun loadMoreMovieChannel() = loadMoreChannel(VideoChannel.MOVIE)
+
+    /** 动漫频道触底加载下一页 */
+    fun loadMoreAnimeChannel() = loadMoreChannel(VideoChannel.ANIME)
+
+    private fun loadMoreChannel(channel: VideoChannel) {
+        val st = stateOf(channel).value
         if (st.loading || st.loadingMore || st.selectedCategory.isEmpty()) return
-        loadShortDramaCategory(st.selectedCategory, reset = false)
+        loadChannelCategory(channel, st.selectedCategory, reset = false)
     }
 
-    private fun loadShortDrama(reset: Boolean) {
-        dramaJob?.cancel()
-        dramaJob = viewModelScope.launch {
-            _shortDrama.value = _shortDrama.value.copy(loading = true, error = null)
-            val plan = ensureDramaPlan()
+    private fun loadChannel(channel: VideoChannel, reset: Boolean) {
+        val rt = runtimeOf(channel)
+        rt.job?.cancel()
+        rt.job = viewModelScope.launch {
+            val flow = stateOf(channel)
+            flow.value = flow.value.copy(loading = true, error = null)
+            val plan = ensureChannelPlan(channel, rt)
             if (plan.isEmpty()) {
-                _shortDrama.value = _shortDrama.value.copy(
+                flow.value = flow.value.copy(
                     loading = false,
-                    error = "没有找到带「短剧」分类的可用视频源",
+                    error = "没有找到带「${channel.title}」分类的可用视频源",
                 )
                 return@launch
             }
             val categories = plan.keys.toList()
             val first = categories.first()
-            _shortDrama.value = _shortDrama.value.copy(
+            flow.value = flow.value.copy(
                 loading = false,
                 categories = categories,
                 selectedCategory = first,
             )
-            loadShortDramaCategory(first, reset = true)
+            loadChannelCategory(channel, first, reset = true)
         }
     }
 
-    /** 加载某个短剧分类：聚合各源该分类的内容（分页） */
-    private fun loadShortDramaCategory(category: String, reset: Boolean) {
-        dramaJob?.cancel()
-        dramaJob = viewModelScope.launch {
-            val st = _shortDrama.value
-            if (reset) _shortDrama.value = st.copy(loading = true, error = null)
-            else _shortDrama.value = st.copy(loadingMore = true)
+    /** 加载某个分类：聚合各源该分类的内容（分页） */
+    private fun loadChannelCategory(channel: VideoChannel, category: String, reset: Boolean) {
+        val rt = runtimeOf(channel)
+        rt.job?.cancel()
+        rt.job = viewModelScope.launch {
+            val flow = stateOf(channel)
+            val st = flow.value
+            if (reset) flow.value = st.copy(loading = true, error = null)
+            else flow.value = st.copy(loadingMore = true)
 
-            val plan = ensureDramaPlan()
+            val plan = ensureChannelPlan(channel, rt)
             val entries = plan[category].orEmpty()
             if (entries.isEmpty()) {
-                _shortDrama.value = _shortDrama.value.copy(loading = false, loadingMore = false)
+                flow.value = flow.value.copy(loading = false, loadingMore = false)
                 return@launch
             }
 
             // 该分类下各（源, 分类地址）翻页；空页标记枯竭
-            val active = entries.filter { (src, cat) -> dramaKey(src.id, cat) !in dramaExhausted }
-            val nextPage = if (reset) 1 else (dramaPages[category] ?: 0) + 1
+            val active = entries.filter { (src, cat) -> dramaKey(src.id, cat) !in rt.exhausted }
+            val nextPage = if (reset) 1 else (rt.pages[category] ?: 0) + 1
             val fetched = coroutineScope {
                 active.map { (src, cat) -> async {
-                    runCatching { contentRepository.explore(src.id, cat, nextPage) }
-                        .getOrDefault(emptyList())
-                        .also { if (it.isEmpty()) dramaExhausted += dramaKey(src.id, cat) }
+                    runCatching {
+                        withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) {
+                            contentRepository.explore(src.id, cat, nextPage)
+                        }
+                    }.getOrNull().orEmpty()
+                        .also { if (it.isEmpty()) rt.exhausted += dramaKey(src.id, cat) }
                 } }.awaitAll().flatten()
             }
-            if (fetched.isNotEmpty()) dramaPages[category] = nextPage
+            if (fetched.isNotEmpty()) rt.pages[category] = nextPage
 
-            val current = _shortDrama.value
+            val current = flow.value
             val merged = if (reset) fetched else current.items + fetched
-            _shortDrama.value = current.copy(
-                // 打「短剧」标记：详情页 / 播放页据此默认竖屏播放 + 红果式选集
+            flow.value = current.copy(
+                // 短剧条目打「短剧」标记：详情页 / 播放页据此默认竖屏播放 + 红果式选集
                 items = merged.distinctBy { "${it.sourceId}:${it.id}" }
-                    .map { it.copy(extras = it.extras + (EXTRA_SHORT_DRAMA to "1")) },
+                    .map {
+                        if (channel == VideoChannel.SHORT_DRAMA) {
+                            it.copy(extras = it.extras + (EXTRA_SHORT_DRAMA to "1"))
+                        } else it
+                    },
                 loading = false,
                 loadingMore = false,
                 error = if (reset && fetched.isEmpty()) "该分类暂无内容" else null,
@@ -811,19 +902,42 @@ class HomeViewModel(
         }
     }
 
-    /** 探测所有源里带「短剧」分类的，按分类名聚合 → 各（源, 分类地址）。会话内缓存 */
-    private suspend fun ensureDramaPlan(): Map<String, List<Pair<com.novelreader.domain.model.SourceInfo, String>>> {
-        dramaPlan?.let { return it }
-        val sources = _videoHome.value.sources.ifEmpty {
-            sourceRepository?.getSourcesByType(SourceType.VIDEO)
-                ?.filter { it.enabled }
-                .orEmpty()
+    /** 探测所有源里带目标关键词分类的，按分类名聚合 → 各（源, 分类地址）。会话内缓存 */
+    private suspend fun ensureChannelPlan(
+        channel: VideoChannel,
+        rt: ChannelRuntime,
+    ): Map<String, List<Pair<com.novelreader.domain.model.SourceInfo, String>>> {
+        rt.plan?.let { return it }
+        // 冷启动竞态优化：首页正在探测存活源时先等它完成（最多 15s），
+        // 频道 plan 直接用存活源，避免重复探测全部源（死源每个都要等超时）
+        if (_videoHome.value.availableSources.isEmpty() && _videoHome.value.loading) {
+            val deadline = System.currentTimeMillis() + 15_000L
+            while (_videoHome.value.availableSources.isEmpty() &&
+                _videoHome.value.loading &&
+                System.currentTimeMillis() < deadline
+            ) {
+                delay(300)
+            }
         }
+        // 优先用首页探测出的存活源（availableSources）——避免对已知死源重复发起分类请求；
+        // 首页还没探测完（冷启动）时退化为全部启用源，并等源恢复完成再读
+        val sources = _videoHome.value.availableSources
+            .mapNotNull { id -> _videoHome.value.sources.firstOrNull { it.id == id } }
+            .ifEmpty {
+                val all = _videoHome.value.sources.ifEmpty {
+                    runCatching { sourceRepository?.awaitRestored() }
+                    sourceRepository?.getSourcesByType(SourceType.VIDEO)
+                        ?.filter { it.enabled }
+                        .orEmpty()
+                }
+                all.take(MAX_AGGREGATE_SOURCES)
+            }
         val found = coroutineScope {
             sources.map { src -> async {
-                val cats = runCatching { contentRepository.exploreCategoriesOf(src.id) }
-                    .getOrDefault(emptyList())
-                    .filter { it.title.contains("短剧") }
+                val cats = runCatching {
+                    withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) { contentRepository.exploreCategoriesOf(src.id) }
+                }.getOrNull().orEmpty()
+                    .filter { cat -> channel.keywords.any { kw -> cat.title.contains(kw) } }
                 cats.map { cat -> cat.title to (src to cat.url) }
             } }.awaitAll().flatten()
         }
@@ -831,7 +945,7 @@ class HomeViewModel(
         for ((title, entry) in found) {
             grouped.getOrPut(title) { mutableListOf() }.add(entry)
         }
-        dramaPlan = grouped
+        rt.plan = grouped
         return grouped
     }
 
@@ -846,13 +960,6 @@ class HomeViewModel(
 
         /** 单个源探测 / 分类行内容请求的有界超时（毫秒）——死源快速失败，不拖累整页 */
         private const val SOURCE_PROBE_TIMEOUT_MS = 10_000L
-
-        /**
-         * 首屏内容缓存有效期（毫秒）。切 Tab / 从播放·详情页返回时，若内容加载距今未超过
-         * 该时长，直接复用内存里的分区行，不再重新探测源 + 拉内容——采集站每轮探测要等
-         * 所有源超时，反复进出会明显卡顿。下拉刷新 / 切源 / 源变化不受此限制，仍强制重拉。
-         */
-        private const val VIDEO_HOME_CACHE_TTL_MS = 3 * 60_000L
 
         /** 「继续观看」最多展示条数 */
         private const val MAX_CONTINUE_ITEMS = 12

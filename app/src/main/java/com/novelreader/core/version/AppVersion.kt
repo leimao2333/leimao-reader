@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.5.5.2"
+    const val CURRENT_VERSION = "1.5.5.3"
 
     /**
      * 更新日志。
@@ -25,6 +25,13 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.5.5.3",
+            date = "2026-10-14",
+            changes = listOf(
+                "**修复删除失效源仍闪退（根因修复）**：崩溃日志定位到 `Couldn't read row from CursorWindow` —— 循环逐个删除源会触发多次数据库变更通知，与源列表的实时观察查询并发，游标被并发失效导致读不到数据。现改为单条 SQL 批量删除（只触发一次变更通知），从根上消除并发读失效",
+            ),
+        ),
         VersionEntry(
             version = "1.5.5.2",
             date = "2026-10-14",

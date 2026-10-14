@@ -50,6 +50,14 @@ interface SourceRepository {
     /** 删除一个源 */
     suspend fun deleteSource(sourceId: String)
 
+    /**
+     * 批量删除多个源（单次写库，只触发一次 invalidation，v1.5.5.2）。
+     *
+     * 供「一键删除失效源」使用：循环 [deleteSource] 会触发多次 Room invalidation，
+     * 与 observeAll() Flow 重新查询并发导致 Cursor 读失效闪退。
+     */
+    suspend fun deleteSources(ids: List<String>)
+
     /** 启用 / 禁用源 */
     suspend fun setSourceEnabled(sourceId: String, enabled: Boolean)
 

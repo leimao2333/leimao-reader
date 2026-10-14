@@ -37,4 +37,14 @@ interface SourceDao {
 
     @Query("DELETE FROM sources WHERE id = :id")
     suspend fun deleteById(id: String)
+
+    /**
+     * 批量删除源（单条 SQL，只触发一次 invalidation）。
+     *
+     * v1.5.5.2 起用于「一键删除失效源」：循环 deleteById 会触发 N 次 Room invalidation，
+     * 与 observeAll() 的 Flow 重新查询并发，导致 Cursor 读失效（Couldn't read row from
+     * CursorWindow）闪退。改为单条 DELETE ... WHERE id IN (...) 只触发一次。
+     */
+    @Query("DELETE FROM sources WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<String>)
 }

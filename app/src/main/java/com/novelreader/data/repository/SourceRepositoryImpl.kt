@@ -114,6 +114,15 @@ class SourceRepositoryImpl(
         sourceDao.deleteById(sourceId)
     }
 
+    override suspend fun deleteSources(ids: List<String>) {
+        if (ids.isEmpty()) return
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            // 先批量清理内存缓存，再单次写库（只触发一次 invalidation）
+            ids.forEach { sourceManager.unregisterSource(it) }
+            sourceDao.deleteByIds(ids)
+        }
+    }
+
     override suspend fun setSourceEnabled(sourceId: String, enabled: Boolean) {
         sourceManager.setSourceEnabled(sourceId, enabled)
         sourceDao.setEnabled(sourceId, enabled)

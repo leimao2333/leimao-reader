@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.5.5.3"
+    const val CURRENT_VERSION = "1.5.5.4"
 
     /**
      * 更新日志。
@@ -25,6 +25,13 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.5.5.4",
+            date = "2026-10-14",
+            changes = listOf(
+                "**优化更新下载反馈**：点「下载更新」后，更新弹框内直接显示下载进度条与实时百分比（已下载/总大小），下载中禁用关闭与重复点击；下载失败时错误信息显示在弹框内并可直接「重试」，不再出现点了没反应的情况",
+            ),
+        ),
         VersionEntry(
             version = "1.5.5.3",
             date = "2026-10-14",

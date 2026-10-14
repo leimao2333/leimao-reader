@@ -45,12 +45,17 @@ class SettingsViewModel(
     private val _updateInfo = MutableStateFlow<com.novelreader.core.update.UpdateChecker.UpdateInfo?>(null)
     val updateInfo: StateFlow<com.novelreader.core.update.UpdateChecker.UpdateInfo?> = _updateInfo.asStateFlow()
 
+    /** 下载失败信息（非空时在更新弹框内展示，v1.5.5.4） */
+    private val _updateError = MutableStateFlow<String?>(null)
+    val updateError: StateFlow<String?> = _updateError.asStateFlow()
+
     /** 手动检查更新 */
     fun checkUpdate() {
         if (_updateBusy.value) return
         viewModelScope.launch {
             _updateBusy.value = true
             _updateProgress.value = -1f
+            _updateError.value = null
             val info = withContext(Dispatchers.IO) {
                 com.novelreader.core.update.UpdateChecker.checkLatest(
                     com.novelreader.core.version.AppVersion.CURRENT_VERSION,
@@ -68,6 +73,7 @@ class SettingsViewModel(
     /** 取消更新弹框 */
     fun dismissUpdateInfo() {
         _updateInfo.value = null
+        _updateError.value = null
     }
 
     /** 下载并安装更新 */
@@ -78,6 +84,7 @@ class SettingsViewModel(
         viewModelScope.launch {
             _updateBusy.value = true
             _updateProgress.value = 0f
+            _updateError.value = null
             try {
                 val file = withContext(Dispatchers.IO) {
                     val dir = ctx.cacheDir.resolve("update").apply { mkdirs() }
@@ -91,10 +98,13 @@ class SettingsViewModel(
                     target
                 }
                 _updateProgress.value = 1f
+                // 下载完成：关闭弹框并拉起系统安装
                 _updateInfo.value = null
+                _updateError.value = null
                 installApk(ctx, file)
             } catch (e: Exception) {
-                _backupMessage.value = "下载失败：${e.message ?: "未知错误"}"
+                // 下载失败：在弹框内展示错误，保留弹框让用户可重试
+                _updateError.value = e.message ?: "未知错误"
             } finally {
                 _updateBusy.value = false
             }

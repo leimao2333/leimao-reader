@@ -98,6 +98,7 @@ fun SettingsScreen(
     val updateBusy by viewModel.updateBusy.collectAsState()
     val updateProgress by viewModel.updateProgress.collectAsState()
     val updateInfo by viewModel.updateInfo.collectAsState()
+    val updateError by viewModel.updateError.collectAsState()
 
     Scaffold(
         snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
@@ -432,38 +433,100 @@ fun SettingsScreen(
             }
         }
 
-        // ===== 更新确认弹框（v1.5.4.0） =====
+        // ===== 更新确认弹框（v1.5.4.0；v1.5.5.4 增加下载进度与失败反馈） =====
         updateInfo?.let { info ->
+            val downloading = updateBusy && updateProgress >= 0f
             androidx.compose.material3.AlertDialog(
-                onDismissRequest = { viewModel.dismissUpdateInfo() },
-                title = { Text("发现新版本 v${info.version}") },
+                onDismissRequest = {
+                    // 下载中禁止点外部关闭（避免下载状态丢失）
+                    if (!downloading) viewModel.dismissUpdateInfo()
+                },
+                title = {
+                    Text(
+                        when {
+                            downloading && updateProgress >= 1f -> "下载完成"
+                            downloading -> "正在下载 v${info.version}"
+                            else -> "发现新版本 v${info.version}"
+                        }
+                    )
+                },
                 text = {
                     Column {
-                        val body = info.body.trim()
-                        if (body.isNotEmpty()) {
-                            // 显示更新说明（截断过长内容）
-                            val brief = if (body.length > 300) body.take(300) + "…" else body
+                        if (downloading) {
+                            // 下载中：显示进度条 + 百分比
                             Text(
-                                text = brief,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                text = if (updateProgress >= 1f) {
+                                    "下载完成，正在拉起安装…"
+                                } else if (updateProgress > 0f) {
+                                    "正在下载… ${(updateProgress * 100).toInt()}%"
+                                } else {
+                                    "正在连接下载服务器…"
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
                             )
-                        }
-                        if (info.apkSize > 0) {
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                text = "安装包大小：${"%.1f".format(info.apkSize / 1024f / 1024f)} MB",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            Spacer(Modifier.height(12.dp))
+                            androidx.compose.material3.LinearProgressIndicator(
+                                progress = { updateProgress.coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth(),
                             )
+                            Spacer(Modifier.height(4.dp))
+                            if (info.apkSize > 0) {
+                                Text(
+                                    text = "已下载 ${(updateProgress * info.apkSize / 1024f / 1024f).let { "%.1f".format(it) }} / ${"%.1f".format(info.apkSize / 1024f / 1024f)} MB",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        } else {
+                            // 未下载：显示更新说明 + 大小
+                            val body = info.body.trim()
+                            if (body.isNotEmpty()) {
+                                val brief = if (body.length > 300) body.take(300) + "…" else body
+                                Text(
+                                    text = brief,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (info.apkSize > 0) {
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    text = "安装包大小：${"%.1f".format(info.apkSize / 1024f / 1024f)} MB",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            // 下载失败提示（重试时显示在弹框内）
+                            if (updateError != null) {
+                                Spacer(Modifier.height(12.dp))
+                                Text(
+                                    text = "下载失败：$updateError",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
                         }
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = { viewModel.downloadUpdate() }) { Text("下载更新") }
+                    TextButton(
+                        onClick = { viewModel.downloadUpdate() },
+                        enabled = !downloading,
+                    ) {
+                        Text(
+                            when {
+                                downloading -> if (updateProgress >= 1f) "完成" else "下载中…"
+                                updateError != null -> "重试"
+                                else -> "下载更新"
+                            }
+                        )
+                    }
                 },
                 dismissButton = {
-                    TextButton(onClick = { viewModel.dismissUpdateInfo() }) { Text("取消") }
+                    TextButton(
+                        onClick = { viewModel.dismissUpdateInfo() },
+                        enabled = !downloading,
+                    ) { Text("取消") }
                 },
             )
         }

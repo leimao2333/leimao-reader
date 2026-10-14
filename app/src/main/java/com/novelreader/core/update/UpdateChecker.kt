@@ -45,7 +45,12 @@ object UpdateChecker {
             it.asJsonObject.get("name")?.asString == "leimao-reader-v$tagName.apk"
         }?.let { apkAsset = it }
 
-        val apkUrl = apkAsset.asJsonObject.get("browser_download_url")?.asString
+        // 下载地址：优先用 api.github.com 的 asset 端点（443 直连可用），
+        // 而不是 browser_download_url（github.com 直连被墙，下载必然超时）。
+        // asset 的 url 形如 https://api.github.com/repos/{o}/{r}/releases/assets/{id}，
+        // 配合 Accept: application/octet-stream 会 302 到 release-assets CDN 返回 APK。
+        val apkUrl = apkAsset.asJsonObject.get("url")?.asString
+            ?: apkAsset.asJsonObject.get("browser_download_url")?.asString
             ?: return@runCatching null
         val apkSize = apkAsset.asJsonObject.get("size")?.asLong ?: 0L
         val body = root.get("body")?.asString ?: ""
@@ -55,9 +60,16 @@ object UpdateChecker {
     /**
      * 下载 APK 到 [target] 文件（带进度回调，运行在下载线程）。
      * 阻塞式，必须在 IO 线程执行。
+     *
+     * 下载地址是 api.github.com 的 asset 端点，必须带 `Accept: application/octet-stream`
+     * 才会返回 APK 二进制（否则返回 JSON 元数据）；会 302 到 release-assets CDN。
      */
     fun downloadApk(url: String, target: File, onProgress: (Long, Long) -> Unit) {
-        HttpClient.downloadFile(url, target, onProgress = { d, t -> onProgress(d, t) })
+        HttpClient.downloadFile(
+            url, target,
+            headers = mapOf("Accept" to "application/octet-stream"),
+            onProgress = { d, t -> onProgress(d, t) },
+        )
     }
 
     // ===== 内部工具 =====

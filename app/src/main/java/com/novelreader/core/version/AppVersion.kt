@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.5.5.0"
+    const val CURRENT_VERSION = "1.5.5.1"
 
     /**
      * 更新日志。
@@ -25,6 +25,13 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.5.5.1",
+            date = "2026-10-14",
+            changes = listOf(
+                "**修复更新下载失效**：下载更新 APK 改用 GitHub API 的资产端点（api.github.com 直连可用），原地址走 github.com 被墙导致下载超时",
+            ),
+        ),
         VersionEntry(
             version = "1.5.5.0",
             date = "2026-10-14",

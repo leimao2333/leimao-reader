@@ -500,25 +500,27 @@ fun VideoPlayerScreen(
                                                 }
                                             }
                                         } else {
-                                            // 竖屏 / 窗口态：保留原有亮度 / 音量手势
-                                            val fraction = -totalDy / size.height
-                                            if (dragStartX < size.width / 2f) {
-                                                val v = (startBrightness + fraction).coerceIn(0.02f, 1f)
-                                                applyBrightness(v)
-                                                verticalIndicator = VerticalIndicator(true, v)
-                                            } else {
-                                                val max = audioManager
-                                                    .getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                                                    .coerceAtLeast(1)
-                                                val v = (startVolume + fraction * max).roundToInt()
-                                                    .coerceIn(0, max)
-                                                audioManager.setStreamVolume(
-                                                    AudioManager.STREAM_MUSIC, v, 0
-                                                )
-                                                verticalIndicator =
-                                                    VerticalIndicator(false, v / max.toFloat())
+                                            // 竖屏 / 窗口态（含短剧竖屏、横屏未开启切集手势）：
+                                            // v1.6.0.0 取消左右边竖滑调亮度 / 音量手势（短剧容易误触），
+                                            // 改为上下滑切上下集；亮度 / 音量改走 MoreVert 菜单式调节。
+                                            val threshold = size.height * 0.22f
+                                            if (!switchTriggered && totalDy < -threshold) {
+                                                switchTriggered = true
+                                                val next = viewModel.peekNext()
+                                                if (next != null) {
+                                                    viewModel.playNext()
+                                                    switchEpisodeHint = SwitchEpisodeHint(true, next.title)
+                                                }
+                                                controlsVisible = false
+                                            } else if (!switchTriggered && totalDy > threshold) {
+                                                switchTriggered = true
+                                                val prev = viewModel.peekPrev()
+                                                if (prev != null) {
+                                                    viewModel.playPrev()
+                                                    switchEpisodeHint = SwitchEpisodeHint(false, prev.title)
+                                                }
+                                                controlsVisible = false
                                             }
-                                            controlsVisible = false
                                         }
                                     }
                                 }
@@ -795,6 +797,19 @@ fun VideoPlayerScreen(
                 onLoadSubtitle = { subtitlePicker.launch(arrayOf("*/*")) },
                 onToggleSubtitle = { viewModel.toggleSubtitle() },
                 onClearSubtitle = { viewModel.clearSubtitle() },
+                // v1.6.0.0：短剧把更多菜单合并到底部面板；长视频保留 MoreVert（含亮度 / 音量滑块）
+                hideMoreMenu = isShortDrama,
+                currentBrightness = { currentBrightness() },
+                onBrightnessChange = { applyBrightness(it) },
+                currentVolumeFraction = {
+                    val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                    audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) / max.toFloat()
+                },
+                onVolumeChange = { fraction ->
+                    val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                    val v = (fraction * max).roundToInt().coerceIn(0, max)
+                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0)
+                },
             )
 
             // ===== 短剧底部常驻栏（红果式：选集按钮 + 剧名 + 集数）=====
@@ -860,6 +875,21 @@ fun VideoPlayerScreen(
                     currentUrl = currentEpisodeUrl,
                     lines = lines,
                     currentLineIndex = currentLineIndex,
+                    qualityTracks = qualityTracks,
+                    selectedQuality = selectedQuality,
+                    onSelectQuality = { viewModel.selectQuality(it) },
+                    onResetQuality = { viewModel.resetQuality() },
+                    currentBrightness = { currentBrightness() },
+                    onBrightnessChange = { applyBrightness(it) },
+                    currentVolumeFraction = {
+                        val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                        audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) / max.toFloat()
+                    },
+                    onVolumeChange = { fraction ->
+                        val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                        val v = (fraction * max).roundToInt().coerceIn(0, max)
+                        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0)
+                    },
                     onPick = {
                         viewModel.playEpisode(episodesList.getOrNull(it) ?: return@ShortDramaEpisodeOverlay)
                         episodesOpen = false

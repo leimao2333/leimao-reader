@@ -20,6 +20,7 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import com.novelreader.core.network.HttpClient
 import com.novelreader.core.preferences.PreferencesManager
 import com.novelreader.core.util.LineSwitch
+import com.novelreader.data.cache.VideoPrefetchCache
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.ChapterLine
 import com.novelreader.domain.model.SourceType
@@ -83,6 +84,8 @@ data class VideoPrefs(
     val verticalSwipeSwitch: Boolean = true,
     /** 小窗播放（PIP）开关（v1.5.1.0，默认关闭） */
     val pipEnabled: Boolean = false,
+    /** 预加载集数（向后预取接下来 N 集，默认 3；v1.6.0.0） */
+    val prefetchAhead: Int = 3,
     /** 是否已完成首次读取（UI 依据此判断能否应用"默认全屏"） */
     val loaded: Boolean = false,
 )
@@ -98,6 +101,7 @@ class VideoPlayerViewModel(
     private val contentRepository: ContentRepository,
     private val progressRepository: ProgressRepository,
     private val preferencesManager: PreferencesManager,
+    private val videoPrefetchCache: VideoPrefetchCache,
 ) : ViewModel() {
 
     /** ExoPlayer 实例（由 UI 层绑定到 PlayerView） */
@@ -188,8 +192,15 @@ class VideoPlayerViewModel(
     /** 预取任务（切集时取消，避免旧集预取覆盖新集） */
     private var prefetchJob: Job? = null
 
-    /** 下一集播放地址预缓存：episode.url → (videoUrl, headers)。切集命中时秒起，无需再等解析。 */
+    /**
+     * 下一集播放地址预缓存：episode.url → (videoUrl, headers)。切集命中时秒起，无需再等解析。
+     * v1.6.0.0：保留内存映射用于会话内秒命中；解析结果同时落盘（[videoPrefetchCache]），
+     * 下次进入播放页 / 冷启动可从磁盘热起来。
+     */
     private val prefetchCache = mutableMapOf<String, Pair<String, Map<String, String>>>()
+
+    /** 当前正在看的视频条目（用于构造预取 key：sourceId + itemId + lineIndex + episode.index） */
+    private var prefetchKeyPrefix: String = ""
 
     /** 缓存最近一次播放的地址与请求头（外挂字幕重载时复用） */
     private var lastVideoUrl: String? = null
@@ -209,6 +220,7 @@ class VideoPlayerViewModel(
                 autoNext = preferencesManager.videoAutoNextFlow.first(),
                 verticalSwipeSwitch = preferencesManager.videoVerticalSwipeSwitchFlow.first(),
                 pipEnabled = preferencesManager.videoPipEnabledFlow.first(),
+                prefetchAhead = preferencesManager.videoPrefetchAheadFlow.first(),
                 loaded = true,
             )
             _prefs.value = loaded
@@ -245,6 +257,11 @@ class VideoPlayerViewModel(
             launch {
                 preferencesManager.videoPipEnabledFlow.collect { v ->
                     _prefs.update { it.copy(pipEnabled = v) }
+                }
+            }
+            launch {
+                preferencesManager.videoPrefetchAheadFlow.collect { v ->
+                    _prefs.update { it.copy(prefetchAhead = v) }
                 }
             }
             launch {
@@ -512,9 +529,34 @@ class VideoPlayerViewModel(
         _episodeTitle.value = episode.title
         _currentEpisodeUrl.value = episode.url
         normalSpeed = _prefs.value.savedSpeed.coerceIn(0.25f, 5f)
+        // 预取 key 前缀：按节目源 / 节目 / 线路切分，保证换源 / 换节目不读到别人的缓存
+        prefetchKeyPrefix = "${item.sourceId}__${item.id}__${_currentLineIndex.value}__"
         loadEpisode(episode, restoreProgress = true)
         // 线路表后台加载（详情页已把首条线路的剧集通过导航传进来，所以不必阻塞起播）
         viewModelScope.launch { loadLines(item, episode) }
+        // 进入播放页时把磁盘预热到内存（冷启动也能秒切）
+        warmPrefetchFromDisk()
+    }
+
+    /**
+     * 把磁盘上的预取条目按当前 key 前缀热到内存（v1.6.0.0）。
+     *
+     * 落地策略（[VideoPrefetchCache]）保证同一节目源 / 节目 / 线路下切集不重复解析；
+     * 换源后旧条目仍占用磁盘，但下一次进入相同节目会被忽略、缓存管理页也能一键清。
+     */
+    private fun warmPrefetchFromDisk() {
+        val prefix = prefetchKeyPrefix
+        if (prefix.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                videoPrefetchCache.listAll().forEach { (k, entry) ->
+                    if (!k.startsWith(prefix)) return@forEach
+                    val episodeKey = k.removePrefix(prefix)
+                    if (episodeKey.isBlank()) return@forEach
+                    prefetchCache[episodeKey] = entry.videoUrl to entry.headers
+                }
+            }
+        }
     }
 
     /**
@@ -583,25 +625,49 @@ class VideoPlayerViewModel(
     }
 
     /**
-     * 预取下一集播放地址（v1.5.1.0 预缓存）。
+     * 预取接下来 [VideoPrefs.prefetchAhead] 集的播放地址（v1.6.0.0 N 集预加载）。
      *
-     * 当前集起播后，后台把下一集的地址解析出来放进 [prefetchCache]，
-     * 用户点「下一集」或连播时命中缓存直接起播，消除「切集 → 解析 → prepare」的等待。
+     * 当前集起播后，后台把后续 N 集的地址解析出来放进 [prefetchCache]（同时落盘到
+     * [videoPrefetchCache]），用户点「下一集」/ 连播时命中缓存直接起播，消除
+     * 「切集 → 解析 → prepare」的等待；连播多集时也能享受到预加载的加速效果。
+     *
      * 预取是纯增强：失败 / 超时静默，绝不影响当前播放。
      */
     private fun schedulePrefetchNext() {
         prefetchJob?.cancel()
-        val next = peekNext() ?: return
-        if (prefetchCache.containsKey(next.url)) return
+        val ahead = _prefs.value.prefetchAhead.coerceIn(1, 6)
+        // 取当前之后的 N 集（连续到末尾则少取）
+        val targets = (1..ahead).mapNotNull { peekByOffset(it) }
+        if (targets.isEmpty()) return
+        val prefix = prefetchKeyPrefix
         prefetchJob = viewModelScope.launch {
-            val result = runCatching {
-                withContext(Dispatchers.IO) { contentRepository.content(next) }
-            }.getOrNull()
-            val url = result?.videoUrl
-            if (!url.isNullOrEmpty()) {
-                prefetchCache[next.url] = url to result.videoHeaders
+            for (next in targets) {
+                if (prefetchCache.containsKey(next.url)) continue
+                val result = runCatching {
+                    withContext(Dispatchers.IO) { contentRepository.content(next) }
+                }.getOrNull()
+                val url = result?.videoUrl
+                if (!url.isNullOrEmpty()) {
+                    val headers = result.videoHeaders
+                    prefetchCache[next.url] = url to headers
+                    // 落盘：缓存管理页能列出 / 清理
+                    if (prefix.isNotBlank()) {
+                        runCatching {
+                            videoPrefetchCache.save(
+                                prefix + next.url,
+                                VideoPrefetchCache.Entry(url, headers),
+                            )
+                        }
+                    }
+                }
             }
         }
+    }
+
+    /** 当前播放位置向后偏移 [offset] 集（offset = 1 即下一集） */
+    private fun peekByOffset(offset: Int): ChapterItem? {
+        val i = currentIndex
+        return _episodes.value.getOrNull(i + offset)
     }
 
     private fun play(
@@ -809,9 +875,34 @@ class VideoPlayerViewModel(
         saveProgress() // 换源前先把当前线路的进度落盘
         _currentLineIndex.value = index
         _episodes.value = target.chapters
-        prefetchCache.clear() // 换线路后集地址全变，清空预缓存避免命中脏数据
+        // 换线路后集地址全变 → 清空内存 + 磁盘上的旧节目预缓存
+        clearPrefetch()
+        // 重新设置 key 前缀（线路变了）
+        val newPrefix = "${currentItem?.sourceId ?: ""}__${currentItem?.id ?: ""}__${index}__"
+        prefetchKeyPrefix = newPrefix
+        // 删除磁盘上旧线路的预加载条目（按前缀匹配）
+        clearDiskPrefetchWithPrefix("${currentItem?.sourceId ?: ""}__${currentItem?.id ?: ""}__")
         loadEpisode(next, restoreProgress = false, seekToMs = position)
         _message.value = "已切换到「${target.name}」${next.title}"
+    }
+
+    /** 清空内存预取（换线路 / 退出播放页时调用） */
+    private fun clearPrefetch() {
+        prefetchCache.clear()
+        prefetchJob?.cancel()
+        prefetchJob = null
+    }
+
+    /** 清空磁盘上指定节目源 / 节目的全部预加载（按前缀匹配） */
+    private fun clearDiskPrefetchWithPrefix(prefix: String) {
+        if (prefix.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                videoPrefetchCache.listAll().keys
+                    .filter { it.startsWith(prefix) }
+                    .forEach { videoPrefetchCache.removeKey(it) }
+            }
+        }
     }
 
     /** 切到当前测速结果里最快的一条线路；没有可用结果时不动 */

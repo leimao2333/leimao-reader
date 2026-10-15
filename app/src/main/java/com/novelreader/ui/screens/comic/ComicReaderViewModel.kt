@@ -99,6 +99,25 @@ class ComicReaderViewModel(
             state
         }
 
+    /**
+     * 预加载话数（向后预取接下来 N 话的完整图片列表，0~5，默认 3；v1.6.0.0）。
+     * 与章内预加载张数（[preloadCount]）正交：一个是章内图片提前几张，一个是阅读完
+     * 当前话后自动预取后续 N 话的整章图片（落到 Coil 缓存，缓存管理页面可清理）。
+     */
+    val preloadChapters: StateFlow<Int> = preferences.comicPreloadChaptersFlow
+        .let { flow ->
+            val state = MutableStateFlow(com.novelreader.core.preferences.PreferencesManager.DEFAULT_COMIC_PRELOAD_CHAPTERS)
+            viewModelScope.launch { flow.collectLatest { state.value = it } }
+            state
+        }
+
+    fun setPreloadChapters(value: Int) {
+        viewModelScope.launch { preferences.setComicPreloadChapters(value) }
+    }
+
+    /** 漫画预加载任务（切话时取消重启） */
+    private var preloadJob: kotlinx.coroutines.Job? = null
+
     /** 横屏双页（左右翻页模式下横屏并排两页；C3） */
     val landscapeDoublePage: StateFlow<Boolean> = preferences.comicLandscapeDoublePageFlow
         .let { flow ->
@@ -152,6 +171,7 @@ class ComicReaderViewModel(
                 _imageHeaders.value = emptyMap()
                 _imageScripts.value = emptyMap()
                 saveProgress()
+                preloadNextChapters(chapter.index)
             } else runCatching { contentRepository.content(chapter) }
                 .onSuccess { result ->
                     val imgs = result.comicImages?.filter { it.isNotBlank() } ?: emptyList()
@@ -163,6 +183,7 @@ class ComicReaderViewModel(
                         _error.value = "本章暂无可用图片，可能源已失效或章节待更新"
                     } else {
                         saveProgress()
+                        preloadNextChapters(chapter.index)
                     }
                 }
                 .onFailure { e ->
@@ -171,6 +192,41 @@ class ComicReaderViewModel(
                         ?: "加载失败，请检查网络或切换书源"
                 }
             _loading.value = false
+        }
+    }
+
+    /**
+     * 预取当前章之后的 [preloadChapters] 话（v1.6.0.0）。
+     *
+     * 串行预取（每话正常会下载 10~50 张图，并发会把图片服务器打挂）：
+     * 1. 先读本地章节缓存目录（[DownloadManager.comicChapterCacheDir]），
+     *    已缓存的话直接跳过；
+     * 2. 走源去拿图片地址列表（[contentRepository.content] 拿到的是元数据 / 图片 URL，
+     *    不会真正下载图片；图片会在 Coil 首次展示时按需加载并落到磁盘缓存）；
+     * 3. 不再额外保存图片——Coil 的磁盘缓存（25% 应用堆 + 512MB 磁盘）负责实际落地，
+     *    「缓存管理」页的视频预加载分区主要给视频用，漫画的预加载间接由 Coil 缓存负责。
+     */
+    private fun preloadNextChapters(currentIndex: Int) {
+        preloadJob?.cancel()
+        val count = preloadChapters.value.coerceIn(0, 5)
+        if (count == 0) return
+        val chapters = _chapters.value
+        val targets = (1..count).mapNotNull { chapters.getOrNull(currentIndex + it) }
+        if (targets.isEmpty()) return
+        preloadJob = viewModelScope.launch {
+            for (ch in targets) {
+                if (ch.index == currentChapter?.index) continue
+                // 本地章节目录已有文件就跳过
+                val cached = currentItem?.let { item ->
+                    runCatching {
+                        downloadManager?.comicChapterCacheDir(item, ch.index)
+                            ?.listFiles()?.any(File::isFile) == true
+                    }.getOrDefault(false)
+                }
+                if (cached == true) continue
+                // 拉图片地址列表（不真正下载图片，由 Coil 触发实际下载并写缓存）
+                runCatching { contentRepository.content(ch) }
+            }
         }
     }
 

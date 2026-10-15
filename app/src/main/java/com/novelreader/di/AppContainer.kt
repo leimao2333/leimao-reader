@@ -78,6 +78,13 @@ class AppContainer(context: Context) {
         )
     }
 
+    /** 视频预加载磁盘缓存（v1.6.0.0 落盘化，让缓存管理页能列出 / 清理） */
+    val videoPrefetchCache: com.novelreader.data.cache.VideoPrefetchCache by lazy {
+        com.novelreader.data.cache.VideoPrefetchCache(
+            java.io.File(appContext.filesDir, "video_prefetch"),
+        )
+    }
+
     /** 标签磁盘缓存（v1.5.10.0，一个内容类型一个文件） */
     val tagStore: com.novelreader.data.cache.TagStore by lazy {
         com.novelreader.data.cache.TagStore(

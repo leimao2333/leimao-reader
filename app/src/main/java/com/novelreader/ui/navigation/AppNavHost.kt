@@ -381,6 +381,7 @@ fun AppNavHost(
                 factory = NovelViewModelFactory(container) {
                     com.novelreader.ui.screens.cache.CacheManageViewModel(
                         it.chapterCacheRepository,
+                        it.videoPrefetchCache,
                         it.preferencesManager,
                     )
                 }
@@ -726,6 +727,7 @@ fun AppNavHost(
                         it.contentRepository,
                         it.progressRepository,
                         it.preferencesManager,
+                        it.videoPrefetchCache,
                     )
                 }
             )

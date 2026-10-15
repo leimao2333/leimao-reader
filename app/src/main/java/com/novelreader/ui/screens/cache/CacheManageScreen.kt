@@ -37,9 +37,9 @@ import androidx.compose.ui.unit.dp
 import com.novelreader.domain.repository.BookCacheSummary
 
 /**
- * 缓存管理页（#30）。
+ * 缓存管理页（#30，v1.6.0.0 扩展）。
  *
- * 展示本地已缓存章节（按书聚合），支持清理单本 / 全部缓存。
+ * 展示本地已缓存章节（按书聚合，按类型分组）+ 视频预加载，支持清理单本 / 全部 / 视频预加载。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,10 +50,13 @@ fun CacheManageScreen(
     val books by viewModel.books.collectAsState()
     val totalCount by viewModel.totalCount.collectAsState()
     val totalSize by viewModel.totalSize.collectAsState()
+    val videoPrefetchSize by viewModel.videoPrefetchSize.collectAsState()
+    val videoPrefetchCount by viewModel.videoPrefetchCount.collectAsState()
     val message by viewModel.message.collectAsState()
 
     var confirmClearAll by remember { mutableStateOf(false) }
     var pendingRemove by remember { mutableStateOf<BookCacheSummary?>(null) }
+    var pendingClearVideoPrefetch by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -65,7 +68,7 @@ fun CacheManageScreen(
                     }
                 },
                 actions = {
-                    if (books.isNotEmpty()) {
+                    if (books.isNotEmpty() || videoPrefetchSize > 0) {
                         TextButton(onClick = { confirmClearAll = true }) {
                             Text("清空")
                         }
@@ -91,17 +94,33 @@ fun CacheManageScreen(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
-                    text = "占用 ${viewModel.formatSize(totalSize)}",
+                    text = "占用 ${viewModel.formatSize(totalSize + videoPrefetchSize)}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.primary,
                 )
             }
             HorizontalDivider()
 
+            // 视频预加载分区（v1.6.0.0）
+            CacheSection(
+                title = "视频预加载",
+                subtitle = "${videoPrefetchCount} 集 · ${viewModel.formatSize(videoPrefetchSize)}",
+                description = "视频播放时自动预取的下一批播放地址；换线路 / 退出播放页会自动清理过期条目",
+                actionLabel = if (videoPrefetchSize > 0) "清空" else null,
+                onAction = { pendingClearVideoPrefetch = true },
+            )
+
+            // 章节缓存分区
+            Text(
+                text = "章节缓存",
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+
             if (books.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        text = "暂无缓存\n阅读小说章节时会自动缓存到本地",
+                        text = "暂无章节缓存\n阅读 / 播放时会自动缓存到本地",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -165,15 +184,38 @@ fun CacheManageScreen(
         )
     }
 
-    // 清空全部确认
+    // 清空视频预加载确认
+    if (pendingClearVideoPrefetch) {
+        AlertDialog(
+            onDismissRequest = { pendingClearVideoPrefetch = false },
+            title = { Text("清空视频预加载") },
+            text = { Text("确定清空全部视频预加载（${viewModel.formatSize(videoPrefetchSize)}）？这不会影响正在播放的视频。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.clearVideoPrefetch()
+                    pendingClearVideoPrefetch = false
+                }) { Text("清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingClearVideoPrefetch = false }) { Text("取消") }
+            },
+        )
+    }
+
+    // 清空全部确认（含视频预加载）
     if (confirmClearAll) {
         AlertDialog(
             onDismissRequest = { confirmClearAll = false },
             title = { Text("清空全部缓存") },
-            text = { Text("确定清空全部已缓存章节？此操作不可恢复。") },
+            text = {
+                Text(
+                    "确定清空全部章节缓存 + 视频预加载（共 ${viewModel.formatSize(totalSize + videoPrefetchSize)}）？\n" +
+                        "此操作不可恢复。"
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
-                    viewModel.clearAll()
+                    viewModel.clearAllIncludingPrefetch()
                     confirmClearAll = false
                 }) { Text("清空") }
             },
@@ -198,6 +240,48 @@ fun CacheManageScreen(
             )
         }
     }
+}
+
+/**
+ * 缓存分区头部（v1.6.0.0）。一个分区一段：标题 + 摘要 + 可选清理按钮。
+ */
+@Composable
+private fun CacheSection(
+    title: String,
+    subtitle: String,
+    description: String,
+    actionLabel: String?,
+    onAction: () -> Unit,
+) {
+    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = title, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (actionLabel != null) {
+                Text(
+                    text = actionLabel,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier
+                        .clickable(onClick = onAction)
+                        .padding(8.dp),
+                )
+            }
+        }
+        Text(
+            text = description,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
+    HorizontalDivider()
 }
 
 private fun typeLabel(type: String?): String = when (type) {

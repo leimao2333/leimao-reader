@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -119,6 +120,17 @@ fun BoxScope.VideoControlsOverlay(
     onLoadSubtitle: () -> Unit = {},
     onToggleSubtitle: () -> Unit = {},
     onClearSubtitle: () -> Unit = {},
+    /**
+     * 隐藏 MoreVert 按钮（v1.6.0.0）。短剧模式下整个画面相关的菜单已经合并到底部
+     * 面板（[ShortDramaEpisodeOverlay]），顶部不再保留 ⋮ 入口以免与底部「选集」按钮
+     * 撞到一起、用户搞不清入口。
+     */
+    hideMoreMenu: Boolean = false,
+    /** 菜单式调亮度 / 音量（v1.6.0.0）。仅在 MoreVert 开启时生效 */
+    currentBrightness: () -> Float = { 1f },
+    onBrightnessChange: (Float) -> Unit = {},
+    currentVolumeFraction: () -> Float = { 1f },
+    onVolumeChange: (Float) -> Unit = {},
 ) {
     val duration = durationMs.coerceAtLeast(0L)
 
@@ -407,8 +419,8 @@ fun BoxScope.VideoControlsOverlay(
 
                 Spacer(Modifier.width(2.dp))
 
-                // 更多菜单：清晰度（仅多码率源）收纳进这里，不再常驻底部操作栏
-                if (qualityTracks.isNotEmpty()) {
+                // 更多菜单：清晰度（仅多码率源）+ 亮度 + 音量（v1.6.0.0 菜单式调节）
+                if (!hideMoreMenu) {
                     Box {
                         IconButton(onClick = { qualityMenuOpen = true }) {
                             Icon(
@@ -421,37 +433,85 @@ fun BoxScope.VideoControlsOverlay(
                             expanded = qualityMenuOpen,
                             onDismissRequest = { qualityMenuOpen = false },
                         ) {
+                            // 亮度滑块（v1.6.0.0）
+                            var brightnessValue by remember {
+                                mutableStateOf(currentBrightness().coerceIn(0.02f, 1f))
+                            }
                             Text(
-                                text = "清晰度",
+                                text = "亮度 ${(brightnessValue * 100).toInt()}%",
                                 color = Color.White.copy(alpha = 0.6f),
                                 fontSize = 12.sp,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                             )
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text = "自动",
-                                        fontWeight = if (selectedQuality == null) FontWeight.Bold else FontWeight.Normal,
-                                    )
+                            Slider(
+                                value = brightnessValue,
+                                onValueChange = {
+                                    brightnessValue = it
+                                    onBrightnessChange(it)
                                 },
-                                onClick = {
-                                    onResetQuality()
-                                    qualityMenuOpen = false
-                                },
+                                valueRange = 0.02f..1f,
+                                modifier = Modifier
+                                    .padding(horizontal = 12.dp)
+                                    .width(220.dp),
                             )
-                            qualityTracks.forEach { track ->
+                            HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
+
+                            // 音量滑块（v1.6.0.0）
+                            var volumeValue by remember {
+                                mutableStateOf(currentVolumeFraction().coerceIn(0f, 1f))
+                            }
+                            Text(
+                                text = "音量 ${(volumeValue * 100).toInt()}%",
+                                color = Color.White.copy(alpha = 0.6f),
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                            )
+                            Slider(
+                                value = volumeValue,
+                                onValueChange = {
+                                    volumeValue = it
+                                    onVolumeChange(it)
+                                },
+                                valueRange = 0f..1f,
+                                modifier = Modifier
+                                    .padding(horizontal = 12.dp)
+                                    .width(220.dp),
+                            )
+                            HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
+
+                            if (qualityTracks.isNotEmpty()) {
+                                Text(
+                                    text = "清晰度",
+                                    color = Color.White.copy(alpha = 0.6f),
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                )
                                 DropdownMenuItem(
                                     text = {
                                         Text(
-                                            text = track.label,
-                                            fontWeight = if (selectedQuality?.height == track.height) FontWeight.Bold else FontWeight.Normal,
+                                            text = "自动",
+                                            fontWeight = if (selectedQuality == null) FontWeight.Bold else FontWeight.Normal,
                                         )
                                     },
                                     onClick = {
-                                        onSelectQuality(track)
+                                        onResetQuality()
                                         qualityMenuOpen = false
                                     },
                                 )
+                                qualityTracks.forEach { track ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = track.label,
+                                                fontWeight = if (selectedQuality?.height == track.height) FontWeight.Bold else FontWeight.Normal,
+                                            )
+                                        },
+                                        onClick = {
+                                            onSelectQuality(track)
+                                            qualityMenuOpen = false
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
@@ -784,6 +844,10 @@ private fun speedLabel(measured: Boolean, speed: Long?, testing: Boolean): Strin
  * - 每集一个竖版块（红果是 3:4 竖屏缩略图，这里用「第 N 集」大字块）
  * - 当前集高亮描边，点击即切集
  *
+ * v1.6.0.0：把 MoreVert 菜单里的清晰度、亮度、音量等画面相关控制**合并**进底层面板
+ * （避免短剧模式下顶部「MoreVert」与底部「选集」撞到一起分不清），底部现在有三个 Tab：
+ * **选集 / 换源 / 画面**。「画面」里含清晰度选择 + 亮度 / 音量滑块。
+ *
  * @param onPick 点选某一集（传入集在列表中的下标）
  * @param onPickLine 切换线路（换源 Tab 用）
  */
@@ -794,6 +858,14 @@ fun ShortDramaEpisodeOverlay(
     currentUrl: String,
     lines: List<ChapterLine>,
     currentLineIndex: Int,
+    qualityTracks: List<QualityTrack> = emptyList(),
+    selectedQuality: QualityTrack? = null,
+    onSelectQuality: (QualityTrack) -> Unit = {},
+    onResetQuality: () -> Unit = {},
+    currentBrightness: () -> Float = { 1f },
+    onBrightnessChange: (Float) -> Unit = {},
+    currentVolumeFraction: () -> Float = { 1f },
+    onVolumeChange: (Float) -> Unit = {},
     onPick: (Int) -> Unit,
     onPickLine: (Int) -> Unit,
     onDismiss: () -> Unit,
@@ -809,7 +881,7 @@ fun ShortDramaEpisodeOverlay(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .fillMaxHeight(0.72f)
+                .fillMaxHeight(0.78f)
                 .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
                 .background(Color(0xFF16181C))
                 .clickable(enabled = false) {},
@@ -819,6 +891,14 @@ fun ShortDramaEpisodeOverlay(
                 currentUrl = currentUrl,
                 lines = lines,
                 currentLineIndex = currentLineIndex,
+                qualityTracks = qualityTracks,
+                selectedQuality = selectedQuality,
+                onSelectQuality = onSelectQuality,
+                onResetQuality = onResetQuality,
+                currentBrightness = currentBrightness,
+                onBrightnessChange = onBrightnessChange,
+                currentVolumeFraction = currentVolumeFraction,
+                onVolumeChange = onVolumeChange,
                 onPick = onPick,
                 onPickLine = onPickLine,
             )
@@ -826,8 +906,18 @@ fun ShortDramaEpisodeOverlay(
     }
 }
 
+/** 面板 Tab 下标（短剧用 v1.6.0.0 加 PICTURE 画面 Tab） */
+object ShortDramaSheetTabs {
+    const val EPISODES = 0
+    const val LINES = 1
+    const val PICTURE = 2
+}
+
 /**
  * 红果式选集面板内容（不含遮罩）。
+ *
+ * v1.6.0.0：第三个 Tab「画面」承载亮度 / 音量滑块、清晰度选择，取代原来的 MoreVert 菜单
+ * （避免与底部「选集」按钮撞在一起分不清入口）。
  */
 @Composable
 private fun ShortDramaEpisodeSheet(
@@ -835,42 +925,47 @@ private fun ShortDramaEpisodeSheet(
     currentUrl: String,
     lines: List<ChapterLine>,
     currentLineIndex: Int,
+    qualityTracks: List<QualityTrack> = emptyList(),
+    selectedQuality: QualityTrack? = null,
+    onSelectQuality: (QualityTrack) -> Unit = {},
+    onResetQuality: () -> Unit = {},
+    currentBrightness: () -> Float = { 1f },
+    onBrightnessChange: (Float) -> Unit = {},
+    currentVolumeFraction: () -> Float = { 1f },
+    onVolumeChange: (Float) -> Unit = {},
     onPick: (Int) -> Unit,
     onPickLine: (Int) -> Unit,
 ) {
-    var tab by remember { mutableIntStateOf(SheetTabs.EPISODES) }
+    val darkPalette = SheetPalette(
+        accent = Color(0xFF7ED694),
+        text = Color.White,
+        subText = Color.White.copy(alpha = 0.55f),
+        divider = Color.White.copy(alpha = 0.10f),
+        tabTrack = Color.White.copy(alpha = 0.08f),
+        tabSelected = Color(0xFF4CAF50).copy(alpha = 0.30f),
+        tagBg = Color(0xFF4CAF50).copy(alpha = 0.20f),
+    )
+    var tab by remember { mutableIntStateOf(ShortDramaSheetTabs.EPISODES) }
     Column(modifier = Modifier.fillMaxSize()) {
-        // 顶部：选集 / 换源 Tab + 当前集信息
+        // 顶部：选集 / 换源 / 画面 Tab + 当前集信息
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SheetTab("选集（${episodes.size}）", tab == SheetTabs.EPISODES, SheetPalette(
-                accent = Color(0xFF7ED694),
-                text = Color.White,
-                subText = Color.White.copy(alpha = 0.55f),
-                divider = Color.White.copy(alpha = 0.10f),
-                tabTrack = Color.White.copy(alpha = 0.08f),
-                tabSelected = Color(0xFF4CAF50).copy(alpha = 0.30f),
-                tagBg = Color(0xFF4CAF50).copy(alpha = 0.20f),
-            )) {
-                tab = SheetTabs.EPISODES
+            SheetTab("选集（${episodes.size}）", tab == ShortDramaSheetTabs.EPISODES, darkPalette) {
+                tab = ShortDramaSheetTabs.EPISODES
             }
             if (lines.size > 1) {
                 Spacer(Modifier.width(8.dp))
-                SheetTab("换源（${lines.size}）", tab == SheetTabs.LINES, SheetPalette(
-                    accent = Color(0xFF7ED694),
-                    text = Color.White,
-                    subText = Color.White.copy(alpha = 0.55f),
-                    divider = Color.White.copy(alpha = 0.10f),
-                    tabTrack = Color.White.copy(alpha = 0.08f),
-                    tabSelected = Color(0xFF4CAF50).copy(alpha = 0.30f),
-                    tagBg = Color(0xFF4CAF50).copy(alpha = 0.20f),
-                )) {
-                    tab = SheetTabs.LINES
+                SheetTab("换源（${lines.size}）", tab == ShortDramaSheetTabs.LINES, darkPalette) {
+                    tab = ShortDramaSheetTabs.LINES
                 }
+            }
+            Spacer(Modifier.width(8.dp))
+            SheetTab("画面", tab == ShortDramaSheetTabs.PICTURE, darkPalette) {
+                tab = ShortDramaSheetTabs.PICTURE
             }
             Spacer(Modifier.weight(1f))
             Text(
@@ -880,56 +975,193 @@ private fun ShortDramaEpisodeSheet(
             )
         }
 
-        if (tab == SheetTabs.LINES) {
-            // 换源：复用深色线路列表
-            LineList(
-                lines = lines,
-                currentLineIndex = currentLineIndex,
-                lineSpeeds = emptyMap(),
-                speedTesting = false,
-                colors = SheetPalette(
-                    accent = Color(0xFF7ED694),
-                    text = Color.White,
-                    subText = Color.White.copy(alpha = 0.55f),
-                    divider = Color.White.copy(alpha = 0.10f),
-                    tabTrack = Color.White.copy(alpha = 0.08f),
-                    tabSelected = Color(0xFF4CAF50).copy(alpha = 0.30f),
-                    tagBg = Color(0xFF4CAF50).copy(alpha = 0.20f),
-                ),
-                onPickLine = onPickLine,
-            )
-        } else {
-            // 选集：红果式竖版大块网格
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(4),
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                gridItemsIndexed(episodes) { index, ep ->
-                    val current = ep.url == currentUrl
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .aspectRatio(3f / 4f)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(
-                                if (current) Color(0xFF4CAF50).copy(alpha = 0.28f)
-                                else Color.White.copy(alpha = 0.08f)
+        when (tab) {
+            ShortDramaSheetTabs.LINES -> {
+                LineList(
+                    lines = lines,
+                    currentLineIndex = currentLineIndex,
+                    lineSpeeds = emptyMap(),
+                    speedTesting = false,
+                    colors = darkPalette,
+                    onPickLine = onPickLine,
+                )
+            }
+            ShortDramaSheetTabs.PICTURE -> {
+                PictureTabContent(
+                    qualityTracks = qualityTracks,
+                    selectedQuality = selectedQuality,
+                    onSelectQuality = onSelectQuality,
+                    onResetQuality = onResetQuality,
+                    currentBrightness = currentBrightness,
+                    onBrightnessChange = onBrightnessChange,
+                    currentVolumeFraction = currentVolumeFraction,
+                    onVolumeChange = onVolumeChange,
+                )
+            }
+            else -> {
+                // 选集：红果式竖版大块网格
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(4),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    gridItemsIndexed(episodes) { index, ep ->
+                        val current = ep.url == currentUrl
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aspectRatio(3f / 4f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (current) Color(0xFF4CAF50).copy(alpha = 0.28f)
+                                    else Color.White.copy(alpha = 0.08f)
+                                )
+                                .clickable { onPick(index) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "${index + 1}",
+                                color = if (current) Color(0xFF7ED694) else Color.White.copy(alpha = 0.85f),
+                                fontSize = 18.sp,
+                                fontWeight = if (current) FontWeight.Bold else FontWeight.Normal,
                             )
-                            .clickable { onPick(index) },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = "${index + 1}",
-                            color = if (current) Color(0xFF7ED694) else Color.White.copy(alpha = 0.85f),
-                            fontSize = 18.sp,
-                            fontWeight = if (current) FontWeight.Bold else FontWeight.Normal,
-                        )
+                        }
                     }
                 }
             }
         }
     }
+}
+
+/**
+ * 「画面」Tab 内容：清晰度选择 + 亮度 / 音量滑块（v1.6.0.0）。
+ *
+ * 短剧把原本的 MoreVert 菜单并到这里；亮度 / 音量通过滑块调节（替代左右边手势）。
+ */
+@Composable
+private fun PictureTabContent(
+    qualityTracks: List<QualityTrack>,
+    selectedQuality: QualityTrack?,
+    onSelectQuality: (QualityTrack) -> Unit,
+    onResetQuality: () -> Unit,
+    currentBrightness: () -> Float,
+    onBrightnessChange: (Float) -> Unit,
+    currentVolumeFraction: () -> Float,
+    onVolumeChange: (Float) -> Unit,
+) {
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        // 清晰度（仅多码率源）
+        if (qualityTracks.isNotEmpty()) {
+            item {
+                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Text(
+                        text = "清晰度",
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 13.sp,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScrollable(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        QualityChip(
+                            label = "自动",
+                            selected = selectedQuality == null,
+                            onClick = onResetQuality,
+                        )
+                        qualityTracks.forEach { track ->
+                            QualityChip(
+                                label = track.label,
+                                selected = selectedQuality?.height == track.height,
+                                onClick = { onSelectQuality(track) },
+                            )
+                        }
+                    }
+                }
+                HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
+            }
+        }
+
+        // 亮度
+        item {
+            var brightnessValue by remember {
+                mutableStateOf(currentBrightness().coerceIn(0.02f, 1f))
+            }
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Text(
+                    text = "亮度 ${(brightnessValue * 100).toInt()}%",
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontSize = 13.sp,
+                )
+                Slider(
+                    value = brightnessValue,
+                    onValueChange = {
+                        brightnessValue = it
+                        onBrightnessChange(it)
+                    },
+                    valueRange = 0.02f..1f,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
+        }
+
+        // 音量
+        item {
+            var volumeValue by remember {
+                mutableStateOf(currentVolumeFraction().coerceIn(0f, 1f))
+            }
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Text(
+                    text = "音量 ${(volumeValue * 100).toInt()}%",
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontSize = 13.sp,
+                )
+                Slider(
+                    value = volumeValue,
+                    onValueChange = {
+                        volumeValue = it
+                        onVolumeChange(it)
+                    },
+                    valueRange = 0f..1f,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+
+        item { Spacer(Modifier.height(16.dp)) }
+    }
+}
+
+@Composable
+private fun QualityChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (selected) Color(0xFF4CAF50).copy(alpha = 0.30f) else Color.White.copy(alpha = 0.08f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+    ) {
+        Text(
+            text = label,
+            color = if (selected) Color(0xFF7ED694) else Color.White.copy(alpha = 0.85f),
+            fontSize = 13.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+        )
+    }
+}
+
+/**
+ * 让 Row 支持水平滚动（短剧画面 Tab 里清晰度 chips 一行不够放时用）。
+ *
+ * chips 数量一般不会触发滚动，仅为容错。
+ */
+@Composable
+private fun Modifier.horizontalScrollable(): Modifier {
+    val scrollState = androidx.compose.foundation.rememberScrollState()
+    return this.then(horizontalScroll(scrollState))
 }

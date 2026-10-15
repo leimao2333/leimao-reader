@@ -89,6 +89,9 @@ class PreferencesManager(private val context: Context) {
         /** 累计阅读时长（秒，全局） */
         val KEY_NOVEL_READ_SECONDS = longPreferencesKey("novel_read_seconds")
 
+        /** 小说预缓存话数（向后预取接下来 N 章，1~5，默认 3；v1.6.0.0） */
+        val KEY_NOVEL_PRELOAD_CHAPTERS = intPreferencesKey("novel_preload_chapters")
+
         // ----- v1.1.8.0 对标开源阅读补齐 -----
         /** 简繁转换：0=不转换 1=简转繁 2=繁转简（对标开源阅读 ChineseConverter） */
         val KEY_NOVEL_CONVERT_MODE = intPreferencesKey("novel_convert_mode")
@@ -133,6 +136,12 @@ class PreferencesManager(private val context: Context) {
         val KEY_COMIC_PRELOAD_WIFI_ONLY = booleanPreferencesKey("comic_preload_wifi_only")
         /** 横屏双页（左右翻页模式下，横屏时并排展示两页；v1.4.5.0 C3） */
         val KEY_COMIC_LANDSCAPE_DOUBLE_PAGE = booleanPreferencesKey("comic_landscape_double_page")
+        /**
+         * 预加载话数（向后预取下一话 / 多话，1~5，默认 3；v1.6.0.0）。
+         * 与 [KEY_COMIC_PRELOAD_COUNT]（章内预加载张数）正交：一个是章内图片提前几张，
+         * 一个是阅读完当前话后自动预取后续几话的完整图片列表（落到 Coil 缓存）。
+         */
+        val KEY_COMIC_PRELOAD_CHAPTERS = intPreferencesKey("comic_preload_chapters")
 
         // ===== 视频 =====
         val KEY_VIDEO_AUTO_PLAY = booleanPreferencesKey("video_auto_play")
@@ -152,6 +161,11 @@ class PreferencesManager(private val context: Context) {
         val KEY_VIDEO_VERTICAL_SWIPE_SWITCH = booleanPreferencesKey("video_vertical_swipe_switch")
         /** 小窗播放（PIP）开关（v1.5.1.0，默认关闭；关闭时切后台不进入画中画） */
         val KEY_VIDEO_PIP_ENABLED = booleanPreferencesKey("video_pip_enabled")
+        /**
+         * 视频预加载集数（向后预取接下来 N 集的播放地址，1~6，默认 3；v1.6.0.0）。
+         * 当前集起播后会自动预取后续 N 集，连播 / 点切下集秒起。
+         */
+        val KEY_VIDEO_PREFETCH_AHEAD = intPreferencesKey("video_prefetch_ahead")
 
         // ----- v1.3.3.0 影视首页（MoonTV 风格）-----
         /** 影视首页当前使用的视频源 id（记忆上次选择） */
@@ -206,6 +220,12 @@ class PreferencesManager(private val context: Context) {
         const val MAX_SEARCH_CONCURRENCY = 16
         /** 默认漫画预加载张数 */
         const val DEFAULT_COMIC_PRELOAD_COUNT = 4
+        /** 默认漫画预加载话数（v1.6.0.0） */
+        const val DEFAULT_COMIC_PRELOAD_CHAPTERS = 3
+        /** 默认小说预缓存话数（v1.6.0.0） */
+        const val DEFAULT_NOVEL_PRELOAD_CHAPTERS = 3
+        /** 默认视频预加载集数（v1.6.0.0） */
+        const val DEFAULT_VIDEO_PREFETCH_AHEAD = 3
         /** 模糊搜索默认开启 */
         const val DEFAULT_FUZZY_SEARCH = true
         /** 搜索历史最大保留条数 */
@@ -513,6 +533,14 @@ class PreferencesManager(private val context: Context) {
         context.dataStore.edit { it[KEY_NOVEL_READ_SECONDS] = (it[KEY_NOVEL_READ_SECONDS] ?: 0L) + delta }
     }
 
+    /** 小说预缓存话数（向后预取接下来 N 章，1~5，默认 3；v1.6.0.0） */
+    val novelPreloadChaptersFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_NOVEL_PRELOAD_CHAPTERS] ?: DEFAULT_NOVEL_PRELOAD_CHAPTERS }
+
+    suspend fun setNovelPreloadChapters(value: Int) {
+        context.dataStore.edit { it[KEY_NOVEL_PRELOAD_CHAPTERS] = value.coerceIn(0, 5) }
+    }
+
     // ===== 漫画 =====
     val comicPageModeFlow: Flow<Int> = context.dataStore.data
         .map { it[KEY_COMIC_PAGE_MODE] ?: 0 }
@@ -543,6 +571,17 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setComicLandscapeDoublePage(value: Boolean) {
         context.dataStore.edit { it[KEY_COMIC_LANDSCAPE_DOUBLE_PAGE] = value }
+    }
+
+    /**
+     * 漫画预加载话数（阅读完当前话后自动预取后续 N 话的完整图片列表，0~5，默认 3；v1.6.0.0）。
+     * 0 表示关闭「预加载下一话」功能；与章内预加载张数（[KEY_COMIC_PRELOAD_COUNT]）正交。
+     */
+    val comicPreloadChaptersFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_COMIC_PRELOAD_CHAPTERS] ?: DEFAULT_COMIC_PRELOAD_CHAPTERS }
+
+    suspend fun setComicPreloadChapters(value: Int) {
+        context.dataStore.edit { it[KEY_COMIC_PRELOAD_CHAPTERS] = value.coerceIn(0, 5) }
     }
 
     // ===== 视频 =====
@@ -608,6 +647,14 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setVideoPipEnabled(value: Boolean) {
         context.dataStore.edit { it[KEY_VIDEO_PIP_ENABLED] = value }
+    }
+
+    /** 视频预加载集数（向后预取接下来 N 集，1~6，默认 3；v1.6.0.0） */
+    val videoPrefetchAheadFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_VIDEO_PREFETCH_AHEAD] ?: DEFAULT_VIDEO_PREFETCH_AHEAD }
+
+    suspend fun setVideoPrefetchAhead(value: Int) {
+        context.dataStore.edit { it[KEY_VIDEO_PREFETCH_AHEAD] = value.coerceIn(1, 6) }
     }
 
     // ----- v1.3.3.0 影视首页 -----

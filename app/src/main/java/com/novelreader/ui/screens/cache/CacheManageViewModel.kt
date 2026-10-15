@@ -3,6 +3,7 @@ package com.novelreader.ui.screens.cache
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novelreader.core.preferences.PreferencesManager
+import com.novelreader.data.cache.VideoPrefetchCache
 import com.novelreader.domain.repository.BookCacheSummary
 import com.novelreader.domain.repository.ChapterCacheRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,10 +14,11 @@ import kotlinx.coroutines.launch
 /**
  * 缓存管理 ViewModel（#30）。
  *
- * 展示本地已缓存章节（按书聚合），支持清理单本 / 全部缓存。
+ * 展示本地已缓存章节（按书聚合）+ 视频预加载（v1.6.0.0），支持清理单本 / 全部 / 视频预加载。
  */
 class CacheManageViewModel(
     private val chapterCacheRepository: ChapterCacheRepository,
+    private val videoPrefetchCache: VideoPrefetchCache,
     private val preferences: PreferencesManager,
 ) : ViewModel() {
 
@@ -28,6 +30,14 @@ class CacheManageViewModel(
 
     private val _totalSize = MutableStateFlow(0L)
     val totalSize: StateFlow<Long> = _totalSize.asStateFlow()
+
+    /** 视频预加载总占用（字节，v1.6.0.0） */
+    private val _videoPrefetchSize = MutableStateFlow(0L)
+    val videoPrefetchSize: StateFlow<Long> = _videoPrefetchSize.asStateFlow()
+
+    /** 视频预加载条目数（v1.6.0.0） */
+    private val _videoPrefetchCount = MutableStateFlow(0)
+    val videoPrefetchCount: StateFlow<Int> = _videoPrefetchCount.asStateFlow()
 
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
@@ -46,6 +56,8 @@ class CacheManageViewModel(
             _books.value = runCatching { chapterCacheRepository.cacheBooks() }.getOrDefault(emptyList())
             _totalCount.value = runCatching { chapterCacheRepository.totalCount() }.getOrDefault(0)
             _totalSize.value = runCatching { chapterCacheRepository.totalSize() }.getOrDefault(0L)
+            _videoPrefetchSize.value = runCatching { videoPrefetchCache.totalSize() }.getOrDefault(0L)
+            _videoPrefetchCount.value = runCatching { videoPrefetchCache.count() }.getOrDefault(0)
             _loading.value = false
         }
     }
@@ -64,17 +76,48 @@ class CacheManageViewModel(
         }
     }
 
-    /** 清空全部缓存 */
+    /** 清空全部章节缓存 */
     fun clearAll() {
         viewModelScope.launch {
             runCatching { chapterCacheRepository.clearAll() }
                 .onSuccess {
-                    _message.value = "已清空全部缓存"
+                    _message.value = "已清空全部章节缓存"
                     refresh()
                 }
                 .onFailure {
                     _message.value = "清空失败：${it.message}"
                 }
+        }
+    }
+
+    /** 清空视频预加载（v1.6.0.0） */
+    fun clearVideoPrefetch() {
+        viewModelScope.launch {
+            val size = _videoPrefetchSize.value
+            runCatching { videoPrefetchCache.clear() }
+                .onSuccess {
+                    _message.value = "已清空视频预加载（${formatSize(size)}）"
+                    refresh()
+                }
+                .onFailure {
+                    _message.value = "清空失败：${it.message}"
+                }
+        }
+    }
+
+    /** 一键清空（章节缓存 + 视频预加载，v1.6.0.0） */
+    fun clearAllIncludingPrefetch() {
+        viewModelScope.launch {
+            val size = _videoPrefetchSize.value
+            runCatching {
+                chapterCacheRepository.clearAll()
+                videoPrefetchCache.clear()
+            }.onSuccess {
+                _message.value = "已清空全部缓存（含视频预加载 ${formatSize(size)}）"
+                refresh()
+            }.onFailure {
+                _message.value = "清空失败：${it.message}"
+            }
         }
     }
 

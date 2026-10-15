@@ -166,6 +166,17 @@ class NovelReaderViewModel(
     /** 预加载任务（切章时取消重启） */
     private var preloadJob: Job? = null
 
+    /**
+     * 预缓存话数（向后预取接下来 N 章，默认 3；v1.6.0.0 改可调）。
+     * 0 = 关闭预缓存；最大 5 章。
+     */
+    val preloadChapters: StateFlow<Int> =
+        stateOf(preferences.novelPreloadChaptersFlow, PreferencesManager.DEFAULT_NOVEL_PRELOAD_CHAPTERS)
+
+    fun setPreloadChapters(value: Int) {
+        viewModelScope.launch { preferences.setNovelPreloadChapters(value) }
+    }
+
     // ===== 阅读设置（从 DataStore 订阅） =====
     private fun <T> stateOf(flow: kotlinx.coroutines.flow.Flow<T>, default: T): StateFlow<T> {
         val state = MutableStateFlow(default)
@@ -759,34 +770,25 @@ class NovelReaderViewModel(
     }
 
     /**
-     * 章节名净化（对标 legado TocRegex）：把替换规则同样应用到章节标题，
-     * 去掉「123456第X章 xxx」「最新章节：」等站点噪音。单条规则出错自动跳过。
+     * 预加载当前章之后的 [preloadChapters] 个章节（v1.6.0.0 改可调）。
+     *
+     * 取内容顺序：内存预加载缓存 → 本地章节缓存 → 网络。
+     * 命中缓存时不显示 loading 遮罩，做到「切章秒开」。
      */
-    private fun cleanChapterTitle(title: String): String =
-        TextReplaceRules.apply(title, replaceRules.value).trim()
-
-    /** 批量清洗目录标题 */
-    private fun cleanChapterTitles(chapters: List<ChapterItem>): List<ChapterItem> {
-        val rules = replaceRules.value
-        if (rules.isEmpty()) return chapters
-        return chapters.map { ch -> ch.copy(title = TextReplaceRules.apply(ch.title, rules).trim()) }
-    }
-
-    /** 预加载相邻章节（下一章优先，其次上一章），提升翻章流畅度 */
     private fun preloadAround(index: Int) {
         preloadJob?.cancel()
+        val count = preloadChapters.value.coerceIn(0, 5)
+        if (count == 0) return
         val chapters = _chapters.value
-        val targets = buildList {
-            chapters.getOrNull(index + 1)?.let { add(it) }
-            chapters.getOrNull(index - 1)?.let { add(it) }
-        }
+        // 取 index+1..index+count；不足则取到底（不存在则跳过）
+        val targets = (1..count).mapNotNull { chapters.getOrNull(index + it) }
         if (targets.isEmpty()) return
         preloadJob = viewModelScope.launch {
             for (ch in targets) {
                 if (memoryCache[ch.index]?.isNotBlank() == true) continue
                 if (ch.index == currentChapter?.index) continue
                 val item = currentItem ?: break
-                // 先本地缓存
+                // 先本地章节缓存（单章缓存也是「预缓存」的一部分——用户已读过的章都缓存了）
                 val cached = chapterCacheRepository?.let {
                     runCatching { it.getCached(item.sourceId, item.id, ch.index) }.getOrNull()
                 }
@@ -808,6 +810,20 @@ class NovelReaderViewModel(
             }
             refreshCachedIndices()
         }
+    }
+
+    /**
+     * 章节名净化（对标 legado TocRegex）：把替换规则同样应用到章节标题，
+     * 去掉「123456第X章 xxx」「最新章节：」等站点噪音。单条规则出错自动跳过。
+     */
+    private fun cleanChapterTitle(title: String): String =
+        TextReplaceRules.apply(title, replaceRules.value).trim()
+
+    /** 批量清洗目录标题 */
+    private fun cleanChapterTitles(chapters: List<ChapterItem>): List<ChapterItem> {
+        val rules = replaceRules.value
+        if (rules.isEmpty()) return chapters
+        return chapters.map { ch -> ch.copy(title = TextReplaceRules.apply(ch.title, rules).trim()) }
     }
 
     /** 切换章节（按列表下标） */

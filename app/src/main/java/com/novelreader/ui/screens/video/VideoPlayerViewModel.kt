@@ -20,6 +20,7 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import com.novelreader.core.network.HttpClient
 import com.novelreader.core.preferences.PreferencesManager
 import com.novelreader.core.util.LineSwitch
+import com.novelreader.core.util.VideoLineMemory
 import com.novelreader.data.cache.VideoPrefetchCache
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.ChapterLine
@@ -150,6 +151,42 @@ class VideoPlayerViewModel(
     private val _speedTesting = MutableStateFlow(false)
     val speedTesting: StateFlow<Boolean> = _speedTesting.asStateFlow()
 
+    // ==================== 记住上次用的源 + 自动优先有效源（v1.6.9.0） ====================
+
+    /**
+     * 记忆里的线路落在当前线路表的哪个下标（UI 在换源列表上打「上次」角标）。
+     *
+     * `null` = 这部片子还没有记忆 / 线路表还没加载出来。
+     */
+    private val _rememberedLineIndex = MutableStateFlow<Int?>(null)
+    val rememberedLineIndex: StateFlow<Int?> = _rememberedLineIndex.asStateFlow()
+
+    /**
+     * 全部线路记忆：key = `sourceId\u0001itemId`。
+     *
+     * 纯逻辑（序列化 / 按名字解析下标 / 裁剪）在 [VideoLineMemory]；这里只做读写。
+     */
+    private var lineMemory: Map<String, VideoLineMemory.Entry> = emptyMap()
+
+    /**
+     * 本次会话里已确认播不通的线路下标（自动换源时每条最多试一次，
+     * 否则两条坏线路之间会来回弹）。
+     */
+    private val failedLines = mutableSetOf<Int>()
+
+    /** 自动起播选线 / 纠错任务（重新进片时取消上一次） */
+    private var lineProbeJob: Job? = null
+
+    /**
+     * 探测纠线刚切走时，给「上一条线路迟到的播放错误」一次豁免（v1.6.9.0）。
+     *
+     * 场景：进入播放页时先按导航传进来的线路起播，随后探测发现它不通、切到另一条 ——
+     * 旧线路那条 load 的错误回调可能晚一步才到。不豁免的话会出现
+     * 「已经切到好线路了，却又被那条死线路的错误带着往回切」。
+     * 豁免只给一次，且在新线路真正 READY 后立刻撤销。
+     */
+    private var staleErrorGrace = false
+
     /** 当前选集标题 */
     private val _episodeTitle = MutableStateFlow("")
     val episodeTitle: StateFlow<String> = _episodeTitle.asStateFlow()
@@ -211,6 +248,12 @@ class VideoPlayerViewModel(
 
     init {
         viewModelScope.launch {
+            // 线路记忆（v1.6.9.0）：一次性读进内存，之后写穿回 DataStore。
+            // 读失败当作「没有记忆」——这是体验优化，绝不该拖累播放。
+            lineMemory = runCatching {
+                VideoLineMemory.decode(preferencesManager.videoLineMemoryFlow.first())
+            }.getOrDefault(emptyMap())
+
             // 先取一次真实设置（避免 UI 拿到默认值就把「默认全屏」用错）
             val loaded = VideoPrefs(
                 fullscreenDefault = preferencesManager.videoFullscreenDefaultFlow.first(),
@@ -289,10 +332,19 @@ class VideoPlayerViewModel(
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 _state.update { it.copy(isBuffering = playbackState == Player.STATE_BUFFERING) }
+                if (playbackState == Player.STATE_READY) staleErrorGrace = false
                 if (playbackState == Player.STATE_ENDED) onEnded()
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                // v1.6.9.0：刚因探测纠线切走时，第一条错误多半来自被放弃的那条线路
+                if (staleErrorGrace) {
+                    staleErrorGrace = false
+                    return
+                }
+                // 这条路线的流挂了就自动换下一条没试过的（每条最多试一次）；
+                // 全部试完才如实把错误抛给用户
+                if (tryAutoSwitchOnError()) return
                 _error.value = error.message ?: "播放出错"
             }
 
@@ -529,6 +581,10 @@ class VideoPlayerViewModel(
         _episodeTitle.value = episode.title
         _currentEpisodeUrl.value = episode.url
         normalSpeed = _prefs.value.savedSpeed.coerceIn(0.25f, 5f)
+        // 换片：清掉上一部片子留下的失败线路记录与「上次」角标
+        failedLines.clear()
+        _rememberedLineIndex.value = null
+        lineProbeJob?.cancel()
         // 预取 key 前缀：按节目源 / 节目 / 线路切分，保证换源 / 换节目不读到别人的缓存
         prefetchKeyPrefix = "${item.sourceId}__${item.id}__${_currentLineIndex.value}__"
         loadEpisode(episode, restoreProgress = true)
@@ -576,6 +632,126 @@ class VideoPlayerViewModel(
             lines[index].chapters.takeIf { it.isNotEmpty() }?.let { _episodes.value = it }
         } else {
             _currentLineIndex.value = 0
+        }
+        // 线路表就绪后再纠一次线（v1.6.9.0）：能省掉「每次都要手动换源」的重复劳动
+        applyRememberedLine()
+    }
+
+    // ==================== 记住上次的源 + 自动优先有效源（v1.6.9.0） ====================
+
+    /** 记忆里的线路落在当前线路表的下标（线路表未加载 / 无记忆时为 null） */
+    private fun rememberedIndex(): Int? {
+        val item = currentItem ?: return null
+        return VideoLineMemory.resolveIndex(
+            lineMemory[VideoLineMemory.key(item.sourceId, item.id)],
+            _lines.value.map { it.name },
+        )
+    }
+
+    /** 把当前线路记进 [lineMemory] 并落盘（下次进这部片子直接用它） */
+    private fun rememberCurrentLine() {
+        val item = currentItem ?: return
+        val index = _currentLineIndex.value
+        val name = _lines.value.getOrNull(index)?.name ?: return
+        val now = System.currentTimeMillis()
+        val key = VideoLineMemory.key(item.sourceId, item.id)
+        lineMemory = VideoLineMemory.prune(
+            VideoLineMemory.put(lineMemory, key, name, index, now),
+            now,
+        )
+        _rememberedLineIndex.value = index
+        viewModelScope.launch {
+            runCatching {
+                preferencesManager.setVideoLineMemory(VideoLineMemory.encode(lineMemory))
+            }
+        }
+    }
+
+    /**
+     * 进入播放页后把线路纠到「记忆的 / 可用的」那条（v1.6.9.0）。
+     *
+     * 策略（**只发最少的请求**，不阻塞起播）：
+     * 1. 单线路源直接返回（没什么可选的，也别白测一次）；
+     * 2. 先探**当前正在播的那条**：通了且就是记忆线路 → 什么都不做；
+     * 3. 当前通了、但记忆线路是另一条 → 探一下记忆线路，可达就切回去（「之后还是什么源」）；
+     * 4. 当前不通 → 并发探完其余线路，用 [LineSwitch.pickValid] 选
+     *    「记忆线路优先、否则最快可达」的那条切过去（「自动优先有效源」）。
+     *
+     * 一条可达的都没有时**不乱切**，只提示，保持在原位等用户手动换。
+     */
+    private fun applyRememberedLine() {
+        val item = currentItem ?: return
+        val lines = _lines.value
+        if (lines.size < 2) return
+
+        val preferred = rememberedIndex()
+        _rememberedLineIndex.value = preferred
+        lineProbeJob?.cancel()
+        lineProbeJob = viewModelScope.launch {
+            val episodeIndex = currentEpisode?.index ?: 0
+            val current = _currentLineIndex.value
+
+            suspend fun probeOf(index: Int): Long? {
+                val line = lines.getOrNull(index) ?: return null
+                val url = (line.chapters.getOrNull(episodeIndex) ?: line.chapters.firstOrNull())
+                    ?.url?.takeIf { it.isNotBlank() } ?: return null
+                // 必须切到 IO：probe 是阻塞式 socket 调用（同 speedTest 的教训）
+                return withContext(Dispatchers.IO) {
+                    HttpClient.probe(url, AUTO_LINE_PROBE_TIMEOUT_MS)
+                }
+            }
+
+            val collected = mutableMapOf<Int, Long?>()
+            val currentMs = probeOf(current)
+            collected[current] = currentMs
+            _lineSpeeds.value = collected.toMap()
+            // 探测已经证明这条不通 → 记进失败集合，别再让它被「出错自动换源」选回来
+            if (currentMs == null) failedLines += current
+
+            if (currentMs != null) {
+                if (preferred == null || preferred == current) {
+                    // 当前就能播，且没有别的偏好 → 不动
+                    if (preferred == null) rememberCurrentLine()
+                    return@launch
+                }
+                // 当前能播但用户上次用的是另一条：探一下记忆线路，可达才切回去
+                collected[preferred] = probeOf(preferred)
+                _lineSpeeds.value = collected.toMap()
+            } else {
+                // 当前不通 → 其余线路并发探（分片，别把弱站打挂）
+                val others = lines.indices.filter { it != current }
+                for (chunk in others.chunked(SPEED_CONCURRENCY)) {
+                    coroutineScope {
+                        chunk.map { i -> async { i to probeOf(i) } }.awaitAll()
+                    }.forEach { (i, ms) ->
+                        collected[i] = ms
+                        _lineSpeeds.value = collected.toMap()
+                    }
+                }
+            }
+
+            val target = LineSwitch.pickValid(preferred, collected, lines.size)
+            if (target == null) {
+                if (_lines.value.size > 1) _message.value = "所有线路都暂时不可达，已保留当前线路"
+                return@launch
+            }
+            if (target == current) {
+                if (preferred == null) rememberCurrentLine()
+                return@launch
+            }
+            val targetName = lines.getOrNull(target)?.name.orEmpty()
+            val currentName = lines.getOrNull(current)?.name.orEmpty()
+            // 给被放弃那条线路的迟到错误一次豁免（见 [staleErrorGrace]）
+            staleErrorGrace = true
+            switchLineInternal(
+                index = target,
+                userInitiated = false,
+                note = if (target == preferred) {
+                    "已恢复到上次用的「$targetName」"
+                } else {
+                    "「$currentName」不可用，已自动切换到「$targetName」"
+                },
+            )
         }
     }
 
@@ -852,14 +1028,26 @@ class VideoPlayerViewModel(
     // ==================== 换源 / 测速择优（v1.3.6.0） ====================
 
     /**
-     * 切换到指定线路。
+     * 切换到指定线路（用户在「换源」Tab 手动点选）。
      *
      * 两条保位规则：
      * 1. **保集**：优先切到新线路的**同一集序号**（各线路集序基本一致）；
      *    若新线路集数不够（如只有预告），退回该线路第 1 集。
      * 2. **保位置**：把当前播放进度带到新线路继续，避免换源后从头看。
+     *
+     * v1.6.9.0：手动换源会**写进记忆**（下次进这部片子直接用它），
+     * 并清空本次会话的「失败线路」记录，让之前失败的线路重新有机会。
      */
-    fun switchLine(index: Int) {
+    fun switchLine(index: Int) = switchLineInternal(index, userInitiated = true, note = null)
+
+    /**
+     * 换源的真正实现。
+     *
+     * @param userInitiated 用户手动点的（清空失败记录 + 提示「已切换到…」）；
+     *                      自动纠错传 false（保留失败记录，提示由 [note] 给出）
+     * @param note 自定义提示语；`null` = 用默认的「已切换到「X」N集」
+     */
+    private fun switchLineInternal(index: Int, userInitiated: Boolean, note: String?) {
         val lines = _lines.value
         val target = lines.getOrNull(index) ?: return
         if (index == _currentLineIndex.value) return
@@ -873,6 +1061,8 @@ class VideoPlayerViewModel(
             }
 
         saveProgress() // 换源前先把当前线路的进度落盘
+        // 手动换源后重新给每条线路机会（自动纠错时保留，避免坏线路被反复选中）
+        if (userInitiated) failedLines.clear()
         _currentLineIndex.value = index
         _episodes.value = target.chapters
         // 换线路后集地址全变 → 清空内存 + 磁盘上的旧节目预缓存
@@ -883,7 +1073,32 @@ class VideoPlayerViewModel(
         // 删除磁盘上旧线路的预加载条目（按前缀匹配）
         clearDiskPrefetchWithPrefix("${currentItem?.sourceId ?: ""}__${currentItem?.id ?: ""}__")
         loadEpisode(next, restoreProgress = false, seekToMs = position)
-        _message.value = "已切换到「${target.name}」${next.title}"
+        // v1.6.9.0：这次的选择记下来 —— 自动纠错选出的可用线路同样值得记住
+        rememberCurrentLine()
+        _message.value = note ?: "已切换到「${target.name}」${next.title}"
+    }
+
+    /**
+     * 播放出错时自动换到下一条没试过的线路（v1.6.9.0，「自动优先有效源」的兜底）。
+     *
+     * @return `true` = 已经自动切走了，UI 不必再弹错误
+     */
+    private fun tryAutoSwitchOnError(): Boolean {
+        val lines = _lines.value
+        if (lines.size < 2) return false
+        val current = _currentLineIndex.value
+        failedLines += current
+        // 没有别的线路可换（都试过 / 只剩当前这条）→ 如实把错误交给用户
+        val next = LineSwitch.nextUntried(lines.size, failedLines)
+            ?.takeIf { it != current } ?: return false
+        val currentName = lines.getOrNull(current)?.name.orEmpty()
+        val nextName = lines.getOrNull(next)?.name.orEmpty()
+        switchLineInternal(
+            index = next,
+            userInitiated = false,
+            note = "「$currentName」播放失败，已自动切换到「$nextName」",
+        )
+        return true
     }
 
     /** 清空内存预取（换线路 / 退出播放页时调用） */
@@ -1049,6 +1264,7 @@ class VideoPlayerViewModel(
         tickerJob?.cancel()
         boostJob?.cancel()
         prefetchJob?.cancel()
+        lineProbeJob?.cancel()
         player?.release()
         player = null
     }
@@ -1068,5 +1284,7 @@ class VideoPlayerViewModel(
         private const val SPEED_CONCURRENCY = 3
         /** 单条线路测速超时 */
         private const val SPEED_PROBE_TIMEOUT_MS = 5_000L
+        /** 进播放页自动纠线时的探测超时（比手动测速短，别让用户干等） */
+        private const val AUTO_LINE_PROBE_TIMEOUT_MS = 4_000L
     }
 }

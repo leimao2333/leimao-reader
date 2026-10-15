@@ -108,4 +108,51 @@ class LineSwitchTest {
     fun `测速未完成时不标最快`() {
         assertFalse(LineSwitch.isFastest(mapOf(0 to null, 1 to null), 0, lineCount = 2))
     }
+
+    // ===== 记忆线路优先 + 自动优先有效源（v1.6.9.0） =====
+
+    @Test
+    fun `记忆线路可达时优先用它`() {
+        // 记忆是 2 号（延迟 900ms），但没有比它更快的可选？——不，0 号更快；
+        // 「记住上次用的源」优先于「最快」，用户的选择优先
+        val speeds = mapOf(0 to 100L, 2 to 900L)
+        assertEquals(2, LineSwitch.pickValid(preferred = 2, speeds = speeds, lineCount = 3))
+    }
+
+    @Test
+    fun `记忆线路不可达时退回最快可达的`() {
+        // 记忆的 1 号已经不通了 —— 不能把用户每次带回死线路
+        val speeds = mapOf(0 to 700L, 1 to null, 2 to 120L)
+        assertEquals(2, LineSwitch.pickValid(preferred = 1, speeds = speeds, lineCount = 3))
+    }
+
+    @Test
+    fun `没有记忆时选最快可达的`() {
+        assertEquals(1, LineSwitch.pickValid(preferred = null, mapOf(0 to 600L, 1 to 80L), 2))
+    }
+
+    @Test
+    fun `记忆下标越界时按可达性选`() {
+        // 源少了一条线路，旧记忆的下标指到了外面
+        assertEquals(0, LineSwitch.pickValid(preferred = 7, mapOf(0 to 300L), lineCount = 2))
+    }
+
+    @Test
+    fun `一条可达的都没有时不瞎切`() {
+        // 全不可达 / 都没测 → null，调用方保持现状（而不是切到某条没测过的线上）
+        assertNull(LineSwitch.pickValid(preferred = 1, mapOf(0 to null, 1 to null), lineCount = 2))
+        assertNull(LineSwitch.pickValid(preferred = null, emptyMap(), lineCount = 3))
+    }
+
+    @Test
+    fun `播放出错自动切下一条没试过的线路`() {
+        assertEquals(0, LineSwitch.nextUntried(lineCount = 3, tried = emptySet()))
+        assertEquals(2, LineSwitch.nextUntried(lineCount = 3, tried = setOf(0, 1)))
+    }
+
+    @Test
+    fun `所有线路都试过之后不再自动换`() {
+        // 全试完 → null，调用方如实报错，而不是在坏线路之间来回弹
+        assertNull(LineSwitch.nextUntried(lineCount = 3, tried = setOf(0, 1, 2)))
+    }
 }

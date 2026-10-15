@@ -42,4 +42,38 @@ object LineSwitch {
      */
     fun isFastest(speeds: Map<Int, Long?>, index: Int, lineCount: Int): Boolean =
         lineCount > 1 && fastestIndex(speeds) == index
+
+    /**
+     * 起播 / 自动纠错时该用哪条线路（v1.6.9.0，「自动优先有效源」的核心决策）。
+     *
+     * 规则（依次判断）：
+     * 1. **记忆线路可达** → 用它 —— 用户上次的选择优先；
+     * 2. 否则 **探测结果里最快且可达**的那条；
+     * 3. 一条可达的都没有（还没测 / 全不可达）→ `null`，
+     *    调用方据此保持现状或提示，而不是瞎切到某个没测过的线路。
+     *
+     * 注意：记忆线路**不可达时不会被选中** —— 「记住我上次用的源」和
+     * 「优先有效源」冲突时，后者优先，否则用户会每次都被带回那条死线路。
+     *
+     * @param preferred 记忆里的线路下标（可能为 null / 越界）
+     * @param speeds 探测结果：下标 → 延迟毫秒（`null` = 不可达，缺键 = 未测）
+     */
+    fun pickValid(preferred: Int?, speeds: Map<Int, Long?>, lineCount: Int): Int? {
+        val reachable = speeds.filterValues { it != null }
+        if (preferred != null && preferred in 0 until lineCount && reachable.containsKey(preferred)) {
+            return preferred
+        }
+        return reachable.minByOrNull { it.value ?: Long.MAX_VALUE }?.key
+    }
+
+    /**
+     * 播放出错后自动换的下一条线路：按顺序取第一个**没试过**的（v1.6.9.0）。
+     *
+     * 用 [tried] 记录本片本次会话里已失败的线路，保证每条最多自动试一次，
+     * 不会在两条坏线路之间来回弹。
+     *
+     * @return 下一条待尝试的线路下标；全部试过则为 `null`（调用方此时如实报错）
+     */
+    fun nextUntried(lineCount: Int, tried: Set<Int>): Int? =
+        (0 until lineCount).firstOrNull { it !in tried }
 }

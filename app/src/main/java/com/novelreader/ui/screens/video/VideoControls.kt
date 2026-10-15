@@ -609,6 +609,8 @@ fun EpisodeLinePickerOverlay(
     currentUrl: String,
     lines: List<ChapterLine>,
     currentLineIndex: Int,
+    /** 记忆里「上次用的线路」下标（v1.6.9.0），打「上次」角标用 */
+    rememberedLineIndex: Int? = null,
     lineSpeeds: Map<Int, Long?>,
     speedTesting: Boolean,
     onPick: (ChapterItem) -> Unit,
@@ -642,6 +644,7 @@ fun EpisodeLinePickerOverlay(
                 currentUrl = currentUrl,
                 lines = lines,
                 currentLineIndex = currentLineIndex,
+                rememberedLineIndex = rememberedLineIndex,
                 lineSpeeds = lineSpeeds,
                 speedTesting = speedTesting,
                 onPick = onPick,
@@ -708,6 +711,8 @@ fun EpisodeLineSheet(
     currentUrl: String,
     lines: List<ChapterLine>,
     currentLineIndex: Int,
+    /** 记忆里「上次用的线路」下标（v1.6.9.0），打「上次」角标用 */
+    rememberedLineIndex: Int? = null,
     lineSpeeds: Map<Int, Long?>,
     speedTesting: Boolean,
     onPick: (ChapterItem) -> Unit,
@@ -762,6 +767,7 @@ fun EpisodeLineSheet(
             LineList(
                 lines = lines,
                 currentLineIndex = currentLineIndex,
+                rememberedLineIndex = rememberedLineIndex,
                 lineSpeeds = lineSpeeds,
                 speedTesting = speedTesting,
                 colors = c,
@@ -827,6 +833,9 @@ private fun EpisodeList(
 
 /**
  * 线路列表：线路名 + 集数 + 测速结果，当前线路高亮，最快的标「最快」。
+ *
+ * v1.6.9.0：记忆里「上次用的线路」标「上次」——用户能一眼看出进播放页时
+ * 被自动纠到了哪条（当前线路同时还有「播放中」，两个角标各说一件事，不冲突）。
  */
 @Composable
 private fun LineList(
@@ -836,10 +845,12 @@ private fun LineList(
     speedTesting: Boolean,
     colors: SheetPalette,
     onPickLine: (Int) -> Unit,
+    rememberedLineIndex: Int? = null,
 ) {
     LazyColumn(modifier = Modifier.fillMaxSize()) {
         itemsIndexed(lines) { index, line ->
             val current = index == currentLineIndex
+            val remembered = index == rememberedLineIndex
             val speed = lineSpeeds[index]
             val measured = lineSpeeds.containsKey(index)
             Row(
@@ -859,6 +870,17 @@ private fun LineList(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
+                        if (remembered) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = "上次",
+                                color = if (current) colors.accent else colors.subText,
+                                fontSize = 10.sp,
+                                modifier = Modifier
+                                    .background(colors.divider, RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 5.dp, vertical = 1.dp),
+                            )
+                        }
                         if (LineSwitch.isFastest(lineSpeeds, index, lines.size)) {
                             Spacer(Modifier.width(6.dp))
                             Text(
@@ -919,6 +941,8 @@ fun ShortDramaEpisodeOverlay(
     currentUrl: String,
     lines: List<ChapterLine>,
     currentLineIndex: Int,
+    /** 记忆里「上次用的线路」下标（v1.6.9.0），打「上次」角标用 */
+    rememberedLineIndex: Int? = null,
     qualityTracks: List<QualityTrack> = emptyList(),
     selectedQuality: QualityTrack? = null,
     onSelectQuality: (QualityTrack) -> Unit = {},
@@ -952,6 +976,7 @@ fun ShortDramaEpisodeOverlay(
                 currentUrl = currentUrl,
                 lines = lines,
                 currentLineIndex = currentLineIndex,
+                rememberedLineIndex = rememberedLineIndex,
                 qualityTracks = qualityTracks,
                 selectedQuality = selectedQuality,
                 onSelectQuality = onSelectQuality,
@@ -986,6 +1011,7 @@ private fun ShortDramaEpisodeSheet(
     currentUrl: String,
     lines: List<ChapterLine>,
     currentLineIndex: Int,
+    rememberedLineIndex: Int? = null,
     qualityTracks: List<QualityTrack> = emptyList(),
     selectedQuality: QualityTrack? = null,
     onSelectQuality: (QualityTrack) -> Unit = {},
@@ -1045,6 +1071,7 @@ private fun ShortDramaEpisodeSheet(
                     speedTesting = false,
                     colors = darkPalette,
                     onPickLine = onPickLine,
+                    rememberedLineIndex = rememberedLineIndex,
                 )
             }
             ShortDramaSheetTabs.PICTURE -> {

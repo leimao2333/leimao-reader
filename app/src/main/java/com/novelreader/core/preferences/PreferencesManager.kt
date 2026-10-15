@@ -166,6 +166,14 @@ class PreferencesManager(private val context: Context) {
          * 当前集起播后会自动预取后续 N 集，连播 / 点切下集秒起。
          */
         val KEY_VIDEO_PREFETCH_AHEAD = intPreferencesKey("video_prefetch_ahead")
+        /**
+         * 播放页「记住上次用的源（线路）」（v1.6.9.0）。
+         *
+         * JSON 数组，元素 `{key, lineName, lineIndex, updatedAt}`，key = `sourceId\u0001itemId`。
+         * 解析 / 裁剪逻辑在 [com.novelreader.core.util.VideoLineMemory]（纯逻辑，可离线单测）；
+         * 这里只负责存取字符串。
+         */
+        val KEY_VIDEO_LINE_MEMORY = stringPreferencesKey("video_line_memory")
 
         // ----- v1.3.3.0 影视首页（MoonTV 风格）-----
         /** 影视首页当前使用的视频源 id（记忆上次选择） */
@@ -655,6 +663,14 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setVideoPrefetchAhead(value: Int) {
         context.dataStore.edit { it[KEY_VIDEO_PREFETCH_AHEAD] = value.coerceIn(1, 6) }
+    }
+
+    /** 播放页「记住上次用的源（线路）」的 JSON（空串 = 无记忆；v1.6.9.0） */
+    val videoLineMemoryFlow: Flow<String> = context.dataStore.data
+        .map { it[KEY_VIDEO_LINE_MEMORY] ?: "" }
+
+    suspend fun setVideoLineMemory(json: String) {
+        context.dataStore.edit { it[KEY_VIDEO_LINE_MEMORY] = json }
     }
 
     // ----- v1.3.3.0 影视首页 -----

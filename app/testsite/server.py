@@ -24,11 +24,14 @@
 """
 
 import json
+import os
 import struct
 import sys
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 # 分类：(type_id, type_name, parent_id)。parent_id == 0 表示一级类型。
 #
@@ -59,6 +62,24 @@ CATEGORIES = [
 # 每个分类多少条（够首页一排 + 电影频道翻 2 页）
 PER_CATEGORY = 24
 PAGE_SIZE = 12
+
+# 失效线路用的端口：这上面没有服务 —— 连接被立刻拒绝，
+# 用来验收「记忆的源失效了 / 当前线路不通 → 自动优先有效源」（v1.6.9.0）。
+DEAD_PORT = 9998
+
+# 哪一部片子做成「线路二挂掉、线路一还能播」：
+# 详情页会把**集数最多的那条**（这里是线路二，2 集）交给播放器，
+# 于是进播放页必然先撞上死线路 —— 正好用来验收自动优先有效源。
+# 只改一部片子，避免影响首页分区等其他验收。
+BROKEN_SECOND_LINE = (1, 1)  # 电影·01
+
+# 可播的 mp4 素材（H.264）。找不到就退回原来的空 m3u8 占位。
+MEDIA_MP4 = next((
+    p for p in (
+        os.path.join(HERE, "assets", "demo.mp4"),
+        os.path.normpath(os.path.join(HERE, "..", "..", "..", "testsite", "assets", "video", "test.mp4")),
+    ) if os.path.exists(p)
+), None)
 
 # 各接口的「源标记」，写进片名便于肉眼区分聚合来源
 SITE_TAGS = {
@@ -123,8 +144,11 @@ def make_items(tag: str, type_id: int, type_name: str, with_play: bool):
         else:
             remarks = "HD国语"
             episodes = 1
+        broken = (type_id, n) == BROKEN_SECOND_LINE
+        # 常规：线路一 / 线路二都是空 m3u8 占位（够验链路，但播放器会报错）
+        first_ext = "mp4" if broken else "m3u8"
         play_url = "#".join(
-            f"第{i:02d}集$http://10.0.2.2:8899/media/{vod_id}_{i}.m3u8"
+            f"第{i:02d}集$http://10.0.2.2:8899/media/{'real_' if broken else ''}{vod_id}_{i}.{first_ext}"
             for i in range(1, episodes + 1)
         )
         item = {
@@ -146,8 +170,10 @@ def make_items(tag: str, type_id: int, type_name: str, with_play: bool):
         if with_play:
             item["vod_content"] = f"<p>[{tag}] {type_name} 第 {n} 号的完整简介。</p>"
             # 线路一给完整集数、线路二少两集，用于验证「默认选集数最多的线路 / 换源」
+            # broken 的那部：线路二指向死端口（探不通、播放必错）
+            second_host = f"10.0.2.2:{DEAD_PORT}/dead" if broken else "10.0.2.2:8899/media"
             short = "#".join(
-                f"第{i:02d}集$http://10.0.2.2:8899/media/{vod_id}_b{i}.m3u8"
+                f"第{i:02d}集$http://{second_host}/{vod_id}_b{i}.m3u8"
                 for i in range(1, max(2, episodes - 2) + 1)
             )
             item["vod_play_from"] = "线路一$$$线路二"
@@ -182,8 +208,13 @@ class Handler(BaseHTTPRequestHandler):
             seed = int(path.rsplit("/", 1)[-1].split(".")[0] or "0")
             return self._send(poster_png(seed), "image/png")
 
-        # 播放地址：给个 1 字节占位，让「测速 / 播放器报错」可控
+        # 播放地址：
+        # - .mp4 = 真素材（能真播，用于验收「自动优先有效源」后确实放得起来）；
+        # - 其余给空 m3u8 占位，让「测速 / 播放器报错」可控。
         if path.startswith("/media/"):
+            if path.endswith(".mp4") and MEDIA_MP4:
+                with open(MEDIA_MP4, "rb") as f:
+                    return self._send(f.read(), "video/mp4")
             return self._send(b"", "application/vnd.apple.mpegurl")
 
         if path.endswith("/favicon.ico"):

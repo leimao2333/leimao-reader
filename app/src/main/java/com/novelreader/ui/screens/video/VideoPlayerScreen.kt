@@ -138,6 +138,8 @@ fun VideoPlayerScreen(
     val message by viewModel.message.collectAsState()
     val lines by viewModel.lines.collectAsState()
     val currentLineIndex by viewModel.currentLineIndex.collectAsState()
+    // v1.6.9.0：换源列表上标「上次」用（记忆里上次用的那条线路）
+    val rememberedLineIndex by viewModel.rememberedLineIndex.collectAsState()
     val lineSpeeds by viewModel.lineSpeeds.collectAsState()
     val speedTesting by viewModel.speedTesting.collectAsState()
     val qualityTracks by viewModel.qualityTracks.collectAsState()
@@ -837,6 +839,7 @@ fun VideoPlayerScreen(
             // ===== 选集 / 换源 浮层（短剧用红果式，普通视频用双 Tab 面板）=====
             if (isShortDrama) {
                 ShortDramaEpisodeOverlay(
+                    rememberedLineIndex = rememberedLineIndex,
                     visible = episodesOpen && !inPip,
                     episodes = episodesList,
                     currentUrl = currentEpisodeUrl,
@@ -866,6 +869,7 @@ fun VideoPlayerScreen(
                 )
             } else {
                 EpisodeLinePickerOverlay(
+                    rememberedLineIndex = rememberedLineIndex,
                     visible = episodesOpen && !inPip,
                     tab = sheetTab,
                     onTabChange = { sheetTab = it },
@@ -913,6 +917,7 @@ fun VideoPlayerScreen(
             }
             EpisodeLineSheet(
                 dark = false,
+                rememberedLineIndex = rememberedLineIndex,
                 tab = sheetTab,
                 onTabChange = { sheetTab = it },
                 episodes = episodesList,

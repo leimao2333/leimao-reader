@@ -127,9 +127,17 @@ fun BoxScope.VideoControlsOverlay(
      */
     hideMoreMenu: Boolean = false,
     /**
-     * 隐藏顶部「选集」入口图标（v1.6.3.0）。短剧模式下顶部 List 图标与底部红果式
-     * 常驻栏的「选集」按钮**重复**（两者都打开同一个 ShortDramaEpisodeOverlay），
-     * 合并到底部「菜单栏目」即可，顶部不再保留该图标，避免用户搞不清入口。
+     * 隐藏顶部「选集」入口图标（v1.6.3.0 引入，v1.6.4.0 调整为「仅隐藏顶部图标」）。
+     *
+     * 历史：v1.6.3.0 之前，短剧模式有两个「选集」入口（顶部 List 图标 + 底部红果式常驻栏的「选集」按钮），
+     * 两者指向同一个底部浮层，纯属重复 → 删顶部。
+     *
+     * v1.6.4.0 反馈：删顶部 List 后发现底部红果式「选集」与操作栏「字幕」**视觉挤在一起**
+     * （两者都锚定屏幕底部，垂直重叠）。改为：**完全删除红果式常驻栏**，
+     * 「选集」按钮作为底部操作栏的一员（与「倍速 / 字幕 / 全屏」同一行）。
+     *
+     * 现在本参数仍保留，控制顶部 List 图标是否渲染（普通视频默认 false；v1.6.4.0 起两边都显示
+     * 「选集」——顶部图标与底部操作栏图标并存，普通视频顶部按钮冗余未改，避免变动太大）。
      */
     hideEpisodeIcon: Boolean = false,
     /** 菜单式调亮度 / 音量（v1.6.0.0）。仅在 MoreVert 开启时生效 */
@@ -412,6 +420,20 @@ fun BoxScope.VideoControlsOverlay(
                             )
                         }
                     }
+                }
+
+                Spacer(Modifier.width(4.dp))
+
+                // 选集入口（v1.6.4.0）：短剧模式下「选集」与底部操作栏的
+                // 倍速/字幕/全屏合并到同一行（替代原来的红果式独立底栏，
+                // 解决「选集」与「字幕」视觉挤在一起的体验问题）。
+                // 普通视频同样显示此入口，与原来顶部 List 图标职责一致。
+                IconButton(onClick = onOpenEpisodes) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.List,
+                        contentDescription = "选集",
+                        tint = Color.White,
+                    )
                 }
 
                 Spacer(Modifier.width(4.dp))

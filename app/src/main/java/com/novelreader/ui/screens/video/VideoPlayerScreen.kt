@@ -753,10 +753,19 @@ fun VideoPlayerScreen(
             }
 
             // ===== 自定义控制层 =====
+            // v1.6.4.0：短剧副标题加上「第 X / Y 集」信息（原红果式底栏已删除，
+            // 这些信息合并到顶栏副标题里集中展示，避免分散到两处）。
+            val curIdx = episodesList.indexOfFirst { it.url == currentEpisodeUrl }
+                .let { if (it >= 0) it else 0 }
+            val headerSubtitle = when {
+                isShortDrama && episodesList.isNotEmpty() ->
+                    "第 ${curIdx + 1} / ${episodesList.size} 集 · $episodeTitle"
+                else -> episodeTitle
+            }
             VideoControlsOverlay(
                 visible = controlsVisible && !inPip,
                 title = item.title,
-                subtitle = episodeTitle,
+                subtitle = headerSubtitle,
                 isPlaying = playback.isPlaying,
                 isBuffering = playback.isBuffering && !loading,
                 positionMs = playback.positionMs,
@@ -816,59 +825,9 @@ fun VideoPlayerScreen(
             )
 
             // ===== 短剧底部常驻栏（红果式：选集按钮 + 剧名 + 集数）=====
-            if (isShortDrama && !inPip) {
-                val curIdx = episodesList.indexOfFirst { it.url == currentEpisodeUrl }
-                    .let { if (it >= 0) it else 0 }
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .fillMaxWidth()
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f))
-                            )
-                        )
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = item.title,
-                            color = Color.White,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = "第 ${curIdx + 1} / ${episodesList.size} 集",
-                            color = Color.White.copy(alpha = 0.75f),
-                            fontSize = 12.sp,
-                        )
-                    }
-                    Spacer(Modifier.width(12.dp))
-                    // 选集入口（红果右下角常驻按钮）
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(Color.White.copy(alpha = 0.2f))
-                            .clickable { episodesOpen = true }
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.List,
-                                contentDescription = "选集",
-                                tint = Color.White,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text("选集", color = Color.White, fontSize = 13.sp)
-                        }
-                    }
-                }
-            }
+            // v1.6.4.0 删除：选集入口已合并到底部操作栏（与倍速/字幕/全屏同一行）。
+            // 原来红果式底栏和操作栏都锚定屏幕底部，导致「选集」与「字幕」视觉挤在一起。
+            // 集数信息已合并进 VideoControlsOverlay 顶栏副标题（见下方 subtitle 拼接）。
 
             // ===== 选集 / 换源 浮层（短剧用红果式，普通视频用双 Tab 面板）=====
             if (isShortDrama) {

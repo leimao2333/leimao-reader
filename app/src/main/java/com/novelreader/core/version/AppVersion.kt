@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.6.3.0"
+    const val CURRENT_VERSION = "1.6.4.0"
 
     /**
      * 更新日志。
@@ -26,11 +26,22 @@ object AppVersion {
      */
     val CHANGELOG: List<VersionEntry> = listOf(
         VersionEntry(
+            version = "1.6.4.0",
+            date = "2026-10-15",
+            changes = listOf(
+                "**短剧选集合并到底部操作栏（菜单栏目）**：v1.6.3.0 只删了顶部 List 图标，但底部「红果式」常驻栏的「选集」按钮和操作栏的「字幕」按钮都锚定屏幕底部，垂直重叠 → 用户看到「选集」与「字幕」挤在一起。v1.6.4.0 完全删除红果式常驻栏，「选集」按钮改放进 VideoControlsOverlay 底部操作栏，与「倍速 / 字幕 / 全屏」同一行（菜单栏目）",
+                "**集数信息合并到顶栏副标题**：原红果式底栏里的「剧名 + 第 X / Y 集」信息不再有独立位置，改在 VideoControlsOverlay 顶栏副标题里集中展示为「第 X / Y 集 · 第NN集」，避免分散到两处",
+                "**实现细节**：VideoControlsOverlay 底部 Row 在「字幕」与「旋转」之间插入「选集」IconButton（List 图标），点击即打开 ShortDramaEpisodeOverlay / EpisodeLinePickerOverlay；VideoPlayerScreen 删除原 line 815-868 的红果式 Row + Column + Box + Icon + Text，移除约 60 行代码",
+                "**顶部 List 图标仍隐藏**：v1.6.3.0 引入的 `hideEpisodeIcon` 参数在 v1.6.4.0 保留（短剧模式 = true），避免顶部重复入口；底部操作栏的「选集」始终显示",
+            ),
+        ),
+        VersionEntry(
             version = "1.6.3.0",
             date = "2026-10-15",
             changes = listOf(
                 "**短剧选集入口合并到底部菜单**：之前短剧播放页有**两个**「选集」入口 —— 顶部控制栏右侧的 List 图标 + 底部红果式常驻栏里的「选集」文字按钮 —— 都打开同一个底部浮层，纯属重复。现保留底部红果式「选集」按钮（短剧的菜单栏目），**删除顶部 List 图标**，让选集入口只剩一个、用户不再困惑入口位置",
                 "**实现细节**：顶部控制层新增 `hideEpisodeIcon` 参数（默认 false，普通视频不受影响）；VideoControlsOverlay 顶部 List IconButton 在 `hideEpisodeIcon = true` 时整块不渲染，参数沿用 v1.6.0.0 引入的 `hideMoreMenu` 风格保持对称",
+                "**v1.6.4.0 调整**：v1.6.3.0 没有完全解决问题（红果式底栏与操作栏视觉挤在一起），v1.6.4.0 改为把「选集」按钮放到底部操作栏，完全删除红果式底栏",
             ),
         ),
         VersionEntry(

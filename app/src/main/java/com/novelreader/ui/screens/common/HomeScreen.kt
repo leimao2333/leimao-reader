@@ -12,7 +12,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -23,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.ViewList
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.History
@@ -34,7 +37,10 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Source
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -77,6 +83,8 @@ import com.novelreader.ui.screens.bookshelf.BookGrid
 @Composable
 fun HomeScreen(
     viewModel: HomeViewModel,
+    /** 标签下拉菜单（搜索框左侧，v1.5.10.0）；由 NavHost 创建传入 */
+    tagsViewModel: com.novelreader.ui.screens.tag.TagsViewModel,
     onOpenNovelItem: (MediaItem) -> Unit,
     onOpenComicItem: (MediaItem) -> Unit,
     onOpenVideoItem: (MediaItem) -> Unit,
@@ -93,6 +101,8 @@ fun HomeScreen(
     onOpenShortDrama: (MediaItem) -> Unit = {},
     /** 打开阅读历史（v1.4.3.0） */
     onOpenHistory: () -> Unit = {},
+    /** 打开标签搜索（v1.5.10.0）：参数为当前 Tab 类型 + 选中的初始标签 */
+    onOpenTagSearch: (SourceType, String) -> Unit = { _, _ -> },
 ) {
     val importMessage by viewModel.importMessage.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -146,6 +156,8 @@ fun HomeScreen(
     var manageGroup by remember { mutableStateOf<String?>(null) }
     var newGroupForItem by remember { mutableStateOf<MediaItem?>(null) }
     var coverEditForItem by remember { mutableStateOf<MediaItem?>(null) }
+    // 长按「继续观看」海报待删除的记录（v1.5.10.0 历史编辑）
+    var removeContinueTarget by remember { mutableStateOf<MediaItem?>(null) }
 
     // 展现形式：0=封面墙网格，1=列表
     var gridMode by rememberSaveable { mutableIntStateOf(0) }
@@ -238,8 +250,28 @@ fun HomeScreen(
             }
 
             Column(modifier = Modifier.fillMaxSize()) {
-                // 搜索栏（点击进入独立搜索页）
-                SearchEntryBar(placeholder = placeholder, onClick = onOpenSearch)
+                // 搜索栏（点击进入独立搜索页）+ 左侧标签下拉（v1.5.10.0）
+                LaunchedEffect(selectedTab) {
+                    tagsViewModel.ensure(currentType)
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val tagList by tagsViewModel.tags.collectAsState()
+                    val tagLoading by tagsViewModel.loading.collectAsState()
+                    TagDropdownButton(
+                        tags = tagList,
+                        loading = tagLoading,
+                        onSelect = { tag -> onOpenTagSearch(currentType, tag) },
+                        onRefresh = { tagsViewModel.refresh(currentType) },
+                    )
+                    SearchEntryBar(
+                        placeholder = placeholder,
+                        onClick = onOpenSearch,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
 
                 Spacer(Modifier.height(8.dp))
 
@@ -289,6 +321,7 @@ fun HomeScreen(
                         onRefresh = viewModel::refreshVideoHome,
                         onLoadMore = viewModel::loadMoreVideo,
                         onOpenSearch = onOpenVideoSearch,
+                        onRemoveContinue = { removeContinueTarget = it },
                     )
                 }
 
@@ -453,6 +486,24 @@ fun HomeScreen(
                         },
                         dismissButton = {
                             TextButton(onClick = { newGroupForItem = null }) { Text("取消") }
+                        },
+                    )
+                }
+
+                // 长按「继续观看」删除确认（v1.5.10.0 历史编辑）
+                removeContinueTarget?.let { target ->
+                    AlertDialog(
+                        onDismissRequest = { removeContinueTarget = null },
+                        title = { Text("删除观看记录") },
+                        text = { Text("确定删除「${target.title}」的观看记录吗？\n（不影响收藏，仅清除继续观看与历史）") },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                viewModel.removeContinueWatching(target)
+                                removeContinueTarget = null
+                            }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { removeContinueTarget = null }) { Text("取消") }
                         },
                     )
                 }
@@ -654,18 +705,103 @@ private fun GroupChip(
 private fun com.novelreader.domain.model.MediaItem.itemKey(): String = "$sourceId:$id"
 
 /**
+ * 「标签」下拉按钮（搜索框左侧，v1.5.10.0）。
+ *
+ * 点击弹出当前内容类型的标签池（自动收集自各源发现分类），选中即进入标签搜索；
+ * 标签还在收集时显示细圈，收完自动出现；菜单底部提供「重新收集」。
+ */
+@Composable
+private fun TagDropdownButton(
+    tags: List<String>,
+    loading: Boolean,
+    onSelect: (String) -> Unit,
+    onRefresh: () -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Surface(
+            onClick = { open = true },
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier.padding(start = 12.dp),
+        ) {
+            Row(
+                modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 12.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "标签",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (loading) {
+                    Spacer(Modifier.width(4.dp))
+                    androidx.compose.material3.CircularProgressIndicator(
+                        modifier = Modifier.size(12.dp),
+                        strokeWidth = 1.5.dp,
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Filled.ArrowDropDown,
+                        contentDescription = "选择标签",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+
+        DropdownMenu(
+            expanded = open,
+            onDismissRequest = { open = false },
+            modifier = Modifier.heightIn(max = 360.dp),
+        ) {
+            if (tags.isEmpty()) {
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            if (loading) "正在收集标签…" else "暂无标签",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    },
+                    onClick = {},
+                )
+            }
+            tags.forEach { tag ->
+                DropdownMenuItem(
+                    text = { Text(tag, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
+                    onClick = {
+                        open = false
+                        onSelect(tag)
+                    },
+                )
+            }
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text("重新收集标签", style = MaterialTheme.typography.bodySmall) },
+                onClick = {
+                    open = false
+                    onRefresh()
+                },
+            )
+        }
+    }
+}
+
+/**
  * 可点击的「搜索栏」入口（非输入框，点击跳转搜索页）。
  */
 @Composable
 private fun SearchEntryBar(
     placeholder: String,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Surface(
         onClick = onClick,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         shape = RoundedCornerShape(24.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
     ) {

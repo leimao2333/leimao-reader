@@ -40,6 +40,7 @@ object Routes {
     // ===== 通用 =====
     const val BOOKSHELF = "bookshelf"          // 书架/收藏
     const val HISTORY = "history"              // 阅读历史（v1.4.3.0）
+    const val TAG_SEARCH = "tag_search?type={type}&tag={tag}"  // 标签搜索（v1.5.10.0）
 
     // ===== RSS 订阅（v1.3.1.0）=====
     const val RSS = "rss"                              // 订阅列表 + 文章流
@@ -91,4 +92,16 @@ object Routes {
 
     /** 订阅文章阅读页（v1.3.1.0） */
     fun rssReader(articleId: Long): String = "rss_reader/$articleId"
+
+    /**
+     * 标签搜索页（v1.5.10.0）；[tag] 为初始标签（可空），进入后有该标签即自动搜索。
+     * 多个标签用空格分开 = 复合搜索，进入页面后可继续追加。
+     */
+    fun tagSearch(
+        type: com.novelreader.domain.model.SourceType,
+        tag: String = "",
+    ): String {
+        val t = java.net.URLEncoder.encode(tag, "UTF-8")
+        return "tag_search?type=${type.name}&tag=$t"
+    }
 }

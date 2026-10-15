@@ -25,9 +25,13 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -36,7 +40,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -102,20 +109,13 @@ fun VideoChannelScreen(
             }
         }
 
-        // ===== 分类 Tab =====
+        // ===== 分类下拉（v1.5.10.0：从横滑 Tab 改为下拉框，分类多时不用来回划） =====
         if (state.categories.isNotEmpty()) {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(state.categories, key = { it }) { category ->
-                    FilterChip(
-                        selected = state.selectedCategory == category,
-                        onClick = { onSelectCategory(category) },
-                        label = { Text(category) },
-                    )
-                }
-            }
+            CategoryDropdown(
+                categories = state.categories,
+                selected = state.selectedCategory,
+                onSelect = onSelectCategory,
+            )
             Spacer(Modifier.height(8.dp))
         }
 
@@ -190,6 +190,80 @@ fun VideoChannelScreen(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 频道分类下拉（v1.5.10.0）。
+ *
+ * 未选分类（空串 = 全部）时按钮显示「分类」，已选时高亮并显示分类名 ——
+ * 与片库筛选下拉同款式，一眼能看出当前在看哪个分类。
+ */
+@Composable
+private fun CategoryDropdown(
+    categories: List<String>,
+    selected: String,
+    onSelect: (String) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    val active = selected.isNotBlank()
+    val container = if (active) MaterialTheme.colorScheme.primaryContainer
+    else MaterialTheme.colorScheme.surfaceVariant
+    val content = if (active) MaterialTheme.colorScheme.onPrimaryContainer
+    else MaterialTheme.colorScheme.onSurfaceVariant
+
+    Box(modifier = Modifier.padding(horizontal = 12.dp)) {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(16.dp))
+                .background(container)
+                .clickable { open = true }
+                .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = selected.ifBlank { "分类" },
+                style = MaterialTheme.typography.labelLarge,
+                color = content,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Icon(
+                Icons.Filled.ArrowDropDown,
+                contentDescription = null,
+                tint = content,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text("全部") },
+                onClick = {
+                    open = false
+                    if (selected.isNotBlank()) onSelect("")
+                },
+                trailingIcon = {
+                    if (!active) {
+                        Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                    }
+                },
+            )
+            categories.forEach { category ->
+                DropdownMenuItem(
+                    text = { Text(category) },
+                    onClick = {
+                        open = false
+                        if (category != selected) onSelect(category)
+                    },
+                    trailingIcon = {
+                        if (category == selected) {
+                            Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                        }
+                    },
+                )
             }
         }
     }

@@ -1,5 +1,6 @@
 package com.novelreader.ui.screens.novel
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,15 +10,22 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -26,8 +34,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -185,6 +197,92 @@ private fun String.isRecommendLike(): Boolean =
         contains("榜单") || contains("人气")
 
 /**
+ * 发现页栏目下拉（v1.5.10.0）。
+ *
+ * 首项「推荐」（selectedTitle 为 null 时选中），其余为聚合栏目；
+ * 未选栏目时按钮显示「栏目」，已选时高亮并显示栏目名。
+ */
+@Composable
+private fun ExploreCategoryDropdown(
+    categories: List<ExploreCategory>,
+    selectedTitle: String?,
+    onSelect: (ExploreCategory?) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    val active = selectedTitle != null
+    val container = if (active) MaterialTheme.colorScheme.primaryContainer
+    else MaterialTheme.colorScheme.surfaceVariant
+    val content = if (active) MaterialTheme.colorScheme.onPrimaryContainer
+    else MaterialTheme.colorScheme.onSurfaceVariant
+
+    Box(modifier = Modifier.padding(horizontal = 12.dp)) {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(16.dp))
+                .background(container)
+                .clickable { open = true }
+                .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = selectedTitle ?: "栏目",
+                style = MaterialTheme.typography.labelLarge,
+                color = content,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Icon(
+                Icons.Filled.ArrowDropDown,
+                contentDescription = null,
+                tint = content,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+
+        DropdownMenu(
+            expanded = open,
+            onDismissRequest = { open = false },
+            modifier = Modifier.heightIn(max = 360.dp),
+        ) {
+            DropdownMenuItem(
+                text = { Text("推荐") },
+                onClick = {
+                    open = false
+                    onSelect(null)
+                },
+                trailingIcon = {
+                    if (!active) {
+                        Icon(
+                            Icons.Filled.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                },
+            )
+            categories.forEach { cat ->
+                DropdownMenuItem(
+                    text = { Text(cat.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    onClick = {
+                        open = false
+                        onSelect(cat)
+                    },
+                    trailingIcon = {
+                        if (cat.title == selectedTitle) {
+                            Icon(
+                                Icons.Filled.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    },
+                )
+            }
+        }
+    }
+}
+
+/**
  * 发现页（v1.4.2.0 聚合式）。
  *
  * 顶部：返回 + 标题 + 「聚合 N 个源」+ 刷新；
@@ -232,26 +330,13 @@ fun ExploreScreen(
             }
         }
 
-        // 分类 chips：首个「推荐」，其余为合并分类
+        // 栏目下拉（v1.5.10.0：从横滑 chips 改为下拉框，栏目多时不用来回划）
         if (categories.isNotEmpty()) {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 12.dp),
-            ) {
-                item {
-                    FilterChip(
-                        selected = selectedCategory == null,
-                        onClick = { viewModel.selectCategory(null) },
-                        label = { Text("推荐") },
-                    )
-                }
-                items(categories, key = { it.title }) { cat ->
-                    FilterChip(
-                        selected = selectedCategory?.title == cat.title,
-                        onClick = { viewModel.selectCategory(cat) },
-                        label = { Text(cat.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    )
-                }
-            }
+            ExploreCategoryDropdown(
+                categories = categories,
+                selectedTitle = selectedCategory?.title,
+                onSelect = viewModel::selectCategory,
+            )
             Spacer(Modifier.height(8.dp))
         }
 

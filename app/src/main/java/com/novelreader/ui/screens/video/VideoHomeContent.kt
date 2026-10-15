@@ -5,8 +5,10 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -100,6 +102,8 @@ fun VideoHomeContent(
     onRefresh: () -> Unit,
     onLoadMore: () -> Unit,
     onOpenSearch: () -> Unit,
+    /** 长按「继续观看」海报删除该条观看记录（v1.5.10.0 历史编辑） */
+    onRemoveContinue: ((MediaItem) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize()) {
@@ -123,6 +127,7 @@ fun VideoHomeContent(
                 onItemClick = onItemClick,
                 onRefresh = onRefresh,
                 onOpenSearch = onOpenSearch,
+                onRemoveContinue = onRemoveContinue,
             )
         }
     }
@@ -137,6 +142,7 @@ private fun VideoSectionsContent(
     onItemClick: (MediaItem) -> Unit,
     onRefresh: () -> Unit,
     onOpenSearch: () -> Unit,
+    onRemoveContinue: ((MediaItem) -> Unit)? = null,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -190,12 +196,16 @@ private fun VideoSectionsContent(
                                 state.continueWatching,
                                 key = { "${it.item.sourceId}:${it.item.id}" },
                             ) { cont ->
+                                // 长按删除观看记录（v1.5.10.0 历史编辑）
                                 PosterCard(
                                     item = cont.item,
                                     width = ROW_CARD_WIDTH,
                                     episodeLabel = cont.episodeLabel,
                                     progress = cont.progress,
                                     onClick = { onItemClick(cont.item) },
+                                    onLongClick = onRemoveContinue?.let { remove ->
+                                        { remove(cont.item) }
+                                    },
                                 )
                             }
                         }
@@ -374,34 +384,12 @@ private fun VideoGridContent(
             modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 8.dp),
         )
 
-        // 分类 chips（含「全部」），网格视图内可继续换分类
-        if (state.categories.isNotEmpty()) {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                item {
-                    FilterChip(
-                        selected = state.selectedCategory.isEmpty(),
-                        onClick = { onSelectCategory("") },
-                        label = { Text("全部") },
-                    )
-                }
-                // key 加标题防撞：聚合模式下不同分类可能共享同一 url（如数字 id 相同）
-                items(state.categories, key = { "${it.url}::${it.title}" }) { category ->
-                    FilterChip(
-                        selected = state.selectedCategory == category.url,
-                        onClick = { onSelectCategory(category.url) },
-                        label = { Text(category.title) },
-                    )
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-        }
-
-        // 地区 / 年份 / 排序三个维度用下拉（v1.3.5.0）。分类维度保留上面的 chips：
-        // 分类可能有十几个且是最常用的切换，chips 一点即达比下拉快一倍。
+        // 分类 / 地区 / 年份 / 排序四个维度统一下拉（v1.5.10.0：分类从横滑 chips 改为
+        // 下拉框 —— 分类一多横滑要划很久，下拉一步直达）
         FilterDropdownRow(
+            categories = state.categories,
+            selectedCategory = state.selectedCategory,
+            onSelectCategory = onSelectCategory,
             selectedArea = state.selectedArea,
             selectedYear = state.selectedYear,
             selectedOrder = state.selectedOrder,
@@ -457,12 +445,15 @@ private fun VideoGridContent(
 // ============================== 筛选栏 ==============================
 
 /**
- * 片库筛选行：地区 / 年份 / 排序（分类维度由上面的 chips 承担，见 [VideoGridContent]）。
+ * 片库筛选行：分类 / 地区 / 年份 / 排序（v1.5.10.0 起分类也用下拉）。
  *
  * 年份按**当前年**动态生成，不写死列表 —— 否则过几年就选不到最新年份了。
  */
 @Composable
 private fun FilterDropdownRow(
+    categories: List<com.novelreader.domain.model.ExploreCategory>,
+    selectedCategory: String,
+    onSelectCategory: (String) -> Unit,
     selectedArea: String,
     selectedYear: String,
     selectedOrder: String,
@@ -475,11 +466,26 @@ private fun FilterDropdownRow(
         VideoFilters.years(java.util.Calendar.getInstance().get(java.util.Calendar.YEAR))
     }
     val orderOptions = remember { VideoFilters.orders() }
+    // 分类选项：「全部」（空 url）+ 各聚合分类；同名不同 url 的分类去重保序
+    val categoryOptions = remember(categories) {
+        buildList {
+            add(VideoFilters.ALL)
+            val seen = HashSet<String>()
+            categories.forEach { cat ->
+                if (cat.title.isNotBlank() && seen.add(cat.title)) {
+                    add(VideoFilters.Option(cat.title, cat.url))
+                }
+            }
+        }
+    }
 
     LazyRow(
         contentPadding = PaddingValues(horizontal = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        if (categoryOptions.size > 1) {
+            item { FilterDropdown("分类", categoryOptions, selectedCategory, onSelectCategory) }
+        }
         item { FilterDropdown("地区", areaOptions, selectedArea, onSelectArea) }
         item { FilterDropdown("年份", yearOptions, selectedYear, onSelectYear) }
         item { FilterDropdown("排序", orderOptions, selectedOrder, onSelectOrder) }
@@ -574,9 +580,17 @@ private fun PosterCard(
     episodeLabel: String = "",
     progress: Float = 0f,
     onClick: () -> Unit,
+    /** 长按回调（「继续观看」删除记录用；null = 无长按） */
+    onLongClick: (() -> Unit)? = null,
 ) {
     val sizeModifier = if (width != null) Modifier.width(width) else Modifier.fillMaxWidth()
-    Column(modifier = sizeModifier.clickable(onClick = onClick)) {
+    val clickModifier = if (onLongClick != null) {
+        @OptIn(ExperimentalFoundationApi::class)
+        sizeModifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)
+    } else {
+        sizeModifier.clickable(onClick = onClick)
+    }
+    Column(modifier = clickModifier) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()

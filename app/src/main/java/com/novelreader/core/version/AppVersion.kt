@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.5.9.0"
+    const val CURRENT_VERSION = "1.5.10.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,16 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.5.10.0",
+            date = "2026-10-15",
+            changes = listOf(
+                "**标签功能**：自动收集小说 / 漫画 / 视频所有源的发现分类作为标签池（导入源即得标签，落盘缓存冷启动即有）；搜索框左侧新增「标签」下拉菜单，点选即进入标签搜索",
+                "**标签搜索**：支持单标签搜索与**复合搜索**（多个标签用空格分开，取同时命中所有标签的作品）；搜索页可继续追加 / 移除标签组合筛选",
+                "**分类改下拉框**：视频首页网格 / 电影 / 动漫 / 短剧频道的分类条，以及小说 / 漫画发现页的栏目条，全部从横滑改为下拉框，分类再多一步直达",
+                "**历史记录编辑**：阅读历史每行新增删除按钮（不用先进多选模式）；影视首页「继续观看」支持长按删除单条观看记录",
+            ),
+        ),
         VersionEntry(
             version = "1.5.9.0",
             date = "2026-10-14",

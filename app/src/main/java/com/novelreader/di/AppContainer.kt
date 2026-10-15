@@ -78,6 +78,18 @@ class AppContainer(context: Context) {
         )
     }
 
+    /** 标签磁盘缓存（v1.5.10.0，一个内容类型一个文件） */
+    val tagStore: com.novelreader.data.cache.TagStore by lazy {
+        com.novelreader.data.cache.TagStore(
+            java.io.File(appContext.filesDir, "tags"),
+        )
+    }
+
+    /** 标签仓库（v1.5.10.0，自动收集各源发现分类为标签池） */
+    val tagRepository: com.novelreader.data.repository.TagRepository by lazy {
+        com.novelreader.data.repository.TagRepository(contentRepository, tagStore)
+    }
+
     val sourceManager: SourceManager by lazy {
         SourceManager(veneraEngine)
     }

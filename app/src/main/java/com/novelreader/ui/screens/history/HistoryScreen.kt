@@ -172,6 +172,8 @@ fun HistoryScreen(
                                         viewModel.toggleSelect(HistoryViewModel.keyOf(r))
                                     }
                                 },
+                                // 单条快速删除（v1.5.10.0 历史编辑）：不用先进多选模式
+                                onDelete = { viewModel.remove(r) },
                             )
                             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                         }
@@ -237,7 +239,7 @@ private fun TypeFilterRow(
     }
 }
 
-/** 单条历史记录行：封面 + 标题/章节/时间 + 类型标签 + 可选复选框 */
+/** 单条历史记录行：封面 + 标题/章节/时间 + 类型标签 + 可选复选框 + 单条删除 */
 @Composable
 private fun HistoryRow(
     item: RecentReading,
@@ -246,6 +248,8 @@ private fun HistoryRow(
     onToggleSelect: () -> Unit,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    /** 单条快速删除（非多选模式下显示删除按钮，v1.5.10.0 历史编辑） */
+    onDelete: () -> Unit = {},
 ) {
     Row(
         modifier = Modifier
@@ -317,6 +321,18 @@ private fun HistoryRow(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+
+        // 单条快速删除（多选模式下用复选框，不重复显示）
+        if (!selecting) {
+            IconButton(onClick = onDelete) {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "删除「${item.title}」的记录",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
         }
     }
 }

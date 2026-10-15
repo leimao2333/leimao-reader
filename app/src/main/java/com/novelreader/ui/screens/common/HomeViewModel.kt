@@ -482,6 +482,16 @@ class HomeViewModel(
         }
     }
 
+    /** 删除一条「继续观看」记录（长按海报触发，v1.5.10.0 历史编辑） */
+    fun removeContinueWatching(item: com.novelreader.domain.model.MediaItem) {
+        viewModelScope.launch {
+            runCatching { progressRepository.removeProgress(item.sourceId, item.id) }
+            _videoHome.value = _videoHome.value.copy(
+                continueWatching = buildContinueWatching(_videoHome.value.sources),
+            )
+        }
+    }
+
     /** 下拉刷新（分区视图连「继续观看」一起刷新） */
     fun refreshVideoHome() {
         if (!_videoHome.value.expanded) {

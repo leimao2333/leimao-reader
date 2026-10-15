@@ -83,9 +83,16 @@ fun AppNavHost(
                     )
                 }
             )
+            // 标签下拉菜单（搜索框左侧，v1.5.10.0）
+            val tagsViewModel: com.novelreader.ui.screens.tag.TagsViewModel = viewModel(
+                factory = NovelViewModelFactory(container) {
+                    com.novelreader.ui.screens.tag.TagsViewModel(it.tagRepository)
+                }
+            )
             val scope = androidx.compose.runtime.rememberCoroutineScope()
             HomeScreen(
                 viewModel = homeViewModel,
+                tagsViewModel = tagsViewModel,
                 onOpenNovelItem = { item -> navController.navigate(Routes.novelDetail(item)) },
                 onOpenComicItem = { item -> navController.navigate(Routes.comicDetail(item)) },
                 onOpenVideoItem = { item -> navController.navigate(Routes.videoDetail(item)) },
@@ -111,6 +118,7 @@ fun AppNavHost(
                 onOpenExplore = { type -> navController.navigate(Routes.explore(type)) },
                 onOpenRss = { navController.navigate(Routes.RSS) },
                 onOpenHistory = { navController.navigate(Routes.HISTORY) },
+                onOpenTagSearch = { type, tag -> navController.navigate(Routes.tagSearch(type, tag)) },
                 onContinueReading = { item, chapters, target ->
                     NavCache.putChapters(item, chapters)
                     val index = target?.index?.coerceAtLeast(0) ?: 0
@@ -206,6 +214,48 @@ fun AppNavHost(
                             com.novelreader.domain.model.SourceType.VIDEO ->
                                 navController.navigate(Routes.videoPlayer(item, index))
                         }
+                    }
+                },
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        // ===== 标签搜索（v1.5.10.0）=====
+        composable(
+            route = Routes.TAG_SEARCH,
+            arguments = listOf(
+                navArgument("type") { type = NavType.StringType; defaultValue = "NOVEL" },
+                navArgument("tag") { type = NavType.StringType; defaultValue = "" },
+            ),
+        ) { backStackEntry ->
+            val typeName = backStackEntry.arguments?.getString("type") ?: "NOVEL"
+            val type = runCatching {
+                com.novelreader.domain.model.SourceType.valueOf(typeName)
+            }.getOrDefault(com.novelreader.domain.model.SourceType.NOVEL)
+            val initialTag = java.net.URLDecoder.decode(
+                backStackEntry.arguments?.getString("tag").orEmpty(),
+                "UTF-8",
+            )
+            val viewModel: com.novelreader.ui.screens.tag.TagSearchViewModel = viewModel(
+                factory = NovelViewModelFactory(container) {
+                    com.novelreader.ui.screens.tag.TagSearchViewModel(
+                        it.contentRepository,
+                        it.tagRepository,
+                        it.sourceRepository,
+                        type,
+                        initialTag,
+                    )
+                }
+            )
+            com.novelreader.ui.screens.tag.TagSearchScreen(
+                viewModel = viewModel,
+                onItemClick = { item ->
+                    when (type) {
+                        com.novelreader.domain.model.SourceType.COMIC ->
+                            navController.navigate(Routes.comicDetail(item))
+                        com.novelreader.domain.model.SourceType.VIDEO ->
+                            navController.navigate(Routes.videoDetail(item))
+                        else -> navController.navigate(Routes.novelDetail(item))
                     }
                 },
                 onBack = { navController.popBackStack() },

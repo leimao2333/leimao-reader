@@ -68,7 +68,10 @@ class TagRepository(
         val sources = runCatching { contentRepository.exploreSources(type, includeDisabled = true) }
             .getOrDefault(emptyList())
         val plan = LinkedHashMap<String, MutableList<Pair<String, String>>>()
+        /** 自己有分类能力的源（v1.7.0.0）：通用题材词不再给它们绑搜索入口 */
+        val withCategories = mutableSetOf<String>()
         for ((info, cats) in sources) {
+            if (cats.isNotEmpty()) withCategories += info.id
             for (cat in cats) {
                 // v1.6.2.0 清洗：源数据可能带前后空格、内部多空格、
                 // \n / \t / 全角空格等噪声。复用 [TagPlan.normalizeTag] 与
@@ -83,7 +86,7 @@ class TagRepository(
             }
         }
         // v1.6.6.0：漫画补充通用题材词，绑到「按题材搜索」入口
-        attachComicGenres(type, plan)
+        attachComicGenres(type, plan, withCategories)
         val snapshot = TagPlan(
             collectedAtMs = if (plan.isEmpty()) 0L else System.currentTimeMillis(),
             plan = plan,
@@ -98,10 +101,14 @@ class TagRepository(
     /**
      * 给漫画标签池补通用题材词（v1.6.6.0）。
      *
-     * 漫画源绝大多数没有发现分类能力（25 个 Venera 源协议层就没有分类浏览，
-     * legado 漫画源也大多没配 `exploreUrl`），只靠源分类时标签池只有几十个。
-     * 这里把 [ComicGenres.ALL] 里的题材词绑到漫画源的**搜索入口**
+     * 漫画源里有一部分**没有分类能力**：legado 漫画源大多没配 `exploreUrl`，
+     * 少数 Venera 源也解析不出 `category.parts`。只靠源分类时标签池会很小。
+     * 这里把 [ComicGenres.ALL] 里的题材词绑到这些源的**搜索入口**
      * （[TagEntryUrl.search]），点击标签即跨源按题材搜索——不依赖分类页。
+     *
+     * v1.7.0.0：**跳过已经有分类能力的源**（[withCategories]）。Venera 源现在
+     * 走的是真分类页（`vcat::` 入口），再给它绑一个「按标题搜」的搜索入口，
+     * 只会把搜标题撞出来的无关作品混进标签结果里，反而降低质量。
      *
      * 只给排序靠前的 [ComicGenres.MAX_SOURCES_PER_GENRE] 个源绑定：标签搜索是
      * 等全部源返回再展示，绑太多会把等待时间拉到几十秒（见该常量注释）。
@@ -110,11 +117,14 @@ class TagRepository(
     private suspend fun attachComicGenres(
         type: SourceType,
         plan: LinkedHashMap<String, MutableList<Pair<String, String>>>,
+        withCategories: Set<String> = emptySet(),
     ) {
         if (type != SourceType.COMIC) return
         val sourceIds = runCatching {
-            contentRepository.searchableSourceIds(type, ComicGenres.MAX_SOURCES_PER_GENRE)
+            contentRepository.searchableSourceIds(type, 0)
         }.getOrDefault(emptyList())
+            .filter { it !in withCategories }
+            .take(ComicGenres.MAX_SOURCES_PER_GENRE)
         if (sourceIds.isEmpty()) return
         for (genre in ComicGenres.ALL) {
             val entries = plan.getOrPut(genre) { mutableListOf() }

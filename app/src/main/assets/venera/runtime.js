@@ -654,11 +654,12 @@
         return src;
     }
 
-    function chaptersToPairs(chapters) {
+    /** 取「键值对」序列，兼容 Map / 普通对象 / 数组 */
+    function entriesOf(obj) {
         var out = [];
-        if (!chapters) return out;
-        if (typeof chapters.entries === 'function') {
-            var it = chapters.entries();
+        if (!obj) return out;
+        if (typeof obj.entries === 'function') {
+            var it = obj.entries();
             var step = it.next();
             while (!step.done) {
                 out.push(step.value);
@@ -666,8 +667,114 @@
             }
             return out;
         }
-        for (var k in chapters) {
-            if (Object.prototype.hasOwnProperty.call(chapters, k)) out.push([k, chapters[k]]);
+        if (Array.isArray(obj)) {
+            for (var i = 0; i < obj.length; i++) out.push([String(i), obj[i]]);
+            return out;
+        }
+        if (typeof obj === 'object') {
+            for (var k in obj) {
+                if (Object.prototype.hasOwnProperty.call(obj, k)) out.push([k, obj[k]]);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 判断章节的「值」是不是**分组容器**，而不是单独一章。
+     *
+     * Venera 的基础约定是 `chapters = Map<epId, 标题>`，但源可以写成两层
+     * `Map<分组名, Map<epId, 标题>>`——漫画人（manhuaren）就按「话数区间」分组。
+     * 两层结构若不当心展开，内层 Map 会被直接 `String()` 成 `[object Map]`，
+     * 目录里就整列显示成 `[object Map]`。
+     *
+     * 单个章节的值长这样：字符串，或带 `title` / `name` / `url` / `href` 的对象。
+     * 分组容器的值是 Map、数组，或「每个值都是字符串 / 对象」的纯对象。
+     */
+    function isChapterGroup(v) {
+        if (!v || typeof v !== 'object') return false;
+        if (typeof v.entries === 'function') return true;
+        if (Array.isArray(v)) return false;
+        if (typeof v.title === 'string' || typeof v.name === 'string' ||
+            typeof v.url === 'string' || typeof v.href === 'string') return false;
+        var ks = Object.keys(v);
+        if (ks.length === 0) return false;
+        for (var i = 0; i < ks.length; i++) {
+            var val = v[ks[i]];
+            if (val === null || val === undefined) return false;
+            if (typeof val !== 'object' && typeof val !== 'string') return false;
+        }
+        return true;
+    }
+
+    /** 分组名没信息量时（纯分隔标签）不往章节标题上拼 */
+    var GENERIC_GROUP_NAMES = ['连载', '正文', '默认', '全部', '目录', '章节', '漫画', '本话', 'default'];
+
+    /**
+     * 「看起来是卷号」的分组名才拼前缀。
+     *
+     * 拼上去有两个好处：目录里能看出这一话属于哪一卷；app 的
+     * `ComicChapterVolume` 正是从标题里解析卷号（第N卷 / 第N卷 / Vol.N）来做分卷展示的，
+     * 拼上就能自动分组。反过来，「第1-30话」这类区间标签拼上去只会变噪音，所以不拼。
+     */
+    var VOLUME_NAME_RES = [
+        /第\s*[0-9０-９]+\s*卷/,
+        /第\s*[零一二三四五六七八九十百千万两]+\s*卷/,
+        /卷\s*[0-9０-９]+/,
+        /vol\.?\s*[0-9０-９]+/i,
+    ];
+
+    function groupLabel(name) {
+        var s = String(name === undefined || name === null ? '' : name).trim();
+        if (!s) return '';
+        for (var i = 0; i < GENERIC_GROUP_NAMES.length; i++) {
+            if (s === GENERIC_GROUP_NAMES[i]) return '';
+        }
+        for (var j = 0; j < VOLUME_NAME_RES.length; j++) {
+            if (VOLUME_NAME_RES[j].test(s)) return s;
+        }
+        return '';
+    }
+
+    /** 给分组内的章节标题加分组前缀；标题里已经含分组名、或标题取不出来时不动 */
+    function labelChapter(label, value) {
+        if (!label) return value;
+        var t = chapterTitle(value);
+        if (!t) return label;
+        if (t.indexOf(label) >= 0) return value;
+        return label + ' ' + t;
+    }
+
+    /**
+     * 把源返回的 `chapters` 拍平成 `[epId, 标题]` 对数组。
+     *
+     * 支持：`Map<epId, 标题>` / 普通对象 / `[[epId, 标题], …]` /
+     * **两层嵌套分组**（`Map<分组名, Map<epId, 标题>>`）。
+     * 嵌套时把分组名拼到标题前（`第1卷 第3话`）。
+     */
+    function chaptersToPairs(chapters) {
+        var out = [];
+        // 已经是 `[[epId, 标题], …]` 的数组形态：直接用，别被当成下标键
+        if (Array.isArray(chapters) && chapters.length > 0 && Array.isArray(chapters[0])) {
+            for (var n = 0; n < chapters.length; n++) {
+                var p = chapters[n];
+                if (!p || p.length === 0) continue;
+                out.push([p[0], p.length > 1 ? p[1] : '']);
+            }
+            return out;
+        }
+        var direct = entriesOf(chapters);
+        for (var i = 0; i < direct.length; i++) {
+            var k = direct[i][0];
+            var v = direct[i][1];
+            if (!isChapterGroup(v)) {
+                out.push([k, v]);
+                continue;
+            }
+            var label = groupLabel(k);
+            var inner = entriesOf(v);
+            for (var j = 0; j < inner.length; j++) {
+                out.push([inner[j][0], labelChapter(label, inner[j][1])]);
+            }
         }
         return out;
     }
@@ -675,11 +782,26 @@
     function chapterTitle(v) {
         if (v === null || v === undefined) return '';
         if (typeof v === 'string') return v;
+        if (typeof v === 'number' || typeof v === 'boolean') return String(v);
         if (typeof v === 'object') {
             if (typeof v.title === 'string') return v.title;
             if (typeof v.name === 'string') return v.name;
+            // 数组：可能是 [epId, 标题] 之类的对，取后面的标题位
+            if (Array.isArray(v)) {
+                return v.length > 1 ? chapterTitle(v[1]) : chapterTitle(v[0]);
+            }
+            // 兜底：万一还有没展开的分组容器，也绝不返回 '[object Object]' / '[object Map]'
+            if (isChapterGroup(v)) {
+                var subs = [];
+                var pairs = entriesOf(v);
+                for (var i = 0; i < pairs.length; i++) {
+                    var t = chapterTitle(pairs[i][1]);
+                    if (t) subs.push(t);
+                }
+                return subs.join(' / ');
+            }
         }
-        return String(v);
+        return '';
     }
 
     /**
@@ -767,6 +889,171 @@
         return out;
     }
 
+    /**
+     * `tags` 里这些分组是**元信息**不是题材，摊平后要丢掉
+     * （Venera 的 `ComicDetails.tags` 是 `{分组名: [标签…]}`，
+     * kavita 用「作者 / 类型 / 标签」，包子漫画用「作者 / 标签」）。
+     */
+    var TAG_GROUP_SKIP = ['作者', '作者名', '别名', '提示', 'author', 'authors'];
+
+    /** 标签元素 → 名字；只有字符串（或带 name/title/label 的对象）才算标签 */
+    function tagName(x) {
+        if (x === null || x === undefined) return '';
+        if (typeof x === 'string') return x.trim();
+        if (typeof x === 'object') {
+            var n = x.name || x.title || x.label || x.tag || x.value;
+            return typeof n === 'string' ? n.trim() : '';
+        }
+        // 数字 / 布尔是坏数据，不当标签
+        return '';
+    }
+
+    /**
+     * 把源返回的 `tags` 归一成**字符串数组**。
+     *
+     * 两种写法在真实源里都很常见：
+     * - 数组：`["玄幻", "热血"]`（搜索列表结果基本都是这种）
+     * - 对象：`{ 作者: ["xx"], 标签: ["玄幻", "热血"] }` —— 这是 Venera
+     *   `ComicDetails` / `Comic` 的标准结构，**detail 响应几乎全是它**。
+     *
+     * 以前 app 侧直接按数组解析，遇到对象就整条解析失败（`getAsJsonArray`
+     * 抛 IllegalStateException），漫画源的标签与详情一起没了。
+     * 这里统一摊平，元信息分组（作者等）丢掉。
+     */
+    function flattenTags(v) {
+        var out = [];
+        var add = function (x) {
+            var s = tagName(x);
+            if (s && out.indexOf(s) < 0) out.push(s);
+        };
+        if (!v) return out;
+        if (Array.isArray(v)) {
+            for (var i = 0; i < v.length; i++) add(v[i]);
+            return out;
+        }
+        if (typeof v === 'object') {
+            var pairs = entriesOf(v);
+            for (var j = 0; j < pairs.length; j++) {
+                var group = String(pairs[j][0] === undefined ? '' : pairs[j][0]).trim();
+                if (TAG_GROUP_SKIP.indexOf(group) >= 0) continue;
+                var val = pairs[j][1];
+                if (Array.isArray(val)) {
+                    for (var k = 0; k < val.length; k++) add(val[k]);
+                } else {
+                    add(val);
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 把源返回的漫画数组序列化成 app 可消费的结构。
+     *
+     * `tags` 必须带上：不少源（包子漫画等）在列表里就给出该作品的题材标签，
+     * app 侧拿它做详情页标签栏、也用来判断「同时属于多个标签」（v1.7.0.0）。
+     */
+    function serializeComics(comics) {
+        var list = [];
+        var arr = comics || [];
+        for (var i = 0; i < arr.length; i++) {
+            var c = arr[i];
+            if (!c) continue;
+            list.push({
+                id: String(c.id === undefined || c.id === null ? '' : c.id),
+                title: c.title || '',
+                subTitle: c.subTitle || c.subtitle || '',
+                cover: c.cover || '',
+                description: c.description || '',
+                tags: flattenTags(c.tags),
+            });
+        }
+        return list;
+    }
+
+    /**
+     * 把「分类项」归一成 `{name, param, itemType}`。
+     *
+     * 分类项的三种写法（真实源里都出现过）：
+     * - 纯字符串：`"恋爱"`（param 取同下标的 `categoryParams[i]` / `groupParam`）
+     * - 老式对象：`{ label: "全彩", target: { action/page, param/attributes.param, keyword } }`
+     * - 动态 loader 的返回值：与上面两种同形，额外可能是 `{ name, param }`
+     *
+     * `itemType` 决定 app 侧怎么消费：`search` = 该分类没有分类页、退回搜索；
+     * 其余一律当分类页处理（Venera 里就是 `categoryComics.load`）。
+     */
+    function normalizeCategoryItem(raw, fallbackParam, fallbackType) {
+        if (raw === null || raw === undefined) return null;
+        if (typeof raw === 'string') {
+            var s = raw.trim();
+            if (!s) return null;
+            return { name: s, param: fallbackParam, itemType: fallbackType || 'category' };
+        }
+        if (typeof raw !== 'object') return null;
+        var target = raw.target || {};
+        var name = raw.label || raw.name || raw.title || target.keyword || '';
+        if (!name) return null;
+        var attributes = target.attributes || {};
+        var param = null;
+        if (target.param !== undefined && target.param !== null) param = target.param;
+        else if (attributes.param !== undefined && attributes.param !== null) param = attributes.param;
+        else if (raw.param !== undefined && raw.param !== null) param = raw.param;
+        else param = fallbackParam;
+        // action: 'category' → 分类页；'search' / 带 keyword 的 → 搜索
+        var type = fallbackType || 'category';
+        if (target.action === 'search' || target.page === 'search') type = 'search';
+        else if (target.action === 'category' || target.page === 'category') type = 'category';
+        var keyword = (target.keyword !== undefined && target.keyword !== null)
+            ? String(target.keyword) : String(name);
+        return { name: String(name), param: param, itemType: type, keyword: keyword };
+    }
+
+    /**
+     * 解析源声明的 `category = { parts: [...] }`（含 `type:"dynamic"` 的 loader）。
+     *
+     * 同时带上 `options`：分类页的**其它过滤器**（`categoryComics.optionList` 各组）
+     * 的默认选择，按位置取用（与 [defaultOptions] 同规则，`"all-全部"` → `"all"`）。
+     * app 侧把这份默认值随分类入口一起存下来，点标签时才能凑出一次合法调用。
+     */
+    async function collectCategoryParts(src) {
+        var cat = src.category;
+        var options = defaultOptions(src.categoryComics);
+        if (!cat || !Array.isArray(cat.parts) || !cat.parts.length) {
+            return { title: (cat && cat.title) || '', parts: [], options: options };
+        }
+        var parts = [];
+        for (var i = 0; i < cat.parts.length; i++) {
+            var part = cat.parts[i];
+            if (!part) continue;
+            var rawItems = [];
+            try {
+                if (part.type === 'dynamic' && typeof part.loader === 'function') {
+                    rawItems = await part.loader.call(src) || [];
+                } else {
+                    rawItems = part.categories || [];
+                }
+            } catch (e) {
+                // loader 可能需要登录 / 网络：单个 part 失败不能拖垮整张分类表
+                log('warning', 'category.parts[' + i + ']', String(e));
+                rawItems = part.categories || [];
+            }
+            if (!Array.isArray(rawItems)) rawItems = [];
+            var params = Array.isArray(part.categoryParams) ? part.categoryParams : [];
+            var group = (part.groupParam === undefined) ? null : part.groupParam;
+            var type = part.itemType || 'category';
+            var items = [];
+            for (var j = 0; j < rawItems.length; j++) {
+                var fallbackParam = params.length > j ? params[j] : group;
+                var item = normalizeCategoryItem(rawItems[j], fallbackParam, type);
+                if (item) items.push(item);
+            }
+            if (items.length) {
+                parts.push({ name: String(part.name || ''), items: items });
+            }
+        }
+        return { title: cat.title || '', parts: parts, options: options };
+    }
+
     async function doCall(key, op, args) {
         var src = await ensureSource(key);
         switch (op) {
@@ -792,21 +1079,30 @@
                     if (pageNo > 1) return { comics: [], maxPage: null };
                     r = await src.search.loadNext.call(src, args[0], opts, null);
                 }
-                var comics = (r && r.comics) || [];
-                var list = [];
-                for (var i = 0; i < comics.length; i++) {
-                    var c = comics[i];
-                    if (!c) continue;
-                    list.push({
-                        id: String(c.id === undefined || c.id === null ? '' : c.id),
-                        title: c.title || '',
-                        subTitle: c.subTitle || c.subtitle || '',
-                        cover: c.cover || '',
-                        description: c.description || '',
-                        tags: c.tags || [],
-                    });
+                return { comics: serializeComics((r && r.comics) || []), maxPage: (r && r.maxPage) || null };
+            }
+
+            // ===== 分类浏览（v1.7.0.0）=====
+            // Venera 源声明的 `category = { parts: [{name, categories, categoryParams,
+            // itemType, type}] }`，以前只被静态解析成「分类名 → 按关键词搜索」，
+            // 而搜索只匹配标题，于是漫画标签点了大概率查不到东西。
+            // 这里改成真正评估源代码里的分类表（dynamic part 调 loader），
+            // 再配合下面的 `categoryComics` 走源自己的分类页。
+            case 'categories':
+                return await collectCategoryParts(src);
+
+            case 'categoryComics': {
+                var loader = src.categoryComics && src.categoryComics.load;
+                if (typeof loader !== 'function') {
+                    throw new Error('该源没有实现分类加载（categoryComics.load）');
                 }
-                return { comics: list, maxPage: (r && r.maxPage) || null };
+                var ccOptions = Array.isArray(args[2]) ? args[2] : [];
+                var ccPage = args[3] || 1;
+                var res = await loader.call(src, args[0], args[1], ccOptions, ccPage);
+                return {
+                    comics: serializeComics((res && res.comics) || []),
+                    maxPage: (res && res.maxPage) || null,
+                };
             }
 
             case 'info': {
@@ -817,7 +1113,7 @@
                     subTitle: (d && (d.subtitle || d.subTitle)) || '',
                     cover: (d && d.cover) || '',
                     description: (d && d.description) || '',
-                    tags: (d && d.tags) || null,
+                    tags: flattenTags(d && d.tags),
                     updateTime: (d && d.updateTime) || '',
                     chapters: chaptersToPairs(d && d.chapters).map(function (p) {
                         return [String(p[0]), chapterTitle(p[1])];

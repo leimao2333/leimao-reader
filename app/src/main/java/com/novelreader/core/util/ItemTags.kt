@@ -26,6 +26,15 @@ object ItemTags {
     /** 单个条目最多展示几个标签（小栏展开后也沿用，防止异常源刷屏） */
     const val MAX_TAGS = 8
 
+    /**
+     * [MediaItem.extras] 里「源自带标签」的键（逗号分隔，v1.7.0.0）。
+     *
+     * Venera 源的列表 / 详情响应本来就带每部作品的题材（包子漫画的 `type_names`、
+     * MangaDex 的 tags…），以前在适配器里被丢掉。现在存进 extras 由这里读出来，
+     * 漫画详情页因此能多出一行真实题材，而不是只有浏览上下文那一个分类名。
+     */
+    const val EXTRAS_TAGS = "tags"
+
     /** 标签间分隔符：半/全角逗号、顿号、斜杠、竖线、空白 */
     private val SPLIT_REGEX = Regex("[,，、/|\\s]+")
 
@@ -56,8 +65,11 @@ object ItemTags {
         when (item.type) {
             SourceType.VIDEO -> addSplit(out, item.extras["typeName"], dropStatus = false)
             // legado 的 kind 偶尔被源写成状态（「连载中」/「1」），按片段过滤
-            SourceType.NOVEL, SourceType.COMIC ->
+            SourceType.NOVEL, SourceType.COMIC -> {
                 addSplit(out, item.extras["kind"], dropStatus = true)
+                // 源自带的题材标签（Venera 源响应里的 tags，v1.7.0.0）
+                addSplit(out, item.extras[EXTRAS_TAGS], dropStatus = true)
+            }
         }
         if (out.size > MAX_TAGS) return out.take(MAX_TAGS)
         return out.toList()

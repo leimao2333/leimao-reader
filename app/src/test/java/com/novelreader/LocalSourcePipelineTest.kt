@@ -55,6 +55,7 @@ class LocalSourcePipelineTest {
                 <a class="book-name" href="/book/1">测试小说</a>
                 <span class="book-author">测试作者</span>
                 <span class="book-intro">本地模拟源 · 用于装机实测</span>
+                <span class="book-status">连载中</span>
               </div>
             </div>
             </body></html>
@@ -65,6 +66,7 @@ class LocalSourcePipelineTest {
             <h1 class="book-title">测试小说</h1>
             <p class="book-author">测试作者</p>
             <p class="book-intro">这是一本用于「装机实测」的测试书籍。</p>
+            <span class="book-kind">玄幻</span>
             <div class="chapter-list">
               <div class="chapter-item"><a class="chapter-name" href="/chapter/1">第1章 测试章节</a></div>
               <div class="chapter-item"><a class="chapter-name" href="/chapter/2">第2章 测试章节</a></div>
@@ -84,7 +86,12 @@ class LocalSourcePipelineTest {
             """.trimIndent()
         }
 
-        /** 与「从文件导入」完全一致的书源 JSON（字段名为 ASCII，规则用 legado 短式） */
+        /**
+         * 与「从文件导入」完全一致的书源 JSON（字段名为 ASCII，规则用 legado 短式）。
+         *
+         * 刻意让 **`kind` 只出现在详情规则里**（搜索规则只给 `status`）：
+         * 这正是「小说详情页标签栏整行不见」的那类源，用来守住 v1.7.0.0 的修复。
+         */
         private fun sourceJson(base: String): String = """
             {
               "bookSourceName": "本地测试源",
@@ -97,12 +104,14 @@ class LocalSourcePipelineTest {
                 "name": "@css:.book-name",
                 "author": "@css:.book-author",
                 "bookUrl": ".book-name@href",
-                "intro": "@css:.book-intro"
+                "intro": "@css:.book-intro",
+                "status": "@css:.book-status"
               },
               "ruleBookInfo": {
                 "name": "@css:.book-title",
                 "author": "@css:.book-author",
-                "intro": "@css:.book-intro"
+                "intro": "@css:.book-intro",
+                "kind": "@css:.book-kind"
               },
               "ruleToc": {
                 "chapterList": "@css:.chapter-item",
@@ -206,6 +215,27 @@ class LocalSourcePipelineTest {
         assertEquals("测试小说", detail.title)
         assertEquals("测试作者", detail.author)
         assertTrue("简介应含关键字, 实际=${detail.desc}", detail.desc?.contains("装机实测") == true)
+    }
+
+    /**
+     * v1.7.0.0：`ruleBookInfo.kind` 以前只写进 extras["status"]，标签栏读的是
+     * extras["kind"]，于是「分类只由详情规则给出」的源在小说 / 漫画详情页
+     * 整行标签都不显示。同时 kind 不能把搜索阶段拿到的真实状态覆盖掉。
+     */
+    @Test
+    fun `详情 kind 进分类字段 - 标签栏派生得出且不覆盖状态`() = runBlocking {
+        val a = adapter()
+        val item = a.search("test", 1)[0]
+        assertEquals("搜索阶段应有状态", "连载中", item.extras["status"])
+
+        val detail = a.detail(item)
+        assertEquals("详情 kind 应落到 extras[\"kind\"]", "玄幻", detail.extras["kind"])
+        assertEquals("真实状态不应被分类名覆盖", "连载中", detail.extras["status"])
+
+        // 标签栏据此派生：分类进标签；状态词即使混进 kind 也会被过滤掉
+        val tags = com.novelreader.core.util.ItemTags.of(detail)
+        assertTrue("标签应含详情 kind, 实际=$tags", tags.contains("玄幻"))
+        assertEquals("连载中", com.novelreader.ui.components.BookMeta.statusText(detail))
     }
 
     @Test

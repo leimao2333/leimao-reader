@@ -49,7 +49,8 @@ class ComicGenresTest {
 
     @Test
     fun `题材词表无重复且数量符合预期`() {
-        assertEquals(32, ComicGenres.ALL.size)
+        // v1.7.0.0：32 → 66（补上主流漫画站同样高频的题材 / 受众词）
+        assertEquals(66, ComicGenres.ALL.size)
         assertEquals(ComicGenres.ALL.size, ComicGenres.ALL.distinct().size)
         assertTrue(ComicGenres.ALL.all { it.isNotBlank() })
     }

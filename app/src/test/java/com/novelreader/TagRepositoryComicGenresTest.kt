@@ -140,19 +140,24 @@ class TagRepositoryComicGenresTest {
     }
 
     @Test
-    fun `源自带同名分类时不重复绑定同一入口`() = runBlocking {
+    fun `有分类能力的源不再绑题材词搜索入口`() = runBlocking {
         val r = repo(
             withCategories = listOf(
                 info("legado_1", "铅笔漫画") to listOf(ExploreCategory("热血", "/list/31")),
             ),
-            // 同一个源既给了分类，又在可搜索源里
-            searchable = listOf("legado_1"),
+            // 同一个源既给了分类，又在可搜索源里；另一个源没有任何分类
+            searchable = listOf("legado_1", "legado_2"),
         )
         val plan = r.refresh(SourceType.COMIC)
         val entries = plan.entriesFor("热血")
-        // 两条入口：一条发现分类、一条搜索；互不覆盖
-        assertEquals(2, entries.size)
-        assertEquals(1, entries.count { TagEntryUrl.searchKeywordOf(it.second) == "热血" })
+        // legado_1 只留一条「真分类」入口；题材词的搜索入口只给没有分类能力的 legado_2
+        assertEquals(1, entries.count { it.first == "legado_1" })
+        assertEquals("/list/31", entries.first { it.first == "legado_1" }.second)
+        assertEquals(listOf("legado_2"), entries.filter { it.first != "legado_1" }.map { it.first })
+        assertEquals(
+            "热血",
+            TagEntryUrl.searchKeywordOf(entries.first { it.first == "legado_2" }.second),
+        )
     }
 
     @Test

@@ -28,7 +28,7 @@ object Routes {
     const val EXPLORE = "explore?type={type}"   // 发现页（v1.2.3.0，按类型枚举源的发现分类）
 
     // ===== 漫画 =====
-    const val COMIC_SEARCH = "comic_search"
+    const val COMIC_SEARCH = "comic_search?keyword={keyword}"
     const val COMIC_DETAIL = "comic_detail/{item}"
     const val COMIC_READER = "comic_reader/{item}/{chapterIndex}"
 
@@ -51,6 +51,12 @@ object Routes {
     fun novelSearch(initialKeyword: String = ""): String {
         val kw = java.net.URLEncoder.encode(initialKeyword, "UTF-8")
         return "novel_search?keyword=$kw"
+    }
+
+    /** 漫画搜索页；与小说 / 影视一致，initialKeyword 非空时进入后按该关键词预搜索 */
+    fun comicSearch(initialKeyword: String = ""): String {
+        val kw = java.net.URLEncoder.encode(initialKeyword, "UTF-8")
+        return "comic_search?keyword=$kw"
     }
 
     /** 发现页；type 为 SourceType 名称（NOVEL/COMIC/VIDEO） */

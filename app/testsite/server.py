@@ -23,6 +23,7 @@
 - 片名带 `·T1` / `·T2` / `·T3` 后缀，标出它来自哪个采集接口，便于验证跨源聚合。
 """
 
+import io
 import json
 import os
 import struct
@@ -134,6 +135,76 @@ def site_tag(path: str) -> str:
     return "X"
 
 
+# ===================== 漫画接口（/comic/api/*，v1.7.0.0）=====================
+# 用来验收「Venera 源的分类页浏览」与「复合搜索 = 同源交集 + 翻页探测」。
+#
+# 数据刻意做成**一部作品可以同时属于多个题材**（真实漫画站就是如此）：
+#   - 恋爱 ∩ 校园 = 恋爱校园物语 / 校园恋爱日常  → 第 1 页就能命中；
+#   - 热血 ∩ 奇幻 = 双面英雄                   → 榜单里排最后，
+#     两个分类的第 1 页都没有它，**只有翻到第 2 页才找得到**
+#     （专门用来验证复合搜索的翻页探测，不然「翻页」这条路径永远没被测过）。
+COMIC_PAGE_SIZE = 12
+
+COMIC_TAGS = {
+    "1": ["恋爱", "校园"],
+    "2": ["奇幻"],
+    "3": ["校园"],
+    "4": ["热血"],
+    "5": ["恋爱", "奇幻"],
+    "6": ["恋爱", "校园"],
+    "35": ["热血", "奇幻"],
+}
+for _i in range(7, 21):      # 热血填充：把「双面英雄」挤出第 1 页
+    COMIC_TAGS[str(_i)] = ["热血"]
+for _i in range(21, 35):     # 奇幻填充
+    COMIC_TAGS[str(_i)] = ["奇幻"]
+
+COMIC_TITLES = {
+    "1": "恋爱校园物语·本地",
+    "2": "奇幻冒险谭·本地",
+    "3": "纯情校园·本地",
+    "4": "热血格斗王·本地",
+    "5": "跨界恋曲·本地",
+    "6": "校园恋爱日常·本地",
+    "35": "双面英雄·本地",
+}
+
+# 分类参数（Venera 的 categoryParams）→ 题材名
+COMIC_PARAMS = {
+    "all": None,
+    "lianai": "恋爱",
+    "xiaoyuan": "校园",
+    "qihuan": "奇幻",
+    "rexie": "热血",
+}
+
+
+def comic_title(cid: str) -> str:
+    if cid in COMIC_TITLES:
+        return COMIC_TITLES[cid]
+    tags = COMIC_TAGS.get(cid, [])
+    return f"{'/'.join(tags) or '综合'}填充{int(cid):02d}·本地"
+
+
+def comic_json(cid: str) -> dict:
+    return {
+        "id": cid,
+        "title": comic_title(cid),
+        "cover": f"http://10.0.2.2:8899/pic/{9000 + int(cid)}.png",
+        "tags": COMIC_TAGS.get(cid, []),
+    }
+
+
+def comic_page(ids: list, page: int) -> dict:
+    start = max(0, (page - 1) * COMIC_PAGE_SIZE)
+    picked = ids[start:start + COMIC_PAGE_SIZE]
+    max_page = (len(ids) + COMIC_PAGE_SIZE - 1) // COMIC_PAGE_SIZE
+    return {
+        "items": [comic_json(c) for c in picked],
+        "maxPage": max_page if page < max_page else page,
+    }
+
+
 def make_items(tag: str, type_id: int, type_name: str, with_play: bool):
     items = []
     for n in range(1, PER_CATEGORY + 1):
@@ -219,6 +290,58 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.endswith("/favicon.ico"):
             return self._send(b"", "image/x-icon")
+
+        # 本地 Venera 漫画源本体：导入时粘贴 http://10.0.2.2:8899/local_comic.js
+        if path.endswith("/local_comic.js"):
+            with io.open(os.path.join(HERE, "local_comic.js"), "r", encoding="utf-8") as f:
+                return self._send(f.read().encode("utf-8"), "application/javascript; charset=utf-8")
+
+        # ===== 漫画接口（给本地 Venera 漫画源用，v1.7.0.0）=====
+        # 形状与真实源一致：{items:[{id,title,cover,tags}], maxPage}
+        if path.startswith("/comic/api/"):
+            page_no = int((query.get("page") or ["1"])[0] or "1")
+            ctype = "application/json; charset=utf-8"
+            if path.endswith("/info"):
+                cid = (query.get("id") or ["1"])[0]
+                item = comic_json(cid)
+                body = dict(item)
+                body.update({
+                    "description": f"[本地] {item['title']} 的简介，题材：{'/'.join(item['tags'])}",
+                    # 详情响应的 tags 是**对象**（Venera ComicDetails 的标准写法：
+                    # {分组名: [标签…]}）。「作者」是元信息分组，不该当标签展示 →
+                    # 详情页标签栏应只出现 类型 / 标签 两个分组的内容。
+                    "tags": {
+                        "作者": ["本地作者"],
+                        "类型": item["tags"],
+                        "标签": ["本地", "验收"],
+                    },
+                    # 目录刻意做成**两层 Map**（分组名 → {epId: 标题}），漫画人
+                    # （manhuaren）就是这么写的 —— 验收「分组要摊平，不能显示成
+                    # [object Map]」；「连载」是通用分组名（不拼前缀），
+                    # 「第 2 卷」要拼成「第 2 卷 第 03 话」。
+                    "chapterGroups": [
+                        {"group": "连载", "eps": {"e1": "第 01 话", "e2": "第 02 话"}},
+                        {"group": "第 2 卷", "eps": {"e3": "第 03 话", "e4": "第 04 话"}},
+                    ],
+                })
+            elif path.endswith("/search"):
+                kw = (query.get("q") or [""])[0].strip()
+                ids = [
+                    c for c in sorted(COMIC_TAGS, key=int)
+                    if kw and kw in comic_title(c)
+                ]
+                body = {"items": [comic_json(c) for c in ids], "maxPage": 1}
+            else:
+                want = COMIC_PARAMS.get((query.get("type") or ["all"])[0], None)
+                ids = [
+                    c for c in sorted(COMIC_TAGS, key=int)
+                    if want is None or want in COMIC_TAGS.get(c, [])
+                ]
+                body = comic_page(ids, page_no)
+            return self._send(
+                json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                ctype,
+            )
 
         ac = (query.get("ac") or [""])[0]
         pg = int((query.get("pg") or ["1"])[0] or "1")

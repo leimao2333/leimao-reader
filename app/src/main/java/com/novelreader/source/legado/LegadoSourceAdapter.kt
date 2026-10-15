@@ -564,7 +564,18 @@ class LegadoSourceAdapter(
             desc = fieldValue("intro") ?: desc
             // 详情页元信息（#27）：状态 / 字数 / 最新章节 / 更新时间
             // 搜索阶段未带出的字段，在此从详情规则补齐（缺失则保留搜索时的值）
-            fieldValue("kind")?.takeIf { it.isNotBlank() }?.let { extras["status"] = it }
+            //
+            // kind 是**一物两用**的字段：多数源写的是分类（「玄幻」「热血」），
+            // 少数源混写状态（「连载中」）。v1.6.9.0 之前只落到 extras["status"]，
+            // 结果详情页标签栏（ItemTags 读 extras["kind"]）在只由详情规则给出 kind
+            // 的源上永远是空的 —— 小说 / 漫画详情页看不到标签就是这么来的。
+            // 现在 extras["kind"] 一定写（状态词会被 ItemTags 过滤掉，不会当标签）；
+            // extras["status"] 只在还是空的时候回填，免得把搜索阶段拿到的真实状态
+            // （「连载中」）覆盖成分类名（v1.7.0.0）。
+            fieldValue("kind")?.takeIf { it.isNotBlank() }?.let {
+                extras["kind"] = it
+                if (extras["status"].isNullOrBlank()) extras["status"] = it
+            }
             fieldValue("wordCount")?.takeIf { it.isNotBlank() }?.let { extras["wordCount"] = it }
             fieldValue("lastUpdate")?.takeIf { it.isNotBlank() }?.let { extras["lastUpdate"] = it }
             fieldValue("lastChapter")?.takeIf { it.isNotBlank() }?.let { extras["lastChapter"] = it }

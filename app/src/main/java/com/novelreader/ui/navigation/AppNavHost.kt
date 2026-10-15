@@ -60,7 +60,7 @@ fun AppNavHost(
     androidx.compose.runtime.LaunchedEffect(initialNovelSearchKeyword) {
         if (!initialNovelSearchKeyword.isNullOrBlank()) {
             when (initialSearchType.lowercase()) {
-                "comic" -> navController.navigate(Routes.COMIC_SEARCH)
+                "comic" -> navController.navigate(Routes.comicSearch(initialNovelSearchKeyword))
                 "video" -> navController.navigate(Routes.videoSearch(initialNovelSearchKeyword))
                 else -> navController.navigate(Routes.novelSearch(initialKeyword = initialNovelSearchKeyword))
             }
@@ -106,7 +106,7 @@ fun AppNavHost(
                 onOpenSources = { navController.navigate(Routes.SOURCE_MANAGE) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
                 onOpenNovelSearch = { navController.navigate(Routes.novelSearch()) },
-                onOpenComicSearch = { navController.navigate(Routes.COMIC_SEARCH) },
+                onOpenComicSearch = { navController.navigate(Routes.comicSearch()) },
                 onOpenVideoSearch = { navController.navigate(Routes.videoSearch()) },
                 onOpenExplore = { type -> navController.navigate(Routes.explore(type)) },
                 onOpenRss = { navController.navigate(Routes.RSS) },
@@ -576,7 +576,16 @@ fun AppNavHost(
         }
 
         // ===== 漫画：搜索 =====
-        composable(Routes.COMIC_SEARCH) {
+        composable(
+            route = Routes.COMIC_SEARCH,
+            arguments = listOf(navArgument("keyword") {
+                type = NavType.StringType
+                defaultValue = ""
+            }),
+        ) { backStackEntry ->
+            // 与小说 / 影视搜索页对齐：带关键词进来自动搜一次
+            // （深链 novelreader://search?keyword=xx&type=comic 靠它落地）
+            val initialKeyword = backStackEntry.arguments?.getString("keyword").orEmpty()
             val viewModel: ComicSearchViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
                     ComicSearchViewModel(it.contentRepository, it.preferencesManager)
@@ -584,6 +593,7 @@ fun AppNavHost(
             )
             ComicSearchScreen(
                 viewModel = viewModel,
+                initialKeyword = initialKeyword,
                 onItemClick = { item ->
                     navController.navigate(Routes.comicDetail(item))
                 },

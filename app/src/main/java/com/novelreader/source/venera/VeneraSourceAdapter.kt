@@ -1,5 +1,6 @@
 package com.novelreader.source.venera
 
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.novelreader.core.util.TagEntryUrl
@@ -30,29 +31,103 @@ class VeneraSourceAdapter(
     private val key: String get() = info.id
 
     /**
-     * 发现分类 = 源自己声明的分类表（v1.6.6.0）。
+     * 发现分类 = 源**自己声明的分类表**（v1.6.6.0；v1.7.0.0 改走真分类页）。
      *
-     * Venera 协议没有「按分类浏览」接口，所以以前这些源在标签体系里零贡献
-     * （25 个 Venera 漫画源一个标签都产不出来）。源代码里的 `category.parts[].categories`
-     * 其实就是完整的分类表，直接拿来当标签，并绑成**按关键词搜索**入口
-     * （[TagEntryUrl]）——点标签时改走本源的 `search`，链路依然通。
+     * Venera 协议没有统一的「发现分类」接口，但源代码里 `category.parts[]` 就是完整的
+     * 分类表（含 `type:"dynamic"` 的 loader）。v1.6.6.0 起把它静态解析成分类名、
+     * 绑成**按关键词搜索**入口 —— 这是当时的权宜之计：搜索只匹配标题，
+     * 漫画里点「恋爱」基本搜不到东西，复合搜索更是永远出不来。
      *
-     * 这样漫画标签池一下多了几百个跨源标签，而且都是源自己维护的、随源更新。
+     * v1.7.0.0 改成在 WebView 里**真实评估** `category`（loader 一并执行），
+     * 每个分类项带着 `param`（源自己的分类参数）与其它过滤器的默认值，
+     * 绑成 `vcat::` 分类入口 —— 点标签 = 走源自己的 `categoryComics.load`，
+     * 和 Venera 客户端的分类页完全同一条链路。
+     *
+     * 运行时报错（源语法特殊 / loader 需要登录）时退回静态解析的 `search::` 入口，
+     * 至少还有标签可用。
      */
-    override suspend fun exploreCategories(): List<ExploreCategory> =
-        VeneraCategories.parse(code).map { name ->
+    override suspend fun exploreCategories(): List<ExploreCategory> {
+        runtimeCategories()?.let { if (it.isNotEmpty()) return it }
+        return VeneraCategories.parse(code).map { name ->
             ExploreCategory(title = name, url = TagEntryUrl.search(name))
         }
+    }
+
+    /** 在 WebView 里评估源的分类表 → 分类入口；失败 / 无分类返回 null */
+    private suspend fun runtimeCategories(): List<ExploreCategory>? = runCatching {
+        engine.putSource(key, code)
+        val obj = JsonParser.parseString(engine.call(key, "categories")).asJsonObject
+        val defaults: List<JsonElement> =
+            obj.getAsJsonArray("options")?.toList() ?: emptyList()
+        val parts = obj.getAsJsonArray("parts") ?: return@runCatching null
+        val out = mutableListOf<ExploreCategory>()
+        for (partEl in parts) {
+            val items = partEl.asJsonObject.getAsJsonArray("items") ?: continue
+            for (itemEl in items) {
+                val item = itemEl.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                val name = item.textOrNull("name") ?: continue
+                val kind = item.textOrNull("itemType") ?: CATEGORY_KIND
+                val url = if (kind == SEARCH_KIND) {
+                    TagEntryUrl.search(item.textOrNull("keyword") ?: name)
+                } else {
+                    TagEntryUrl.category(
+                        name = name,
+                        param = item.get("param"),
+                        options = defaults,
+                    )
+                }
+                // 同名分类在不同 part 里出现时保留先出现的那个（标签身份是名字）
+                if (out.none { it.title == name }) out += ExploreCategory(title = name, url = url)
+            }
+        }
+        out.ifEmpty { null }
+    }.getOrNull()
 
     override suspend fun search(keyword: String, page: Int): List<MediaItem> {
         engine.putSource(key, code)
-        val json = engine.call(key, "search", keyword, page)
+        return parseComics(engine.call(key, "search", keyword, page))
+    }
+
+    /**
+     * 分类页浏览（v1.7.0.0）：标签池里的 `vcat::` 入口落到这里。
+     *
+     * 分类页拿不到内容时（源改了接口 / 该分类为空）退回按分类名搜索，
+     * 至少不是空手 —— 与 v1.6.6.0 的老行为兼容。
+     */
+    override suspend fun exploreFilter(
+        url: String,
+        page: Int,
+        filters: Map<String, String>,
+    ): List<MediaItem> {
+        val entry = TagEntryUrl.categoryOf(url)
+        if (entry != null && entry.kind != SEARCH_KIND) {
+            val comics = runCatching {
+                engine.putSource(key, code)
+                parseComics(
+                    engine.call(key, "categoryComics", entry.name, entry.param, entry.options, page),
+                )
+            }.getOrDefault(emptyList())
+            if (comics.isNotEmpty()) return comics
+        }
+        val keyword = entry?.keyword ?: entry?.name ?: TagEntryUrl.searchKeywordOf(url)
+        return search(keyword ?: url, page)
+    }
+
+    /**
+     * 解析源返回的漫画列表。
+     *
+     * `tags` 一路带出到 [MediaItem.extras]：包子漫画等源在列表里就给出每部作品的
+     * 题材标签，详情页标签栏与「同时属于多个标签」的判断都用得上（v1.7.0.0）。
+     */
+    private fun parseComics(json: String): List<MediaItem> {
         val obj = JsonParser.parseString(json).asJsonObject
         val arr = obj.getAsJsonArray("comics") ?: return emptyList()
         return arr.mapNotNull { el ->
             val c = el.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
             val id = c.str("id")
             if (id.isNullOrBlank()) return@mapNotNull null
+            val extras = mutableMapOf<String, String>()
+            itemTags(c)?.let { extras[com.novelreader.core.util.ItemTags.EXTRAS_TAGS] = it }
             MediaItem(
                 id = id,
                 title = c.str("title").orEmpty(),
@@ -63,9 +138,25 @@ class VeneraSourceAdapter(
                 detailUrl = id,
                 sourceId = info.id,
                 sourceName = info.name,
+                extras = extras,
             )
         }
     }
+
+    /**
+     * 列表 / 详情响应里的 `tags` → 逗号分隔字符串。
+     *
+     * 归一化口径（数组 / 对象两种形态、丢掉作者等元信息分组）收在
+     * [VeneraTags.parse]，那边有单测，这里只做「拼接 + 空则不写」。
+     */
+    private fun itemTags(obj: JsonObject): String? =
+        VeneraTags.parse(obj.get("tags"))
+            .takeIf { it.isNotEmpty() }
+            ?.joinToString(",")
+
+    /** 取字符串字段（非字符串 / 缺失 → null） */
+    private fun JsonObject?.textOrNull(key: String): String? =
+        this?.get(key)?.takeIf { it.isJsonPrimitive }?.asString?.trim()?.takeIf { it.isNotEmpty() }
 
     override suspend fun detail(item: MediaItem): MediaItem {
         val comicId = item.detailUrl.ifBlank { item.id }
@@ -74,6 +165,9 @@ class VeneraSourceAdapter(
         val obj = JsonParser.parseString(json).asJsonObject
         val extras = item.extras.toMutableMap()
         obj.str("updateTime")?.takeIf { it.isNotBlank() }?.let { extras["lastUpdate"] = it }
+        // v1.7.0.0：详情/搜索响应自带的作品题材标签（如包子漫画的 type_names）也带出来，
+        // 详情页标签栏据此多一行分类，不用再去猜
+        itemTags(obj)?.let { extras[com.novelreader.core.util.ItemTags.EXTRAS_TAGS] = it }
         return item.copy(
             title = obj.str("title")?.takeIf { it.isNotBlank() } ?: item.title,
             cover = obj.str("cover")?.takeIf { it.isNotBlank() } ?: item.cover,
@@ -201,6 +295,12 @@ class VeneraSourceAdapter(
     companion object {
         private const val TAG = "VeneraAdapter"
         private const val CHAPTER_SEP = "|"
+
+        /** 分类项的 itemType：走分类页（默认） */
+        private const val CATEGORY_KIND = "category"
+
+        /** 分类项的 itemType：该分类没有分类页，退回搜索 */
+        private const val SEARCH_KIND = "search"
 
         /** 交由客户端协商的请求头（见 [sanitizeHeaders]） */
         private val DROPPED_HEADERS = setOf(

@@ -60,6 +60,40 @@ class ItemTagsTest {
     }
 
     @Test
+    fun `漫画读取源自带题材标签`() {
+        // v1.7.0.0：Venera 源响应里的 tags（如包子漫画的 type_names）也要展示
+        val out = ItemTags.of(
+            item(
+                SourceType.COMIC,
+                extras = mapOf(ItemTags.EXTRAS_TAGS to "恋爱,校园,日常"),
+            ),
+        )
+        assertEquals(listOf("恋爱", "校园", "日常"), out)
+    }
+
+    @Test
+    fun `源自带标签与 kind 并存且去重`() {
+        val out = ItemTags.of(
+            item(
+                SourceType.COMIC,
+                extras = mapOf(
+                    "kind" to "热血",
+                    ItemTags.EXTRAS_TAGS to "热血,冒险",
+                ),
+            ),
+        )
+        assertEquals(listOf("热血", "冒险"), out)
+    }
+
+    @Test
+    fun `源自带标签里的状态词被过滤`() {
+        val out = ItemTags.of(
+            item(SourceType.COMIC, extras = mapOf(ItemTags.EXTRAS_TAGS to "已完结,奇幻")),
+        )
+        assertEquals(listOf("奇幻"), out)
+    }
+
+    @Test
     fun `kind 是状态词时过滤`() {
         // legado 的 kind 偶尔被源写成状态，不是分类
         assertEquals(

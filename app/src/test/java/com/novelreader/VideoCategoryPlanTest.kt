@@ -9,15 +9,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 视频分类合并纯逻辑单测（v1.6.7.0）。
+ * 视频分类合并纯逻辑单测（v1.6.7.0；v1.6.8.0 补「其他」兜底类型）。
  *
- * 两条核心不变式：
+ * 三条核心不变式：
  * 1. **分类的身份是「分类名」，不是源内地址** —— 苹果 CMS 的地址是 `type_id`
  *    （1/2/9…），跨源必然撞号；身份用错就会出现「点 A 分类出 B 内容」
  *    「两个分类同时打勾」「标题显示错」。
  * 2. **类型必须归位且顺序固定** —— 各源把「动作片」当一级还是二级并不一致，
  *    直接按 `parent` 判类型会把 180 多个名字（含套图社 / 成人栏目 / 站内公告）
  *    全塞进「类型」下拉，而且首页分区会随源顺序乱跳。
+ * 3. **归不进去的一个都不丢** —— 全部进「其他」兜底类型（v1.6.8.0），
+ *    按覆盖源数倒序；合览时每源最多 5 条，单个分类精确选中不受限。
  */
 class VideoCategoryPlanTest {
 
@@ -84,16 +86,86 @@ class VideoCategoryPlanTest {
     }
 
     @Test
-    fun `未归类名字不展示（套图社 成人栏目 站内公告）`() {
+    fun `未归类名字全部进其他而不是被丢弃`() {
+        // v1.6.8.0：用户明确要求「没包含的都加进去」。套图社 / 成人栏目 / 站内公告
+        // 都收进「其他」，按覆盖源数倒序（跨源通用的排前面）
+        val plan = VideoCategoryPlan.build(
+            sourceOrder = listOf("A", "B"),
+            catsBySource = mapOf(
+                "A" to listOf(cat("爱蜜社", "7"), cat("成人笑话", "8"), cat("采集教程", "9")),
+                "B" to listOf(cat("成人笑话", "18")),
+            ),
+        )
+        assertEquals(listOf("其他"), plan.tree.keys.toList())
+        // 「成人笑话」两个源都有排最前，其余按首次出现序
+        assertEquals(listOf("成人笑话", "爱蜜社", "采集教程"), plan.tree["其他"])
+        // 地址表按名合并、逐源各留各的
+        assertEquals(
+            listOf(CategorySource("A", "8"), CategorySource("B", "18")),
+            plan.urls["成人笑话"],
+        )
+    }
+
+    @Test
+    fun `其他合览每源最多五条杂项地址`() {
+        // 线上实测：101 个杂项名字只来自 13 个源，最多的单源占 37 条。
+        // OkHttp 同 Host 并发 5，全打只会排队撞 10s 超时 → 每源截 5 条
+        val plan = VideoCategoryPlan.build(
+            sourceOrder = listOf("A", "B"),
+            catsBySource = mapOf(
+                "A" to (1..8).map { cat("杂项$it", "$it") },
+                "B" to listOf(cat("爱蜜社", "7")),
+            ),
+        )
+        // 合览：A 只取前 5 条（源的声明顺序），B 取 1 条
+        assertEquals(6, plan.typeUrls["其他"]?.size)
+        assertTrue(plan.typeUrls["其他"]!!.take(5).all { it.sourceId == "A" })
+        assertEquals(CategorySource("B", "7"), plan.typeUrls["其他"]!!.last())
+        // 但下拉里名字全都列得出来（A 的 8 个杂项 + B 的「爱蜜社」= 9），
+        // 单个精确选中不受上限影响
+        assertEquals(9, plan.tree["其他"]?.size)
+        assertEquals(
+            listOf(CategorySource("A", "8")),
+            VideoCategoryPlan.targetsOf(plan, "其他", "杂项8", listOf("A", "B")),
+        )
+    }
+
+    @Test
+    fun `未归类父级及其子分类都进其他`() {
+        // 「视频一区」这种站内结构父级也查不到归属，父子一起拍平进「其他」，
+        // 各自成为可选中项（父级在苹果 CMS 里本身就是可查询地址）
         val plan = VideoCategoryPlan.build(
             sourceOrder = listOf("A"),
             catsBySource = mapOf(
-                "A" to listOf(cat("爱蜜社", "7"), cat("成人笑话", "8"), cat("采集教程", "9")),
+                "A" to listOf(
+                    cat("视频一区", "50"),
+                    cat("日本有码", "51", parent = "视频一区"),
+                    cat("中文字幕", "52", parent = "视频一区"),
+                ),
             ),
         )
-        assertTrue(plan.tree.isEmpty())
-        // 但地址表里仍然保留，详情页/其他入口按名查不会被误伤
-        assertEquals(listOf(CategorySource("A", "7")), plan.urls["爱蜜社"])
+        assertEquals(listOf("视频一区", "日本有码", "中文字幕"), plan.tree["其他"])
+        // 合览三条都在（未超每源 5 条上限）
+        assertEquals(3, plan.typeUrls["其他"]?.size)
+    }
+
+    @Test
+    fun `只选其他时逐源取杂项地址且不可用的源被跳过`() {
+        val plan = VideoCategoryPlan.build(
+            sourceOrder = listOf("A", "B"),
+            catsBySource = mapOf(
+                "A" to listOf(cat("爱蜜社", "7"), cat("秀人网", "8")),
+                "B" to listOf(cat("福利", "9")),
+            ),
+        )
+        assertEquals(
+            listOf(CategorySource("A", "7"), CategorySource("A", "8"), CategorySource("B", "9")),
+            VideoCategoryPlan.targetsOf(plan, "其他", "", listOf("A", "B")),
+        )
+        assertEquals(
+            listOf(CategorySource("B", "9")),
+            VideoCategoryPlan.targetsOf(plan, "其他", "", listOf("B", "C")),
+        )
     }
 
     @Test
@@ -106,7 +178,9 @@ class VideoCategoryPlanTest {
                 "B" to listOf(cat("福利", "1")),
             ),
         )
-        assertEquals(listOf("预告片"), plan.tree.keys.toList())
+        // 「福利」归不进规范类型，进「其他」兜底，但不会被预告片吞掉
+        assertEquals(listOf("预告片", "其他"), plan.tree.keys.toList())
+        assertEquals(listOf("福利"), plan.tree["其他"])
         assertEquals(listOf(CategorySource("A", "1")), plan.typeUrls["预告片"])
         assertEquals(listOf(CategorySource("B", "1")), plan.urls["福利"])
     }
@@ -310,9 +384,12 @@ class VideoCategoryPlanTest {
         assertEquals("动漫", VideoTypeMap.typeOf("里番动漫"))
         assertEquals("体育", VideoTypeMap.typeOf("篮球"))
         assertEquals("资讯", VideoTypeMap.typeOf("头条"))
-        // 非影视栏目不该被归位（否则又会塞满「类型」下拉）
+        // 非影视栏目不该被归位到规范类型（进「其他」兜底，见 build 的测试）
         assertEquals(null, VideoTypeMap.typeOf("爱蜜社"))
         assertEquals(null, VideoTypeMap.typeOf("采集教程"))
         assertEquals(null, VideoTypeMap.typeOf(""))
+        // 「其他」是兜底类型，恒排在 9 个规范类型之后
+        assertEquals("其他", VideoTypeMap.ORDER.last())
+        assertEquals(10, VideoTypeMap.ORDER.size)
     }
 }

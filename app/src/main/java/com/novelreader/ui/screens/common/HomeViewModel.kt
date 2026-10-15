@@ -704,9 +704,11 @@ class HomeViewModel(
         //       type_id（1/2/9…），聚合 40 多个源时不同分类会撞同一个数字，旧实现拿它当
         //       身份，于是「点 A 分类出 B 内容、下拉里两个分类同时打勾、大标题显示成另
         //       一个名字」；
-        //    ② 类型用 VideoTypeMap **归位**到 9 个规范类型并按固定顺序排列 —— 之前直接
+        //    ② 类型用 VideoTypeMap **归位**到规范类型并按固定顺序排列 —— 之前直接
         //       拿「父级为空」当一级类型，185 个名字（含套图社 / 成人栏目 / 站内公告）
         //       全塞进「类型」下拉，且首页分区取前 12 个键，源顺序一变分区就乱跳。
+        //       v1.6.8.0：归不进去的名字不再丢弃，全部进**「其他」**兜底类型
+        //       （按覆盖源数倒序），一个都不少。
         //    纯逻辑见 VideoCategoryPlan。
         val catPlan = com.novelreader.core.util.VideoCategoryPlan.build(
             sourceOrder = orderedAlive.map { it.id },
@@ -873,8 +875,12 @@ class HomeViewModel(
      * v1.6.7.0 升到 `home_v3`：payload 结构又变了（类型改成 `VideoTypeMap` 归位后的
      * 规范类型，并新增 `categoryTypeUrls`），`home_v2` 里存的是未归位的老类型名，
      * 反序列化出来会让「类型」下拉又变乱。key 换代让旧缓存自然作废，不必写兼容代码。
+     *
+     * v1.6.8.0 再升 `home_v4`：payload 结构没变，但树里**多了一个「其他」类型**
+     * （未归位的杂项分类不再丢弃）。首页「加载一次之后固定」，不升 key 的话
+     * 老用户升级后看到的还是没有「其他」的旧缓存，得手动点刷新才出现。
      */
-    private fun homeCacheKey() = "home_v3"
+    private fun homeCacheKey() = "home_v4"
 
     private fun channelCacheKey(channel: VideoChannel) = "channel_${channel.name}"
 

@@ -121,6 +121,37 @@ class VideoHomeSectionsTest {
     }
 
     @Test
+    fun `未归类分类进其他排且能展开拉取`() = runTest(dispatcher) {
+        // v1.6.8.0：归不进 9 个规范类型的分类全部进「其他」，一个都不丢
+        val content = VideoHomeFakeContentRepository().apply {
+            categories = listOf(cat("1", "电影"), cat("7", "爱蜜社"), cat("8", "卫视"))
+            itemsByCategory = mapOf(
+                "1" to listOf(video("m1", "电影一")),
+                "7" to listOf(video("p1", "套图一")),
+                "8" to listOf(video("tv1", "卫视一")),
+            )
+        }
+        val vm = newViewModel(content = content)
+        vm.onVideoTabShown()
+        advanceUntilIdle()
+
+        val state = vm.videoHome.value
+        // 「其他」排在规范类型之后；爱蜜社 / 卫视都收在它下面（覆盖源数相同，按出现序）
+        assertEquals(listOf("电影", "其他"), state.rows.map { it.title })
+        assertEquals(listOf("爱蜜社", "卫视"), state.categoryTree["其他"])
+        // 「其他」这一排合览了各源的杂项地址
+        assertEquals(setOf("套图一", "卫视一"), state.rows[1].items.map { it.title }.toSet())
+
+        // 展开「其他」→ 逐源各取各的杂项地址
+        vm.expandVideoCategory("其他", "其他")
+        advanceUntilIdle()
+        val grid = vm.videoHome.value
+        assertEquals("其他", grid.expandedTitle)
+        assertEquals("其他", grid.selectedType)
+        assertEquals(setOf("套图一", "卫视一"), grid.items.map { it.title }.toSet())
+    }
+
+    @Test
     fun `分类接口不通时判定源不可达且不再拉内容`() = runTest(dispatcher) {
         val content = VideoHomeFakeContentRepository().apply {
             categoryError = IllegalStateException("timeout")

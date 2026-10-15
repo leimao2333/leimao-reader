@@ -141,4 +141,48 @@ class TagStoreTest {
         val loaded = store.load("NOVEL")
         assertEquals(listOf("都市"), loaded?.tags)
     }
+
+    // ===== v1.6.2.0 标签名清洗 =====
+
+    @Test
+    fun `normalizeTag trim 前后空格`() {
+        assertEquals("玄幻", TagPlan.normalizeTag("  玄幻  "))
+        assertEquals("玄幻 漫画", TagPlan.normalizeTag("\t玄幻 漫画\n"))
+    }
+
+    @Test
+    fun `normalizeTag 折叠多空格为单个`() {
+        assertEquals("热血 漫画", TagPlan.normalizeTag("热血   漫画"))
+        assertEquals("热血 漫画", TagPlan.normalizeTag("热血  漫画"))
+    }
+
+    @Test
+    fun `normalizeTag 折叠全角空格`() {
+        // \u3000 是 IDEOGRAPHIC SPACE（全角空格）
+        assertEquals("热血 漫画", TagPlan.normalizeTag("热血\u3000\u3000漫画"))
+    }
+
+    @Test
+    fun `normalizeTag 全空白返回空串`() {
+        assertEquals("", TagPlan.normalizeTag(""))
+        assertEquals("", TagPlan.normalizeTag("   "))
+        assertEquals("", TagPlan.normalizeTag("\t\n\u3000"))
+    }
+
+    @Test
+    fun `fromJson 落地时清洗 - trim 与折叠多空格`() {
+        // 模拟旧的、未清洗的本地缓存：key 含前后空格、多空格、全角空格
+        val rawJson = """
+            {"collectedAtMs":100,"plan":{
+                "  玄幻  ":[["s1","u1"]],
+                "热血  漫画":[["s2","u2"]],
+                "热血\u3000漫画":[["s3","u3"]]
+            }}
+        """.trimIndent()
+        val plan = TagPlan.fromJson(rawJson) ?: error("should parse")
+        // 三个都清洗后折叠：「玄幻」、「热血 漫画」
+        assertEquals(setOf("玄幻", "热血 漫画"), plan.plan.keys)
+        // 「热血 漫画」集合了 s2 与 s3 两条
+        assertEquals(2, plan.entriesFor("热血 漫画").size)
+    }
 }

@@ -85,6 +85,7 @@ fun TagSearchScreen(
     onBack: () -> Unit,
 ) {
     val hotTags by viewModel.hotTags.collectAsState()
+    val allTags by viewModel.allTags.collectAsState() // v1.6.2.0：用于总数显示
     val collecting by viewModel.collecting.collectAsState()
     val query by viewModel.query.collectAsState()
     val results by viewModel.results.collectAsState()
@@ -93,8 +94,11 @@ fun TagSearchScreen(
     val notice by viewModel.notice.collectAsState()
     val activeTags by viewModel.activeTags.collectAsState()
 
+    // v1.6.2.0：「更多热门」展开面板开关
+    var showAllHotTags by remember { mutableStateOf(false) }
+
     Column(modifier = Modifier.fillMaxSize()) {
-        // ===== 顶栏：返回 + 标题 =====
+        // ===== 顶栏：返回 + 标题（显示当前 Type，让用户分辨小说/漫画/视频）=====
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -104,17 +108,35 @@ fun TagSearchScreen(
             IconButton(onClick = onBack) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
             }
-            Text(
-                text = "标签搜索",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f),
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "标签搜索 · ${typeLabel(viewModel.type)}",
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                // 总数 + 状态副标题：明确当前是哪个 Type、已收集多少标签
+                Text(
+                    text = buildString {
+                        if (allTags.isNotEmpty()) append("共 ${allTags.size} 个标签")
+                        if (collecting) {
+                            if (isNotEmpty()) append(" · ")
+                            append("正在收集…")
+                        }
+                    }.ifBlank { "从各源发现分类自动收集" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             IconButton(onClick = viewModel::refreshTags, enabled = !collecting) {
                 Icon(Icons.Filled.Refresh, contentDescription = "重新收集标签")
             }
         }
 
-        // ===== 热门推荐标签（v1.6.1.0）：按覆盖源数倒序的 top N，点选即追加 =====
+        // ===== 热门推荐标签（v1.6.1.0）：按覆盖源数倒序的 top N =====
+        // v1.6.2.0：行内只显示前 HOT_TAG_VISIBLE 个 + 「更多 ▾ N」入口，
+        //         点开 [AllHotTagsSheet] 看全部（保留 [TagSearchViewModel.HOT_TAG_LIMIT]
+        //         作为 hard cap，避免面板内几千个 chip 撑爆）。
         if (hotTags.isNotEmpty() || collecting) {
             Column {
                 Row(
@@ -149,7 +171,11 @@ fun TagSearchScreen(
                         contentPadding = PaddingValues(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        items(hotTags, key = { "hot_$it" }) { tag ->
+                        // 前 8 个可见
+                        items(
+                            hotTags.take(HOT_TAG_VISIBLE),
+                            key = { "hot_$it" },
+                        ) { tag ->
                             HotTagChip(
                                 tag = tag,
                                 active = tag in activeTags,
@@ -159,6 +185,16 @@ fun TagSearchScreen(
                                     else viewModel.addTag(tag)
                                 },
                             )
+                        }
+                        // 「更多」入口——剩余标签数
+                        val more = hotTags.size - HOT_TAG_VISIBLE
+                        if (more > 0) {
+                            item(key = "hot_more") {
+                                MoreHotChip(
+                                    remain = more,
+                                    onClick = { showAllHotTags = true },
+                                )
+                            }
                         }
                     }
                     Spacer(Modifier.height(6.dp))
@@ -300,7 +336,97 @@ fun TagSearchScreen(
             }
         }
     }
+
+    // ===== 「更多热门标签」底部面板（v1.6.2.0）=====
+    if (showAllHotTags) {
+        AllHotTagsSheet(
+            tags = hotTags,
+            activeTags = activeTags,
+            onPick = { tag ->
+                if (tag in activeTags) viewModel.removeTag(tag)
+                else viewModel.addTag(tag)
+            },
+            onDismiss = { showAllHotTags = false },
+        )
+    }
 }
+
+/**
+ * 「更多热门」底部弹层（v1.6.2.0）。
+ *
+ * 顶部热门行只显示前 [HOT_TAG_VISIBLE] 个，剩余全部塞进这个面板。
+ * 面板标题 = "热门标签 · 小说"（明确类型），副标题 = "覆盖 X 个源的标签共 N 个"；
+ * 内容区是 [FlowRow]（横纵自动换行），不是 12 列网格，避免「少年漫」这种短词被拉成夸张高度。
+ *
+ * 单个标签点击行为与顶部行一致：未选 = 追加并搜索；已选 = 移除。
+ */
+@OptIn(
+    androidx.compose.foundation.layout.ExperimentalLayoutApi::class,
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+)
+@Composable
+private fun AllHotTagsSheet(
+    tags: List<String>,
+    activeTags: List<String>,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    androidx.compose.material3.ModalBottomSheet(
+        onDismissRequest = onDismiss,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        ) {
+            Text(
+                text = "全部热门标签",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = "共 ${tags.size} 个，按覆盖源数倒序",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp, bottom = 12.dp),
+            )
+            androidx.compose.foundation.layout.FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                tags.forEach { tag ->
+                    HotTagChip(
+                        tag = tag,
+                        active = tag in activeTags,
+                        onClick = { onPick(tag) },
+                    )
+                }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+/**
+ * 当前 Type 的中文显示名（v1.6.2.0）。
+ *
+ * 顶部副标题与「更多热门」面板都要用，集中一处避免拼写漂移。
+ */
+private fun typeLabel(type: SourceType): String = when (type) {
+    SourceType.NOVEL -> "小说"
+    SourceType.COMIC -> "漫画"
+    SourceType.VIDEO -> "视频"
+}
+
+/**
+ * v1.6.2.0：热门推荐行内直接可见的标签数。
+ *
+ * 行宽按 6 寸屏测算，每 chip 约 64dp + 8dp spacing，
+ * 屏幕宽 360dp 大约放下 4~5 个；这里给 8 个，超出部分进「更多 ▾ N」入口。
+ * 用户的视觉上限是 1 行（再放多就换行了，看起来乱）。
+ */
+private const val HOT_TAG_VISIBLE = 8
 
 /**
  * 热门推荐标签 chip（v1.6.1.0）。
@@ -353,6 +479,31 @@ private fun HotTagChip(
             ),
         )
     }
+}
+
+/**
+ * 「更多 ▾ N」入口 chip（v1.6.2.0）。
+ *
+ * 行内 [HOT_TAG_VISIBLE] 之外的标签数；点开弹 [AllHotTagsSheet]。
+ * 与普通热门 chip 视觉一致（surfaceVariant），仅在 label 上区分开。
+ */
+@Composable
+private fun MoreHotChip(remain: Int, onClick: () -> Unit) {
+    AssistChip(
+        onClick = onClick,
+        label = {
+            Text(
+                "更多 ▾ $remain",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontWeight = FontWeight.Medium,
+            )
+        },
+        colors = AssistChipDefaults.assistChipColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        ),
+    )
 }
 
 /** 标签搜索结果的海报卡（视频）：2:3 封面 + 标题 + 来源名 */

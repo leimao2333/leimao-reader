@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.6.1.0"
+    const val CURRENT_VERSION = "1.6.2.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,16 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.6.2.0",
+            date = "2026-10-15",
+            changes = listOf(
+                "**标签名清洗**：源返回的分类名经常带前后空格、内部多空格、全角空格（\\u3000）、换行 / Tab 等噪声。统一清洗为单空格 + trim，避免「热血漫画」「热血 漫画」被当成两个标签导致热词推荐分散、用户搜不到同名内容",
+                "**标签搜索页顶部明确显示当前 Type**：标题改为「标签搜索 · 小说 / 漫画 / 视频」，副标题显示「共 X 个标签」，让用户明确分辨不同 Tab 的标签池（数据本身一直是按 type 分文件存的）",
+                "**热门推荐折叠为「前 8 个 + 更多」入口**：行宽装不下时不强行换行；点「更多 ▾ N」chip 弹出底部面板（ModalBottomSheet），用 FlowRow 自适应铺开全部热门标签，每个都可点选 / 移除",
+                "**修复 Release APK multipart 包装上传 bug**：之前所有版本的上传脚本用 multipart/form-data，GitHub 把整个请求体当成文件存，CDN 给用户下载的是 multipart preamble，APK 装不上。改用 application/octet-stream 直接 POST 字节。v1.4.0 ~ v1.6.1.0 历史包均受影响，推荐重新下载 v1.6.2.0",
+            ),
+        ),
         VersionEntry(
             version = "1.6.1.0",
             date = "2026-10-15",

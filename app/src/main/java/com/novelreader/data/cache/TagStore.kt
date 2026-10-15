@@ -66,17 +66,41 @@ data class TagPlan(
         fun fromJson(text: String): TagPlan? = runCatching {
             val dto = gson().fromJson(text, Dto::class.java) ?: return null
             val plan = LinkedHashMap<String, List<Pair<String, String>>>()
-            dto.plan?.forEach { (tag, entryLists) ->
+            dto.plan?.forEach { (rawTag, entryLists) ->
+                // v1.6.2.0：清洗 key（落盘数据可能来自旧版本未清洗版本，
+                // 也可能在源端每次抓不一致；折叠 "热血 漫画" / "热血漫画" 为同一标签）。
+                val tag = normalizeTag(rawTag)
+                if (tag.isEmpty()) return@forEach
                 val entries = entryLists.orEmpty()
                     .mapNotNull { p ->
                         val srcId = p.getOrNull(0) ?: return@mapNotNull null
                         val url = p.getOrNull(1) ?: return@mapNotNull null
                         if (srcId.isNotEmpty() && url.isNotEmpty()) srcId to url else null
                     }
-                if (entries.isNotEmpty()) plan[tag] = entries
+                if (entries.isNotEmpty()) {
+                    // 同一清洗后 key 可能在旧数据里多次出现，合并 entries
+                    plan.merge(tag, entries) { old, new -> (old + new).distinct() }
+                }
             }
             TagPlan(collectedAtMs = dto.collectedAtMs, plan = plan)
         }.getOrNull()
+
+        /**
+         * 标签名规范化（v1.6.2.0）。
+         *
+         * - trim 前后空白
+         * - 折叠所有连续空白字符（半角空格 / 全角空格 \u3000 / 换行 / Tab）到单个半角空格
+         * - 与 [com.novelreader.data.repository.TagRepository.collect] 中清洗规则保持一致
+         *
+         * 公开给外部（如 [TagPlan.fromJson]）使用，外部落地缓存可能未经清洗。
+         */
+        fun normalizeTag(raw: String): String {
+            val trimmed = raw.trim()
+            if (trimmed.isEmpty()) return ""
+            return trimmed.replace(WHITESPACE_REGEX, " ")
+        }
+
+        private val WHITESPACE_REGEX = Regex("[\\s\u3000]+")
 
         val EMPTY = TagPlan()
     }

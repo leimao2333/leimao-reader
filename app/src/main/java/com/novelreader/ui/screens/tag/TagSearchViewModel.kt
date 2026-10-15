@@ -21,9 +21,10 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
 /**
- * 标签搜索 ViewModel（v1.5.10.0）。
+ * 标签搜索 ViewModel（v1.5.10.0 起；v1.6.1.0 重做 UI 后保留全量 + 新增热门标签）。
  *
  * - 标签来自 [TagRepository] 自动收集的各源发现分类（落盘缓存，冷启动即有）；
+ * - **热门标签**：按标签覆盖源数倒序，取 top [HOT_TAG_LIMIT] 展示在搜索页顶部；
  * - **单标签搜索**：聚合所有拥有该分类的源的第 1 页内容，跨源去重；
  * - **复合搜索**：查询串里多个标签（空格分隔）分别聚合后**按标题求交集**
  *   （见 [TagQuery.intersect]），实现「玄幻 完结」式组合筛选；
@@ -40,6 +41,15 @@ class TagSearchViewModel(
     /** 全部可用标签（自动收集） */
     private val _allTags = MutableStateFlow<List<String>>(emptyList())
     val allTags: StateFlow<List<String>> = _allTags.asStateFlow()
+
+    /**
+     * 热门推荐标签（v1.6.1.0）：按覆盖源数倒序，取 top [HOT_TAG_LIMIT]。
+     *
+     * 在搜索页顶部作为「一键选择」入口，用户点选即触发复合搜索（多次复用 + 自动追加）。
+     * 「覆盖源数」= 该标签下有多少 (sourceId, url) 对，越多说明越多源支持该分类。
+     */
+    private val _hotTags = MutableStateFlow<List<String>>(emptyList())
+    val hotTags: StateFlow<List<String>> = _hotTags.asStateFlow()
 
     /** 标签池是否正在收集（首次使用要逐源探测，视频源较慢） */
     private val _collecting = MutableStateFlow(false)
@@ -82,6 +92,7 @@ class TagSearchViewModel(
             _collecting.value = true
             tagPlan = runCatching { tagRepository.tags(type) }.getOrDefault(TagPlan.EMPTY)
             _allTags.value = tagPlan.tags
+            _hotTags.value = tagPlan.hotTags(HOT_TAG_LIMIT)
             _collecting.value = false
             if (thenSearch && _results.value.isEmpty()) search()
         }
@@ -93,6 +104,7 @@ class TagSearchViewModel(
             _collecting.value = true
             tagPlan = runCatching { tagRepository.refresh(type) }.getOrDefault(TagPlan.EMPTY)
             _allTags.value = tagPlan.tags
+            _hotTags.value = tagPlan.hotTags(HOT_TAG_LIMIT)
             _collecting.value = false
         }
     }
@@ -101,25 +113,33 @@ class TagSearchViewModel(
         _query.value = value
     }
 
-    /** 把标签追加到查询串（空格分隔）并立即搜索 —— 复合搜索入口 */
+    /**
+     * 把标签追加到查询串（空格分隔）并立即搜索 —— 复合搜索入口（v1.5.10.0）。
+     *
+     * v1.6.1.0 改进：同步把 [activeTags] 也更新，让热们推荐 chip 立刻呈现「已选」状态，
+     * 不用等搜索请求回来才反映。
+     */
     fun addTag(tag: String) {
         if (tag.isBlank()) return
         val current = TagQuery.parse(_query.value)
         if (tag in current) return
-        _query.value = (current + tag).joinToString(" ")
+        val next = current + tag
+        _query.value = next.joinToString(" ")
+        _activeTags.value = next
         search()
     }
 
-    /** 从查询串移除某个标签（点结果区标题上的 chip） */
+    /** 从查询查询返回某标签（点已选 chip）。最后一个标签移除时同步清空结果 / 进度 */
     fun removeTag(tag: String) {
         val current = TagQuery.parse(_query.value) - tag
         _query.value = current.joinToString(" ")
+        _activeTags.value = current
         if (current.isEmpty()) {
             searchJob?.cancel()
             _results.value = emptyList()
-            _activeTags.value = emptyList()
             _searching.value = false
             _notice.value = null
+            _progress.value = null
         } else {
             search()
         }
@@ -139,6 +159,7 @@ class TagSearchViewModel(
             if (tagPlan.plan.isEmpty()) {
                 tagPlan = runCatching { tagRepository.tags(type) }.getOrDefault(TagPlan.EMPTY)
                 _allTags.value = tagPlan.tags
+                _hotTags.value = tagPlan.hotTags(HOT_TAG_LIMIT)
             }
 
             val entriesPerTag = tags.map { tagPlan.entriesFor(it) }
@@ -195,5 +216,10 @@ class TagSearchViewModel(
         }.getOrDefault(emptySet())
         if (adultIds.isEmpty()) return items
         return items.sortedBy { it.sourceId in adultIds }
+    }
+
+    companion object {
+        /** 热门推荐标签上限（v1.6.1.0） */
+        const val HOT_TAG_LIMIT = 12
     }
 }

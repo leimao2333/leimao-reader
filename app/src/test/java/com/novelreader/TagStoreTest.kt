@@ -76,6 +76,64 @@ class TagStoreTest {
     }
 
     @Test
+    fun `hotTags 按 entry 数倒序 数量小于 limit 也只返回所有`() {
+        val plan = TagPlan(
+            plan = linkedMapOf(
+                "玄幻" to listOf("s1" to "u1", "s2" to "u2"),
+                "电影" to listOf("s1" to "u3"),
+                "都市" to listOf("s1" to "u4", "s2" to "u5", "s3" to "u6"),
+            ),
+        )
+        // 都市(3) > 玄幻(2) > 电影(1)
+        assertEquals(listOf("都市", "玄幻", "电影"), plan.hotTags(10))
+    }
+
+    @Test
+    fun `hotTags 取 limit 个`() {
+        val plan = TagPlan(
+            plan = linkedMapOf(
+                "玄幻" to listOf("s1" to "u1", "s2" to "u2", "s3" to "u3"),
+                "都市" to listOf("s1" to "u4", "s2" to "u5"),
+                "科幻" to listOf("s1" to "u6"),
+            ),
+        )
+        // 玄幻(3) > 都市(2) > 科幻(1)，取前 2
+        assertEquals(listOf("玄幻", "都市"), plan.hotTags(2))
+    }
+
+    @Test
+    fun `hotTags entry 数相同时按 key 稳定排序`() {
+        // 用 ASCII 标签避免中日韩字符排序的歧义
+        val plan = TagPlan(
+            plan = linkedMapOf(
+                "alpha" to listOf("s1" to "u1"),
+                "beta" to listOf("s1" to "u2"),
+                "gamma" to listOf("s1" to "u3"),
+            ),
+        )
+        // 全是 1 条，按 key 字典序
+        assertEquals(listOf("alpha", "beta", "gamma"), plan.hotTags(5))
+    }
+
+    @Test
+    fun `hotTags 空 plan 返回空`() {
+        assertEquals(emptyList<String>(), TagPlan.EMPTY.hotTags(5))
+    }
+
+    @Test
+    fun `hotTags limit 小于等于 0 时返回所有`() {
+        val plan = TagPlan(
+            plan = linkedMapOf(
+                "玄幻" to listOf("s1" to "u1"),
+                "都市" to listOf("s1" to "u2"),
+            ),
+        )
+        // 都是 1 条，按 key 排序：玄 < 都
+        assertEquals(listOf("玄幻", "都市"), plan.hotTags(0))
+        assertEquals(listOf("玄幻", "都市"), plan.hotTags(-1))
+    }
+
+    @Test
     fun `重复 save 覆盖旧值`() {
         val store = TagStore(tmp.newFolder())
         store.save("NOVEL", samplePlan())

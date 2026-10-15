@@ -83,16 +83,9 @@ fun AppNavHost(
                     )
                 }
             )
-            // 标签下拉菜单（搜索框左侧，v1.5.10.0）
-            val tagsViewModel: com.novelreader.ui.screens.tag.TagsViewModel = viewModel(
-                factory = NovelViewModelFactory(container) {
-                    com.novelreader.ui.screens.tag.TagsViewModel(it.tagRepository)
-                }
-            )
             val scope = androidx.compose.runtime.rememberCoroutineScope()
             HomeScreen(
                 viewModel = homeViewModel,
-                tagsViewModel = tagsViewModel,
                 onOpenNovelItem = { item -> navController.navigate(Routes.novelDetail(item)) },
                 onOpenComicItem = { item -> navController.navigate(Routes.comicDetail(item)) },
                 onOpenVideoItem = { item -> navController.navigate(Routes.videoDetail(item)) },

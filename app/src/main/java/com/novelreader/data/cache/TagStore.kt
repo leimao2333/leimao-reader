@@ -20,6 +20,26 @@ data class TagPlan(
     /** 标签名列表（按收集顺序） */
     val tags: List<String> get() = plan.keys.toList()
 
+    /**
+     * 热门标签：按「覆盖源数」（每个标签下有多少 (sourceId, url) 对）倒序，
+     * 返回前 [limit] 个。覆盖数相同则按收集顺序（[plan] 顺序）稳定排序。
+     *
+     * 用法：首页 / 标签搜索页顶部推荐位，优先展示覆盖面广的分类。
+     *
+     * 标签为空时返回空列表；limit <= 0 时按当前标签总数。
+     */
+    fun hotTags(limit: Int): List<String> {
+        if (plan.isEmpty()) return emptyList()
+        val capped = if (limit <= 0) plan.size else limit
+        return plan.entries
+            .sortedWith(
+                compareByDescending<Map.Entry<String, List<Pair<String, String>>>> { it.value.size }
+                    .thenBy { it.key },
+            )
+            .map { it.key }
+            .take(capped)
+    }
+
     /** 精确匹配某标签的入口；未命中再做「互相包含」的宽松匹配（如「热血」命中「热血漫画」） */
     fun entriesFor(tag: String): List<Pair<String, String>> {
         plan[tag]?.let { return it }

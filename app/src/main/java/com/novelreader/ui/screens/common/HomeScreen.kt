@@ -83,8 +83,6 @@ import com.novelreader.ui.screens.bookshelf.BookGrid
 @Composable
 fun HomeScreen(
     viewModel: HomeViewModel,
-    /** 标签下拉菜单（搜索框左侧，v1.5.10.0）；由 NavHost 创建传入 */
-    tagsViewModel: com.novelreader.ui.screens.tag.TagsViewModel,
     onOpenNovelItem: (MediaItem) -> Unit,
     onOpenComicItem: (MediaItem) -> Unit,
     onOpenVideoItem: (MediaItem) -> Unit,
@@ -101,7 +99,7 @@ fun HomeScreen(
     onOpenShortDrama: (MediaItem) -> Unit = {},
     /** 打开阅读历史（v1.4.3.0） */
     onOpenHistory: () -> Unit = {},
-    /** 打开标签搜索（v1.5.10.0）：参数为当前 Tab 类型 + 选中的初始标签 */
+    /** 打开标签搜索（v1.5.10.0）；[initialTag] 为预填标签（可空 = 用户主动进入 / 复合搜索页可展示热门推荐） */
     onOpenTagSearch: (SourceType, String) -> Unit = { _, _ -> },
 ) {
     val importMessage by viewModel.importMessage.collectAsState()
@@ -161,6 +159,10 @@ fun HomeScreen(
 
     // 展现形式：0=封面墙网格，1=列表
     var gridMode by rememberSaveable { mutableIntStateOf(0) }
+
+    // 搜索模式：SEARCH = 进入普通搜索页；TAG = 进入标签搜索页（v1.6.1.0）
+    // rememberSaveable 跨 tab 切回保留用户选择
+    var searchMode by rememberSaveable { mutableStateOf(SearchMode.SEARCH) }
 
     // 每次回到前台时刷新（进度可能已变化）
     // key 里带上 selectedTab：观察者闭包会捕获它，只用 lifecycleOwner 作 key 会读到旧值
@@ -250,25 +252,21 @@ fun HomeScreen(
             }
 
             Column(modifier = Modifier.fillMaxSize()) {
-                // 搜索栏（点击进入独立搜索页）+ 左侧标签下拉（v1.5.10.0）
-                LaunchedEffect(selectedTab) {
-                    tagsViewModel.ensure(currentType)
-                }
+                // 搜索栏（点击进入对应页面）+ 左侧「搜索 / 标签」模式切换（v1.6.1.0）
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    val tagList by tagsViewModel.tags.collectAsState()
-                    val tagLoading by tagsViewModel.loading.collectAsState()
-                    TagDropdownButton(
-                        tags = tagList,
-                        loading = tagLoading,
-                        onSelect = { tag -> onOpenTagSearch(currentType, tag) },
-                        onRefresh = { tagsViewModel.refresh(currentType) },
+                    SearchModeDropdown(
+                        mode = searchMode,
+                        onSelect = { searchMode = it },
                     )
                     SearchEntryBar(
-                        placeholder = placeholder,
-                        onClick = onOpenSearch,
+                        placeholder = if (searchMode == SearchMode.SEARCH) placeholder else "标签搜索（多个标签用空格分开）",
+                        onClick = {
+                            if (searchMode == SearchMode.SEARCH) onOpenSearch()
+                            else onOpenTagSearch(currentType, "")
+                        },
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -705,85 +703,74 @@ private fun GroupChip(
 private fun com.novelreader.domain.model.MediaItem.itemKey(): String = "$sourceId:$id"
 
 /**
- * 「标签」下拉按钮（搜索框左侧，v1.5.10.0）。
+ * 搜索栏左侧的「搜索模式」切换器（v1.6.1.0）。
  *
- * 点击弹出当前内容类型的标签池（自动收集自各源发现分类），选中即进入标签搜索；
- * 标签还在收集时显示细圈，收完自动出现；菜单底部提供「重新收集」。
+ * 用户选择「搜索」或「标签」两种模式，决定点击搜索栏后进入哪种页面。
+ * 设计目的：把标签搜索和普通搜索**统一到同一行入口**，用户切模式即可；
+ * 不再让标签搜索作为独立的「标签下拉菜单」藏在搜索框左侧。
+ */
+private enum class SearchMode(val label: String) {
+    SEARCH("搜索"),
+    TAG("标签"),
+}
+
+/**
+ * 「搜索 / 标签」模式切换下拉按钮（v1.6.1.0）。
+ *
+ * 单选：SEARCH ⇄ TAG。
+ * 当前选中的模式高亮（primary container 配色），未选 mode 显示表面色；
+ * 点击下拉图标弹出菜单选另一模式即可。
  */
 @Composable
-private fun TagDropdownButton(
-    tags: List<String>,
-    loading: Boolean,
-    onSelect: (String) -> Unit,
-    onRefresh: () -> Unit,
+private fun SearchModeDropdown(
+    mode: SearchMode,
+    onSelect: (SearchMode) -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
-    Box {
+    Box(modifier = Modifier.padding(start = 12.dp)) {
         Surface(
             onClick = { open = true },
             shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            modifier = Modifier.padding(start = 12.dp),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            modifier = Modifier.padding(end = 4.dp),
         ) {
             Row(
-                modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 12.dp, bottom = 12.dp),
+                modifier = Modifier.padding(start = 12.dp, end = 6.dp, top = 12.dp, bottom = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "标签",
+                    text = mode.label,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
-                if (loading) {
-                    Spacer(Modifier.width(4.dp))
-                    androidx.compose.material3.CircularProgressIndicator(
-                        modifier = Modifier.size(12.dp),
-                        strokeWidth = 1.5.dp,
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Filled.ArrowDropDown,
-                        contentDescription = "选择标签",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
+                Icon(
+                    imageVector = Icons.Filled.ArrowDropDown,
+                    contentDescription = "切换搜索模式",
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(18.dp),
+                )
             }
         }
 
         DropdownMenu(
             expanded = open,
             onDismissRequest = { open = false },
-            modifier = Modifier.heightIn(max = 360.dp),
         ) {
-            if (tags.isEmpty()) {
+            SearchMode.values().forEach { m ->
                 DropdownMenuItem(
                     text = {
                         Text(
-                            if (loading) "正在收集标签…" else "暂无标签",
-                            style = MaterialTheme.typography.bodySmall,
+                            text = m.label,
+                            fontWeight = if (m == mode) androidx.compose.ui.text.font.FontWeight.Bold
+                            else androidx.compose.ui.text.font.FontWeight.Normal,
                         )
                     },
-                    onClick = {},
-                )
-            }
-            tags.forEach { tag ->
-                DropdownMenuItem(
-                    text = { Text(tag, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
                     onClick = {
                         open = false
-                        onSelect(tag)
+                        onSelect(m)
                     },
                 )
             }
-            HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text("重新收集标签", style = MaterialTheme.typography.bodySmall) },
-                onClick = {
-                    open = false
-                    onRefresh()
-                },
-            )
         }
     }
 }

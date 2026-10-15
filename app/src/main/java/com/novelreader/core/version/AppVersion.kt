@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.6.0.0"
+    const val CURRENT_VERSION = "1.6.1.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.6.1.0",
+            date = "2026-10-15",
+            changes = listOf(
+                "**标签搜索入口改造**：首页搜索栏左侧下拉框改为「搜索 / 标签」模式切换（不再用 tag 池作内联下拉），两种模式共用同一行入口，符合「和搜索合在一起」的预期",
+                "**TagSearch 页面重做**：① 顶部新增「热门推荐」标签区，按覆盖源数倒序取 top 12，点选即追加为搜索条件（再次点击 = 移除）；② 输入框接受手输标签，空格分开自动复合（按标题交集）；③ 输入框右侧搜索按钮 / IME 搜索键均可触发",
+                "**删除冗余 TagsViewModel**：标签数据由 TagSearchViewModel 内部维护（落盘 + 自动冷启动恢复），不再需要外部 ViewModel 预热",
+            ),
+        ),
         VersionEntry(
             version = "1.6.0.0",
             date = "2026-10-15",

@@ -122,5 +122,11 @@ private fun DetailTagChip(tag: String, onClick: () -> Unit) {
     )
 }
 
-/** 折叠态可见的标签数；超出部分收进「▾」箭头 */
-private const val COLLAPSED_VISIBLE = 3
+/**
+ * 折叠态可见的标签数；超出部分收进「▾」箭头。
+ *
+ * v1.7.3.0 从 3 放宽到 8：3 个时用户看到的是「推荐 爱情 BL ⌄」—— 折叠箭头
+ * 几乎永远在，而展开是免费的（FlowRow 本来就换行），把最常见的标签数直接铺完，
+ * 「单个漫画的标签太少」的一大半就是这条折叠线造成的。
+ */
+private const val COLLAPSED_VISIBLE = 8

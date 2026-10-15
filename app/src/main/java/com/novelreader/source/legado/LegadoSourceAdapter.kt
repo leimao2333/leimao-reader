@@ -201,7 +201,19 @@ class LegadoSourceAdapter(
     /** 按发现分类地址拉取列表：{{page}} 等占位符渲染后走与搜索相同的解析链路 */
     override suspend fun explore(url: String, page: Int): List<MediaItem> {
         if (source.ruleExplore.isEmpty() || url.isBlank()) return emptyList()
-        return loadList(url, "", page, source.ruleExplore)
+        // v1.7.2.0：发现规则没写 coverUrl 时借搜索规则的封面。实测 138 个小说源里
+        // 36 个 `ruleExplore` 没配 coverUrl（52PO小说、飞卢、猫九…），探索列表整排
+        // 变成首字占位块；而两条规则解析的是同一套站点结构，搜索的封面选择器在
+        // 发现页通常同样命中。只在确实缺失时补，不覆盖源自己写的规则。
+        val rule = if (
+            source.ruleExplore["coverUrl"].isNullOrBlank() &&
+            !source.ruleSearch["coverUrl"].isNullOrBlank()
+        ) {
+            source.ruleExplore + ("coverUrl" to source.ruleSearch["coverUrl"]!!)
+        } else {
+            source.ruleExplore
+        }
+        return loadList(url, "", page, rule)
     }
 
     /** 处理 JSON 响应的搜索（@json 规则） */

@@ -541,6 +541,8 @@ private fun VerticalScrollReader(
                 onZoomStateChanged = { z ->
                     zoomedUrl = if (z) url else if (zoomedUrl == url) null else zoomedUrl
                 },
+                // 点击呼出菜单必须走图片自己的手势（它 consume 了 down，父容器 clickable 收不到）
+                onTap = { _ -> onTap() },
                 onLoadFailed = onImageFailed,
             )
         }
@@ -626,6 +628,29 @@ private fun HorizontalPagerReader(
         zoomedUrl = if (z) url else if (zoomedUrl == url) null else zoomedUrl
     }
 
+    // 三区点击：左 1/3 上一页 / 上一话，右 1/3 下一页 / 下一话，中间呼出菜单。
+    // 入参是「点击位置在**整屏**里的横向比例」—— 双页模式下由两张图各自换算。
+    // （点在图片上时由图片冒泡上来；点在 Fit 留出的黑边上由下方 comicPagerTap 兜住。）
+    fun zoneTap(screenFraction: Float) {
+        when {
+            screenFraction < 1f / 3f -> {
+                if (pagerState.currentPage > 0) {
+                    scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+                } else {
+                    onPrevChapter()
+                }
+            }
+            screenFraction > 2f / 3f -> {
+                if (pagerState.currentPage < pageCountSafe - 1) {
+                    scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
+                } else {
+                    onNextChapter()
+                }
+            }
+            else -> onTap()
+        }
+    }
+
     HorizontalPager(
         state = pagerState,
         // 放大查看细节时禁止滑动翻页（缩放组件会自己吞掉拖动事件，这里双保险）
@@ -669,6 +694,7 @@ private fun HorizontalPagerReader(
             if (doublePage) {
                 // 双页并排：左右各占一半，各用 FillWidth 适配（保持图片原始比例）
                 Row(modifier = Modifier.fillMaxSize()) {
+                    // 双页并排时每张图只占半屏，把图内比例折算回整屏比例再判区
                     ZoomableComicImage(
                         url = images.getOrNull(leftImg) ?: "",
                         modifier = Modifier
@@ -679,6 +705,7 @@ private fun HorizontalPagerReader(
                         headers = headers,
                         script = scripts[images.getOrNull(leftImg) ?: ""],
                         onZoomStateChanged = { z -> onImgZoom(images.getOrNull(leftImg) ?: "", z) },
+                        onTap = { f -> zoneTap(f * 0.5f) },
                         onLoadFailed = onImageFailed,
                     )
                     ZoomableComicImage(
@@ -691,6 +718,7 @@ private fun HorizontalPagerReader(
                         headers = headers,
                         script = scripts[images.getOrNull(rightImg) ?: ""],
                         onZoomStateChanged = { z -> onImgZoom(images.getOrNull(rightImg) ?: "", z) },
+                        onTap = { f -> zoneTap(0.5f + f * 0.5f) },
                         onLoadFailed = onImageFailed,
                     )
                 }
@@ -703,6 +731,7 @@ private fun HorizontalPagerReader(
                     headers = headers,
                     script = scripts[images.getOrNull(page) ?: ""],
                     onZoomStateChanged = { z -> onImgZoom(images.getOrNull(page) ?: "", z) },
+                    onTap = { f -> zoneTap(f) },
                     onLoadFailed = onImageFailed,
                 )
             }

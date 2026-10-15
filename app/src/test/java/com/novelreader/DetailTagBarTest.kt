@@ -13,12 +13,11 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * 详情页「标签小栏」UI 测试（v1.6.5.0）。
+ * 详情页「标签小栏」UI 测试（v1.6.5.0；v1.7.3.0 折叠线 3 → 8）。
  *
- * 验证折叠 / 展开行为（演示数据只有 1~2 个标签，模拟器上看不到 ▾ 箭头，
- * 用 Robolectric 在本机确定性验证）：
- * - ≤3 个标签：全部展示、无箭头；
- * - >3 个标签：默认折叠（前 3 个 + 「更多 ▾」），点箭头展开全部 + 「收起 ▴」；
+ * 验证折叠 / 展开行为（用 Robolectric 在本机确定性验证）：
+ * - ≤8 个标签：全部展示、无箭头；
+ * - >8 个标签：默认折叠（前 8 个 + 「更多 ▾」），点箭头展开全部 + 「收起 ▴」；
  * - 点标签触发回调。
  */
 @RunWith(RobolectricTestRunner::class)
@@ -29,55 +28,56 @@ class DetailTagBarTest {
     val rule = createComposeRule()
 
     @Test
-    fun `不超过三个标签时全部展示且无箭头`() {
+    fun `不超过八个标签时全部展示且无箭头`() {
         rule.setContent {
-            DetailTagBar(tags = listOf("玄幻", "奇幻"), onTagClick = {})
+            DetailTagBar(
+                tags = listOf("玄幻", "奇幻", "爽文", "东方玄幻", "热血", "校园", "恋爱", "冒险"),
+                onTagClick = {},
+            )
         }
-        rule.onNodeWithText("玄幻").assertIsDisplayed()
-        rule.onNodeWithText("奇幻").assertIsDisplayed()
-        // 没有「更多」入口（hasMore = false）
+        listOf("玄幻", "奇幻", "爽文", "东方玄幻", "热血", "校园", "恋爱", "冒险").forEach {
+            rule.onNodeWithText(it).assertIsDisplayed()
+        }
         rule.onNodeWithText("更多").assertDoesNotExist()
     }
 
     @Test
-    fun `超过三个标签默认折叠显示更多箭头`() {
+    fun `超过八个标签默认折叠显示更多箭头`() {
+        val tags = listOf(
+            "玄幻", "奇幻", "爽文", "东方玄幻", "热血", "校园", "恋爱", "冒险", "悬疑", "搞笑",
+        )
         rule.setContent {
-            DetailTagBar(
-                tags = listOf("玄幻", "奇幻", "爽文", "东方玄幻", "热血"),
-                onTagClick = {},
-            )
+            DetailTagBar(tags = tags, onTagClick = {})
         }
-        // 前 3 个可见
-        rule.onNodeWithText("玄幻").assertIsDisplayed()
-        rule.onNodeWithText("奇幻").assertIsDisplayed()
-        rule.onNodeWithText("爽文").assertIsDisplayed()
-        // 第 4 个起折叠
-        rule.onNodeWithText("东方玄幻").assertDoesNotExist()
-        rule.onNodeWithText("热血").assertDoesNotExist()
+        // 前 8 个可见
+        tags.take(8).forEach { rule.onNodeWithText(it).assertIsDisplayed() }
+        // 第 9 个起折叠
+        rule.onNodeWithText("悬疑").assertDoesNotExist()
+        rule.onNodeWithText("搞笑").assertDoesNotExist()
         // 「更多」箭头在
         rule.onNodeWithText("更多").assertIsDisplayed()
     }
 
     @Test
     fun `点更多箭头展开全部再点收起`() {
+        val tags = listOf(
+            "玄幻", "奇幻", "爽文", "东方玄幻", "热血", "校园", "恋爱", "冒险", "悬疑", "搞笑",
+        )
         rule.setContent {
-            DetailTagBar(
-                tags = listOf("玄幻", "奇幻", "爽文", "东方玄幻", "热血"),
-                onTagClick = {},
-            )
+            DetailTagBar(tags = tags, onTagClick = {})
         }
         // 展开
         rule.onNodeWithText("更多").performClick()
         rule.waitForIdle()
-        rule.onNodeWithText("东方玄幻").assertIsDisplayed()
-        rule.onNodeWithText("热血").assertIsDisplayed()
+        rule.onNodeWithText("悬疑").assertIsDisplayed()
+        rule.onNodeWithText("搞笑").assertIsDisplayed()
         rule.onNodeWithText("收起").assertIsDisplayed()
         rule.onNodeWithText("更多").assertDoesNotExist()
 
         // 收起
         rule.onNodeWithText("收起").performClick()
         rule.waitForIdle()
-        rule.onNodeWithText("东方玄幻").assertDoesNotExist()
+        rule.onNodeWithText("悬疑").assertDoesNotExist()
         rule.onNodeWithText("更多").assertIsDisplayed()
     }
 

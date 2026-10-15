@@ -36,6 +36,12 @@ import kotlin.math.abs
  *
  * @param enabled 是否开启缩放交互（由阅读器根据翻页模式控制）
  * @param onZoomStateChanged 缩放态变化回调（true=进入放大态应锁住父容器翻页 / 滚动）
+ * @param onTap 单击回调（参数是点击位置**在本图内**的横向比例 0f~1f，供翻页模式做三区判定）。
+ *   **必须走这里而不是父容器的 `clickable`**：`detectTapGestures` 会 consume 掉 down
+ *   事件，而 `Modifier.clickable` / 父级 `detectTapGestures` 都要求 down 未被消费才响应 ——
+ *   于是「点在图片上」时父容器的点击是永远收不到的（v1.7.2.0 实测：菜单呼不出来、
+ *   翻页模式的左/中/右三区点击也全部失效）。
+ * @param onLoadFailed 图片加载失败回调：向上冒泡，由阅读器向源要备用镜像地址（v1.7.1.0）
  */
 @Composable
 fun ZoomableComicImage(
@@ -47,7 +53,7 @@ fun ZoomableComicImage(
     script: String? = null,
     enabled: Boolean = true,
     onZoomStateChanged: (Boolean) -> Unit = {},
-    /** 图片加载失败回调：向上冒泡，由阅读器向源要备用镜像地址（v1.7.1.0） */
+    onTap: ((Float) -> Unit)? = null,
     onLoadFailed: (String) -> Unit = {},
 ) {
     // 逐页独立状态：翻页 / 切图后重置为 1x
@@ -90,10 +96,15 @@ fun ZoomableComicImage(
                 translationX = offset.x
                 translationY = offset.y
             }
-            // 双击：1x ↔ 放大
-            .pointerInput(url, enabled) {
+            // 双击：1x ↔ 放大；单击：冒泡给阅读器（呼出菜单 / 三区翻页）
+            .pointerInput(url, enabled, onTap) {
                 if (!enabled) return@pointerInput
                 detectTapGestures(
+                    onTap = { pos ->
+                        val cb = onTap ?: return@detectTapGestures
+                        val w = size.width.toFloat()
+                        cb(if (w > 0f) (pos.x / w).coerceIn(0f, 1f) else 0.5f)
+                    },
                     onDoubleTap = { pos ->
                         if (scale > 1f) {
                             scale = 1f

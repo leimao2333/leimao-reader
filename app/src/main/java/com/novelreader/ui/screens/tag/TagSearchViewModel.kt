@@ -2,6 +2,7 @@ package com.novelreader.ui.screens.tag
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.novelreader.core.util.TagAlias
 import com.novelreader.core.util.TagCompound
 import com.novelreader.core.util.TagQuery
 import com.novelreader.data.cache.TagPlan
@@ -225,13 +226,30 @@ class TagSearchViewModel(
                 _notice.value = "没有已启用的源，先去源管理里打开一个"
                 return@launch
             }
-            val entriesPerTag = tags.map { tag ->
-                val entries = tagPlan.entriesFor(tag)
-                if (enabledIds == null) entries else entries.filter { it.first in enabledIds }
+            // 中英互译（v1.7.2.0）：一个标签词展开成标签池里**所有等价标签** ——
+            // 输「百合」会同时搜池里的「百合」与「Yuri」，输「英语」也能命中「英語 ENG」
+            // 这种复合标签。此前只按字面匹配，池里的英文标签对中文用户等于不存在。
+            val variantsPerTag = tags.map { tag ->
+                TagAlias.matchesInPool(tag, tagPlan.tags).ifEmpty { listOf(tag) }
+            }
+            val entriesPerTag = variantsPerTag.map { variants ->
+                variants
+                    .flatMap { tagPlan.entriesFor(it) }
+                    .distinct()
+                    .let { if (enabledIds == null) it else it.filter { e -> e.first in enabledIds } }
             }
             val known = tags.filterIndexed { i, _ -> entriesPerTag[i].isNotEmpty() }
             val missing = tags.filterNot { it in known }
             val knownEntries = entriesPerTag.filter { it.isNotEmpty() }
+            // 译名命中时告诉用户「实际按哪些标签搜的」，否则结果突然变多会显得莫名其妙。
+            // 只有**展开出了别的名字**才提示；单纯大小写 / 空格差异（输 yuri 命中 Yuri）
+            // 属于同一个词，提示它只会制造噪音。
+            val translatedNotice = tags.mapIndexedNotNull { i, tag ->
+                val variants = variantsPerTag[i]
+                val self = TagQuery.normalizeTitle(tag)
+                if (variants.none { TagQuery.normalizeTitle(it) != self }) return@mapIndexedNotNull null
+                "「${tag}」已按 ${variants.joinToString("、")} 搜索"
+            }.joinToString("；")
 
             if (known.isEmpty()) {
                 _activeTags.value = emptyList()
@@ -252,13 +270,17 @@ class TagSearchViewModel(
             _results.value = final
             _progress.value = null
             _searching.value = false
-            _notice.value = when {
+            val tail = when {
                 missing.isNotEmpty() ->
                     "未找到标签：${missing.joinToString("、")}，已按其余标签搜索"
                 final.isNotEmpty() -> null
                 known.size > 1 -> "没有作品同时属于「${known.joinToString("」「")}」"
                 else -> "「${known.first()}」下暂无内容"
             }
+            _notice.value = listOfNotNull(
+                translatedNotice.takeIf { it.isNotBlank() },
+                tail,
+            ).joinToString("；").takeIf { it.isNotBlank() }
         }
     }
 

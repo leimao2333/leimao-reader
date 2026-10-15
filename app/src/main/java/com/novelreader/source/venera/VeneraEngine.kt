@@ -95,8 +95,26 @@ class VeneraEngine(private val context: Context) {
         registered.remove(key)
     }
 
-    /** 执行一个操作：op ∈ ping / search / info / chapters / content */
+    /**
+     * 执行一个操作：op ∈ ping / search / info / chapters / content。
+     *
+     * v1.7.2.0 起**渲染进程崩溃自动重试一次**：WebView 渲染进程被杀时，
+     * [onRenderProcessGone] 会把当前排队中的所有调用一起判失败并丢弃 WebView 实例，
+     * 用户侧表现为弹「WebView 渲染进程已经终止」。而下次调用本来就会重建实例，
+     * 所以这里对这一类失败重试一次即可无感恢复（search/info/chapters/content 都是
+     * 幂等读，重试无副作用）。
+     */
     suspend fun call(sourceKey: String, op: String, vararg args: Any?): String {
+        try {
+            return callOnce(sourceKey, op, *args)
+        } catch (e: Exception) {
+            if (e.message?.contains("渲染进程已终止") != true) throw e
+            android.util.Log.w(LOG_TAG, "渲染进程崩溃，重建 WebView 后重试一次 op=$op")
+            return callOnce(sourceKey, op, *args)
+        }
+    }
+
+    private suspend fun callOnce(sourceKey: String, op: String, vararg args: Any?): String {
         val code = sources[sourceKey] ?: throw IllegalStateException("源未注册：$sourceKey")
         ensureStarted(code, sourceKey)
 

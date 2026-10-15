@@ -285,8 +285,14 @@ class SourceManageViewModel(
                     failures += result.failures
                 }
 
+                // v1.7.2.0：导入时就地查重，把「覆盖 / 跳过」如实告诉用户 ——
+                // 否则同一份源导两次，第二次界面显示「已添加 N 个」，源列表却没变长，
+                // 看起来像导入坏了。
+                val (updated, dupes) = sourceRepositoryImpl?.lastImportDedupeStats() ?: (0 to 0)
                 _message.value = buildString {
                     append("已添加 $added 个源")
+                    if (updated > 0) append("；$updated 个已存在的源被更新为更完整版本")
+                    if (dupes > 0) append("；跳过 $dupes 个重复源（库里已有）")
                     if (failures.isNotEmpty()) {
                         append("；失败 ${failures.size} 个：")
                         append(failures.take(3).joinToString("，"))

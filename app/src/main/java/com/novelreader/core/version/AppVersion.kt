@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.6.2.0"
+    const val CURRENT_VERSION = "1.6.3.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,14 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.6.3.0",
+            date = "2026-10-15",
+            changes = listOf(
+                "**短剧选集入口合并到底部菜单**：之前短剧播放页有**两个**「选集」入口 —— 顶部控制栏右侧的 List 图标 + 底部红果式常驻栏里的「选集」文字按钮 —— 都打开同一个底部浮层，纯属重复。现保留底部红果式「选集」按钮（短剧的菜单栏目），**删除顶部 List 图标**，让选集入口只剩一个、用户不再困惑入口位置",
+                "**实现细节**：顶部控制层新增 `hideEpisodeIcon` 参数（默认 false，普通视频不受影响）；VideoControlsOverlay 顶部 List IconButton 在 `hideEpisodeIcon = true` 时整块不渲染，参数沿用 v1.6.0.0 引入的 `hideMoreMenu` 风格保持对称",
+            ),
+        ),
         VersionEntry(
             version = "1.6.2.0",
             date = "2026-10-15",

@@ -126,6 +126,12 @@ fun BoxScope.VideoControlsOverlay(
      * 撞到一起、用户搞不清入口。
      */
     hideMoreMenu: Boolean = false,
+    /**
+     * 隐藏顶部「选集」入口图标（v1.6.3.0）。短剧模式下顶部 List 图标与底部红果式
+     * 常驻栏的「选集」按钮**重复**（两者都打开同一个 ShortDramaEpisodeOverlay），
+     * 合并到底部「菜单栏目」即可，顶部不再保留该图标，避免用户搞不清入口。
+     */
+    hideEpisodeIcon: Boolean = false,
     /** 菜单式调亮度 / 音量（v1.6.0.0）。仅在 MoreVert 开启时生效 */
     currentBrightness: () -> Float = { 1f },
     onBrightnessChange: (Float) -> Unit = {},
@@ -178,8 +184,10 @@ fun BoxScope.VideoControlsOverlay(
                     )
                 }
             }
-            IconButton(onClick = onOpenEpisodes) {
-                Icon(Icons.AutoMirrored.Filled.List, contentDescription = "选集", tint = Color.White)
+            if (!hideEpisodeIcon) {
+                IconButton(onClick = onOpenEpisodes) {
+                    Icon(Icons.AutoMirrored.Filled.List, contentDescription = "选集", tint = Color.White)
+                }
             }
         }
     }

@@ -799,6 +799,9 @@ fun VideoPlayerScreen(
                 onClearSubtitle = { viewModel.clearSubtitle() },
                 // v1.6.0.0：短剧把更多菜单合并到底部面板；长视频保留 MoreVert（含亮度 / 音量滑块）
                 hideMoreMenu = isShortDrama,
+                // v1.6.3.0：短剧顶部「List」图标与底部红果式常驻栏的「选集」按钮重复，
+                // 合并到底部「菜单栏目」，顶部不再保留该入口，避免用户搞不清。
+                hideEpisodeIcon = isShortDrama,
                 currentBrightness = { currentBrightness() },
                 onBrightnessChange = { applyBrightness(it) },
                 currentVolumeFraction = {

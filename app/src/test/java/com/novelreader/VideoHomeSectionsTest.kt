@@ -77,8 +77,9 @@ class VideoHomeSectionsTest {
         val state = vm.videoHome.value
         assertFalse("默认应是分区视图", state.expanded)
         assertEquals(3, state.rows.size)
-        assertEquals(listOf("电影", "连续剧", "综艺"), state.rows.map { it.title })
-        assertEquals(listOf("1", "2", "3"), state.rows.map { it.categoryId })
+        assertEquals(listOf("电影", "电视剧", "综艺"), state.rows.map { it.title })
+        // v1.6.7.0：分区行的 categoryId 是**规范类型名**（源的原始叫法「连续剧」已归位到「电视剧」）
+        assertEquals(listOf("电影", "电视剧", "综艺"), state.rows.map { it.categoryId })
         assertEquals(2, state.rows[1].items.size)
         assertNull("正常加载不应有错误提示", state.error)
     }
@@ -104,12 +105,10 @@ class VideoHomeSectionsTest {
     @Test
     fun `单个分类拉取失败只丢那一排`() = runTest(dispatcher) {
         val content = VideoHomeFakeContentRepository().apply {
-            categories = listOf(cat("1", "电影"), cat("2", "坏分类"), cat("3", "综艺"))
-            itemsByCategory = mapOf(
-                "1" to listOf(video("m1", "电影一")),
-                "3" to listOf(video("s1", "综艺一")),
-            )
-            failCategories = setOf("2")
+            categories = listOf(cat("1", "电影"), cat("3", "综艺"))
+            itemsByCategory = mapOf("1" to listOf(video("m1", "电影一")))
+            // 「综艺」那一排整体拉不到（唯一能提供它的源超时）
+            failCategories = setOf("3")
         }
         val vm = newViewModel(content = content)
 
@@ -117,7 +116,7 @@ class VideoHomeSectionsTest {
         advanceUntilIdle()
 
         val state = vm.videoHome.value
-        assertEquals(listOf("电影", "综艺"), state.rows.map { it.title })
+        assertEquals(listOf("电影"), state.rows.map { it.title })
         assertNull("有排成功了就不该报错", state.error)
     }
 
@@ -283,13 +282,15 @@ class VideoHomeSectionsTest {
         val state = vm.videoHome.value
         assertTrue(state.expanded)
         assertEquals("连续剧", state.expandedTitle)
-        assertEquals("2", state.selectedCategory)
+        // v1.6.7.0：展开的是**一级类型**，二级分类留空 = 浏览该类型全部
+        assertEquals("连续剧", state.selectedType)
+        assertEquals("", state.selectedCategory)
         assertEquals(1, state.items.size)
         assertEquals("剧一", state.items.first().title)
     }
 
     @Test
-    fun `网格视图内切分类`() = runTest(dispatcher) {
+    fun `网格视图内切类型`() = runTest(dispatcher) {
         val content = VideoHomeFakeContentRepository().apply {
             categories = listOf(cat("1", "电影"), cat("2", "连续剧"))
             itemsByCategory = mapOf(
@@ -303,13 +304,79 @@ class VideoHomeSectionsTest {
         vm.expandVideoCategory("2", "连续剧")
         advanceUntilIdle()
 
-        vm.selectVideoCategory("1")
+        vm.selectVideoType("电影")
         advanceUntilIdle()
 
         val state = vm.videoHome.value
         assertTrue(state.expanded)
         assertEquals("电影", state.expandedTitle)
+        assertEquals("电影", state.selectedType)
         assertEquals("电影一", state.items.single().title)
+    }
+
+    @Test
+    fun `选二级分类会覆盖一级类型作为生效分类`() = runTest(dispatcher) {
+        val content = VideoHomeFakeContentRepository().apply {
+            // 电影（一级）下挂「动作片」「喜剧片」两个二级分类
+            categories = listOf(
+                cat("1", "电影"),
+                cat("9", "动作片", parent = "电影"),
+                cat("10", "喜剧片", parent = "电影"),
+            )
+            itemsByCategory = mapOf(
+                "1" to listOf(video("m1", "电影一")),
+                "9" to listOf(video("a1", "动作片一")),
+                "10" to listOf(video("c1", "喜剧片一")),
+            )
+        }
+        val vm = newViewModel(content = content)
+        vm.onVideoTabShown()
+        advanceUntilIdle()
+
+        val tree = vm.videoHome.value.categoryTree
+        assertEquals(listOf("动作片", "喜剧片"), tree["电影"])
+
+        vm.expandVideoCategory("电影", "电影")
+        advanceUntilIdle()
+        assertEquals("电影一", vm.videoHome.value.items.single().title)
+
+        vm.selectVideoCategory("动作片")
+        advanceUntilIdle()
+
+        val state = vm.videoHome.value
+        assertEquals("电影", state.selectedType)
+        assertEquals("动作片", state.selectedCategory)
+        assertEquals("动作片", state.expandedTitle)
+        assertEquals("动作片一", state.items.single().title)
+    }
+
+    @Test
+    fun `切成另一个类型会清掉已选二级分类`() = runTest(dispatcher) {
+        val content = VideoHomeFakeContentRepository().apply {
+            categories = listOf(
+                cat("1", "电影"),
+                cat("9", "动作片", parent = "电影"),
+                cat("2", "连续剧"),
+                cat("20", "欧美剧", parent = "连续剧"),
+            )
+            itemsByCategory = mapOf("1" to listOf(video("m1", "电影一")))
+        }
+        val vm = newViewModel(content = content)
+        vm.onVideoTabShown()
+        advanceUntilIdle()
+
+        vm.expandVideoCategory("电影", "电影")
+        advanceUntilIdle()
+        vm.selectVideoCategory("动作片")
+        advanceUntilIdle()
+        assertEquals("动作片", vm.videoHome.value.selectedCategory)
+
+        vm.selectVideoType("连续剧")
+        advanceUntilIdle()
+
+        val state = vm.videoHome.value
+        assertEquals("连续剧", state.selectedType)
+        assertEquals("二级分类挂在类型下，换类型必须清掉", "", state.selectedCategory)
     }
 
     @Test
@@ -384,6 +451,79 @@ class VideoHomeSectionsTest {
         val state = vm.videoHome.value
         assertEquals(2, state.items.size)
         assertEquals(listOf("第一页一", "第二页一"), state.items.map { it.title })
+    }
+
+    /**
+     * v1.6.7.0 回归：**源内地址跨源撞车**。
+     *
+     * 线上「点 A 分类出来 B 分类的内容、下拉两个分类同时打勾、大标题显示成另一个名字」
+     * 的根因就是：分类地址是苹果 CMS 的 `type_id`，只在源内唯一。这里两个源里 `1`
+     * 分别是「电影」和「动作片」，旧实现拿某一个源的 `1` 去问所有源 → 串味。
+     */
+    @Test
+    fun `跨源同名分类各取各的地址而地址撞车也不串味`() = runTest(dispatcher) {
+        val content = VideoHomeFakeContentRepository().apply {
+            categoriesBySource = mapOf(
+                // 演示源：电影=1、动作片=2
+                "src" to listOf(cat("1", "电影"), cat("2", "动作片", parent = "电影")),
+                // 备选源：动作片=1（和演示源的「电影」撞号），且没有「电影」这一级
+                "src2" to listOf(cat("1", "动作片", parent = "电影")),
+            )
+            itemsBySourceCategory = mapOf(
+                "src|1" to listOf(video("m1", "电影一")),
+                "src|2" to listOf(video("a1", "动作片一")),
+                "src2|1" to listOf(video("a2", "动作片二", sourceId = "src2")),
+            )
+        }
+        val vm = newViewModel(content = content)
+        vm.onVideoTabShown()
+        advanceUntilIdle()
+
+        // 类型归位：源里的「动作片」是「电影」下的二级分类，不是独立类型
+        assertEquals(listOf("电影"), vm.videoHome.value.categoryTree.keys.toList())
+        assertEquals(listOf("动作片"), vm.videoHome.value.categoryTree["电影"])
+        // 计划里每个源保留**自己的**地址：动作片 = src→2、src2→1
+        assertEquals(
+            listOf("src" to "2", "src2" to "1"),
+            vm.videoHome.value.categoryPlan["动作片"].orEmpty().map { it.sourceId to it.url },
+        )
+
+        // 打开「电影」类型（不选二级）：只有认识「电影」的源用自己那条地址取数
+        vm.expandVideoCategory("电影", "电影")
+        advanceUntilIdle()
+        assertEquals(listOf("电影一"), vm.videoHome.value.items.map { it.title })
+
+        // 再切到「动作片」：两个源都用自己的地址，两边内容都出来且互不串味
+        vm.selectVideoCategory("动作片")
+        advanceUntilIdle()
+        val state = vm.videoHome.value
+        assertEquals("动作片", state.expandedTitle)
+        assertEquals("动作片", state.selectedCategory)
+        assertEquals(
+            setOf("动作片一", "动作片二"),
+            state.items.map { it.title }.toSet(),
+        )
+    }
+
+    @Test
+    fun `只给不认识该分类的源发请求`() = runTest(dispatcher) {
+        val content = VideoHomeFakeContentRepository().apply {
+            categoriesBySource = mapOf(
+                "src" to listOf(cat("1", "电影")),
+                // src2 没有「电影」这个分类
+                "src2" to listOf(cat("7", "综艺")),
+            )
+            itemsBySourceCategory = mapOf("src|1" to listOf(video("m1", "电影一")))
+        }
+        val vm = newViewModel(content = content)
+        vm.onVideoTabShown()
+        advanceUntilIdle()
+        content.exploreCalls.clear()
+
+        vm.expandVideoCategory("电影", "电影")
+        advanceUntilIdle()
+
+        assertEquals("只应问认识「电影」的那个源", listOf("1" to 1), content.exploreCalls)
     }
 
     // ===== 片库四维筛选（v1.3.5.0）=====
@@ -557,13 +697,14 @@ class VideoHomeSectionsTest {
         preferencesManager = null,
     )
 
-    private fun cat(id: String, name: String) = ExploreCategory(title = name, url = id)
+    private fun cat(id: String, name: String, parent: String = "") =
+        ExploreCategory(title = name, url = id, parent = parent)
 
-    private fun video(id: String, title: String) = MediaItem(
+    private fun video(id: String, title: String, sourceId: String = "src") = MediaItem(
         id = id,
         title = title,
         type = SourceType.VIDEO,
-        sourceId = "src",
+        sourceId = sourceId,
         sourceName = "演示源",
     )
 }
@@ -602,6 +743,12 @@ private class VideoHomeFakeSourceRepository(private val sources: List<SourceInfo
 private class VideoHomeFakeContentRepository : ContentRepository {
     var categories: List<ExploreCategory> = emptyList()
 
+    /** 按源返回不同分类（跨源聚合测试用）；非空时优先于 [categories] */
+    var categoriesBySource: Map<String, List<ExploreCategory>> = emptyMap()
+
+    /** 按「源|分类地址」返回内容（跨源聚合测试用）；命中优先于 [itemsByCategory] */
+    var itemsBySourceCategory: Map<String, List<MediaItem>> = emptyMap()
+
     /** 分类 → 第一页内容 */
     var itemsByCategory: Map<String, List<MediaItem>> = emptyMap()
 
@@ -622,7 +769,7 @@ private class VideoHomeFakeContentRepository : ContentRepository {
 
     override suspend fun exploreCategoriesOf(sourceId: String): List<ExploreCategory> {
         categoryError?.let { throw it }
-        return categories
+        return categoriesBySource[sourceId] ?: categories
     }
 
     override suspend fun exploreFiltered(
@@ -638,6 +785,7 @@ private class VideoHomeFakeContentRepository : ContentRepository {
     override suspend fun explore(sourceId: String, url: String, page: Int): List<MediaItem> {
         exploreCalls += url to page
         if (url in failCategories) throw IllegalStateException("boom: $url")
+        itemsBySourceCategory["$sourceId|$url"]?.let { return it }
         if (pagedItems.isNotEmpty()) return pagedItems[page].orEmpty()
         return itemsByCategory[url].orEmpty()
     }

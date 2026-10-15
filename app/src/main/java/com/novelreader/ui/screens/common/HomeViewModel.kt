@@ -288,8 +288,34 @@ class HomeViewModel(
     data class VideoHomeState(
         val sources: List<com.novelreader.domain.model.SourceInfo> = emptyList(),
         val currentSourceId: String = "",
-        val categories: List<com.novelreader.domain.model.ExploreCategory> = emptyList(),
-        /** 当前分类 id（空串 = 全部） */
+        /**
+         * 分类树（v1.6.7.0）：规范**类型**名 → 其下**分类**名（保序，可为空）。
+         *
+         * 类型是 [com.novelreader.core.util.VideoTypeMap.ORDER] 里那 9 个
+         * （电影 / 电视剧 / 综艺 / 动漫 / 短剧 / 纪录片 / 体育 / 资讯 / 预告片），
+         * **顺序固定**，不随存活源顺序变化；各源的叫法（连续剧 / 电影片 / 4K电影…）
+         * 都在 `VideoTypeMap` 里归位。
+         */
+        val categoryTree: Map<String, List<String>> = emptyMap(),
+        /**
+         * 分类名（二级分类名）→ 各源该分类的**源内地址**（v1.6.7.0）。
+         *
+         * **为什么不能只存一个 url**：苹果 CMS 的分类地址是该源的 `type_id`
+         * （`1` / `2` / `9` …），只在源内唯一。聚合 40 多个源时，不同源的不同分类
+         * 会撞同一个数字，拿它当身份就会出现「点 A 分类出 B 内容」。
+         * 现在以**分类名**为身份，查询时逐源取各自地址。
+         */
+        val categoryPlan: Map<String, List<com.novelreader.domain.model.CategorySource>> = emptyMap(),
+        /**
+         * 类型名 → 各源**该类型自身**的源内地址（v1.6.7.0，每源最多一条）。
+         *
+         * 只选「类型」不选「分类」时用它 —— 例如选「电影」，各源分别用自己
+         * `电影 / 电影片 / 4K电影` 那条地址，而不是只从某个源拉。
+         */
+        val categoryTypeUrls: Map<String, List<com.novelreader.domain.model.CategorySource>> = emptyMap(),
+        /** 当前选中的一级类型（"" = 全部） */
+        val selectedType: String = "",
+        /** 当前选中的二级分类（"" = 该类型下全部） */
         val selectedCategory: String = "",
         /** 片库筛选：地区（空串 = 不限） */
         val selectedArea: String = "",
@@ -324,8 +350,15 @@ class HomeViewModel(
         /** 当前视图是否已有内容（判断要不要重新拉首屏） */
         val loaded: Boolean
             get() = if (expanded) items.isNotEmpty() else rows.isNotEmpty()
-    }
 
+        /** 网格视图**当前生效的分类名**：二级优先，其次一级类型，都为空 = 全部 */
+        val effectiveCategory: String
+            get() = selectedCategory.ifBlank { selectedType }
+
+        /** 当前一级类型下的二级分类列表（未选类型 = 空） */
+        val subCategories: List<String>
+            get() = categoryTree[selectedType].orEmpty()
+    }
     private val _videoHome = MutableStateFlow(VideoHomeState())
     val videoHome: StateFlow<VideoHomeState> = _videoHome.asStateFlow()
 
@@ -355,12 +388,15 @@ class HomeViewModel(
             val next = state.copy(
                 sources = sources,
                 currentSourceId = current,
-                categories = if (sourceChanged) emptyList() else state.categories,
+                categoryTree = if (sourceChanged) emptyMap() else state.categoryTree,
+                categoryPlan = if (sourceChanged) emptyMap() else state.categoryPlan,
+                categoryTypeUrls = if (sourceChanged) emptyMap() else state.categoryTypeUrls,
                 items = if (sourceChanged) emptyList() else state.items,
                 rows = if (sourceChanged) emptyList() else state.rows,
                 // 换源后原来的「展开分类」不再适用，退回分区视图
                 expanded = if (sourceChanged) false else state.expanded,
                 expandedTitle = if (sourceChanged) "" else state.expandedTitle,
+                selectedType = if (sourceChanged) "" else state.selectedType,
                 selectedCategory = if (sourceChanged) "" else state.selectedCategory,
             )
             // 「继续观看」来自本地进度表，与所选源无关，每次进页都刷新
@@ -381,7 +417,10 @@ class HomeViewModel(
         if (sourceId == _videoHome.value.currentSourceId) return
         _videoHome.value = _videoHome.value.copy(
             currentSourceId = sourceId,
-            categories = emptyList(),
+            categoryTree = emptyMap(),
+            categoryPlan = emptyMap(),
+            categoryTypeUrls = emptyMap(),
+            selectedType = "",
             selectedCategory = "",
             items = emptyList(),
             rows = emptyList(),
@@ -402,12 +441,17 @@ class HomeViewModel(
         viewModelScope.launch { runCatching { preferencesManager?.setVideoChannelIndex(index) } }
     }
 
-    /** 展开某个分类的网格视图（分区标题右侧「查看更多」） */
+    /**
+     * 展开某个分类的网格视图（分区标题右侧「查看更多」）。
+     *
+     * v1.6.7.0：[categoryId] 现在是**一级类型名**（等于 [title]），不再传源内分类地址。
+     */
     fun expandVideoCategory(categoryId: String, title: String) {
         _videoHome.value = _videoHome.value.copy(
             expanded = true,
-            expandedTitle = title,
-            selectedCategory = categoryId,
+            selectedType = title,
+            selectedCategory = "",
+            expandedTitle = title.ifBlank { "全部" },
             items = emptyList(),
             hasMore = true,
         )
@@ -419,23 +463,42 @@ class HomeViewModel(
         if (!_videoHome.value.expanded) return
         _videoHome.value = _videoHome.value.copy(
             expanded = false,
-            expandedTitle = "",
+            selectedType = "",
             selectedCategory = "",
+            expandedTitle = "",
             items = emptyList(),
             hasMore = true,
         )
         loadVideoHome(reset = true)
     }
 
-    /** 网格视图内切换分类（空串 = 全部） */
-    fun selectVideoCategory(categoryId: String) {
+    /**
+     * 网格视图切换**一级类型**（v1.6.7.0 二级下拉的第一级；空串 = 全部）。
+     *
+     * 换类型时**清空二级分类** —— 二级分类挂在类型下，跨类型不通用。
+     */
+    fun selectVideoType(type: String) {
         val s = _videoHome.value
-        if (categoryId == s.selectedCategory && s.expanded) return
-        val title = s.categories.firstOrNull { it.url == categoryId }?.title.orEmpty().ifBlank { "全部" }
+        if (type == s.selectedType && s.expanded) return
         _videoHome.value = s.copy(
             expanded = true,
-            expandedTitle = title,
-            selectedCategory = categoryId,
+            selectedType = type,
+            selectedCategory = "",
+            expandedTitle = type.ifBlank { "全部" },
+            items = emptyList(),
+            hasMore = true,
+        )
+        loadVideoHome(reset = true)
+    }
+
+    /** 网格视图切换**二级分类**（空串 = 该类型下全部） */
+    fun selectVideoCategory(category: String) {
+        val s = _videoHome.value
+        if (category == s.selectedCategory && s.expanded) return
+        _videoHome.value = s.copy(
+            expanded = true,
+            selectedCategory = category,
+            expandedTitle = category.ifBlank { s.selectedType.ifBlank { "全部" } },
             items = emptyList(),
             hasMore = true,
         )
@@ -601,12 +664,13 @@ class HomeViewModel(
         // 1) 探测存活源：单请求优先（能拉到分类即活），分类为空/失败再退化一次内容探测；
         //    每个源独立有界超时，确认存活就增量刷新可用源列表。
         //    v1.5.8.0「尽量所有源都聚合」：不再截断前 N 个源，探测全部启用源（并发 + 有界超时兜底）。
+        //    v1.6.7.0：取**完整分类树**（含二级），供首页「类型 → 分类」二级下拉用。
         val alive = java.util.Collections.synchronizedList(mutableListOf<com.novelreader.domain.model.SourceInfo>())
         val catsBySource = java.util.concurrent.ConcurrentHashMap<String, List<ExploreCategory>>()
         coroutineScope {
             all.map { src -> async {
                 val cats = runCatching {
-                    withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) { contentRepository.exploreCategoriesOf(src.id) }
+                    withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) { contentRepository.exploreCategoryTreeOf(src.id) }
                 }.getOrNull().orEmpty()
                 val ok = cats.isNotEmpty() || runCatching {
                     withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) { contentRepository.explore(src.id, "", 1).isNotEmpty() }
@@ -630,27 +694,44 @@ class HomeViewModel(
         val adultIds = adultSourceIds(_videoHome.value.sources)
         val orderedAlive = alive.sortedBy { it.id in adultIds }
 
-        // 2) 合并各存活源的分类（探测阶段已顺带取到），按标题去重保序
-        val allCats = orderedAlive.flatMap { catsBySource[it.id].orEmpty() }
-        val mergedCats = LinkedHashMap<String, ExploreCategory>()
-        for (cat in allCats) if (cat.title.isNotBlank() && cat.title !in mergedCats) {
-            mergedCats[cat.title] = cat
-        }
-        // 有的源不返回分类：用「全部」兜底一行
-        val plan: List<Pair<String, String>> = if (mergedCats.isEmpty()) {
-            listOf("" to "全部")
-        } else {
-            mergedCats.values.take(MAX_VIDEO_ROWS).map { it.url to it.title }
-        }
+        // 2) 合并各存活源的分类（探测阶段已顺带取到），产出三样东西：
+        //    - **类型树**：规范类型名 → 其下二级分类名
+        //    - **分类计划**：分类名 → 各源该分类的**源内地址**
+        //    - **类型地址**：类型名 → 各源该类型自身的源内地址
+        //
+        //    v1.6.7.0 两处关键修正：
+        //    ① 身份一律用**分类名**，不再用源内地址 —— 苹果 CMS 的分类地址就是该源的
+        //       type_id（1/2/9…），聚合 40 多个源时不同分类会撞同一个数字，旧实现拿它当
+        //       身份，于是「点 A 分类出 B 内容、下拉里两个分类同时打勾、大标题显示成另
+        //       一个名字」；
+        //    ② 类型用 VideoTypeMap **归位**到 9 个规范类型并按固定顺序排列 —— 之前直接
+        //       拿「父级为空」当一级类型，185 个名字（含套图社 / 成人栏目 / 站内公告）
+        //       全塞进「类型」下拉，且首页分区取前 12 个键，源顺序一变分区就乱跳。
+        //    纯逻辑见 VideoCategoryPlan。
+        val catPlan = com.novelreader.core.util.VideoCategoryPlan.build(
+            sourceOrder = orderedAlive.map { it.id },
+            catsBySource = catsBySource,
+        )
+        val tree = catPlan.tree
+        // 分区行 = 规范类型（顺序恒定）；一个类型都没有时用「全部」兜底一行
+        val rowPlan: List<String> = if (tree.isEmpty()) listOf("") else tree.keys.toList().take(MAX_VIDEO_ROWS)
 
         // 3) 每个分类并发拉各存活源该分类的内容，合并去重；每完成一行先上屏
         val rows = java.util.Collections.synchronizedList(mutableListOf<VideoRow>())
         coroutineScope {
-            plan.mapIndexed { _, (catUrl, title) -> async {
+            rowPlan.mapIndexed { _, title -> async {
+                val targets = com.novelreader.core.util.VideoCategoryPlan.targetsOf(
+                    plan = catPlan,
+                    type = title,
+                    category = "",
+                    availableSources = orderedAlive.map { it.id },
+                )
                 val merged = coroutineScope {
-                    orderedAlive.map { src -> async {
+                    targets.map { t -> async {
                         runCatching {
-                            withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) { contentRepository.explore(src.id, catUrl, 1) }
+                            withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) {
+                                contentRepository.explore(t.sourceId, t.url, 1)
+                            }
                         }.getOrNull().orEmpty()
                     } }.awaitAll().flatten()
                 }
@@ -658,14 +739,14 @@ class HomeViewModel(
                 val dedup = merged.filter { seen.add("${it.sourceId}:${it.id}") }
                     // v1.6.5.0：分区标题（分类名）写进 tags，详情页标签小栏用
                     //（「全部」兜底行不是真分类，跳过）
-                    .map { if (title.isNotBlank() && title != "全部") it.copy(tags = it.tags + title) else it }
+                    .map { if (title.isNotBlank()) it.copy(tags = it.tags + title) else it }
                 // v1.5.8.0：分区行内成人源内容沉底
                 val sunk = sinkAdults(dedup, adultIds)
                 if (sunk.isNotEmpty()) {
-                    rows.add(VideoRow(catUrl, title, sunk))
+                    rows.add(VideoRow(categoryId = title, title = title.ifBlank { "全部" }, items = sunk))
                     _videoHome.value = _videoHome.value.copy(
                         loading = false,
-                        rows = rows.toList().sortedBy { r -> plan.indexOfFirst { it.first == r.categoryId } },
+                        rows = rows.toList().sortedBy { r -> rowPlan.indexOf(r.categoryId) },
                     )
                 }
             } }.awaitAll()
@@ -674,8 +755,10 @@ class HomeViewModel(
         _videoHome.value = _videoHome.value.copy(
             loading = false,
             loadingMore = false,
-            categories = mergedCats.values.toList(),
-            rows = rows.toList().sortedBy { r -> plan.indexOfFirst { it.first == r.categoryId } },
+            categoryTree = catPlan.tree,
+            categoryPlan = catPlan.urls,
+            categoryTypeUrls = catPlan.typeUrls,
+            rows = rows.toList().sortedBy { r -> rowPlan.indexOf(r.categoryId) },
             availableSources = orderedAlive.map { it.id },
             error = if (rows.isEmpty()) "没有取到内容，可能是各源暂时不可用，稍后再试" else null,
             loadedAtMs = if (rows.isNotEmpty()) System.currentTimeMillis() else 0L,
@@ -694,7 +777,8 @@ class HomeViewModel(
         if (reset) videoPage = 0
         val nextPage = videoPage + 1
         val snapshot = _videoHome.value
-        val category = snapshot.selectedCategory
+        // v1.6.7.0：selectedType / selectedCategory 现在都是**名字**（不再是源内地址），
+        // 由下面的 targetsOf 逐源翻译成各自地址。
         val filters = VideoFilters.toFilterMap(
             area = snapshot.selectedArea,
             year = snapshot.selectedYear,
@@ -708,10 +792,25 @@ class HomeViewModel(
             .takeIf { it.isNotEmpty() }
             ?: listOf(sourceId)
 
+        // v1.6.7.0：把「类型 / 分类名」翻译成**每个源自己的**分类地址再请求。
+        // 选了二级分类用该分类地址，只选类型用该类型自身的地址，都不选 = 逐源拉最新。
+        // 不认识该分类的源直接跳过 —— 旧实现拿某一个源的 id 硬问所有源，
+        // 苹果 CMS 的 type_id 跨源同号不同义，才会「点 A 分类出 B 内容」。
+        val targets = com.novelreader.core.util.VideoCategoryPlan.targetsOf(
+            plan = com.novelreader.core.util.VideoCategoryPlan.Plan(
+                tree = snapshot.categoryTree,
+                urls = snapshot.categoryPlan,
+                typeUrls = snapshot.categoryTypeUrls,
+            ),
+            type = snapshot.selectedType,
+            category = snapshot.selectedCategory,
+            availableSources = sourcesToUse,
+        )
+
         val fetched = coroutineScope {
-            sourcesToUse.map { sid -> async {
+            targets.map { t -> async {
                 runCatching {
-                    contentRepository.exploreFiltered(sid, category, nextPage, filters)
+                    contentRepository.exploreFiltered(t.sourceId, t.url, nextPage, filters)
                 }.getOrDefault(emptyList())
             } }.awaitAll().flatten()
         }
@@ -721,9 +820,9 @@ class HomeViewModel(
         val seen = current.items.mapTo(HashSet()) { "${it.sourceId}:${it.id}" }
         val merged = if (reset) fetched else current.items + fetched
         val adultIds = adultSourceIds(current.sources)
-        // v1.6.5.0：网格视图的分类标题（selectedCategory 是 url，标题在 expandedTitle）
-        // 写进 tags，详情页标签小栏用
-        val gridTag = current.expandedTitle.takeIf { it.isNotBlank() && it != "全部" }
+        // v1.6.5.0：网格视图的分类名写进 tags，详情页标签小栏用
+        // v1.6.7.0：分类身份改为「名字」，直接用 effectiveCategory（二级优先，其次一级）
+        val gridTag = current.effectiveCategory.takeIf { it.isNotBlank() }
         _videoHome.value = current.copy(
             items = sinkAdults(
                 merged.distinctBy { "${it.sourceId}:${it.id}" }
@@ -751,7 +850,12 @@ class HomeViewModel(
         val sourceIds: List<String> = emptyList(),
         val currentSourceId: String = "",
         val rows: List<VideoRow> = emptyList(),
-        val categories: List<ExploreCategory> = emptyList(),
+        /** v1.6.7.0：规范类型名 → 二级分类名 */
+        val categoryTree: Map<String, List<String>> = emptyMap(),
+        /** v1.6.7.0：分类名 → 各源该分类的源内地址 */
+        val categoryPlan: Map<String, List<com.novelreader.domain.model.CategorySource>> = emptyMap(),
+        /** v1.6.7.0：类型名 → 各源该类型自身的源内地址 */
+        val categoryTypeUrls: Map<String, List<com.novelreader.domain.model.CategorySource>> = emptyMap(),
         val availableSources: List<String> = emptyList(),
     )
 
@@ -763,7 +867,14 @@ class HomeViewModel(
         val items: List<MediaItem> = emptyList(),
     )
 
-    private fun homeCacheKey() = "home"
+    /**
+     * 首页缓存 key。
+     *
+     * v1.6.7.0 升到 `home_v3`：payload 结构又变了（类型改成 `VideoTypeMap` 归位后的
+     * 规范类型，并新增 `categoryTypeUrls`），`home_v2` 里存的是未归位的老类型名，
+     * 反序列化出来会让「类型」下拉又变乱。key 换代让旧缓存自然作废，不必写兼容代码。
+     */
+    private fun homeCacheKey() = "home_v3"
 
     private fun channelCacheKey(channel: VideoChannel) = "channel_${channel.name}"
 
@@ -800,7 +911,9 @@ class HomeViewModel(
                 .takeIf { id -> s.sources.any { it.id == id } }
                 ?: s.currentSourceId,
             rows = payload.rows,
-            categories = payload.categories,
+            categoryTree = payload.categoryTree,
+            categoryPlan = payload.categoryPlan,
+            categoryTypeUrls = payload.categoryTypeUrls,
             availableSources = payload.availableSources.ifEmpty { payload.sourceIds },
             loading = false,
             loadingMore = false,
@@ -822,7 +935,9 @@ class HomeViewModel(
                         sourceIds = currentEnabledVideoIds().toList(),
                         currentSourceId = s.currentSourceId,
                         rows = s.rows,
-                        categories = s.categories,
+                        categoryTree = s.categoryTree,
+                        categoryPlan = s.categoryPlan,
+                        categoryTypeUrls = s.categoryTypeUrls,
                         availableSources = s.availableSources,
                     ),
                 ),

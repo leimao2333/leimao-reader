@@ -30,14 +30,25 @@ import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-# 一级分类：电影 / 动漫 / 短剧 三个名字要能命中 App 的频道关键词，
-# 其余（连续剧、综艺）只会出现在影视首页的分区行里。
+# 分类：(type_id, type_name, parent_id)。parent_id == 0 表示一级类型。
+#
+# 刻意做成**两级** —— 苹果 CMS 的 `class[].type_pid` 本来就有父子层级，
+# App 的影视首页据此渲染「类型 → 分类」二级下拉，本地站点要有二级分类才验得了。
+# 一级名里的「电影 / 动漫 / 短剧」要能命中 App 的频道关键词；
+# 二级分类（动作片 / 喜剧片 / 欧美剧）只在首页的「分类」那一级下拉里出现。
 CATEGORIES = [
-    (1, "电影"),
-    (2, "连续剧"),
-    (3, "综艺"),
-    (4, "动漫"),
-    (5, "短剧"),
+    (1, "电影", 0),
+    (11, "动作片", 1),
+    (12, "喜剧片", 1),
+    (2, "连续剧", 0),
+    (21, "欧美剧", 2),
+    (3, "综艺", 0),
+    (4, "动漫", 0),
+    (5, "短剧", 0),
+    # 「电影片」是「电影」的**别名**：归位到同一个类型，不该在「类型」下拉里另起一项
+    (98, "电影片", 0),
+    # 站内栏目 / 套图社这类非影视分类：**不该**出现在「类型」下拉里（v1.6.7.0 归位表过滤）
+    (99, "爱蜜社", 0),
 ]
 
 # 每个分类多少条（够首页一排 + 电影频道翻 2 页）
@@ -181,7 +192,7 @@ class Handler(BaseHTTPRequestHandler):
 
         with_play = ac == "detail"
         all_items = []
-        for type_id, type_name in CATEGORIES:
+        for type_id, type_name, _parent_id in CATEGORIES:
             all_items.extend(make_items(tag, type_id, type_name, with_play))
 
         if ids:
@@ -204,8 +215,8 @@ class Handler(BaseHTTPRequestHandler):
             "limit": str(PAGE_SIZE),
             "total": len(picked),
             "class": [
-                {"type_id": cid, "type_pid": 0, "type_name": cname}
-                for cid, cname in CATEGORIES
+                {"type_id": cid, "type_pid": pid, "type_name": cname}
+                for cid, cname, pid in CATEGORIES
             ],
             "list": page_items,
         }

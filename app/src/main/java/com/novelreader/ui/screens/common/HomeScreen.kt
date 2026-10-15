@@ -311,6 +311,7 @@ fun HomeScreen(
                     // v1.5.1.0：去掉下拉刷新容器，刷新仅靠顶部刷新按钮（下拉手势太灵敏，容易误触发）
                     com.novelreader.ui.screens.video.VideoHomeContent(
                         state = videoHomeState,
+                        onSelectType = viewModel::selectVideoType,
                         onSelectCategory = viewModel::selectVideoCategory,
                         onSelectArea = viewModel::selectVideoArea,
                         onSelectYear = viewModel::selectVideoYear,

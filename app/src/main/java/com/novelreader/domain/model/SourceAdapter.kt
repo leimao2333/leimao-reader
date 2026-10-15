@@ -63,8 +63,22 @@ interface SourceAdapter {
 
     /**
      * 发现分类列表（可选实现）。源未配置 exploreUrl 时返回空列表。
+     *
+     * 约定：只返回**一级分类**（[ExploreCategory.parent] 为空的那些）。
      */
     suspend fun exploreCategories(): List<ExploreCategory> = emptyList()
+
+    /**
+     * 发现分类**完整层级树**（v1.6.7.0）。
+     *
+     * 部分源天然带父子分类（苹果 CMS 的 `class[].type_pid`：一级「电影 / 电视剧 /
+     * 动漫 …」，二级「动作片 / 喜剧片 / 欧美剧 …」）。上层「类型 → 分类」二级下拉
+     * 需要这层信息，所以单独开一个方法，避免污染 [exploreCategories] 的既有语义
+     * （分区标题、标签池、频道筛选都只认一级分类）。
+     *
+     * 默认实现 = [exploreCategories]（无层级概念的源，全部条目都算一级）。
+     */
+    suspend fun exploreCategoryTree(): List<ExploreCategory> = exploreCategories()
 
     /**
      * 按发现分类地址拉取书籍列表（规则同搜索，用 ruleExplore）。
@@ -87,9 +101,33 @@ interface SourceAdapter {
 }
 
 /**
- * 发现分类（v1.2.3.0）。
+ * 发现分类（v1.2.3.0；v1.6.7.0 增加 [parent]）。
+ *
+ * **注意 [url] 是「源内地址」**：苹果 CMS 里就是该源的 `type_id`（`1` / `2` / `9` …），
+ * 只在**同一个源内部**唯一。跨源聚合时**绝不能用它当身份**——不同源的同名分类地址不同、
+ * 不同分类也可能撞同一个数字，必须用 [title]（分类名）作身份，把每个源各自的 [url]
+ * 单独存起来（见 [CategorySource]）。
  */
 data class ExploreCategory(
     val title: String,
     val url: String,
+    /**
+     * 父级分类名（`""` = 一级分类 / 无父级）。
+     *
+     * v1.6.7.0：视频苹果 CMS 源用它做「类型 → 分类」二级下拉。
+     * 注意存的是**父级名字**而非父级 id —— 名字才是跨源稳定的。
+     */
+    val parent: String = "",
+)
+
+/**
+ * 某个分类在**某一个源**里的地址（v1.6.7.0）。
+ *
+ * 分类的跨源身份是分类名；每个源对同一个分类名有各自的 [url]
+ * （苹果 CMS 是 `type_id`）。聚合查询时逐源拿自己的 [url] 去请求，
+ * 这样「点 A 分类却出来 B 分类内容」的问题才不会发生。
+ */
+data class CategorySource(
+    val sourceId: String = "",
+    val url: String = "",
 )

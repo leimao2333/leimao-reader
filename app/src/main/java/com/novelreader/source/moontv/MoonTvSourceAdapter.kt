@@ -28,7 +28,6 @@ class MoonTvSourceAdapter(
     /** 一级分类缓存（分类接口较慢，首页会反复读取） */
     @Volatile
     private var categoriesCache: List<ExploreCategory>? = null
-
     private val requestHeaders: Map<String, String>
         get() = buildMap {
             put("Accept", "application/json, text/plain, */*")
@@ -156,10 +155,20 @@ class MoonTvSourceAdapter(
         MacCmsParser.isOk(request(listOf("ac" to "list", "pg" to "1")))
     }.getOrDefault(false)
 
-    override suspend fun exploreCategories(): List<ExploreCategory> {
+    /** 一级分类（分区标题 / 标签池 / 频道筛选用）；由完整树过滤父级为空得来 */
+    override suspend fun exploreCategories(): List<ExploreCategory> =
+        tree().filter { it.parent.isBlank() }
+
+    /** 完整分类树（v1.6.7.0）：一级类型 + 其下二级分类，二级下拉用 */
+    override suspend fun exploreCategoryTree(): List<ExploreCategory> = tree()
+
+    /**
+     * 取（并缓存）完整分类树。故意不吞异常 —— 调用方（影视首页）要据此区分
+     * 「源不可达」与「源本身没有分类」。
+     */
+    private suspend fun tree(): List<ExploreCategory> {
         categoriesCache?.let { return it }
-        // 故意不吞异常：调用方（影视首页）要据此区分「源不可达」与「源本身没有分类」
-        val list = MacCmsParser.parseCategories(request(listOf("ac" to "list", "pg" to "1")))
+        val list = MacCmsParser.parseCategoryTree(request(listOf("ac" to "list", "pg" to "1")))
         if (list.isNotEmpty()) categoriesCache = list
         return list
     }

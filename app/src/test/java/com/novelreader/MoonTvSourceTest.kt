@@ -385,6 +385,51 @@ class MoonTvSourceTest {
         assertEquals("1", categories.first().url)
     }
 
+    // ===== 分类树（v1.6.7.0 视频「类型 → 分类」二级下拉）=====
+
+    @Test
+    fun `分类树解析出一级与二级并还原父级名字`() {
+        val tree = MacCmsParser.parseCategoryTree(SAMPLE_LIST_JSON)
+        assertEquals(2, tree.size)
+        val movie = tree.first { it.title == "电影" }
+        assertEquals("1", movie.url)
+        assertEquals("一级分类父级为空", "", movie.parent)
+
+        val action = tree.first { it.title == "动作片" }
+        assertEquals("10", action.url)
+        // 存的是父级**名字**而不是 pid —— 名字才跨源稳定
+        assertEquals("电影", action.parent)
+    }
+
+    @Test
+    fun `缺少 type_pid 视为一级分类`() {
+        val json = """{"class":[{"type_id":1,"type_name":"电影"},{"type_id":2,"type_name":"电视剧"}]}"""
+        val tree = MacCmsParser.parseCategoryTree(json)
+        assertEquals(listOf("电影", "电视剧"), tree.map { it.title })
+        assertTrue("没有 pid 应算一级", tree.all { it.parent.isBlank() })
+    }
+
+    @Test
+    fun `父级 id 查不到时该条按一级处理`() {
+        // 只有孤立的二级，找不到父级 —— 不能因为解析不出父名就丢掉它
+        val json = """{"class":[{"type_id":9,"type_pid":2,"type_name":"动作片"}]}"""
+        val tree = MacCmsParser.parseCategoryTree(json)
+        assertEquals(1, tree.size)
+        assertEquals("动作片", tree.first().title)
+        assertEquals("", tree.first().parent)
+    }
+
+    @Test
+    fun `分类树对坏 JSON 与缺字段容错`() {
+        assertTrue(MacCmsParser.parseCategoryTree("<html>502</html>").isEmpty())
+        assertTrue(MacCmsParser.parseCategoryTree("""{"code":1}""").isEmpty())
+        assertEquals(
+            listOf("电影"),
+            MacCmsParser.parseCategoryTree("""{"class":[{"type_id":1,"type_name":"电影"},{"type_name":"没有id"}]}""")
+                .map { it.title },
+        )
+    }
+
     @Test
     fun `成功判定`() {
         assertTrue(MacCmsParser.isOk(SAMPLE_LIST_JSON))

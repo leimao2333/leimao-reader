@@ -92,6 +92,9 @@ import kotlinx.coroutines.launch
 @Composable
 fun VideoHomeContent(
     state: HomeViewModel.VideoHomeState,
+    /** 切换一级类型（v1.6.7.0 二级下拉第一级；空串 = 全部） */
+    onSelectType: (String) -> Unit,
+    /** 切换二级分类（空串 = 该类型下全部） */
     onSelectCategory: (String) -> Unit,
     onSelectArea: (String) -> Unit,
     onSelectYear: (String) -> Unit,
@@ -111,6 +114,7 @@ fun VideoHomeContent(
             VideoGridContent(
                 state = state,
                 onBack = onCollapseCategory,
+                onSelectType = onSelectType,
                 onSelectCategory = onSelectCategory,
                 onSelectArea = onSelectArea,
                 onSelectYear = onSelectYear,
@@ -337,6 +341,7 @@ private fun SourceHeaderRow(
 private fun VideoGridContent(
     state: HomeViewModel.VideoHomeState,
     onBack: () -> Unit,
+    onSelectType: (String) -> Unit,
     onSelectCategory: (String) -> Unit,
     onSelectArea: (String) -> Unit,
     onSelectYear: (String) -> Unit,
@@ -384,10 +389,16 @@ private fun VideoGridContent(
             modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 8.dp),
         )
 
-        // 分类 / 地区 / 年份 / 排序四个维度统一下拉（v1.5.10.0：分类从横滑 chips 改为
-        // 下拉框 —— 分类一多横滑要划很久，下拉一步直达）
+        // 类型 / 分类 / 地区 / 年份 / 排序统一下拉。
+        // v1.5.10.0：分类从横滑 chips 改为下拉框（分类一多横滑要划很久）。
+        // v1.6.7.0：分类拆成**二级** —— 先「类型」（苹果 CMS 的一级分类：电影 / 电视剧 /
+        // 动漫 / 综艺 / 短剧 / 预告片…），再「分类」（该类型下的动作片 / 欧美剧…）。
+        // 同时分类身份从「源内地址」改为「分类名」，不再出现张冠李戴与双勾。
         FilterDropdownRow(
-            categories = state.categories,
+            types = state.categoryTree.keys.toList(),
+            selectedType = state.selectedType,
+            onSelectType = onSelectType,
+            subCategories = state.subCategories,
             selectedCategory = state.selectedCategory,
             onSelectCategory = onSelectCategory,
             selectedArea = state.selectedArea,
@@ -445,13 +456,28 @@ private fun VideoGridContent(
 // ============================== 筛选栏 ==============================
 
 /**
- * 片库筛选行：分类 / 地区 / 年份 / 排序（v1.5.10.0 起分类也用下拉）。
+ * 片库筛选行（v1.5.10.0；**v1.6.7.0 分类改二级**）。
+ *
+ * 下拉顺序：类型 → 分类 → 地区 → 年份 → 排序。
+ *
+ * - **类型** = 规范一级类型（电影 / 电视剧 / 综艺 / 动漫 / 短剧 / 纪录片 / 体育 / 资讯 /
+ *   预告片，由 `VideoTypeMap` 把各源五花八门的叫法归位而来，顺序固定）；
+ * - **分类** = 当前类型下的二级分类（电影 → 动作片 / 喜剧片 / 科幻片…），
+ *   只有选了类型且该类型确实有二级分类时才出现；
+ * - 选**类型**而不选分类 = 浏览该类型全部内容（各源各用自己那条类型地址）；
+ * - 选「全部」= 不限，逐源拉最新。
+ *
+ * 选项的 value 就是**分类名本身** —— 视频分类的跨源身份是名字，
+ * 源内地址（苹果 CMS 的 type_id）只存在 ViewModel 的 categoryPlan 里，逐源各用各的。
  *
  * 年份按**当前年**动态生成，不写死列表 —— 否则过几年就选不到最新年份了。
  */
 @Composable
 private fun FilterDropdownRow(
-    categories: List<com.novelreader.domain.model.ExploreCategory>,
+    types: List<String>,
+    selectedType: String,
+    onSelectType: (String) -> Unit,
+    subCategories: List<String>,
     selectedCategory: String,
     onSelectCategory: (String) -> Unit,
     selectedArea: String,
@@ -466,25 +492,26 @@ private fun FilterDropdownRow(
         VideoFilters.years(java.util.Calendar.getInstance().get(java.util.Calendar.YEAR))
     }
     val orderOptions = remember { VideoFilters.orders() }
-    // 分类选项：「全部」（空 url）+ 各聚合分类；同名不同 url 的分类去重保序
-    val categoryOptions = remember(categories) {
-        buildList {
-            add(VideoFilters.ALL)
-            val seen = HashSet<String>()
-            categories.forEach { cat ->
-                if (cat.title.isNotBlank() && seen.add(cat.title)) {
-                    add(VideoFilters.Option(cat.title, cat.url))
-                }
-            }
-        }
+    // 类型选项：「全部」+ 各一级类型（跨源按名合并，天然唯一，不会再撞车）
+    val typeOptions = remember(types) {
+        listOf(VideoFilters.ALL) + types.filter { it.isNotBlank() }.map { VideoFilters.Option(it, it) }
+    }
+    // 二级分类选项：同样以分类名为 value
+    val subOptions = remember(subCategories) {
+        listOf(VideoFilters.ALL) +
+            subCategories.filter { it.isNotBlank() }.map { VideoFilters.Option(it, it) }
     }
 
     LazyRow(
         contentPadding = PaddingValues(horizontal = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        if (categoryOptions.size > 1) {
-            item { FilterDropdown("分类", categoryOptions, selectedCategory, onSelectCategory) }
+        if (typeOptions.size > 1) {
+            item { FilterDropdown("类型", typeOptions, selectedType, onSelectType) }
+            // 选了类型、且该类型有二级分类时才出现「分类」这一级
+            if (selectedType.isNotBlank() && subOptions.size > 1) {
+                item { FilterDropdown("分类", subOptions, selectedCategory, onSelectCategory) }
+            }
         }
         item { FilterDropdown("地区", areaOptions, selectedArea, onSelectArea) }
         item { FilterDropdown("年份", yearOptions, selectedYear, onSelectYear) }

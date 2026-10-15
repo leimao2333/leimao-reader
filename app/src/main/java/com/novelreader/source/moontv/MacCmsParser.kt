@@ -147,18 +147,38 @@ object MacCmsParser {
         parseEpisodeLines(playFrom, playUrl).firstOrNull()?.episodes.orEmpty()
 
     /** 解析一级分类（`class` 中 `type_pid == 0` 的条目） */
-    fun parseCategories(json: String): List<ExploreCategory> {
+    fun parseCategories(json: String): List<ExploreCategory> =
+        parseCategoryTree(json).filter { it.parent.isBlank() }
+
+    /**
+     * 解析**完整分类树**（v1.6.7.0）。
+     *
+     * 苹果 CMS 的 `class` 数组同时包含一级类型（`type_pid == 0`，如「电影 / 电视剧 /
+     * 动漫 / 综艺 / 短剧 / 预告片」）与二级分类（`type_pid == 父级 type_id`，
+     * 如「电影 → 动作片 / 喜剧片 / 科幻片」）。
+     *
+     * 这里把两级都取出来，[ExploreCategory.parent] 填**父级名字**（不是父级 id）——
+     * 名字才是跨源稳定的身份；[ExploreCategory.url] 是该源自己的 `type_id`。
+     *
+     * 实测：`hhzyapi.com` 返回 48 条 = 8 个一级 + 40 个二级。
+     */
+    fun parseCategoryTree(json: String): List<ExploreCategory> {
         val root = runCatching { JsonParser.parseString(json) }.getOrNull() ?: return emptyList()
         if (!root.isJsonObject) return emptyList()
         val arr = root.asJsonObject.getAsJsonArray("class") ?: return emptyList()
-        return arr.mapNotNull { el ->
-            val o = el as? JsonObject ?: return@mapNotNull null
-            val id = str(o, "type_id")
+
+        // 先建 id → 名字映射，才能把子分类的 type_pid 还原成父级名字
+        val raw = arr.mapNotNull { el -> (el as? JsonObject)?.let { str(it, "type_id") to it } }
+            .filter { it.first.isNotBlank() }
+        val nameById = raw.associate { (id, o) -> id to str(o, "type_name") }
+
+        return raw.mapNotNull { (id, o) ->
             val name = str(o, "type_name")
-            if (id.isBlank() || name.isBlank()) return@mapNotNull null
+            if (name.isBlank()) return@mapNotNull null
             val pid = str(o, "type_pid")
-            if (pid.isNotBlank() && pid != "0") return@mapNotNull null
-            ExploreCategory(title = name, url = id)
+            // 父级名字：pid 为空 / "0" / 查不到都算一级
+            val parent = if (pid.isNotBlank() && pid != "0") nameById[pid].orEmpty() else ""
+            ExploreCategory(title = name, url = id, parent = parent)
         }
     }
 

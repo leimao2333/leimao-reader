@@ -340,6 +340,13 @@ class ContentRepositoryImpl(
         adapter.exploreCategories()
     }
 
+    override suspend fun exploreCategoryTreeOf(
+        sourceId: String,
+    ): List<com.novelreader.domain.model.ExploreCategory> = withContext(Dispatchers.IO) {
+        val adapter = resolveAdapter(sourceId) ?: return@withContext emptyList()
+        adapter.exploreCategoryTree()
+    }
+
     private companion object {
         /** 基本汉字区（U+4E00..U+9FFF）码点范围：用于「源名是中文吗」这一档排序 */
         val CJK_RANGE = '\u4E00'.code..'\u9FFF'.code

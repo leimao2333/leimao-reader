@@ -223,6 +223,18 @@ interface ContentRepository {
     suspend fun exploreCategoriesOf(sourceId: String): List<com.novelreader.domain.model.ExploreCategory>
 
     /**
+     * 取**单个源**的发现分类**完整层级树**（v1.6.7.0）。
+     *
+     * 与 [exploreCategoriesOf] 的区别只有一个：带不带二级分类。
+     * 影视首页的「类型 → 分类」二级下拉需要树；分区标题 / 标签池 / 频道筛选
+     * 仍然只要一级（用 [exploreCategoriesOf]）。
+     *
+     * 默认实现退回 [exploreCategoriesOf]：测试假实现无需跟着改。
+     */
+    suspend fun exploreCategoryTreeOf(sourceId: String): List<com.novelreader.domain.model.ExploreCategory> =
+        exploreCategoriesOf(sourceId)
+
+    /**
      * 该类型下适合「按题材搜索」的源 id（v1.6.6.0 漫画标签补题材词用）。
      *
      * 返回顺序即推荐顺序：**中文名源优先**（题材词是中文，这类源命中率高）、

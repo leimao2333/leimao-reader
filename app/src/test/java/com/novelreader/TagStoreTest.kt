@@ -47,9 +47,24 @@ class TagStoreTest {
     @Test
     fun `load 损坏文件返回 null 不抛异常`() {
         val dir = tmp.newFolder()
-        java.io.File(dir, "COMIC.json").writeText("{not valid json")
         val store = TagStore(dir)
+        // 写到当前版本号对应的文件名（v1.6.6.0 起缓存文件名带逻辑版本号）
+        store.fileOf("COMIC").writeText("{not valid json")
         assertNull(store.load("COMIC"))
+    }
+
+    @Test
+    fun `旧逻辑版本的缓存文件被忽略 - 触发重新收集`() {
+        val dir = tmp.newFolder()
+        val store = TagStore(dir)
+        store.save("COMIC", samplePlan())
+        // 模拟上一版逻辑留下的旧文件
+        java.io.File(dir, "COMIC.json").writeText(samplePlan().toJson())
+        // 现版本的缓存照常命中
+        assertEquals(2, store.load("COMIC")?.plan?.size)
+        // 保存一次会顺手清掉旧版本文件
+        store.save("COMIC", samplePlan())
+        assertTrue(!java.io.File(dir, "COMIC.json").exists())
     }
 
     @Test

@@ -1,0 +1,179 @@
+package com.novelreader
+
+import com.novelreader.core.util.ComicGenres
+import com.novelreader.core.util.TagEntryUrl
+import com.novelreader.data.cache.TagStore
+import com.novelreader.data.repository.TagRepository
+import com.novelreader.domain.model.ChapterItem
+import com.novelreader.domain.model.ContentResult
+import com.novelreader.domain.model.ExploreCategory
+import com.novelreader.domain.model.MediaItem
+import com.novelreader.domain.model.SearchState
+import com.novelreader.domain.model.SourceInfo
+import com.novelreader.domain.model.SourceType
+import com.novelreader.domain.repository.ContentRepository
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+
+/**
+ * 漫画标签池集成测试（v1.6.6.0）。
+ *
+ * 覆盖 [TagRepository.collect] → [TagStore] 落盘这条链路：漫画源既有的发现分类
+ * 与新增的「按题材搜索」入口是否都进了标签池，噪声标签是否被滤掉。
+ * 这不是纯函数测试——素材直接用模拟器实测的漫画源清单形状。
+ */
+class TagRepositoryComicGenresTest {
+
+    @get:Rule
+    val tmp = TemporaryFolder()
+
+    /**
+     * 只实现标签收集用得到的方法；其余给最小实现。
+     *
+     * [VeneraStyleSources] 模拟「没有发现分类能力」的源（Venera 那 25 个）：
+     * 它们不出现在 [exploreSources] 的结果里，但出现在 [searchableSourceIds] 里。
+     */
+    private class FakeContent(
+        private val withCategories: List<Pair<SourceInfo, List<ExploreCategory>>>,
+        private val searchable: List<String>,
+    ) : ContentRepository {
+
+        override suspend fun exploreSources(
+            type: SourceType,
+            includeDisabled: Boolean,
+        ): List<Pair<SourceInfo, List<ExploreCategory>>> = withCategories
+
+        override suspend fun searchableSourceIds(type: SourceType, limit: Int): List<String> =
+            if (limit > 0) searchable.take(limit) else searchable
+
+        override suspend fun search(type: SourceType, keyword: String, page: Int): List<MediaItem> =
+            emptyList()
+
+        override fun searchWithProgress(
+            type: SourceType,
+            keyword: String,
+            page: Int,
+            concurrency: Int,
+            fuzzyEnabled: Boolean,
+        ): Flow<SearchState> = flowOf(SearchState())
+
+        override suspend fun detail(item: MediaItem): MediaItem = item
+        override suspend fun chapterList(item: MediaItem): List<ChapterItem> = emptyList()
+        override suspend fun content(chapter: ChapterItem): ContentResult = ContentResult()
+        override suspend fun explore(sourceId: String, url: String, page: Int): List<MediaItem> =
+            emptyList()
+
+        override suspend fun exploreCategoriesOf(sourceId: String): List<ExploreCategory> =
+            emptyList()
+    }
+
+    private fun info(id: String, name: String) = SourceInfo(
+        id = id,
+        name = name,
+        type = SourceType.COMIC,
+        version = "1",
+        author = "",
+        desc = "",
+        baseUrl = "",
+        format = com.novelreader.domain.model.SourceFormat.LEGADO,
+    )
+
+    private fun repo(
+        withCategories: List<Pair<SourceInfo, List<ExploreCategory>>>,
+        searchable: List<String>,
+    ): TagRepository = TagRepository(
+        contentRepository = FakeContent(withCategories, searchable),
+        store = TagStore(tmp.newFolder()),
+    )
+
+    @Test
+    fun `漫画标签池同时含源分类与题材词搜索入口`() = runBlocking {
+        val r = repo(
+            withCategories = listOf(
+                info("legado_1", "包子漫画") to listOf(
+                    ExploreCategory("国产漫画", "/category/cn"),
+                    // 噪声：入口词与状态词都不该进池
+                    ExploreCategory("全部", "/category/all"),
+                    ExploreCategory("连载中", "/category/serial"),
+                ),
+            ),
+            searchable = listOf("venera_baozi", "legado_2"),
+        )
+
+        val plan = r.refresh(SourceType.COMIC)
+
+        // 源分类保留
+        assertEquals(listOf("legado_1" to "/category/cn"), plan.entriesFor("国产漫画"))
+        // 噪声被过滤
+        assertTrue(plan.entriesFor("全部").isEmpty())
+        assertTrue(plan.entriesFor("连载中").isEmpty())
+        // 题材词全部进池，且绑的是「按题材搜索」入口
+        ComicGenres.ALL.forEach { genre ->
+            val entries = plan.entriesFor(genre)
+            assertTrue("题材 $genre 应进标签池", entries.isNotEmpty())
+            assertTrue(
+                "题材 $genre 应绑搜索入口",
+                entries.all { TagEntryUrl.searchKeywordOf(it.second) == genre },
+            )
+        }
+        // 没有分类能力的源（Venera 风格）也能参与题材词
+        val hot = plan.entriesFor("热血")
+        assertEquals(listOf("venera_baozi", "legado_2"), hot.map { it.first })
+    }
+
+    @Test
+    fun `题材词绑定源数受上限约束`() = runBlocking {
+        val many = (1..40).map { "venera_$it" }
+        val r = repo(withCategories = emptyList(), searchable = many)
+        val plan = r.refresh(SourceType.COMIC)
+        assertEquals(
+            ComicGenres.MAX_SOURCES_PER_GENRE,
+            plan.entriesFor("热血").size,
+        )
+    }
+
+    @Test
+    fun `源自带同名分类时不重复绑定同一入口`() = runBlocking {
+        val r = repo(
+            withCategories = listOf(
+                info("legado_1", "铅笔漫画") to listOf(ExploreCategory("热血", "/list/31")),
+            ),
+            // 同一个源既给了分类，又在可搜索源里
+            searchable = listOf("legado_1"),
+        )
+        val plan = r.refresh(SourceType.COMIC)
+        val entries = plan.entriesFor("热血")
+        // 两条入口：一条发现分类、一条搜索；互不覆盖
+        assertEquals(2, entries.size)
+        assertEquals(1, entries.count { TagEntryUrl.searchKeywordOf(it.second) == "热血" })
+    }
+
+    @Test
+    fun `非漫画类型不加题材词`() = runBlocking {
+        val novelInfo = info("novel_1", "中文书城").copy(type = SourceType.NOVEL)
+        val r = repo(
+            withCategories = listOf(novelInfo to listOf(ExploreCategory("都市", "/dushi"))),
+            searchable = listOf("novel_1"),
+        )
+        val plan = r.refresh(SourceType.NOVEL)
+        assertEquals(listOf("都市"), plan.tags)
+        assertFalse(plan.tags.contains("热血"))
+    }
+
+    @Test
+    fun `没有可搜索源时只保留源分类 - 不抛异常`() = runBlocking {
+        val r = repo(
+            withCategories = listOf(info("l1", "某漫画") to listOf(ExploreCategory("科幻", "/s"))),
+            searchable = emptyList(),
+        )
+        val plan = r.refresh(SourceType.COMIC)
+        assertEquals(listOf("科幻"), plan.tags)
+    }
+}

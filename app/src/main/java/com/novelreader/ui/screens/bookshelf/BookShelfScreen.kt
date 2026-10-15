@@ -293,7 +293,7 @@ fun BookShelfScreen(
         ) {
             // 分组 tab（小说/漫画/视频）
             TabRow(selectedTabIndex = groupTab) {
-                listOf("全部", "小说", "动漫", "视频").forEachIndexed { index, label ->
+                listOf("全部", "小说", "漫画", "视频").forEachIndexed { index, label ->
                     Tab(
                         selected = groupTab == index,
                         onClick = { groupTab = index },

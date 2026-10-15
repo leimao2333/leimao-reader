@@ -75,6 +75,26 @@ interface SourceRepository {
     suspend fun setSourceEnabled(sourceId: String, enabled: Boolean)
 
     /**
+     * 合并重复源（v1.6.6.0）。
+     *
+     * 同一站点被重复导入时会出现「同名 + 同站」的重复条目（聚合源包里常见，
+     * `baseUrl` 往往只差一个结尾斜杠）。按「同类型 + 同名 + 归一化 baseUrl」
+     * 分组，每组保留一条（启用优先、规则更完整者优先，见
+     * [com.novelreader.core.util.SourceDedupe]），其余删除。
+     *
+     * baseUrl 为空的源（Venera / 内置）不参与——只靠名字判重会误伤
+     * （多个站点不同但都叫「笔趣阁」的源必须各自保留）。
+     *
+     * @return 被合并（删除）的源数量
+     */
+    suspend fun dedupeDuplicateSources(): Int = 0
+
+    /**
+     * 预览可合并的重复源数量（只读，不写库；源管理页按钮文案用）。
+     */
+    suspend fun countDuplicateSources(): Int = 0
+
+    /**
      * 设置单个源的手动排序序号（v1.5.8.0）。
      */
     suspend fun setSourceSortOrder(sourceId: String, sortOrder: Int)
@@ -201,4 +221,20 @@ interface ContentRepository {
      * 逐个请求全部分类导致长时间等待。
      */
     suspend fun exploreCategoriesOf(sourceId: String): List<com.novelreader.domain.model.ExploreCategory>
+
+    /**
+     * 该类型下适合「按题材搜索」的源 id（v1.6.6.0 漫画标签补题材词用）。
+     *
+     * 返回顺序即推荐顺序：**中文名源优先**（题材词是中文，这类源命中率高）、
+     * 其次已启用的源；同档内保持管理器原有顺序（手动排序 / 名称序）。
+     *
+     * @param limit 最多返回几个；<= 0 表示不限（调用方按等待时长自行裁剪。
+     *   [com.novelreader.core.util.ComicGenres.MAX_SOURCES_PER_GENRE] 就是为此设的）。
+     *
+     * 默认实现返回空列表：测试假实现无需跟着改（同 [exploreFiltered] 的套路）。
+     */
+    suspend fun searchableSourceIds(
+        type: com.novelreader.domain.model.SourceType,
+        limit: Int = 0,
+    ): List<String> = emptyList()
 }

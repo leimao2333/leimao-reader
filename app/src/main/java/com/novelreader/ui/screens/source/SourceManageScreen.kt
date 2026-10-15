@@ -103,7 +103,11 @@ fun SourceManageScreen(
     // 删除失效源二次确认（v1.5.5.0）
     var confirmDeleteFailed by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) { viewModel.observe() }
+    LaunchedEffect(Unit) {
+        viewModel.observe()
+        // v1.6.6.0：进页面先算一次「可合并的重复源」，驱动合并按钮的可用态
+        viewModel.refreshDuplicateCount()
+    }
 
     // 显示提示消息
     LaunchedEffect(message) {
@@ -454,6 +458,27 @@ fun SourceManageScreen(
                         enabled = !updating,
                         onClick = { viewModel.updateFromNetwork(displayedSources) },
                     ) { Text(if (updating) "更新中" else "一键更新") }
+                }
+
+                // 合并重复源（v1.6.6.0）：同类型 + 同名 + 同站的条目只留一条
+                val duplicateCount by viewModel.duplicateCount.collectAsState()
+                if (duplicateCount > 0) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "检测到 $duplicateCount 个重复源（同名且同站点）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = { viewModel.mergeDuplicateSources() }) {
+                            Text("合并重复源")
+                        }
+                    }
                 }
 
                 if (tableView) {

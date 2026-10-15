@@ -380,6 +380,11 @@ private fun AllHotTagsSheet(
     onPick: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    // v1.6.6.0：Venera 源分类进来后漫画标签池有几百个，FlowRow 不是懒加载
+    // （一次性 compose 全部子项），全量渲染会明显卡顿 → 分批展开。
+    var visibleCount by remember(tags.size) { mutableStateOf(TAG_SHEET_PAGE) }
+    val shown = if (tags.size <= visibleCount) tags else tags.take(visibleCount)
+
     androidx.compose.material3.ModalBottomSheet(
         onDismissRequest = onDismiss,
     ) {
@@ -406,12 +411,20 @@ private fun AllHotTagsSheet(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                tags.forEach { tag ->
+                shown.forEach { tag ->
                     HotTagChip(
                         tag = tag,
                         active = tag in activeTags,
                         onClick = { onPick(tag) },
                     )
+                }
+            }
+            if (shown.size < tags.size) {
+                androidx.compose.material3.TextButton(
+                    onClick = { visibleCount += TAG_SHEET_PAGE },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("显示更多（还剩 ${tags.size - shown.size} 个）")
                 }
             }
             Spacer(Modifier.height(24.dp))
@@ -438,6 +451,14 @@ private fun typeLabel(type: SourceType): String = when (type) {
  * 用户的视觉上限是 1 行（再放多就换行了，看起来乱）。
  */
 private const val HOT_TAG_VISIBLE = 8
+
+/**
+ * 「全部标签」面板每批展开多少个（v1.6.6.0）。
+ *
+ * 面板用 [FlowRow] 承载，**不是懒加载** —— 会一次性 compose 所有子项。
+ * Venera 源分类接入后漫画标签池有几百个，全量渲染明显卡顿，所以分批展开。
+ */
+private const val TAG_SHEET_PAGE = 150
 
 /**
  * 热门推荐标签 chip（v1.6.1.0）。

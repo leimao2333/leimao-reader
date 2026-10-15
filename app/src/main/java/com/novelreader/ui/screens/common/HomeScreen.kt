@@ -183,7 +183,9 @@ fun HomeScreen(
 
     val tabs = listOf(
         TabItem("小说", Icons.AutoMirrored.Filled.MenuBook),
-        TabItem("动漫", Icons.Filled.PhotoLibrary),
+        // 注意：这里是**漫画**板块（SourceType.COMIC），不是视频里的「动漫」频道。
+        // 两者名字相近但语义不同，别把视频频道的「动漫」改掉（v1.6.6.0 修正过此处文案）。
+        TabItem("漫画", Icons.Filled.PhotoLibrary),
         TabItem("视频", Icons.Filled.PlayCircle),
     )
 

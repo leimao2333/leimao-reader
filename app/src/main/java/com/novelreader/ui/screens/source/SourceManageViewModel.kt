@@ -81,6 +81,40 @@ class SourceManageViewModel(
         }
     }
 
+    // ===== 重复源合并（v1.6.6.0）=====
+
+    /** 可合并的重复源数量（0 = 无重复，按钮置灰） */
+    private val _duplicateCount = MutableStateFlow(0)
+    val duplicateCount: StateFlow<Int> = _duplicateCount.asStateFlow()
+
+    /** 重新统计可合并重复源（进页面 / 合并后 / 导入后调用） */
+    fun refreshDuplicateCount() {
+        viewModelScope.launch {
+            _duplicateCount.value = runCatching { sourceRepository.countDuplicateSources() }
+                .getOrDefault(0)
+        }
+    }
+
+    /**
+     * 合并重复源：同类型 + 同名 + 同站（baseUrl 归一化后相同）只留一条。
+     *
+     * 保留启用中的、规则更完整的那条；Venera / 内置源（无 baseUrl）不参与，
+     * 所以 5 个都叫「笔趣阁」但站点不同的源不会被误合。
+     */
+    fun mergeDuplicateSources() {
+        viewModelScope.launch {
+            val merged = runCatching { sourceRepository.dedupeDuplicateSources() }
+                .getOrDefault(0)
+            _message.value = if (merged > 0) {
+                "已合并 $merged 个重复源"
+            } else {
+                "没有可合并的重复源"
+            }
+            refresh()
+            refreshDuplicateCount()
+        }
+    }
+
     /** 响应式观察源列表（若仓库实现支持 Flow） */
     fun observe() {
         sourceRepositoryImpl?.let { impl ->
@@ -261,6 +295,9 @@ class SourceManageViewModel(
                 }
                 _importCandidates.value = emptyList()
                 refresh()
+                // v1.6.6.0：新导入的源可能就是重复条目（同一份源在两个包里
+                // 序号不同 → id 不同），导入后立刻重算可合并数
+                refreshDuplicateCount()
             } finally {
                 _importingSelected.value = false
                 veneraPending = emptyList()

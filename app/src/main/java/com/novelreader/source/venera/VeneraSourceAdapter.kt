@@ -2,8 +2,10 @@ package com.novelreader.source.venera
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.novelreader.core.util.TagEntryUrl
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.ContentResult
+import com.novelreader.domain.model.ExploreCategory
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceAdapter
 import com.novelreader.domain.model.SourceInfo
@@ -26,6 +28,21 @@ class VeneraSourceAdapter(
 ) : SourceAdapter {
 
     private val key: String get() = info.id
+
+    /**
+     * 发现分类 = 源自己声明的分类表（v1.6.6.0）。
+     *
+     * Venera 协议没有「按分类浏览」接口，所以以前这些源在标签体系里零贡献
+     * （25 个 Venera 漫画源一个标签都产不出来）。源代码里的 `category.parts[].categories`
+     * 其实就是完整的分类表，直接拿来当标签，并绑成**按关键词搜索**入口
+     * （[TagEntryUrl]）——点标签时改走本源的 `search`，链路依然通。
+     *
+     * 这样漫画标签池一下多了几百个跨源标签，而且都是源自己维护的、随源更新。
+     */
+    override suspend fun exploreCategories(): List<ExploreCategory> =
+        VeneraCategories.parse(code).map { name ->
+            ExploreCategory(title = name, url = TagEntryUrl.search(name))
+        }
 
     override suspend fun search(keyword: String, page: Int): List<MediaItem> {
         engine.putSource(key, code)

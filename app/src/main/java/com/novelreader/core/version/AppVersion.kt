@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.6.5.0"
+    const val CURRENT_VERSION = "1.6.6.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,19 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.6.6.0",
+            date = "2026-10-15",
+            changes = listOf(
+                "**Venera 漫画源接入标签搜索**：Venera 协议没有「按分类浏览」接口（只有 search / info / chapters / content），所以 25 个 Venera 漫画源在标签体系里长期是**零贡献**。现在新增 `source/venera/VeneraCategories.kt` 解析源代码里自己声明的分类表（`category.parts[].categories`，新式字符串数组与老式 `{label, target}` 对象数组都支持），由 `VeneraSourceAdapter.exploreCategories()` 输出为标签，并绑成**按关键词搜索**入口 —— 点标签即用分类名搜该源。实测这 25 个源共声明 699 条分类（去重 583 条），漫画标签池一次涨到几百个，且分类表随源更新自动跟进",
+                "**漫画标签大修·补通用题材词**：漫画标签池一直只有几十个（小说两千多、视频两百多），根因是漫画源普遍**没有发现分类能力** —— 25 个 Venera 源在协议层就没有分类浏览接口（只有 search / info / chapters / content），11 个 legado 漫画源里也只有 4 个配了 `exploreUrl`。新增 `core/util/ComicGenres.kt`（32 个通用题材词：热血 / 恋爱 / 校园 / 奇幻 / 冒险 / 悬疑 / 科幻 …），标签收集时给漫画源绑一个**「按题材搜索」入口**（`search::<词>`，见新增的 `core/util/TagEntryUrl.kt`），点击标签即跨源按题材搜索 —— 不依赖源是否提供分类页，所以 Venera 源也能参与",
+                "**标签点击即查询同标签内容**：`ContentRepositoryImpl.exploreFiltered` 识别 `search::` 前缀后改走源自己的 `search()`，其余入口照旧走发现分类。所以漫画标签从「点了大概率空结果」变成「点了就跨源搜出来」；小说 / 漫画 / 视频三类详情页的标签小栏与标签搜索页的标签 chips 都可点（跳标签搜索页看同标签内容）",
+                "**过滤导航 / 状态类伪标签**：源会把「全部」「最近更新」「排行榜」「连载中」「已完结」这类**入口词 / 状态词**也写进发现分类，它们不是内容题材 —— 进标签池只会挤占热门推荐、点了也查不到对应作品。新增 `TagPlan.isNoiseTag` 在收集与读缓存两处都做过滤（旧缓存里的噪声标签下次启动就被清掉）",
+                "**源管理新增「合并重复源」**：同一站点被重复导入时会出现「同名 + 同站」的重复条目（聚合源包里常见，`baseUrl` 往往只差一个结尾斜杠，如「酸奶漫画」@m.1kkk.com 两条、「漫画小屋（优）」@m.dm5.com 两条）。新增 `core/util/SourceDedupe.kt`，按「同类型 + 同名 + 归一化 baseUrl」分组，每组保留一条（启用优先 → 规则更完整 → 导入更早 → id 字典序），源管理页顶部显示「检测到 N 个重复源（同名且同站点）」+「合并重复源」按钮。**baseUrl 为空的源（Venera / 内置）不参与**，所以 5 个站点不同但都叫「笔趣阁」的源不会被误合",
+                "**底部导航「动漫」改回「漫画」**：漫画板块的 tab 名此前误用了「动漫」（动漫通常指动画，与漫画板块语义不符），书架页的筛选 tab 也一并修正为「漫画」；视频模块里的「动漫」频道是另一个概念，保持不变",
+                "**新增单测**：`SourceDedupeTest`（13 条：urlKey 归一化、真实重复合并、五个笔趣阁不合并、同站不同名不合并、跨类型不合并、保序确定性）、`ComicGenresTest`（13 条：伪 URL 往返、题材词表完整性、噪声标签判定、旧缓存清洗联动）、`VeneraCategoriesTest`（12 条：新式字符串数组 / 老式 label 对象 / 括号配对 / JS 转义 / 空数组 / 真实站点风格）、`TagRepositoryComicGenresTest`（5 条：题材词并入标签池、源数上限、同名合并、非漫画不加、无源不崩）",
+            ),
+        ),
         VersionEntry(
             version = "1.6.5.0",
             date = "2026-10-15",

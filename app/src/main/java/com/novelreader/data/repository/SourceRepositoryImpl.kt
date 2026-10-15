@@ -166,6 +166,39 @@ class SourceRepositoryImpl(
         sourceDao.setEnabled(sourceId, enabled)
     }
 
+    override suspend fun dedupeDuplicateSources(): Int =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val redundant = duplicatedIds() ?: return@withContext 0
+            if (redundant.isEmpty()) return@withContext 0
+            // 复用 deleteSources：批量注销内存适配器 + 单条 DELETE ... WHERE id IN (...)
+            // （只触发一次 Room invalidation，避免 Cursor 读失效闪退，见 v1.5.5.3）
+            deleteSources(redundant)
+            redundant.size
+        }
+
+    override suspend fun countDuplicateSources(): Int =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            duplicatedIds()?.size ?: 0
+        }
+
+    /** 读出全部源并算出冗余 id（判重口径见 [SourceDedupe]） */
+    private suspend fun duplicatedIds(): List<String>? = runCatching {
+        val all = sourceDao.getAll()
+        com.novelreader.core.util.SourceDedupe.redundantIds(
+            all.map { e ->
+                com.novelreader.core.util.SourceDedupe.Candidate(
+                    id = e.id,
+                    type = e.type,
+                    name = e.name,
+                    baseUrl = e.baseUrl,
+                    enabled = e.enabled,
+                    rawLength = e.rawContent.length,
+                    createdAt = e.createdAt,
+                )
+            },
+        )
+    }.getOrNull()
+
     override suspend fun setSourceSortOrder(sourceId: String, sortOrder: Int) {
         sourceManager.setSourceSortOrder(sourceId, sortOrder)
         sourceDao.setSortOrder(sourceId, sortOrder)

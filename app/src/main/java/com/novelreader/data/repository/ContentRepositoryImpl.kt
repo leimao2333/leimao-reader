@@ -281,9 +281,55 @@ class ContentRepositoryImpl(
     ): List<MediaItem> =
         withContext(Dispatchers.IO) {
             val adapter = resolveAdapter(sourceId) ?: return@withContext emptyList()
-            runCatching { adapter.exploreFilter(url, page, filters) }.getOrDefault(emptyList())
-                .map { it.copy(sourceName = it.sourceName.ifBlank { adapter.info.name }) }
+            // v1.6.6.0：`search::<词>` 是「按题材搜索」伪入口（TagEntryUrl）。
+            // 漫画源大多没有发现分类页，标签池给它们绑的就是这种入口——
+            // 点击标签时改走源自己的搜索，而不是去请求不存在的分类页。
+            val keyword = com.novelreader.core.util.TagEntryUrl.searchKeywordOf(url)
+            val raw = if (keyword != null) {
+                runCatching { adapter.search(keyword, page) }.getOrDefault(emptyList())
+            } else {
+                runCatching { adapter.exploreFilter(url, page, filters) }.getOrDefault(emptyList())
+            }
+            raw.map { it.copy(sourceName = it.sourceName.ifBlank { adapter.info.name }) }
         }
+
+    override suspend fun searchableSourceIds(
+        type: com.novelreader.domain.model.SourceType,
+        limit: Int,
+    ): List<String> = withContext(Dispatchers.IO) {
+        val all = sourceManager.getSourcesByType(type)
+        val enabledIds = runCatching { sourceManager.getEnabledSourcesByType(type).map { it.id } }
+            .getOrDefault(emptyList())
+            .toSet()
+        // 中文名源优先（题材词是中文，这类源命中率高），其次已启用源；
+        // 同档内保持管理器原有顺序（手动排序 / 名称序）
+        val ordered = all.sortedWith(
+            compareByDescending<SourceInfo> { info -> info.name.any { it.code in CJK_RANGE } }
+                .thenByDescending { info -> info.id in enabledIds },
+        )
+        // v1.6.6.0：Venera 与其它源**交替**排列。
+        // 漫画里 Venera 源占了大半（25/36），但名称排序常常让 legado 源排在前头，
+        // 于是 limit 一截就把 Venera 全截掉了 —— Venera 的搜索能力等于白接入。
+        // 交替后取前 N 个必然两类都有。
+        val mixed = interleave(
+            primary = ordered.filter { it.format == com.novelreader.domain.model.SourceFormat.VENERA },
+            secondary = ordered.filter { it.format != com.novelreader.domain.model.SourceFormat.VENERA },
+        )
+        val ids = mixed.map { it.id }
+        if (limit > 0) ids.take(limit) else ids
+    }
+
+    /** 交替合并两组（a1,b1,a2,b2,…），任一先耗尽后其余按序补上 */
+    private fun <T> interleave(primary: List<T>, secondary: List<T>): List<T> {
+        val out = ArrayList<T>(primary.size + secondary.size)
+        var i = 0
+        while (i < primary.size || i < secondary.size) {
+            if (i < primary.size) out += primary[i]
+            if (i < secondary.size) out += secondary[i]
+            i++
+        }
+        return out
+    }
 
     override suspend fun exploreCategoriesOf(
         sourceId: String,
@@ -292,5 +338,10 @@ class ContentRepositoryImpl(
         // 故意不吞异常：影视首页据此区分「源不可达」与「源没有分类」，
         // 前者应立刻给出提示，而不是再白等一轮列表请求的超时。
         adapter.exploreCategories()
+    }
+
+    private companion object {
+        /** 基本汉字区（U+4E00..U+9FFF）码点范围：用于「源名是中文吗」这一档排序 */
+        val CJK_RANGE = '\u4E00'.code..'\u9FFF'.code
     }
 }

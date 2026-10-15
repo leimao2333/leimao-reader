@@ -71,6 +71,8 @@ data class TagPlan(
                 // 也可能在源端每次抓不一致；折叠 "热血 漫画" / "热血漫画" 为同一标签）。
                 val tag = normalizeTag(rawTag)
                 if (tag.isEmpty()) return@forEach
+                // v1.6.6.0：丢弃导航 / 状态类伪标签（旧缓存里可能残留「全部」「连载中」）
+                if (isNoiseTag(tag)) return@forEach
                 val entries = entryLists.orEmpty()
                     .mapNotNull { p ->
                         val srcId = p.getOrNull(0) ?: return@mapNotNull null
@@ -99,6 +101,39 @@ data class TagPlan(
             if (trimmed.isEmpty()) return ""
             return trimmed.replace(WHITESPACE_REGEX, " ")
         }
+
+        /**
+         * 导航 / 状态类「伪标签」（v1.6.6.0）。
+         *
+         * 源会把「全部」「最近更新」「排行榜」「连载中」这类**入口词 / 状态词**
+         * 也写进发现分类。它们不是内容题材：进标签池只会挤占热门推荐，
+         * 点了也查不到对应作品（或只会把整个分类原样返回）。
+         *
+         * 精确匹配（大小写不敏感），不做包含匹配——「热血连载漫画」这种
+         * 真题材词不能被误杀。
+         */
+        fun isNoiseTag(raw: String): Boolean {
+            // 折叠空白后再比：源可能把「全部　漫画」写成带全角空格的形式，
+            // 归一化后是「全部 漫画」，去掉空格才能命中集合里的「全部漫画」。
+            val t = normalizeTag(raw).lowercase().replace(" ", "")
+            return t.isNotEmpty() && t in NOISE_TAGS
+        }
+
+        private val NOISE_TAGS = setOf(
+            // 入口 / 导航词
+            "全部", "全部漫画", "全部小说", "全部视频", "全部分类",
+            "分类", "首页", "主页", "目录", "书库",
+            "最近更新", "最新更新", "最新上架", "最近上架", "今日更新", "更新", "最新",
+            "排行榜", "排行", "热门", "推荐", "精选",
+            // 状态词
+            "连载", "连载中", "已完结", "完结", "完结漫画", "连载漫画", "已下架",
+            // Venera 源里常见的「栏目名」（繁体，来自各站首页分区，不是题材）
+            "熱門", "熱門推薦", "熱門漫畫", "每週必看", "大家都在看", "大濕推薦",
+            "那年今天", "官方都在看", "隨便看看", "隨機",
+            // 更新排期（ikmmh 等按星期分区）
+            "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日",
+            "週一", "週二", "週三", "週四", "週五", "週六", "週日",
+        )
 
         private val WHITESPACE_REGEX = Regex("[\\s\u3000]+")
 
@@ -130,15 +165,30 @@ class TagStore(private val dir: File) {
     fun save(typeName: String, plan: TagPlan) {
         runCatching {
             dir.mkdirs()
-            val tmp = File(dir, "$typeName.tmp")
+            val tmp = File(dir, "$typeName.$LOGIC_VERSION.tmp")
             tmp.writeText(plan.toJson())
             if (!tmp.renameTo(fileOf(typeName))) {
                 // 个别文件系统 / Windows 下覆盖已存在文件会改名失败，退化为直接写
                 fileOf(typeName).writeText(plan.toJson())
                 tmp.delete()
             }
+            // 逻辑升级后顺手清掉旧版本的缓存文件（文件名带版本号，见 [fileOf]）
+            File(dir, "$typeName.json").takeIf { it.isFile }?.delete()
         }
     }
 
-    private fun fileOf(typeName: String) = File(dir, "$typeName.json")
+    /**
+     * 缓存文件名带 [LOGIC_VERSION]。
+     *
+     * 收集逻辑改版（比如 v1.6.6.0 加了漫画题材词、开始过滤噪声标签）后，
+     * 老缓存里的标签池是**过时的**——如果沿用同一个文件名，用户不手动点
+     * 「刷新标签」就永远看不到新标签。带版本号后旧文件直接被忽略，
+     * 首次使用自然重新收集一次。
+     */
+    fun fileOf(typeName: String) = File(dir, "$typeName.$LOGIC_VERSION.json")
+
+    companion object {
+        /** 标签收集逻辑版本；**改动收集口径时必须 +1** */
+        const val LOGIC_VERSION = 2
+    }
 }

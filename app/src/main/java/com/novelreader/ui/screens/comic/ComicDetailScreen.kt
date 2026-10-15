@@ -50,6 +50,7 @@ fun ComicDetailScreen(
     onChapterClick: (ChapterItem) -> Unit,
     onRead: () -> Unit,
     onBack: () -> Unit,
+    onTagClick: (String) -> Unit = {},
 ) {
     val detail by viewModel.detail.collectAsState()
     val chapters by viewModel.chapters.collectAsState()
@@ -215,6 +216,14 @@ fun ComicDetailScreen(
                         Spacer(Modifier.height(8.dp))
                     }
                 }
+            }
+
+            // 标签小栏（v1.6.5.0）：浏览上下文 + extras["kind"] 派生，点击跳标签搜索
+            item(key = "tag_bar") {
+                com.novelreader.ui.components.DetailTagBar(
+                    tags = com.novelreader.core.util.ItemTags.of(display),
+                    onTagClick = onTagClick,
+                )
             }
 
             item {

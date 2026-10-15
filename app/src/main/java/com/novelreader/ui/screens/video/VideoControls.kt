@@ -33,6 +33,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.ClosedCaption
@@ -111,6 +112,21 @@ fun BoxScope.VideoControlsOverlay(
     onToggleFullscreen: () -> Unit,
     onToggleOrientation: () -> Unit,
     onOpenEpisodes: () -> Unit,
+    /**
+     * 打开详情页（v1.6.5.0 短剧详情页入口）。
+     *
+     * 短剧卡片是「红果式」一键直达播放的，之前没有详情页可达路径——
+     * 简介 / 标签 / 完整选集都看不到。现在底部操作栏（菜单栏目）加「详情」按钮，
+     * 点击跳视频详情页（`VideoDetailScreen` 对短剧条目同样适用）。
+     */
+    onOpenDetail: () -> Unit = {},
+    /**
+     * 是否在底部操作栏显示「详情」按钮（v1.6.5.0）。
+     *
+     * 默认 false（普通视频保持 5 个按钮不变）；短剧模式传 true —— 短剧没有
+     * 从卡片进详情页的路径，必须给播放器一个直达详情的入口。
+     */
+    showDetailButton: Boolean = false,
     qualityTracks: List<QualityTrack> = emptyList(),
     selectedQuality: QualityTrack? = null,
     onSelectQuality: (QualityTrack) -> Unit = {},
@@ -434,6 +450,21 @@ fun BoxScope.VideoControlsOverlay(
                         contentDescription = "选集",
                         tint = Color.White,
                     )
+                }
+
+                Spacer(Modifier.width(4.dp))
+
+                // 详情页入口（v1.6.5.0）：短剧一键直达播放、没有卡片进详情的路径，
+                // 在菜单栏目里补一个「详情」按钮，跳 VideoDetailScreen
+                // （简介 / 标签小栏 / 完整选集 / 收藏 / 下载）。
+                if (showDetailButton) {
+                    IconButton(onClick = onOpenDetail) {
+                        Icon(
+                            Icons.Filled.Info,
+                            contentDescription = "详情",
+                            tint = Color.White,
+                        )
+                    }
                 }
 
                 Spacer(Modifier.width(4.dp))

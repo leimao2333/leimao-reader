@@ -188,6 +188,9 @@ class ExploreViewModel(
         }
         val seen = LinkedHashSet<String>()
         return merged.filter { seen.add("${it.sourceId}:${it.id}") }
+            // v1.6.5.0：把分类名写进条目 tags，详情页顶部「标签小栏」据此展示
+            // （源自身不带 kind 时，浏览上下文是唯一的标签来源）
+            .map { it.copy(tags = it.tags + categoryTitles) }
     }
 }
 

@@ -656,6 +656,9 @@ class HomeViewModel(
                 }
                 val seen = LinkedHashSet<String>()
                 val dedup = merged.filter { seen.add("${it.sourceId}:${it.id}") }
+                    // v1.6.5.0：分区标题（分类名）写进 tags，详情页标签小栏用
+                    //（「全部」兜底行不是真分类，跳过）
+                    .map { if (title.isNotBlank() && title != "全部") it.copy(tags = it.tags + title) else it }
                 // v1.5.8.0：分区行内成人源内容沉底
                 val sunk = sinkAdults(dedup, adultIds)
                 if (sunk.isNotEmpty()) {
@@ -718,8 +721,15 @@ class HomeViewModel(
         val seen = current.items.mapTo(HashSet()) { "${it.sourceId}:${it.id}" }
         val merged = if (reset) fetched else current.items + fetched
         val adultIds = adultSourceIds(current.sources)
+        // v1.6.5.0：网格视图的分类标题（selectedCategory 是 url，标题在 expandedTitle）
+        // 写进 tags，详情页标签小栏用
+        val gridTag = current.expandedTitle.takeIf { it.isNotBlank() && it != "全部" }
         _videoHome.value = current.copy(
-            items = sinkAdults(merged.distinctBy { "${it.sourceId}:${it.id}" }, adultIds),
+            items = sinkAdults(
+                merged.distinctBy { "${it.sourceId}:${it.id}" }
+                    .map { if (gridTag != null) it.copy(tags = it.tags + gridTag) else it },
+                adultIds,
+            ),
             loading = false,
             loadingMore = false,
             hasMore = fetched.isNotEmpty(),
@@ -1089,9 +1099,11 @@ class HomeViewModel(
                 items = sinkAdults(
                     merged.distinctBy { "${it.sourceId}:${it.id}" }
                         .map {
+                            // v1.6.5.0：分类名写进 tags，详情页标签小栏用
+                            val tagged = it.copy(tags = it.tags + category)
                             if (channel == VideoChannel.SHORT_DRAMA) {
-                                it.copy(extras = it.extras + (EXTRA_SHORT_DRAMA to "1"))
-                            } else it
+                                tagged.copy(extras = tagged.extras + (EXTRA_SHORT_DRAMA to "1"))
+                            } else tagged
                         },
                     adultIds,
                 ),

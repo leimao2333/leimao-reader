@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -70,11 +72,14 @@ import com.novelreader.ui.components.MediaItemCard
  * 设计目标：让标签搜索变成「**和普通搜索同一个入口**」的第二种形态，而非独立的次级页面。
  * 入口在首页搜索栏左侧下拉（搜索 / 标签），进入此页后看到：
  *
- * 1. **热门推荐**：从已收集标签池按覆盖源数取 top [HOT_TAG_LIMIT]，点选即追加到搜索条件；
- * 2. **手动搜索**：输入框接受多个标签（**空格分隔 = 复合搜索，按标题求交集**），
+ * 1. **热门推荐**：从已收集标签池按覆盖源数取前 [HOT_TAG_VISIBLE] 个展示在行内，
+ *    点选即追加到搜索条件；
+ * 2. **「更多 ▾ N」面板**（v1.6.5.0）：**直接展示全部标签**（按覆盖源数倒序，
+ *    不再只给热门 top N——标签池上百个，只放热门等于大部分标签点不到）；
+ * 3. **手动搜索**：输入框接受多个标签（**空格分隔 = 复合搜索，按标题求交集**），
  *    点右下角搜索按钮 / IME 搜索即触发；
- * 3. **已选标签 chips**：单点 chip 即可移除；
- * 4. **结果区**：单标签直接聚合；复合标签按标题交集（[com.novelreader.core.util.TagQuery.intersect]）。
+ * 4. **已选标签 chips**：单点 chip 即可移除；
+ * 5. **结果区**：单标签直接聚合；复合标签按标题交集（[com.novelreader.core.util.TagQuery.intersect]）。
  *
  * 结果展示按类型分流：视频 = 3 列海报网格；小说 / 漫画 = 列表卡片。
  */
@@ -86,6 +91,7 @@ fun TagSearchScreen(
 ) {
     val hotTags by viewModel.hotTags.collectAsState()
     val allTags by viewModel.allTags.collectAsState() // v1.6.2.0：用于总数显示
+    val tagsByCoverage by viewModel.tagsByCoverage.collectAsState() // v1.6.5.0：「更多」面板= 全部标签
     val collecting by viewModel.collecting.collectAsState()
     val query by viewModel.query.collectAsState()
     val results by viewModel.results.collectAsState()
@@ -134,9 +140,9 @@ fun TagSearchScreen(
         }
 
         // ===== 热门推荐标签（v1.6.1.0）：按覆盖源数倒序的 top N =====
-        // v1.6.2.0：行内只显示前 HOT_TAG_VISIBLE 个 + 「更多 ▾ N」入口，
-        //         点开 [AllHotTagsSheet] 看全部（保留 [TagSearchViewModel.HOT_TAG_LIMIT]
-        //         作为 hard cap，避免面板内几千个 chip 撑爆）。
+        // v1.6.2.0：行内只显示前 HOT_TAG_VISIBLE 个 + 「更多 ▾ N」入口；
+        // v1.6.5.0：「更多」面板 [AllHotTagsSheet] 展示**全部**标签
+        //         （tagsByCoverage），不再有 HOT_TAG_LIMIT 硬顶。
         if (hotTags.isNotEmpty() || collecting) {
             Column {
                 Row(
@@ -186,8 +192,9 @@ fun TagSearchScreen(
                                 },
                             )
                         }
-                        // 「更多」入口——剩余标签数
-                        val more = hotTags.size - HOT_TAG_VISIBLE
+                        // 「更多」入口——剩余标签数（v1.6.5.0：面板里是**全部**标签，
+                        // 不只是热门，所以计数按 tagsByCoverage 全集算）
+                        val more = tagsByCoverage.size - HOT_TAG_VISIBLE
                         if (more > 0) {
                             item(key = "hot_more") {
                                 MoreHotChip(
@@ -337,10 +344,10 @@ fun TagSearchScreen(
         }
     }
 
-    // ===== 「更多热门标签」底部面板（v1.6.2.0）=====
+    // ===== 「更多热门标签」底部面板（v1.6.2.0；v1.6.5.0 改为全部标签）=====
     if (showAllHotTags) {
         AllHotTagsSheet(
-            tags = hotTags,
+            tags = tagsByCoverage,
             activeTags = activeTags,
             onPick = { tag ->
                 if (tag in activeTags) viewModel.removeTag(tag)
@@ -352,10 +359,12 @@ fun TagSearchScreen(
 }
 
 /**
- * 「更多热门」底部弹层（v1.6.2.0）。
+ * 「更多」底部弹层（v1.6.2.0）。
  *
- * 顶部热门行只显示前 [HOT_TAG_VISIBLE] 个，剩余全部塞进这个面板。
- * 面板标题 = "热门标签 · 小说"（明确类型），副标题 = "覆盖 X 个源的标签共 N 个"；
+ * 顶部热门行只显示前 [HOT_TAG_VISIBLE] 个，其余全部塞进这个面板。
+ * v1.6.5.0：面板内容是**全部标签**（按覆盖源数倒序），不再是热门 top N——
+ * 标签池上百个，只放热门等于大部分标签用户永远点不到。
+ * 面板标题 = "全部标签 · 小说"（明确类型），副标题 = "共 N 个，按覆盖源数倒序」；
  * 内容区是 [FlowRow]（横纵自动换行），不是 12 列网格，避免「少年漫」这种短词被拉成夸张高度。
  *
  * 单个标签点击行为与顶部行一致：未选 = 追加并搜索；已选 = 移除。
@@ -377,10 +386,12 @@ private fun AllHotTagsSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                // v1.6.5.0：全部标签可能上百个，FlowRow 必须可滚动
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
             Text(
-                text = "全部热门标签",
+                text = "全部标签",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Medium,
             )

@@ -284,8 +284,10 @@ private class CacheTestContentRepository : ContentRepository {
     override suspend fun chapterList(item: MediaItem): List<ChapterItem> = emptyList()
     override suspend fun content(chapter: ChapterItem): ContentResult = ContentResult()
 
-    override suspend fun exploreSources(type: SourceType): List<Pair<SourceInfo, List<ExploreCategory>>> =
-        emptyList()
+    override suspend fun exploreSources(
+        type: SourceType,
+        includeDisabled: Boolean,
+    ): List<Pair<SourceInfo, List<ExploreCategory>>> = emptyList()
 }
 
 private class CacheTestSourceRepository(private val sources: List<SourceInfo>) : SourceRepository {

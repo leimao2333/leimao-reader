@@ -166,8 +166,17 @@ interface ContentRepository {
 
     // ===== 发现页（v1.2.3.0 对标 legado exploreUrl/ruleExplore） =====
 
-    /** 有发现分类的已启用源列表（分类惰性加载：仅解析源 JSON，不发请求） */
-    suspend fun exploreSources(type: com.novelreader.domain.model.SourceType): List<Pair<SourceInfo, List<com.novelreader.domain.model.ExploreCategory>>>
+    /**
+     * 有发现分类的源列表（分类惰性加载：仅解析源 JSON，不发请求）。
+     *
+     * @param includeDisabled true = 包含已禁用的源（v1.6.5.0 标签池用：
+     *   标签收集要涵盖**每一个源**的小说 / 漫画 / 视频，用户临时禁用的源
+     *   其分类仍是有效标签；发现页等场景保持默认 false）。
+     */
+    suspend fun exploreSources(
+        type: com.novelreader.domain.model.SourceType,
+        includeDisabled: Boolean = false,
+    ): List<Pair<SourceInfo, List<com.novelreader.domain.model.ExploreCategory>>>
 
     /** 按发现分类拉取书籍列表 */
     suspend fun explore(sourceId: String, url: String, page: Int): List<MediaItem>

@@ -46,6 +46,19 @@ data class MediaItem(
      * 否则服务端返回空数据 → 目录空白、图片不显示。存 JSON 原文，用时再解析。
      */
     val requestOptions: String = "",
+    /**
+     * 标签（v1.6.5.0）。
+     *
+     * 两个来源：
+     * 1. **浏览上下文**：从某个发现分类点进详情时，由发现页/影视首页把分类名写进来
+     *    （见 `ExploreViewModel.aggregate` / `HomeViewModel.loadChannelCategory`）；
+     * 2. **详情派生**：详情页加载后用 `ItemTags.of(item)` 从 extras 派生
+     *    （视频 = `type_name`，小说/漫画 = legado `kind`）。
+     *
+     * 详情页顶部「标签小栏」展示这些标签，点击可跳标签搜索同标签内容。
+     * 默认空列表；Gson 反序列化旧数据（无该字段）时同样为空。
+     */
+    val tags: List<String> = emptyList(),
 )
 
 /**

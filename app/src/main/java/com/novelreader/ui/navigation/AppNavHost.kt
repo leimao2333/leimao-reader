@@ -531,6 +531,12 @@ fun AppNavHost(
                     // 点击作者：跳到小说搜索页并按作者名预搜索（#31）
                     navController.navigate(Routes.novelSearch(initialKeyword = author))
                 },
+                onTagClick = { tag ->
+                    // 点标签小栏的标签：跳标签搜索页同标签内容（v1.6.5.0）
+                    navController.navigate(
+                        Routes.tagSearch(com.novelreader.domain.model.SourceType.NOVEL, tag)
+                    )
+                },
             )
         }
 
@@ -619,6 +625,12 @@ fun AppNavHost(
                     }
                 },
                 onBack = { navController.popBackStack() },
+                onTagClick = { tag ->
+                    // 点标签小栏的标签：跳标签搜索页同标签内容（v1.6.5.0）
+                    navController.navigate(
+                        Routes.tagSearch(com.novelreader.domain.model.SourceType.COMIC, tag)
+                    )
+                },
             )
         }
 
@@ -698,6 +710,12 @@ fun AppNavHost(
                     navController.navigate(Routes.videoPlayer(item, episode.index))
                 },
                 onBack = { navController.popBackStack() },
+                onTagClick = { tag ->
+                    // 点标签小栏的标签：跳标签搜索页同标签内容（v1.6.5.0）
+                    navController.navigate(
+                        Routes.tagSearch(com.novelreader.domain.model.SourceType.VIDEO, tag)
+                    )
+                },
             )
         }
 
@@ -730,6 +748,8 @@ fun AppNavHost(
                 episodes = episodes,
                 episode = episode,
                 onBack = { navController.popBackStack() },
+                // v1.6.5.0：短剧播放器菜单栏目的「详情」入口 → 视频详情页
+                onOpenDetail = { navController.navigate(Routes.videoDetail(item)) },
             )
         }
     }

@@ -249,10 +249,14 @@ class ContentRepositoryImpl(
 
     override suspend fun exploreSources(
         type: SourceType,
+        includeDisabled: Boolean,
     ): List<Pair<SourceInfo, List<com.novelreader.domain.model.ExploreCategory>>> =
         withContext(Dispatchers.IO) {
+            // v1.6.5.0：includeDisabled=true 时涵盖每一个源（含禁用源），标签池收集用；
+            // 默认只取已启用源（发现页等场景，禁用的源不该出现）。
+            val infos = if (includeDisabled) sourceManager.getSourcesByType(type)
+            else sourceManager.getEnabledSourcesByType(type)
             // 并发枚举各源分类（8 路）：个别源的分类规则要发网络请求，串行会拖累整页。
-            val infos = sourceManager.getEnabledSourcesByType(type)
             val semaphore = Semaphore(8)
             coroutineScope {
                 infos.map { info -> async {

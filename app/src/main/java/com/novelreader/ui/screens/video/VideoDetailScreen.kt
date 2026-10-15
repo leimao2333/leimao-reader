@@ -71,6 +71,7 @@ fun VideoDetailScreen(
     item: MediaItem,
     onEpisodeClick: (ChapterItem) -> Unit,
     onBack: () -> Unit,
+    onTagClick: (String) -> Unit = {},
 ) {
     val detail by viewModel.detail.collectAsState()
     val episodes by viewModel.episodes.collectAsState()
@@ -216,14 +217,26 @@ fun VideoDetailScreen(
                 }
             }
 
-            // ===== 元信息标签行：分类 · 年份 · 地区 · 源名 =====
+            // ===== 标签小栏（v1.6.5.0）：浏览上下文 + type_name 派生，点击跳标签搜索 =====
+            item(key = "tag_bar") {
+                com.novelreader.ui.components.DetailTagBar(
+                    tags = com.novelreader.core.util.ItemTags.of(display),
+                    onTagClick = onTagClick,
+                )
+            }
+
+            // ===== 元信息标签行：评分 · 年份 · 地区 · 语言 · 作者 · 源名 =====
+            // 注：分类（typeName）不在本行——v1.6.5.0 起收进上方可点的「标签小栏」；
+            // author 对苹果 CMS 源就是 type_name，与标签小栏重复，也一并过滤
+            val itemTags = com.novelreader.core.util.ItemTags.of(display)
             val tags = buildList {
-                display.extras["typeName"].orEmpty().takeIf { it.isNotBlank() }?.let { add(it) }
                 display.extras["year"].orEmpty().takeIf { it.isNotBlank() }?.let { add(it) }
                 display.extras["area"].orEmpty().takeIf { it.isNotBlank() }?.let { add(it) }
                 display.extras["lang"].orEmpty().takeIf { it.isNotBlank() }?.let { add(it) }
-                display.author?.takeIf { it.isNotBlank() && it !in this }?.let { add(it) }
-                display.sourceName.takeIf { it.isNotBlank() }?.let { add(it) }
+                display.author?.takeIf {
+                    it.isNotBlank() && it !in this && it !in itemTags
+                }?.let { add(it) }
+                display.sourceName.takeIf { it.isNotBlank() && it !in this }?.let { add(it) }
             }
             val score = display.scoreLabel()
             if (tags.isNotEmpty() || score.isNotBlank()) {

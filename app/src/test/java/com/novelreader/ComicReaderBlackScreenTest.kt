@@ -119,6 +119,7 @@ private class FakeContentRepository(private val result: ContentResult) : Content
 
     override suspend fun exploreSources(
         type: SourceType,
+        includeDisabled: Boolean,
     ): List<Pair<com.novelreader.domain.model.SourceInfo, List<com.novelreader.domain.model.ExploreCategory>>> = emptyList()
     override suspend fun explore(sourceId: String, url: String, page: Int): List<MediaItem> = emptyList()
     override suspend fun exploreCategoriesOf(

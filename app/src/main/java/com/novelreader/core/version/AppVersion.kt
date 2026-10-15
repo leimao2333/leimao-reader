@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.6.4.0"
+    const val CURRENT_VERSION = "1.6.5.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,19 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.6.5.0",
+            date = "2026-10-15",
+            changes = listOf(
+                "**短剧新增详情页 + 菜单栏目入口**：短剧卡片此前是「红果式」一键直达播放，没有详情页可达路径 —— 简介 / 标签 / 完整选集都看不到。现在播放器底部操作栏（菜单栏目）新增「详情」按钮（Icons.Filled.Info，仅短剧模式显示，普通视频保持 5 按钮不变），点击跳 VideoDetailScreen：封面 / 标题 / 收藏 / 播放 / 下载 / 标签小栏 / 元信息 / 简介 / 完整选集一应俱全",
+                "**标签功能大修·标签收集涵盖每一个源**：`exploreSources` 新增 `includeDisabled` 参数，标签池收集时传入 true —— 之前只收集**已启用**源的发现分类，用户临时禁用的源其分类会从标签池消失；现在每一个源（含禁用源）的小说 / 漫画 / 视频分类都进标签池，重新启用源时标签即复得",
+                "**详情页新增「标签小栏」（带下拉箭头）**：小说 / 漫画 / 视频三类详情页顶部新增共享组件 `DetailTagBar`，把一个个体的多个标签收在一行小栏里；超过 3 个时末尾出现「更多 ▾」箭头，点开展开全部、再点收起（箭头翻转 ▴）；点任意标签跳转标签搜索页看同标签内容",
+                "**标签来源三路合一**（`core/util/ItemTags.kt`）：① 浏览上下文 —— 从发现分类 / 影视分区 / 频道点进详情时分类名写进 `MediaItem.tags`（ExploreViewModel、HomeViewModel 的 loadChannelCategory / loadVideoSections / loadVideoGrid）；② 视频 = extras[\"typeName\"]（苹果 CMS vod_type_name）；③ 小说 / 漫画 = legado extras[\"kind\"]（状态词如「连载中」过滤掉，不是分类）。多值字段按 `,，、/|` 拆分、去重、上限 8 个",
+                "**标签搜索「更多」直接展示所有标签**：之前「更多 ▾ N」面板只放热门 top 12，标签池上百个时大部分标签用户永远点不到；现在面板展示**全部**标签（按覆盖源数倒序），FlowRow + verticalScroll 可滚动浏览",
+                "**MediaItem 新增 tags 字段**：随 NavArgs 的 Gson 序列化流经导航，从发现页点到详情页不丢标签",
+                "**视频详情页元信息行去掉「分类」**：分类收进可点的标签小栏，不再在元信息 chips 里重复展示",
+            ),
+        ),
         VersionEntry(
             version = "1.6.4.0",
             date = "2026-10-15",

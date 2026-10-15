@@ -117,6 +117,8 @@ fun VideoPlayerScreen(
     episodes: List<ChapterItem>,
     episode: ChapterItem,
     onBack: () -> Unit,
+    // v1.6.5.0：跳视频详情页（短剧从播放器菜单栏目进详情的入口）
+    onOpenDetail: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val view = LocalView.current
@@ -797,6 +799,9 @@ fun VideoPlayerScreen(
                     }
                 },
                 onOpenEpisodes = { episodesOpen = true },
+                // v1.6.5.0：短剧在菜单栏目里加「详情」入口（普通视频保持 5 按钮不变）
+                onOpenDetail = onOpenDetail,
+                showDetailButton = isShortDrama,
                 qualityTracks = qualityTracks,
                 selectedQuality = selectedQuality,
                 onSelectQuality = { viewModel.selectQuality(it) },

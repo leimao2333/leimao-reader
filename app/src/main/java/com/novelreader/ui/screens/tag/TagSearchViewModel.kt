@@ -43,6 +43,15 @@ class TagSearchViewModel(
     val allTags: StateFlow<List<String>> = _allTags.asStateFlow()
 
     /**
+     * 全部标签（按覆盖源数倒序）（v1.6.5.0）。
+     *
+     * 「更多」面板**直接展示所有标签**（不再只给热门 top N）——标签池动辄上百个，
+     * 只放热门等于大部分标签用户永远点不到。排序仍按覆盖源数，覆盖面广的在前。
+     */
+    private val _tagsByCoverage = MutableStateFlow<List<String>>(emptyList())
+    val tagsByCoverage: StateFlow<List<String>> = _tagsByCoverage.asStateFlow()
+
+    /**
      * 热门推荐标签（v1.6.1.0）：按覆盖源数倒序，取 top [HOT_TAG_LIMIT]。
      *
      * 在搜索页顶部作为「一键选择」入口，用户点选即触发复合搜索（多次复用 + 自动追加）。
@@ -93,6 +102,7 @@ class TagSearchViewModel(
             tagPlan = runCatching { tagRepository.tags(type) }.getOrDefault(TagPlan.EMPTY)
             _allTags.value = tagPlan.tags
             _hotTags.value = tagPlan.hotTags(HOT_TAG_LIMIT)
+            _tagsByCoverage.value = tagPlan.hotTags(0)
             _collecting.value = false
             if (thenSearch && _results.value.isEmpty()) search()
         }
@@ -105,6 +115,7 @@ class TagSearchViewModel(
             tagPlan = runCatching { tagRepository.refresh(type) }.getOrDefault(TagPlan.EMPTY)
             _allTags.value = tagPlan.tags
             _hotTags.value = tagPlan.hotTags(HOT_TAG_LIMIT)
+            _tagsByCoverage.value = tagPlan.hotTags(0)
             _collecting.value = false
         }
     }
@@ -160,6 +171,7 @@ class TagSearchViewModel(
                 tagPlan = runCatching { tagRepository.tags(type) }.getOrDefault(TagPlan.EMPTY)
                 _allTags.value = tagPlan.tags
                 _hotTags.value = tagPlan.hotTags(HOT_TAG_LIMIT)
+                _tagsByCoverage.value = tagPlan.hotTags(0)
             }
 
             val entriesPerTag = tags.map { tagPlan.entriesFor(it) }

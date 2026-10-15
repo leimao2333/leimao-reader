@@ -46,6 +46,7 @@ import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.ui.components.BookMeta
 import com.novelreader.ui.components.CoverPlaceholderLetter
+import com.novelreader.ui.components.DetailTagBar
 
 /**
  * 小说详情与目录页。
@@ -62,6 +63,7 @@ fun NovelDetailScreen(
     onSwitchSource: (MediaItem) -> Unit,
     onBack: () -> Unit,
     onSearchAuthor: (String) -> Unit = {},
+    onTagClick: (String) -> Unit = {},
 ) {
     val detail by viewModel.detail.collectAsState()
     val chapters by viewModel.chapters.collectAsState()
@@ -209,6 +211,14 @@ fun NovelDetailScreen(
                             }
                             if (target != null) onChapterClick(target) else onRead(display)
                         },
+                    )
+                }
+
+                // 标签小栏（v1.6.5.0）：浏览上下文 + extras["kind"] 派生，点击跳标签搜索
+                item {
+                    DetailTagBar(
+                        tags = com.novelreader.core.util.ItemTags.of(display),
+                        onTagClick = onTagClick,
                     )
                 }
 

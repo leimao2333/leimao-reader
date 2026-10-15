@@ -659,6 +659,7 @@ private class VideoHomeFakeContentRepository : ContentRepository {
 
     override suspend fun exploreSources(
         type: SourceType,
+        includeDisabled: Boolean,
     ): List<Pair<SourceInfo, List<ExploreCategory>>> = emptyList()
 }
 

@@ -10,11 +10,15 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
- * 标签仓库（v1.5.10.0；v1.6.2.0 加强标签名清洗）。
+ * 标签仓库（v1.5.10.0；v1.6.2.0 加强标签名清洗；v1.6.5.0 涵盖每一个源）。
  *
- * **标签自动收集**：把各启用源的发现分类（explore 分类）聚合成本内容的标签池——
+ * **标签自动收集**：把各源的发现分类（explore 分类）聚合成本内容的标签池——
  * 小说/漫画的「玄幻 / 都市 / 冒险…」、视频采集站的「电影 / 动作片 / 恋爱…」，
  * 不需要任何人工维护，导入源即得标签。
+ *
+ * v1.6.5.0：收集范围从「已启用源」扩大到**每一个源**（含被禁用的源，
+ * 见 [ContentRepository.exploreSources] 的 includeDisabled）——用户临时禁用
+ * 某个源不该让它的分类从标签池消失，重新启用时标签即复得。
  *
  * 收集涉及逐源请求（视频源要 `?ac=list`），因此：
  * - 结果落盘（[TagStore]），冷启动直接读缓存、毫秒级可用；
@@ -51,7 +55,8 @@ class TagRepository(
     }
 
     private suspend fun collect(type: SourceType): TagPlan {
-        val sources = runCatching { contentRepository.exploreSources(type) }
+        // includeDisabled = true：涵盖每一个源（v1.6.5.0），禁用源的分类也进标签池
+        val sources = runCatching { contentRepository.exploreSources(type, includeDisabled = true) }
             .getOrDefault(emptyList())
         val plan = LinkedHashMap<String, MutableList<Pair<String, String>>>()
         for ((info, cats) in sources) {

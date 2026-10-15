@@ -25,7 +25,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImagePainter
@@ -190,30 +193,56 @@ private fun CoverImage(item: MediaItem) {
     }
 }
 
-/** 无封面占位：显示书名首字（比纯图标更有辨识度），字号随占位块大小自适应 */
+/**
+ * 无封面占位：显示书名首字（比纯图标更有辨识度），字号随占位块大小自适应。
+ *
+ * v1.7.4.0：底色改成**按书名生成**的稳定渐变。此前所有占位块共用同一个
+ * `surfaceVariant` 灰底，一整排无封面的书（不少站点列表页根本不给封面）
+ * 看上去就是一片同样的灰方块，既谈不上辨识度也谈不上好看。现在同一本书
+ * 每次进来都是同一个色相，相邻的书颜色不同，扫一眼能分得清。
+ */
 @Composable
 fun CoverPlaceholderLetter(modifier: Modifier = Modifier, title: String? = null) {
     val letter = remember(title) {
-        title?.trim()?.firstOrNull()?.toString() ?: ""
+        title?.trim()?.take(2) ?: ""
     }
+    // 低饱和 + 高明度：做背景不能抢封面本身的注意力，也要保证深色字够清晰
+    val (start, end) = remember(title) { placeholderColors(title) }
     Box(
-        modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant),
+        modifier = modifier.background(
+            brush = Brush.linearGradient(listOf(start, end)),
+        ),
         contentAlignment = Alignment.Center,
     ) {
         if (letter.isEmpty()) {
             Icon(
                 imageVector = Icons.Filled.Image,
                 contentDescription = "无封面",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = PlaceholderInk,
             )
         } else {
             Text(
                 text = letter,
                 style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = PlaceholderInk,
+                maxLines = 1,
+                overflow = TextOverflow.Clip,
+                textAlign = TextAlign.Center,
             )
         }
     }
+}
+
+/** 占位块上的字色：固定在浅底上足够深的墨色，不随主题的深浅漂移 */
+private val PlaceholderInk = Color(0xFF3B3B3B)
+
+/** 由书名推出一对柔和的邻近色（同一书名每次结果一致） */
+private fun placeholderColors(title: String?): Pair<Color, Color> {
+    val seed = (title?.trim()?.hashCode() ?: 0)
+    // 取绝对值避免负号把色相压到少数几个值上；乘个奇数打散相邻 hash 的连续性
+    val hue = (kotlin.math.abs(seed * 2_654_435_761L) % 360).toFloat()
+    return Color.hsv(hue, 0.22f, 0.93f) to
+        Color.hsv((hue + 26f) % 360f, 0.30f, 0.86f)
 }
 
 @Composable

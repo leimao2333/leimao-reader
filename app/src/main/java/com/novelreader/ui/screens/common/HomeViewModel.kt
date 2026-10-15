@@ -1270,20 +1270,54 @@ class HomeViewModel(
             val gate = Semaphore(MAX_FEED_CONCURRENCY)
             val rows = java.util.Collections.synchronizedList(mutableListOf<FeedRow>())
             val aliveSources = java.util.Collections.synchronizedSet(mutableSetOf<String>())
-            withTimeoutOrNull(FEED_ROW_DEADLINE_MS) {
+
+            /** 把「手上已经回来的排」上屏（不显示转圈）+ 落盘；快照加锁避免并发写乱序 */
+            fun publishPartial() {
+                val ordered = rows.toList()
+                    .sortedBy { r -> plan.rows.indexOfFirst { it.title == r.categoryId } }
+                if (ordered.isEmpty()) return
+                flow.value = flow.value.copy(
+                    loading = false,
+                    aliveCount = maxOf(covered, aliveSources.size),
+                    categories = plan.categories,
+                    rows = ordered,
+                    error = null,
+                    loadedAtMs = System.currentTimeMillis(),
+                )
+                // 落盘要在协程里；这里由调用方（协程上下文）保证
+            }
+
+            // v1.7.4.0：整轮改成**软上界**。以前 [FEED_ROW_DEADLINE_MS] 到点就直接丢弃
+            // 剩下没跑完的排 —— 而漫画排里 Venera 源单源动辄撞上 10 秒探测超时
+            // （实测 copy_manga / mh18 / kavita / komiic / baozi / happy 全部 10s+），
+            // 6 路并发下 35 秒只够跑完 3~4 排，于是**漫画首页永远只有 3 排**，
+            // 60 个栏目里绝大部分永远没有排。现在到点先把已完成的排上屏 + 落盘
+            // （用户不再干等），剩下的排继续在后台跑完再补上并重新落盘。
+            withTimeoutOrNull(FEED_ROW_HARD_LIMIT_MS) {
                 coroutineScope {
-                    plan.rows.map { row -> async {
+                    val jobs = plan.rows.map { row -> async {
+                        val t0 = System.currentTimeMillis()
                         val merged = coroutineScope {
                             row.targets.map { t -> async {
-                                gate.withPermit {
+                                val ts = System.currentTimeMillis()
+                                val r = gate.withPermit {
                                     runCatching {
                                         withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) {
                                             contentRepository.explore(t.sourceId, t.url, 1)
                                         }
                                     }.getOrNull().orEmpty()
                                 }
+                                android.util.Log.i(
+                                    "FeedRowDiag",
+                                    "[$type]源 ${t.sourceId} 排「${row.title}」${r.size}条 ${System.currentTimeMillis() - ts}ms",
+                                )
+                                r
                             } }.awaitAll().flatten()
                         }
+                        android.util.Log.i(
+                            "FeedRowDiag",
+                            "[$type]排「${row.title}」共 ${merged.size} 条，耗时 ${System.currentTimeMillis() - t0}ms，源 ${row.targets.size} 个",
+                        )
                         if (merged.isEmpty()) return@async
                         val seen = LinkedHashSet<String>()
                         val dedup = merged.filter { seen.add("${it.sourceId}:${it.id}") }
@@ -1306,7 +1340,16 @@ class HomeViewModel(
                             rows = rows.toList()
                                 .sortedBy { r -> plan.rows.indexOfFirst { it.title == r.categoryId } },
                         )
-                    } }.awaitAll()
+                    } }
+
+                    // 软上界：到点把已完成的排先上屏 + 落盘，然后**继续等**剩下的排
+                    val checkpoint = launch {
+                        delay(FEED_ROW_DEADLINE_MS)
+                        publishPartial()
+                        saveFeedCache(type)
+                    }
+                    jobs.awaitAll()
+                    checkpoint.cancel()
                 }
             }
 
@@ -1824,17 +1867,29 @@ class HomeViewModel(
         private const val FEED_PROBE_TIMEOUT_MS = 25_000L
 
         /**
-         * 推荐页「各排取内容」整轮的硬上界（毫秒）。
+         * 推荐页「各排取内容」的**软上界**（毫秒）。
          *
-         * 到点就用手上已经回来的排上屏，剩下的下次刷新再说。
+         * 到点把已经回来的排上屏并落盘（用户不再干等），剩下的排**继续后台跑完**再补上。
          *
          * 为什么必须有：`withTimeoutOrNull` 只能取消挂起点，**打断不了阻塞式 socket 读**，
-         * 所以单排里一个走「连接 15s + 读取 20s」的坏源就能把整页拖住；几十个请求共享
-         * 并发闸时更是一排接一排地等。实测没有硬上界时整轮能到分钟级（用户看到的就是
-         * 「一直转圈」）。正常情况 60 个请求 / 6 路并发 × 2 秒左右 ≈ 20 秒内跑完，
-         * 35 秒留了足够余量，只有异常时才触发。
+         * 所以单排里一个慢源就能把整页拖住。正常情况 60 个请求 / 6 路并发 × 2 秒左右
+         * ≈ 20 秒内跑完，35 秒留了足够余量。
          */
         private const val FEED_ROW_DEADLINE_MS = 35_000L
+
+        /**
+         * 推荐页「各排取内容」真正的**硬上界**（毫秒，v1.7.4.0）。
+         *
+         * v1.7.3.0 及以前 [FEED_ROW_DEADLINE_MS] 同时充当硬上界：到点直接丢弃剩下
+         * 没跑完的排。漫画排里 Venera 源单源动辄撞上 10 秒探测超时（实测 copy_manga /
+         * mh18 / kavita / komiic / baozi / happy 全部 10s+），6 路并发下 35 秒只够跑完
+         * 3~4 排 —— 于是**漫画首页永远只有 3 排**（小说能出 10 排），60 个栏目里绝
+         * 大部分永远没有排。
+         *
+         * 现在拆成两级：35 秒软上界先上屏，120 秒硬上界兜底（极端情况不至于无限等）。
+         * 后台续跑不阻塞 UI，跑完补排并重新落盘，下次冷启动就是完整的一屏。
+         */
+        private const val FEED_ROW_HARD_LIMIT_MS = 120_000L
 
         /** 「继续观看」随条目带出的续播集数 extras key */
         const val EXTRA_RESUME_INDEX = "resumeIndex"

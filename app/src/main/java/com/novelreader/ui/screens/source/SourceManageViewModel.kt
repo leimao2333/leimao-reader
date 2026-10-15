@@ -611,10 +611,26 @@ class SourceManageViewModel(
     val testRunning: StateFlow<Boolean> = _testRunning.asStateFlow()
 
     /**
+     * **搜得到但读不了目录**的源 id（v1.7.4.0）。
+     *
+     * 典型是站点改过版 / 换了域名：`test()` 用「测试」关键词搜索还能返回结果
+     * （于是判为「可用」），但 `ruleToc` 早就对不上新页面，点进去一本都读不了
+     * （52PO小说就是：301 跳到 pokanwen.com 且页面重做，目录恒为 0 章）。
+     * 对「这个源好不好用」来说这是**半死**的源，和真正可用的必须分开标。
+     *
+     * 只放**确认读不了**的：搜索压根没结果时无法判定（可能只是关键词不匹配），不放。
+     */
+    private val _unreadable = MutableStateFlow<Set<String>>(emptySet())
+    val unreadable: StateFlow<Set<String>> = _unreadable.asStateFlow()
+
+    /**
      * 批量检测源有效性。
      *
      * 逐个调用 [SourceAdapter.test]（内部以「测试」关键词搜索，返回结果非空即视为可用）。
      * 检测结果写入 [testResults]，UI 据此标记失效源。
+     *
+     * v1.7.4.0 追加一步：判定可用的源还会拿一本真实的书去要一次目录，
+     * 取不到章节的另记进 [unreadable] —— 只多打一个请求，只针对活源。
      *
      * @param sources 待检测的源；默认检测当前全部源
      */
@@ -625,10 +641,12 @@ class SourceManageViewModel(
             _testRunning.value = true
             val total = sources.size
             _testProgress.value = 0 to total
+            _unreadable.value = emptySet()
             // 必须在 IO 线程执行：test() 含网络请求与 Rhino JS，
             // 在主线程跑会卡死 UI 导致 ANR（实体机已复现）。
             val results = withContext(Dispatchers.IO) {
                 val map = _testResults.value.toMutableMap()
+                val unreadableSet = java.util.Collections.synchronizedSet(mutableSetOf<String>())
                 // 限流并发：全串行太慢（280 源 × 20s 上限），全并发耗尽内存；
                 // 用信号量限制最多 8 个源同时检测。
                 val semaphore = kotlinx.coroutines.sync.Semaphore(8)
@@ -640,27 +658,50 @@ class SourceManageViewModel(
                             // 用 withTimeoutOrNull 包住整个 test()，防止单个慢源卡死整轮检测；
                             // 用 runCatching 捕获 Throwable（Rhino 等可能抛 Error，非 Exception），
                             // 任何异常都视为「不可用」，绝不因此崩溃。
+                            val adapter = sourceRepository.getAdapter(source.id)
                             val ok = kotlinx.coroutines.withTimeoutOrNull(20_000L) {
-                                runCatching {
-                                    sourceRepository.getAdapter(source.id)?.test() ?: true
-                                }.getOrDefault(false)
+                                runCatching { adapter?.test() ?: true }.getOrDefault(false)
                             } ?: false
                             synchronized(map) { map[source.id] = ok }
+                            if (ok && adapter != null && probeReadable(adapter) == false) {
+                                unreadableSet += source.id
+                            }
                             _testing.value = _testing.value - source.id
                             val d = done.incrementAndGet()
                             _testProgress.value = d to total
                         }
                     }
                 }.joinAll()
+                _unreadable.value = unreadableSet.toSet()
                 map
             }
             _testResults.value = results.toMap()
             _testProgress.value = null
             _testRunning.value = false
             val failed = results.count { !it.value }
-            _message.value = if (failed == 0) "检测完成：全部源可用"
-            else "检测完成：${results.size} 个源中 $failed 个疑似失效"
+            val partial = _unreadable.value.size
+            _message.value = buildString {
+                append(if (failed == 0) "检测完成：全部源可连通" else "检测完成：${results.size} 个源中 $failed 个疑似失效")
+                if (partial > 0) append("；另有 $partial 个搜得到但读不了目录（站点可能已改版）")
+            }
         }
+    }
+
+    /**
+     * 探测「这个源能不能真的读到目录」。
+     *
+     * @return true = 读到章节；false = 搜到了书却取不到目录（规则对不上新页面）；
+     *   null = 无法判定（搜索就没结果，可能只是关键词不匹配）
+     */
+    private suspend fun probeReadable(adapter: com.novelreader.domain.model.SourceAdapter): Boolean? {
+        val first = runCatching {
+            kotlinx.coroutines.withTimeoutOrNull(15_000L) { adapter.search("测试", 1) }
+        }.getOrNull()?.orEmpty()?.firstOrNull() ?: return null
+        return runCatching {
+            kotlinx.coroutines.withTimeoutOrNull(15_000L) { adapter.chapterList(first) }
+                .orEmpty()
+                .isNotEmpty()
+        }.getOrDefault(false)
     }
 
     /** 一键禁用所有已检出失效的源（自动筛选无用源） */
@@ -735,6 +776,7 @@ class SourceManageViewModel(
     /** 清除检测结果 */
     fun clearTestResults() {
         _testResults.value = emptyMap()
+        _unreadable.value = emptySet()
     }
 
     /** 清除提示消息 */

@@ -347,6 +347,7 @@ fun SourceManageScreen(
                 val testing by viewModel.testing.collectAsState()
                 val testProgress by viewModel.testProgress.collectAsState()
                 val testRunning by viewModel.testRunning.collectAsState()
+                val unreadable by viewModel.unreadable.collectAsState()
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -354,12 +355,19 @@ fun SourceManageScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     val failedCount = testResults.count { !it.value }
+                    val partialCount = unreadable.size
                     Text(
                         text = when {
                             testRunning -> "正在检测…"
                             testResults.isEmpty() -> "尚未检测源可用性"
-                            failedCount == 0 -> "检测完成：全部可用"
-                            else -> "检测到 $failedCount 个疑似失效"
+                            failedCount == 0 && partialCount == 0 -> "检测完成：全部可用"
+                            else -> buildString {
+                                if (failedCount > 0) append("检测到 $failedCount 个疑似失效")
+                                if (partialCount > 0) {
+                                    if (isNotEmpty()) append("，")
+                                    append("$partialCount 个能搜但读不了目录")
+                                }
+                            }
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -486,6 +494,7 @@ fun SourceManageScreen(
                         sources = displayedSources,
                         testResults = testResults,
                         testing = testing,
+                        unreadable = unreadable,
                         onToggle = { viewModel.toggleEnabled(it) },
                         onEdit = { viewModel.openEditSource(it) },
                         onDelete = { viewModel.deleteSource(it) },
@@ -576,12 +585,7 @@ fun SourceManageScreen(
                                 source = source,
                                 selectionMode = if (manualMode) false else selectionMode,
                                 selected = if (manualMode) false else source.id in selectedIds,
-                                testStatus = when {
-                                    source.id in testing -> SourceTestStatus.TESTING
-                                    testResults[source.id] == true -> SourceTestStatus.OK
-                                    testResults[source.id] == false -> SourceTestStatus.FAILED
-                                    else -> SourceTestStatus.UNKNOWN
-                                },
+                                testStatus = statusOf(source.id, testing, testResults, unreadable),
                                 loggedIn = loginStates[source.id] == true,
                                 loggingIn = source.id in loggingIn,
                                 manualMode = manualMode,
@@ -886,6 +890,7 @@ private fun SourceTableView(
     sources: List<SourceInfo>,
     testResults: Map<String, Boolean> = emptyMap(),
     testing: Set<String> = emptySet(),
+    unreadable: Set<String> = emptySet(),
     onToggle: (SourceInfo) -> Unit,
     onEdit: (SourceInfo) -> Unit,
     onDelete: (SourceInfo) -> Unit,
@@ -916,12 +921,7 @@ private fun SourceTableView(
                 ) {
                     TableCell(source.name, 2.0f)
                     TableCell(source.type.label(), 0.8f)
-                    val status = when {
-                        source.id in testing -> SourceTestStatus.TESTING
-                        testResults[source.id] == true -> SourceTestStatus.OK
-                        testResults[source.id] == false -> SourceTestStatus.FAILED
-                        else -> SourceTestStatus.UNKNOWN
-                    }
+                    val status = statusOf(source.id, testing, testResults, unreadable)
                     androidx.compose.foundation.layout.Box(modifier = Modifier.weight(1f)) {
                         SourceTestBadge(status)
                     }
@@ -1222,8 +1222,27 @@ private fun CategoryBadge(category: String) {
     )
 }
 
-/** 源可用性检测状态 */
-enum class SourceTestStatus { UNKNOWN, TESTING, OK, FAILED }
+/** 由「连通性结果 + 目录可读性」合成展示状态（v1.7.4.0） */
+private fun statusOf(
+    id: String,
+    testing: Set<String>,
+    testResults: Map<String, Boolean>,
+    unreadable: Set<String>,
+): SourceTestStatus = when {
+    id in testing -> SourceTestStatus.TESTING
+    testResults[id] == true -> if (id in unreadable) SourceTestStatus.PARTIAL else SourceTestStatus.OK
+    testResults[id] == false -> SourceTestStatus.FAILED
+    else -> SourceTestStatus.UNKNOWN
+}
+
+/**
+ * 源可用性检测状态。
+ *
+ * [PARTIAL]（v1.7.4.0）= **搜得到但读不了目录**：站还通、搜索也返回结果，
+ * 但目录规则对不上改版后的页面（52PO小说这类），点进去一本都读不了。
+ * 和 [FAILED] 分开标，因为它不是「连不上」，换源或等源更新才有解。
+ */
+enum class SourceTestStatus { UNKNOWN, TESTING, OK, PARTIAL, FAILED }
 
 /** 源可用性徽标 */
 @Composable
@@ -1231,6 +1250,7 @@ private fun SourceTestBadge(status: SourceTestStatus) {
     val (label, color) = when (status) {
         SourceTestStatus.TESTING -> "检测中" to MaterialTheme.colorScheme.onSurfaceVariant
         SourceTestStatus.OK -> "可用" to Color(0xFF2E7D32)
+        SourceTestStatus.PARTIAL -> "能搜·读不了" to Color(0xFFE07A00)
         SourceTestStatus.FAILED -> "疑似失效" to MaterialTheme.colorScheme.error
         SourceTestStatus.UNKNOWN -> return
     }

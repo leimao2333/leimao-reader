@@ -863,6 +863,10 @@ internal fun ComicImage(
     val context = LocalContext.current
     // 重试计数：并入缓存键，点击重试时产生全新请求
     var retry by remember(url) { mutableIntStateOf(0) }
+    // 失败原因（v1.7.4.0）：域名不可达与「图挂了」要分开说 —— CCC 追漫台这类源的
+    // 图片域名在当前网络就是连不上，用户看到一句「点击重试」会一直点下去，
+    // 而重试永远不可能成功。说清是网络不可达，他才知道该换网络而不是怪 App。
+    var unreachable by remember(url) { mutableStateOf(false) }
     val bands = remember(url, script) { ComicImageScramble.bandCountFromScript(script) }
     val request = remember(url, retry, headers, bands) {
         ImageRequest.Builder(context)
@@ -878,6 +882,7 @@ internal fun ComicImage(
                         IMAGE_LOG_TAG,
                         "图片加载失败 err=${result.throwable?.javaClass?.simpleName}",
                     )
+                    unreachable = isNetworkUnreachable(result.throwable)
                     // v1.7.1.0：先让上层试一次备用镜像（禁漫天堂等源有 5 条线路），
                     // 拿到新地址后 url 变化会让本组件以新地址重新加载
                     onLoadFailed(url)
@@ -895,6 +900,7 @@ internal fun ComicImage(
         error = {
             ComicError(
                 placeholderModifier,
+                unreachable = unreachable,
                 onRetry = {
                     onLoadFailed(url)
                     retry++
@@ -902,6 +908,28 @@ internal fun ComicImage(
             )
         },
     )
+}
+
+/**
+ * 判断图片加载失败是否属于**网络不可达**（v1.7.4.0）。
+ *
+ * 只看异常类名链：Coil 会把真实原因包几层，而且异常消息里常带图片地址，
+ * 日志与界面都不该出现具体站点。命中这几类就说明「这个域名在当前网络连不上」，
+ * 与 403 防盗链 / 图片本身损坏不是一回事，处理办法也完全不同。
+ */
+private fun isNetworkUnreachable(t: Throwable?): Boolean {
+    val names = setOf(
+        "UnknownHostException", "ConnectException", "SocketTimeoutException",
+        "NoRouteToHostException", "PortUnreachableException", "SSLHandshakeException",
+    )
+    var e = t
+    var depth = 0
+    while (e != null && depth < 5) {
+        if (e.javaClass.simpleName in names) return true
+        e = e.cause
+        depth++
+    }
+    return false
 }
 
 /** 加载中占位 */
@@ -915,10 +943,17 @@ private fun ComicLoading(modifier: Modifier) {
     }
 }
 
-/** 加载失败占位（可点击重试） */
+/**
+ * 加载失败占位（可点击重试）。
+ *
+ * [unreachable] 为 true 时说明是**网络连不上这个域名**（不是图坏了、也不是防盗链），
+ * 这时直说「不可达」并给出「换网络 / 代理」的提示，而不是让用户对着
+ * 「点击重试」反复点 —— 那种情况下重试永远不可能成功。
+ */
 @Composable
 private fun ComicError(
     modifier: Modifier,
+    unreachable: Boolean = false,
     onRetry: () -> Unit,
 ) {
     Box(modifier, contentAlignment = Alignment.Center) {
@@ -929,8 +964,24 @@ private fun ComicError(
                 tint = Color(0xFF888888),
             )
             Spacer(Modifier.height(4.dp))
+            if (unreachable) {
+                Text(
+                    "图片域名当前不可达",
+                    color = Color(0xFFBBBBBB),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    "该站点需要可用的网络环境",
+                    color = Color(0xFF888888),
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+            Spacer(Modifier.height(4.dp))
             TextButton(onClick = onRetry) {
-                Text("图片加载失败，点击重试", color = Color(0xFF6A9BD8))
+                Text(
+                    if (unreachable) "重试" else "图片加载失败，点击重试",
+                    color = Color(0xFF6A9BD8),
+                )
             }
         }
     }

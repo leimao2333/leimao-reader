@@ -71,7 +71,7 @@ class ContentRepositoryImpl(
                         }
                     }
                 }.awaitAll().flatten()
-            }
+            }.let { com.novelreader.core.util.CoverMemory.fill(it) }
         }
 
     override fun searchWithProgress(
@@ -249,10 +249,21 @@ class ContentRepositoryImpl(
                 )
                 return@withContext item
             }
-            runCatching { adapter.detail(item) }
+            val result = runCatching { adapter.detail(item) }
                 .onSuccess { SourceErrorLog.clear(item.sourceId) }
                 .onFailure { SourceErrorLog.record(item.sourceId, "详情", it) }
                 .getOrDefault(item)
+            // v1.7.4.0：有些源列表页不给封面、详情页才给（52PO小说 / 海马读书的
+            // ruleSearch / ruleExplore 都无 coverUrl，ruleBookInfo 却有）。记下来，
+            // 同一会话内回到列表时就能把封面补回去，不用再让用户看占位块。
+            if (result.cover.isNullOrBlank().not()) {
+                com.novelreader.core.util.CoverMemory.remember(
+                    item.sourceId,
+                    item.id.ifBlank { item.detailUrl },
+                    result.cover,
+                )
+            }
+            result
         }
 
     override suspend fun chapterList(item: MediaItem): List<ChapterItem> =
@@ -398,12 +409,47 @@ class ContentRepositoryImpl(
                                     }
                                 }.getOrNull().orEmpty()
                             } else emptyList()
-                            if (finalCats.isEmpty()) null else info to finalCats
+                            // v1.7.4.0：一个分类都没枚举出来的源，挂一组「按题材搜索」
+                            // 的虚拟栏目，而不是整源丢弃。
+                            //
+                            // 实测 138 个小说源里 **36 个（26%）`ruleExplore` 为空**：
+                            // 枚举出 0 个分类 = 推荐计划里根本没有它 = 首页一排都不会打给
+                            // 它，用户只有到搜索页才够得着 —— 导入的源越多，首页反而越窄。
+                            // 而这些源**全都配了 ruleSearch**（138/138），且 `search::<词>`
+                            // 伪入口在 [exploreFiltered] 里会自动转成源自己的搜索请求，
+                            // 于是给它们挂上跨源通用的题材词当栏目即可复用整条聚合链路。
+                            val effective = if (finalCats.isNotEmpty()) finalCats
+                            else if (type == SourceType.NOVEL || type == SourceType.COMIC) {
+                                virtualCategories().also {
+                                    android.util.Log.i(
+                                        "SourceEnum",
+                                        "源「${info.name}」无发现分类，改用 ${it.size} 个题材词搜索入口参与聚合",
+                                    )
+                                }
+                            } else emptyList()
+                            if (effective.isEmpty()) null else info to effective
                         }
                     }
                 } }.awaitAll().filterNotNull()
             }
             SourceEnumeration(items = items, enumerated = infos.size)
+        }
+
+    /**
+     * 无发现分类的源的兜底栏目（v1.7.4.0）。
+     *
+     * 选词标准：**跨源通用 + 站点普遍有内容**。太冷门的题材词大多数站搜不出东西，
+     * 挂上去只是徒增一排空排；也不宜过多 —— 每个词都是一个潜在请求。
+     *
+     * 生成的是 `search::<词>` 伪入口（[com.novelreader.core.util.TagEntryUrl]），
+     * 在 [exploreFiltered] 里会被还原成源自己的搜索请求。
+     */
+    private fun virtualCategories(): List<com.novelreader.domain.model.ExploreCategory> =
+        FALLBACK_SEARCH_TAGS.map {
+            com.novelreader.domain.model.ExploreCategory(
+                title = it,
+                url = com.novelreader.core.util.TagEntryUrl.search(it),
+            )
         }
 
     override suspend fun explore(sourceId: String, url: String, page: Int): List<MediaItem> =
@@ -427,6 +473,7 @@ class ContentRepositoryImpl(
                 runCatching { adapter.exploreFilter(url, page, filters) }.getOrDefault(emptyList())
             }
             raw.map { it.copy(sourceName = it.sourceName.ifBlank { adapter.info.name }) }
+                .let { com.novelreader.core.util.CoverMemory.fill(it) }
         }
 
     override suspend fun searchableSourceIds(
@@ -486,6 +533,16 @@ class ContentRepositoryImpl(
     private companion object {
         /** 基本汉字区（U+4E00..U+9FFF）码点范围：用于「源名是中文吗」这一档排序 */
         val CJK_RANGE = '\u4E00'.code..'\u9FFF'.code
+
+        /**
+         * 无发现分类的源改走的「按题材搜索」兜底词（v1.7.4.0）。
+         *
+         * 只收**跨源通用**的题材：138 个小说源里 36 个没有 `ruleExplore`，它们的
+         * 内容只能靠搜索够到；给它们挂上这些词，首页聚合才认得它们。
+         */
+        val FALLBACK_SEARCH_TAGS = listOf(
+            "玄幻", "都市", "武侠", "仙侠", "科幻", "游戏", "历史", "言情",
+        )
 
         /**
          * 枚举时**单个源**的取分类超时。

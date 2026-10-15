@@ -8,6 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -27,6 +28,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -71,6 +74,10 @@ fun ComicReaderEdgeGestures(
 
     var indicator by remember { mutableStateOf<ComicVerticalIndicator?>(null) }
 
+    // 竖滑起始值：拖动开始时快照一次（拖动过程中用它 + 累计位移算增量）
+    var startBrightness by remember { mutableFloatStateOf(1f) }
+    var startVolume by remember { mutableIntStateOf(0) }
+
     // 进入阅读器时记录原始亮度，退出时恢复（避免改完亮度离开漫画后全局变暗 / 变亮）
     DisposableEffect(activity) {
         val original = activity?.window?.attributes?.screenBrightness
@@ -105,62 +112,37 @@ fun ComicReaderEdgeGestures(
     }
 
     Box(modifier = modifier.fillMaxSize()) {
-        // ===== 手势层：左右边缘竖滑调亮度 / 音量 =====
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(Unit) {
-                    var startX = 0f
-                    var startBrightness = 1f
-                    var startVolume = 0
-                    var engaged = false // 是否已锁定为「边缘竖滑」
+        // ===== 手势层：只在左右边缘各 1/6 宽的**窄条**内响应竖滑 =====
+        // v1.7.1.0：此前是一个**全屏**覆盖层。detectDragGestures 在跨过 touch slop 时会自行
+        // consume()，即使代码对「非边缘起手」提前 return，事件也已被它吃掉 —— 于是中间的
+        // 滚动 / 翻页 / 缩放手势全部失效（部分源「能进页面但不能滑动不能阅读」的直接成因）。
+        // 改成两条窄条后，中间区域再无任何手势层，事件完整透传给内容。
+        val edgeWidthFraction = 1f / EDGE_RATIO
 
-                    detectDragGestures(
-                        onDragStart = { offset ->
-                            startX = offset.x
-                            engaged = false
-                            startBrightness = currentBrightness()
-                            startVolume =
-                                audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-                        },
-                        onDrag = { change, dragAmount ->
-                            // 起手点不在边缘 → 不响应，也不消费（让翻页 / 滚动正常处理）
-                            val edgeLeft = startX < size.width / EDGE_RATIO
-                            val edgeRight = startX > size.width * (EDGE_RATIO - 1) / EDGE_RATIO
-                            if (!edgeLeft && !edgeRight) return@detectDragGestures
-
-                            // 判定为竖滑：纵向位移显著大于横向（避免左右翻页模式被误判）
-                            if (!engaged) {
-                                val slop = viewConfiguration.touchSlop.toFloat()
-                                if (abs(dragAmount.y) > abs(dragAmount.x) &&
-                                    abs(dragAmount.y) > slop
-                                ) {
-                                    engaged = true
-                                } else {
-                                    return@detectDragGestures
-                                }
-                            }
-
-                            change.consume()
-                            val fraction = -dragAmount.y / size.height.coerceAtLeast(1).toFloat()
-                            if (edgeLeft) {
-                                val v = (startBrightness + fraction).coerceIn(0.02f, 1f)
-                                applyBrightness(v)
-                                indicator = ComicVerticalIndicator(true, v)
-                            } else {
-                                val max = audioManager
-                                    .getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                                    .coerceAtLeast(1)
-                                val v = (startVolume + fraction * max).roundToInt()
-                                    .coerceIn(0, max)
-                                audioManager.setStreamVolume(
-                                    AudioManager.STREAM_MUSIC, v, 0
-                                )
-                                indicator = ComicVerticalIndicator(false, v / max.toFloat())
-                            }
-                        },
-                    )
-                },
+        EdgeVerticalDragArea(
+            alignment = Alignment.CenterStart,
+            widthFraction = edgeWidthFraction,
+            onDragStart = { startBrightness = currentBrightness() },
+            onDragFraction = { fraction ->
+                val v = (startBrightness + fraction).coerceIn(0.02f, 1f)
+                applyBrightness(v)
+                indicator = ComicVerticalIndicator(true, v)
+            },
+        )
+        EdgeVerticalDragArea(
+            alignment = Alignment.CenterEnd,
+            widthFraction = edgeWidthFraction,
+            onDragStart = {
+                startVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            },
+            onDragFraction = { fraction ->
+                val max = audioManager
+                    .getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                    .coerceAtLeast(1)
+                val v = (startVolume + fraction * max).roundToInt().coerceIn(0, max)
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0)
+                indicator = ComicVerticalIndicator(false, v / max.toFloat())
+            },
         )
 
         // ===== 亮度 / 音量指示条 =====
@@ -216,6 +198,58 @@ fun ComicReaderEdgeGestures(
     }
 }
 
+/**
+ * 左右边缘的竖滑手势窄条（v1.7.1.0）。
+ *
+ * 只占屏幕左右各 1/[EDGE_RATIO] 宽，中间区域完全不放手势层 —— 这样内容的
+ * 滚动 / 翻页 / 缩放手势不会被「跨过 slop 即 consume」的边缘层吃掉。
+ *
+ * @param onDragStart 拖动开始（用于快照亮度 / 音量起始值）
+ * @param onDragFraction 自拖动开始起的累计竖直位移比例（向下为正）
+ */
+@Composable
+private fun BoxScope.EdgeVerticalDragArea(
+    alignment: Alignment,
+    widthFraction: Float,
+    onDragStart: () -> Unit,
+    onDragFraction: (Float) -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .align(alignment)
+            .fillMaxHeight()
+            .fillMaxWidth(widthFraction)
+            .pointerInput(Unit) {
+                var engaged = false // 是否已锁定为「竖滑」
+                var accum = 0f
+
+                detectDragGestures(
+                    onDragStart = {
+                        engaged = false
+                        accum = 0f
+                        onDragStart()
+                    },
+                    onDrag = { change, dragAmount ->
+                        // 判定为竖滑才接管：纵向位移显著大于横向（避免左右翻页被误判）
+                        if (!engaged) {
+                            val slop = viewConfiguration.touchSlop.toFloat()
+                            if (abs(dragAmount.y) > abs(dragAmount.x) &&
+                                abs(dragAmount.y) > slop
+                            ) {
+                                engaged = true
+                            } else {
+                                return@detectDragGestures
+                            }
+                        }
+                        change.consume()
+                        accum += -dragAmount.y / size.height.coerceAtLeast(1).toFloat()
+                        onDragFraction(accum)
+                    },
+                )
+            },
+    )
+}
+
 /** 从 Context 逐层解包出 Activity（兼容 ContextWrapper） */
 private fun Context.findActivity(): Activity? {
     var ctx = this
@@ -226,5 +260,5 @@ private fun Context.findActivity(): Activity? {
     return null
 }
 
-/** 边缘判定比例：起手点 x < 宽度/EDGE_RATIO 为左边缘，> 宽度*(EDGE_RATIO-1)/EDGE_RATIO 为右边缘 */
+/** 边缘窄条宽度比例：左右各占屏幕宽度的 1/EDGE_RATIO（中间区域不再拦截手势） */
 private const val EDGE_RATIO = 6f

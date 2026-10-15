@@ -30,6 +30,9 @@ object HttpClient {
 
     private const val MAX_RETRY = 3
 
+    /** 共享 Cookie 容器：两个客户端（带/不带重试）必须共用，否则会话 Cookie 会分裂 */
+    private val cookieJar = MemoryCookieJar()
+
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -37,8 +40,25 @@ object HttpClient {
             // 跨源搜索 / 换源 / 首页聚合拖到分钟级（v1.4.8.0 收紧）。
             .readTimeout(20, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
-            .cookieJar(MemoryCookieJar())
+            .cookieJar(cookieJar)
             .addInterceptor(RetryInterceptor(MAX_RETRY))
+            .build()
+    }
+
+    /**
+     * 不带自动重试的客户端（v1.7.1.0）。
+     *
+     * `execute()` 在 `timeoutMs == null` 时曾无条件走带 [RetryInterceptor] 的 [client]，
+     * 于是 `retry = false` 被静默忽略 —— 跨源搜索逐源遍历，一个不可达的站点要跑
+     * 3×(15~20s)+退避 ≈ 60~90s 才判定失败，把整轮搜索拖到分钟级（漫画"0/N 卡住"的直接成因之一）。
+     * 现拆成两个客户端，让 `retry = false` 真正生效。
+     */
+    private val clientNoRetry: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .cookieJar(cookieJar)
             .build()
     }
 
@@ -131,10 +151,11 @@ object HttpClient {
         timeoutMs: Long? = null,
         retry: Boolean = false,
     ): String {
-        val call = if (timeoutMs == null) {
-            client.newCall(request)
-        } else {
-            clientWithTimeout(timeoutMs, retry).newCall(request)
+        val call = when {
+            timeoutMs != null -> clientWithTimeout(timeoutMs, retry).newCall(request)
+            // v1.7.1.0：timeoutMs == null 时也尊重 retry=false，避免死源被 3 次重试放大
+            retry -> client.newCall(request)
+            else -> clientNoRetry.newCall(request)
         }
         call.execute().use { response: Response ->
             if (!response.isSuccessful) {
@@ -283,26 +304,50 @@ object HttpClient {
     /**
      * 字节解码。自动检测字符集。
      * 优先级：指定 charset > Content-Type > HTML meta > 默认 UTF-8 > 回退 GBK
+     *
+     * **两段式**（v1.7.2.0）：先在**字节上**嗅探 `<meta charset>`，命中非 UTF-8 就直接
+     * 按它解码。此前是「先无条件构造整串 UTF-8 → 发现乱码 → 再构造 meta 字符集的串 →
+     * 还不行再构造 GBK 串」，GBK 站点一个 1MB 页面要同时存在三份字符串（UTF-16 下
+     * 每份 ~2MB）。首页聚合并发几十个请求时，这个放大倍数是内存爆掉的直接推手。
+     *
+     * 字节级嗅探只看头部若干字节并用 ISO-8859-1（单字节 ↔ 单字符，恒定开销）解读，
+     * 不产生额外的大对象。
      */
     private fun decode(bytes: ByteArray, charset: String?): String {
         if (charset != null) {
             return runCatching { String(bytes, java.nio.charset.Charset.forName(charset)) }
                 .getOrDefault(String(bytes, Charsets.UTF_8))
         }
-        // 先用 UTF-8 尝试，检测是否有乱码（含替换字符）
+        // 第一段：字节级嗅探（只看头部，避免构造整串）
+        val sniffed = sniffCharsetFromBytes(bytes)
+        if (sniffed != null && sniffed.lowercase() != "utf-8") {
+            runCatching { String(bytes, java.nio.charset.Charset.forName(sniffed)) }
+                .getOrNull()
+                ?.let { return it }
+        }
+        // 第二段：按 UTF-8 解一次；没有替换字符就说明本来就是 UTF-8
         val utf8 = String(bytes, Charsets.UTF_8)
         if (!utf8.contains('\uFFFD')) {
             return utf8
         }
-        // 尝试从 HTML meta 中检测字符集
-        val metaCharset = detectCharsetFromHtml(utf8)
-        if (metaCharset != null && metaCharset.lowercase() != "utf-8") {
-            return runCatching { String(bytes, java.nio.charset.Charset.forName(metaCharset)) }
-                .getOrDefault(utf8)
-        }
         // 回退 GBK（中文站点常见）
         return runCatching { String(bytes, java.nio.charset.Charset.forName("GBK")) }
             .getOrDefault(utf8)
+    }
+
+    /**
+     * 在**字节**上嗅探 HTML `meta` 声明的字符集。
+     *
+     * 只扫头部 [CHARSET_SNIFF_BYTES] 字节：`<meta charset>` 按规范必须出现在
+     * `<head>` 开头 1024 字节内，留 4KB 已经很宽裕。
+     * 用 ISO-8859-1 解读（单字节 → 单字符，长度的 1 倍，无替换歧义），
+     * 这样 ASCII 的标签本身总能正确匹配，不受正文编码影响。
+     */
+    private fun sniffCharsetFromBytes(bytes: ByteArray): String? {
+        val n = minOf(bytes.size, CHARSET_SNIFF_BYTES)
+        if (n <= 0) return null
+        val head = String(bytes, 0, n, Charsets.ISO_8859_1)
+        return detectCharsetFromHtml(head)
     }
 
     /** 从 Content-Type 解析字符集 */
@@ -311,11 +356,20 @@ object HttpClient {
         return regex.find(contentType)?.groupValues?.get(1)
     }
 
-    /** 从 HTML meta 标签检测字符集 */
+    /**
+     * 从 HTML meta 标签检测字符集。
+     *
+     * `charset=` 既可能是 `<meta charset="gbk">`，也可能是
+     * `<meta http-equiv="Content-Type" content="text/html; charset=gb2312">`，
+     * 用一条正则同时覆盖两种写法的 `charset=` 出现位置即可。
+     */
     private fun detectCharsetFromHtml(html: String): String? {
         val regex = Regex("<meta[^>]+charset=[\"']?([\\w-]+)", RegexOption.IGNORE_CASE)
         return regex.find(html)?.groupValues?.get(1)
     }
+
+    /** 字节级字符集嗅探的扫描窗口：`<meta charset>` 必在 head 开头，4KB 足够 */
+    private const val CHARSET_SNIFF_BYTES = 4096
 
     /**
      * 内存 Cookie 持久化（会话内跨请求共享）。

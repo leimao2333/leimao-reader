@@ -174,6 +174,34 @@ class TagSearchViewModel(
      * 3. **只打已启用的源**（见 [enabledSourceIds]）：标签池是含禁用源收集的，
      *    以前搜索也照着池子全打一遍，用户停用的源照样被请求、每个都要干等到超时。
      */
+    // ===== 搜索进度（v1.7.1.0）：把「已完成请求数 / 当前已知请求总数」实时上屏 =====
+    private val progressDone = java.util.concurrent.atomic.AtomicInteger(0)
+    private val progressTotal = java.util.concurrent.atomic.AtomicInteger(0)
+
+    private fun resetProgress() {
+        progressDone.set(0)
+        progressTotal.set(0)
+    }
+
+    /** 登记本批将发出 [n] 个请求（累加进总量） */
+    private fun addProgressTotal(n: Int) {
+        if (n <= 0) return
+        progressTotal.addAndGet(n)
+        publishProgress()
+    }
+
+    /** 完成 1 个请求 */
+    private fun stepProgress() {
+        progressDone.incrementAndGet()
+        publishProgress()
+    }
+
+    private fun publishProgress() {
+        val total = progressTotal.get()
+        if (total <= 0) return
+        _progress.value = progressDone.get().coerceAtMost(total) to total
+    }
+
     fun search() {
         val firstParse = TagQuery.parseWithPool(_query.value, tagPlan.tags)
         if (firstParse.isEmpty()) return
@@ -181,6 +209,7 @@ class TagSearchViewModel(
         searchJob = viewModelScope.launch {
             _searching.value = true
             _notice.value = null
+            resetProgress()
             _progress.value = null
 
             // 标签计划还没收集好就等一下（首次冷启动直进标签搜索的场景）
@@ -212,7 +241,6 @@ class TagSearchViewModel(
                 return@launch
             }
 
-            _progress.value = 0 to known.size
             val found = if (knownEntries.size == 1) {
                 searchOneTag(knownEntries[0])
             } else {
@@ -259,11 +287,16 @@ class TagSearchViewModel(
     private suspend fun searchOneTag(entries: List<Pair<String, String>>): List<MediaItem> =
         coroutineScope {
             val semaphore = Semaphore(8)
+            addProgressTotal(entries.size)
             entries.map { (srcId, url) ->
                 async {
                     semaphore.withPermit {
-                        runCatching { contentRepository.explore(srcId, url, 1) }
-                            .getOrDefault(emptyList())
+                        try {
+                            runCatching { contentRepository.explore(srcId, url, 1) }
+                                .getOrDefault(emptyList())
+                        } finally {
+                            stepProgress()
+                        }
                     }
                 }
             }.awaitAll().flatten().distinctBy { "${it.sourceId}:${it.id}" }
@@ -325,6 +358,8 @@ class TagSearchViewModel(
         page: Int,
     ): List<Map<String, List<MediaItem>>> = coroutineScope {
         val semaphore = Semaphore(8)
+        // 本页将实际发出的请求数 = 各标签 × 该标签下有入口的源
+        addProgressTotal(bySrcPerTag.sumOf { bySrc -> sources.count { bySrc.containsKey(it) } })
         bySrcPerTag.map { bySrc ->
             async {
                 val perSource = LinkedHashMap<String, List<MediaItem>>()
@@ -332,8 +367,12 @@ class TagSearchViewModel(
                     val url = bySrc[src] ?: continue
                     perSource[src] = async {
                         semaphore.withPermit {
-                            runCatching { contentRepository.explore(src, url, page) }
-                                .getOrDefault(emptyList())
+                            try {
+                                runCatching { contentRepository.explore(src, url, page) }
+                                    .getOrDefault(emptyList())
+                            } finally {
+                                stepProgress()
+                            }
                         }
                     }.await()
                 }

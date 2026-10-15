@@ -53,6 +53,46 @@ class SourceAdultsTest {
         assertFalse(src("b", "普通影视").isAdult)
     }
 
+    // ===== 漫画 / 图源的成人站识别（v1.7.2.0）=====
+
+    /**
+     * 漫画 / Venera 源没有 `🔞` 前缀约定，靠**站点名**与 **Venera 源的 author
+     * 字段**（源自己的 key）识别；否则 nhentai 这类站的露骨封面会直接占满
+     * 首页推荐的第一屏。
+     */
+    @Test
+    fun `按站点名识别漫画成人源`() {
+        assertTrue(SourceAdults.isAdult("nhentai"))
+        assertTrue(SourceAdults.isAdult("ehentai"))
+        assertTrue(SourceAdults.isAdult("禁漫天堂"))
+        assertTrue(SourceAdults.isAdult("18漫画"))
+        assertTrue(SourceAdults.isAdult("紳士漫畫"))
+        assertTrue(SourceAdults.isAdult("galleriesindex"))
+        assertTrue(SourceAdults.isAdult("Picacg"))
+        assertTrue(SourceAdults.isAdult("H-Comic"))
+    }
+
+    @Test
+    fun `按 Venera 源 key 识别漫画成人源`() {
+        // 显示名可能被改得看不出内容（如「x」），author 才是源自己的 key
+        assertTrue(SourceAdults.isAdult("x", author = "hitomi"))
+        assertTrue(SourceAdults.isAdult("某图站", author = "wnacg"))
+        assertTrue(SourceAdults.isAdult("某漫画站", author = "nhentai"))
+    }
+
+    /**
+     * **综合站不该被误伤** —— 它们有成人分区但主体是正常内容，
+     * 一起沉底会让首页推荐直接空掉。
+     */
+    @Test
+    fun `综合漫画站不判定为成人`() {
+        assertFalse(SourceAdults.isAdult("MangaDex", author = "manga_dex"))
+        assertFalse(SourceAdults.isAdult("拷贝漫画", author = "copy_manga"))
+        assertFalse(SourceAdults.isAdult("包子漫画", author = "baozi"))
+        assertFalse(SourceAdults.isAdult("漫画人", author = "manhuaren"))
+        assertFalse(SourceAdults.isAdult("少年ジャンプ＋", author = "shonen_jump_plus"))
+    }
+
     // ===== 排序规则（成人沉底） =====
 
     @Test

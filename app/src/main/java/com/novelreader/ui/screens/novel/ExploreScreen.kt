@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -289,7 +290,11 @@ private fun ExploreCategoryDropdown(
  * 发现页（v1.4.2.0 聚合式）。
  *
  * 顶部：返回 + 标题 + 「聚合 N 个源」+ 刷新；
- * 下方：分类 chips（首个为「推荐」），内容区按选中分类展示聚合结果。
+ * 下方：栏目下拉（首个为「推荐」），内容区按选中栏目展示聚合结果。
+ *
+ * v1.7.1.0：正文抽成 [ExploreHeader] + [ExploreBody]，行为不变。
+ * 首页的「发现」已改为并进推荐视图（`FeedContent` 的栏目下拉），
+ * 本页作为独立路由保留。
  */
 @Composable
 fun ExploreScreen(
@@ -298,84 +303,119 @@ fun ExploreScreen(
     onItemClick: (MediaItem) -> Unit,
     onBack: () -> Unit,
 ) {
+    // enableEdgeToEdge 下自绘顶栏必须自行避让系统栏，否则与下拉状态栏重叠
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding(),
+    ) {
+        ExploreHeader(
+            title = title,
+            onBack = onBack,
+            onRefresh = viewModel::refresh,
+            viewModel = viewModel,
+        )
+        ExploreBody(viewModel = viewModel, onItemClick = onItemClick)
+    }
+}
+
+/**
+ * 发现页顶栏。[onBack] 为 null 时不显示返回箭头。
+ */
+@Composable
+private fun ExploreHeader(
+    title: String?,
+    onBack: (() -> Unit)?,
+    onRefresh: () -> Unit,
+    viewModel: ExploreViewModel,
+) {
+    val alive by viewModel.aliveCount.collectAsState()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (onBack != null) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Filled.ArrowBack, contentDescription = "返回")
+            }
+        } else {
+            Spacer(Modifier.width(12.dp))
+        }
+        Text(
+            text = title ?: "发现",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.weight(1f),
+        )
+        if (alive > 0) {
+            Text(
+                text = "聚合 $alive 个源",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        IconButton(onClick = onRefresh) {
+            Icon(Icons.Filled.Refresh, contentDescription = "刷新")
+        }
+    }
+}
+
+/** 发现页正文：栏目下拉 + 聚合结果列表 */
+@Composable
+private fun ExploreBody(
+    viewModel: ExploreViewModel,
+    onItemClick: (MediaItem) -> Unit,
+) {
     val categories by viewModel.categories.collectAsState()
     val selectedCategory by viewModel.selectedCategory.collectAsState()
     val recommended by viewModel.recommended.collectAsState()
     val results by viewModel.results.collectAsState()
-    val aliveCount by viewModel.aliveCount.collectAsState()
     val loading by viewModel.loading.collectAsState()
     val error by viewModel.error.collectAsState()
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Filled.ArrowBack, contentDescription = "返回")
+    // 栏目下拉（v1.5.10.0：从横滑 chips 改为下拉框，栏目多时不用来回划）
+    if (categories.isNotEmpty()) {
+        ExploreCategoryDropdown(
+            categories = categories,
+            selectedTitle = selectedCategory?.title,
+            onSelect = viewModel::selectCategory,
+        )
+        Spacer(Modifier.height(8.dp))
+    }
+
+    when {
+        loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+        error != null && results.isEmpty() && recommended.isEmpty() ->
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(text = error ?: "", color = MaterialTheme.colorScheme.error)
             }
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f),
-            )
-            if (aliveCount > 0) {
+        categories.isEmpty() && recommended.isEmpty() ->
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    text = "聚合 $aliveCount 个源",
-                    style = MaterialTheme.typography.bodySmall,
+                    text = "当前类型的书源没有配置发现地址\n（源 JSON 需包含 exploreUrl / ruleExplore）",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            IconButton(onClick = viewModel::refresh) {
-                Icon(Icons.Filled.Refresh, contentDescription = "刷新")
-            }
-        }
-
-        // 栏目下拉（v1.5.10.0：从横滑 chips 改为下拉框，栏目多时不用来回划）
-        if (categories.isNotEmpty()) {
-            ExploreCategoryDropdown(
-                categories = categories,
-                selectedTitle = selectedCategory?.title,
-                onSelect = viewModel::selectCategory,
-            )
-            Spacer(Modifier.height(8.dp))
-        }
-
-        when {
-            loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
-            error != null && results.isEmpty() && recommended.isEmpty() ->
+        else -> {
+            val display = if (selectedCategory == null) recommended else results
+            if (display.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(text = error ?: "", color = MaterialTheme.colorScheme.error)
+                    Text("该分类暂无内容", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-            categories.isEmpty() && recommended.isEmpty() ->
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        text = "当前类型的书源没有配置发现地址\n（源 JSON 需包含 exploreUrl / ruleExplore）",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            else -> {
-                val display = if (selectedCategory == null) recommended else results
-                if (display.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("该分类暂无内容", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(vertical = 8.dp),
-                    ) {
-                        items(display, key = { "${it.sourceId}:${it.id}" }) { item ->
-                            MediaItemCard(
-                                item = item,
-                                onClick = { onItemClick(item) },
-                                onRead = { onItemClick(item) },
-                            )
-                        }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(vertical = 8.dp),
+                ) {
+                    items(display, key = { "${it.sourceId}:${it.id}" }) { item ->
+                        MediaItemCard(
+                            item = item,
+                            onClick = { onItemClick(item) },
+                            onRead = { onItemClick(item) },
+                        )
                     }
                 }
             }

@@ -37,6 +37,16 @@ class ComicDetailViewModel(
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
+    /**
+     * 目录为空时的**具体原因**（v1.7.1.0）。
+     *
+     * 以前无论「请求超时 / 被墙 / 解析失败」还是「该源确实没有目录」，UI 都只显示
+     * 「可能源已失效」。现在把数据层记下的真实异常透出来，用户至少知道是网络问题
+     * 还是源本身的问题。
+     */
+    private val _chapterError = MutableStateFlow<String?>(null)
+    val chapterError: StateFlow<String?> = _chapterError.asStateFlow()
+
     private val _collected = MutableStateFlow(false)
     val collected: StateFlow<Boolean> = _collected.asStateFlow()
 
@@ -77,8 +87,11 @@ class ComicDetailViewModel(
             .getOrDefault(item)
 
     private suspend fun loadChapters(item: MediaItem) {
-        runCatching { contentRepository.chapterList(item) }
-            .onSuccess { _chapters.value = it }
+        val list = runCatching { contentRepository.chapterList(item) }.getOrDefault(emptyList())
+        _chapters.value = list
+        _chapterError.value =
+            if (list.isEmpty()) com.novelreader.core.source.SourceErrorLog.describe(item.sourceId)
+            else null
     }
 
     private suspend fun loadCollected(item: MediaItem) {

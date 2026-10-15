@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.Icon
@@ -41,7 +42,12 @@ fun NovelSearchScreen(
     val history by viewModel.history.collectAsState()
     val shelfKeys by viewModel.shelfKeys.collectAsState()
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    // enableEdgeToEdge 下自绘顶栏必须自行避让系统栏
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding(),
+    ) {
         // 顶部：返回按钮 + 搜索框同行（紧凑，贴合开源阅读）
         Row(
             modifier = Modifier

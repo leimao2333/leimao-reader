@@ -1,7 +1,8 @@
 package com.novelreader.ui.screens.comic
 
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -13,19 +14,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
+import kotlin.math.abs
 
 /**
  * 支持「双指捏合缩放 + 双击放大/复位 + 拖动查看细节」的漫画图片。
  *
  * 设计要点：
- * - 用 [detectTransformGestures] 处理双指缩放 / 平移，用 [detectTapGestures] 处理双击；
+ * - 缩放 / 平移手势自己实现（[detectComicGestures]），双击用 [detectTapGestures]；
  * - 缩放与平移都通过 [graphicsLayer] 的 scale / translation 实现，不改动布局尺寸，
  *   因此不会触发父容器（LazyColumn / HorizontalPager）的滚动与翻页；
- * - 缩放态下「吞掉」单指拖动事件（transform 手势会消费），避免放大后误翻页；
+ * - **未放大时的单指拖动一律不接管**（详见 [detectComicGestures] 的说明）；
  * - 双击在「1x ↔ 放大」之间切换；缩小到 1x 以下自动回弹到 1x 并复位位移；
  * - 放大后平移位移做边界约束，不拖出大片空白；
  * - 缩放状态逐页独立（keyed by [url]），翻页 / 切图后新页从 1x 开始。
@@ -43,6 +47,8 @@ fun ZoomableComicImage(
     script: String? = null,
     enabled: Boolean = true,
     onZoomStateChanged: (Boolean) -> Unit = {},
+    /** 图片加载失败回调：向上冒泡，由阅读器向源要备用镜像地址（v1.7.1.0） */
+    onLoadFailed: (String) -> Unit = {},
 ) {
     // 逐页独立状态：翻页 / 切图后重置为 1x
     var scale by remember(url) { mutableFloatStateOf(1f) }
@@ -105,17 +111,12 @@ fun ZoomableComicImage(
                     },
                 )
             }
-            // 双指捏合缩放 + 平移。
-            // 用 panZoomLock 区分两种状态（detectTransformGestures 的 panZoomLock=true 时，
-            // 单指拖动不会触发 onGesture，只有双指捏合才会）：
-            // - 1x（未放大）：panZoomLock=true → 单指上下滑透传给 LazyColumn / Pager 正常翻页，
-            //   双指捏合才触发缩放（放大）；
-            // - 放大态：panZoomLock=false → 单指拖动触发 onGesture 平移图片、双指继续缩放。
+            // 捏合缩放 + 放大后平移（自己实现，见 detectComicGestures 的说明）
             .pointerInput(url, enabled) {
                 if (!enabled) return@pointerInput
-                detectTransformGestures(
-                    panZoomLock = !currentIsZoomed,
-                ) { _, pan, zoom, _ ->
+                detectComicGestures(
+                    isZoomed = { currentIsZoomed },
+                ) { pan, zoom ->
                     val newScale = (scale * zoom).coerceIn(1f, MAX_SCALE)
                     scale = newScale
                     offset = if (newScale <= 1f) Offset.Zero else offset + pan
@@ -126,7 +127,92 @@ fun ZoomableComicImage(
         placeholderModifier = placeholderModifier,
         headers = headers,
         script = script,
+        onLoadFailed = onLoadFailed,
     )
+}
+
+/**
+ * 漫画图片的「捏合缩放 + 放大后平移」手势（v1.7.2.0 自己实现）。
+ *
+ * **为什么不用现成的 `detectTransformGestures`** —— 这是「漫画划不动」的病根：
+ * 它只要位移超过 touch slop 就无条件 `consume()` 事件，**不管当前是一根手指还是
+ * 两根**。单指拖动被图片层吃掉之后，父容器（翻页 Pager / 滚动 LazyColumn）再也
+ * 收不到事件，于是页面完全不跟手；而 `panZoomLock` 也拦不住这件事 ——
+ * 那个参数只决定「要不要忽略旋转分量」，与「几根手指才接管」无关。
+ * 表现就是：手指在漫画上左右滑，图片自己什么都没做（1x 时 offset 被归零），
+ * 页面也翻不动。
+ *
+ * 因此这里按**手指数量 + 当前缩放态**自行判定：
+ * - **未放大 + 单指** → 完全不接管，事件原样留给父容器翻页 / 滚动；
+ * - **双指** → 捏合缩放（任何时候都能从 1x 放大），并接管事件；
+ * - **已放大 + 单指** → 平移查看细节，并接管事件避免误翻页。
+ *
+ * @param isZoomed 读取「当前是否处于放大态」（用 getter 而非布尔值，保证手势协程
+ *   永远读到最新状态，不必因状态变化重启手势循环）
+ * @param onTransform 手势生效时回调：累计平移 [pan] 与本次缩放倍率 [zoom]
+ */
+private suspend fun PointerInputScope.detectComicGestures(
+    isZoomed: () -> Boolean,
+    onTransform: (pan: Offset, zoom: Float) -> Unit,
+) {
+    val touchSlop = viewConfiguration.touchSlop
+    awaitEachGesture {
+        awaitFirstDown(requireUnconsumed = false)
+        var lastCentroid: Offset? = null
+        var lastSpan = 0f
+        var pastTouchSlop = false
+        var motionAcc = 0f
+
+        while (true) {
+            val event = awaitPointerEvent()
+            val pressed = event.changes.filter { it.pressed }
+            if (pressed.isEmpty()) break
+
+            // 未放大 + 单指：**彻底不接管**，把事件完整留给父容器
+            if (pressed.size < 2 && !isZoomed()) {
+                lastCentroid = null
+                lastSpan = 0f
+                pastTouchSlop = false
+                motionAcc = 0f
+                continue
+            }
+
+            var sum = Offset.Zero
+            pressed.forEach { sum += it.position }
+            val centroid = sum / pressed.size.toFloat()
+            // 双指间距：捏合缩放的依据（单指时取 0，表示没有缩放分量）
+            val span = if (pressed.size >= 2) {
+                (pressed[0].position - pressed[1].position).getDistance()
+            } else {
+                0f
+            }
+
+            val prevCentroid = lastCentroid
+            val prevSpan = lastSpan
+            lastCentroid = centroid
+            lastSpan = span
+            if (prevCentroid == null) continue
+
+            val pan = centroid - prevCentroid
+            val zoom = if (pressed.size >= 2 && prevSpan > 1f && span > 1f) {
+                span / prevSpan
+            } else {
+                1f
+            }
+
+            if (!pastTouchSlop) {
+                // 把「平移」与「缩放时手指的位移」都换算成像素，再和 touch slop 比：
+                // 两指间距从 S 变到 S' 时，每根手指相对中心移动 |S - S'| / 2
+                motionAcc += pan.getDistance() + abs(1f - zoom) * span / 2f
+                if (motionAcc > touchSlop) pastTouchSlop = true
+            }
+            if (!pastTouchSlop) continue
+
+            if (zoom != 1f || pan != Offset.Zero) onTransform(pan, zoom)
+            // 接管之后必须吃掉事件，否则父容器会同时翻页 / 滚动（放大后误翻页）
+            event.changes.forEach { if (it.positionChanged()) it.consume() }
+        }
+    }
 }
 
 /** 最大缩放倍数 */

@@ -63,7 +63,6 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
@@ -77,10 +76,12 @@ import com.novelreader.core.text.ChineseConverter
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.ui.theme.ReaderBackgrounds
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /* ===================== 手势 ===================== */
@@ -787,36 +788,36 @@ private fun HorizontalPagerNovel(
     pageTurn: kotlinx.coroutines.flow.SharedFlow<Int>? = null,
 ) {
     BoxWithConstraintsCompat { maxWidthDp, maxHeightDp ->
-        val textMeasurer = rememberTextMeasurer()
         val density = LocalDensity.current.density
         val availWidthPx = (maxWidthDp - sidePadding * 2f).coerceAtLeast(1f) * density
         // 底部预留页码行高度，且分页测量与渲染同用 buildReaderText（段距占位行/首行缩进参与测量），
         // 否则渲染比测量高，末行会被裁掉一半
         val fontPx = fontSize * density * androidx.compose.ui.platform.LocalDensity.current.fontScale
         val textHeightPx = ((maxHeightDp - 96f).coerceAtLeast(1f) * density - fontPx * 1.8f).coerceAtLeast(1f)
-        val style = readerTextStyle(fontSize, lineHeightMultiplier, fontFamily, bold, letterSpacing)
         val paraSpacingPx = paragraphSpacing * density
         val titleSpacerPx = 16f * density
 
-        val pages = remember(
-            content, chapterTitle, hideChapterTitle, availWidthPx, textHeightPx,
-            fontSize, lineHeightMultiplier, paraSpacingPx, fontFamily, bold, letterSpacing, indent,
-        ) {
-            paginateByMeasurement(
-                measurer = textMeasurer,
-                content = content,
-                chapterTitle = chapterTitle,
-                showTitle = !hideChapterTitle,
-                widthPx = availWidthPx,
-                heightPx = textHeightPx,
-                style = style,
-                paragraphSpacingPx = paraSpacingPx,
-                render = { buildReaderText(it, fontSize, paragraphSpacing, indent) },
-                titleSpacerPx = titleSpacerPx,
-            )
-        }
+        // v1.7.1.0：分页计算移出主线程（null = 还在算）
+        val pagesOrNull = rememberPaginatedPages(
+            content = content,
+            chapterTitle = chapterTitle,
+            hideChapterTitle = hideChapterTitle,
+            widthPx = availWidthPx,
+            heightPx = textHeightPx,
+            fontSize = fontSize,
+            lineHeightMultiplier = lineHeightMultiplier,
+            paragraphSpacingPx = paraSpacingPx,
+            titleSpacerPx = titleSpacerPx,
+            fontFamily = fontFamily,
+            bold = bold,
+            letterSpacing = letterSpacing,
+            indent = indent,
+        )
+        val pages = pagesOrNull.orEmpty()
+        val pagesReady = pagesOrNull != null
         val hasNextGate = content.isNotBlank() && hasNextChapter
-        val pageCount = pages.size + if (hasNextGate) 1 else 0
+        // 分页未就绪时页数记 0：Pager 不渲染内容，避免「只有半章」的中间态被翻到
+        val pageCount = if (pagesReady) pages.size + if (hasNextGate) 1 else 0 else 0
 
         val startPage = remember(chapterIndex, initialPage, initialRatio, pageCount) {
             when {
@@ -828,16 +829,35 @@ private fun HorizontalPagerNovel(
         val pagerState = rememberPagerState(initialPage = startPage, pageCount = { pageCount })
         val scope = rememberCoroutineScope()
 
+        // v1.7.1.0：分页是异步算出来的，Pager 创建时 pageCount 还是 0，`initialPage` 无从生效。
+        // 结果就绪后补一次定位（只在**首次**就绪时做：后续切章由 chapterIndex 那个 effect 归零）。
+        var didInitialPosition by remember { mutableStateOf(false) }
+        LaunchedEffect(pagesOrNull) {
+            if (!didInitialPosition && pagesOrNull != null) {
+                didInitialPosition = true
+                if (startPage > 0 && startPage < pageCount) pagerState.scrollToPage(startPage)
+            }
+        }
+
+        // v1.7.1.0 翻页节流：动画进行中不重启动画，而是按 targetPage 继续递进并直接跳页。
+        // 旧实现每次连点都 animateScrollToPage(currentPage ± 1)，动画被反复取消 → "跟不上"。
+        suspend fun turn(delta: Int): Boolean {
+            val last = pagerState.pageCount - 1
+            val base = if (pagerState.isScrollInProgress) pagerState.targetPage else pagerState.currentPage
+            val target = base + delta
+            if (target < 0 || target > last) return false
+            if (pagerState.isScrollInProgress) pagerState.scrollToPage(target)
+            else pagerState.animateScrollToPage(target)
+            return true
+        }
+
         if (pageTurn != null) {
             LaunchedEffect(pageTurn, chapterIndex) {
                 pageTurn.collect { dir ->
                     if (dir > 0) {
-                        val last = pagerState.pageCount - 1
-                        if (pagerState.currentPage < last) pagerState.animateScrollToPage(pagerState.currentPage + 1)
-                        else onNextChapter()
+                        if (!turn(1)) onNextChapter()
                     } else {
-                        if (pagerState.currentPage > 0) pagerState.animateScrollToPage(pagerState.currentPage - 1)
-                        else onReachFirst()
+                        if (!turn(-1)) onReachFirst()
                     }
                 }
             }
@@ -872,6 +892,8 @@ private fun HorizontalPagerNovel(
 
         LaunchedEffect(pagerState, pageCount) {
             snapshotFlow { pagerState.currentPage }.collect { page ->
+                // 分页未就绪（pageCount = 0）时不报页码，免得页码栏闪一下「1/0」
+                if (pageCount <= 0) return@collect
                 onPageTextChanged("${page + 1}/$pageCount")
                 onRatioChanged(
                     if (pageCount <= 1) 0 else (page * 10000 / (pageCount - 1))
@@ -895,30 +917,28 @@ private fun HorizontalPagerNovel(
                 .fillMaxSize()
                 .pageTap(
                     onLeft = {
-                        if (pagerState.currentPage > 0) {
-                            scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
-                        } else onReachFirst()
+                        scope.launch { if (!turn(-1)) onReachFirst() }
                     },
                     onCenter = onTapCenter,
                     onRight = {
-                        val last = pagerState.pageCount - 1
-                        if (pagerState.currentPage < last) {
-                            scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
-                        } else onNextChapter()
+                        scope.launch { if (!turn(1)) onNextChapter() }
                     },
                 ),
         ) { page ->
-            val offset = pagerState.currentPageOffsetFraction
-            val transform = when (pageType) {
-                PreferencesManager.PAGE_TYPE_COVER -> PageTransform.cover(offset)
-                PreferencesManager.PAGE_TYPE_SIMULATE -> PageTransform.simulate(offset)
-                PreferencesManager.PAGE_TYPE_NO_ANIM -> PageTransform.NoAnim
-                else -> PageTransform.slide
-            }
+            // v1.7.1.0：currentPageOffsetFraction 改到 graphicsLayer 的 lambda 内读取。
+            // 之前在组合作用域读它 → 滚动每一帧都让本页重组、连带重建整页文本（快速连翻掉帧的主因）；
+            // 放进 lambda 后只更新图层属性，不再触发重组。
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
+                        val offset = pagerState.currentPageOffsetFraction
+                        val transform = when (pageType) {
+                            PreferencesManager.PAGE_TYPE_COVER -> PageTransform.cover(offset)
+                            PreferencesManager.PAGE_TYPE_SIMULATE -> PageTransform.simulate(offset)
+                            PreferencesManager.PAGE_TYPE_NO_ANIM -> PageTransform.NoAnim
+                            else -> PageTransform.slide
+                        }
                         translationX = transform.translationX
                         scaleX = transform.scaleX
                         scaleY = transform.scaleY
@@ -942,6 +962,17 @@ private fun HorizontalPagerNovel(
                     paragraphSpacing = paragraphSpacing,
                     sidePadding = sidePadding,
                     textColor = textColor,
+                )
+            }
+        }
+
+        // v1.7.1.0：分页在后台线程算，就绪前显示轻量加载态。
+        // 此时 pageCount = 0、Pager 不渲染任何页，所以这层覆盖不会挡到已渲染的内容。
+        if (!pagesReady) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(
+                    modifier = Modifier.width(28.dp),
+                    strokeWidth = 2.dp,
                 )
             }
         }
@@ -979,36 +1010,36 @@ private fun VerticalPagerNovel(
     pageTurn: kotlinx.coroutines.flow.SharedFlow<Int>? = null,
 ) {
     BoxWithConstraintsCompat { maxWidthDp, maxHeightDp ->
-        val textMeasurer = rememberTextMeasurer()
         val density = LocalDensity.current.density
         val availWidthPx = (maxWidthDp - sidePadding * 2f).coerceAtLeast(1f) * density
         // 底部预留页码行高度，且分页测量与渲染同用 buildReaderText（段距占位行/首行缩进参与测量），
         // 否则渲染比测量高，末行会被裁掉一半
         val fontPx = fontSize * density * androidx.compose.ui.platform.LocalDensity.current.fontScale
         val textHeightPx = ((maxHeightDp - 96f).coerceAtLeast(1f) * density - fontPx * 1.8f).coerceAtLeast(1f)
-        val style = readerTextStyle(fontSize, lineHeightMultiplier, fontFamily, bold, letterSpacing)
         val paraSpacingPx = paragraphSpacing * density
         val titleSpacerPx = 16f * density
 
-        val pages = remember(
-            content, chapterTitle, hideChapterTitle, availWidthPx, textHeightPx,
-            fontSize, lineHeightMultiplier, paraSpacingPx, fontFamily, bold, letterSpacing, indent,
-        ) {
-            paginateByMeasurement(
-                measurer = textMeasurer,
-                content = content,
-                chapterTitle = chapterTitle,
-                showTitle = !hideChapterTitle,
-                widthPx = availWidthPx,
-                heightPx = textHeightPx,
-                style = style,
-                paragraphSpacingPx = paraSpacingPx,
-                render = { buildReaderText(it, fontSize, paragraphSpacing, indent) },
-                titleSpacerPx = titleSpacerPx,
-            )
-        }
+        // v1.7.1.0：分页计算移出主线程（null = 还在算）
+        val pagesOrNull = rememberPaginatedPages(
+            content = content,
+            chapterTitle = chapterTitle,
+            hideChapterTitle = hideChapterTitle,
+            widthPx = availWidthPx,
+            heightPx = textHeightPx,
+            fontSize = fontSize,
+            lineHeightMultiplier = lineHeightMultiplier,
+            paragraphSpacingPx = paraSpacingPx,
+            titleSpacerPx = titleSpacerPx,
+            fontFamily = fontFamily,
+            bold = bold,
+            letterSpacing = letterSpacing,
+            indent = indent,
+        )
+        val pages = pagesOrNull.orEmpty()
+        val pagesReady = pagesOrNull != null
         val hasNextGate = content.isNotBlank() && hasNextChapter
-        val pageCount = pages.size + if (hasNextGate) 1 else 0
+        // 分页未就绪时页数记 0：Pager 不渲染内容，避免「只有半章」的中间态被翻到
+        val pageCount = if (pagesReady) pages.size + if (hasNextGate) 1 else 0 else 0
 
         val startPage = remember(chapterIndex, initialPage, initialRatio, pageCount) {
             when {
@@ -1020,16 +1051,35 @@ private fun VerticalPagerNovel(
         val pagerState = rememberPagerState(initialPage = startPage, pageCount = { pageCount })
         val scope = rememberCoroutineScope()
 
+        // v1.7.1.0：分页是异步算出来的，Pager 创建时 pageCount 还是 0，`initialPage` 无从生效。
+        // 结果就绪后补一次定位（只在**首次**就绪时做：后续切章由 chapterIndex 那个 effect 归零）。
+        var didInitialPosition by remember { mutableStateOf(false) }
+        LaunchedEffect(pagesOrNull) {
+            if (!didInitialPosition && pagesOrNull != null) {
+                didInitialPosition = true
+                if (startPage > 0 && startPage < pageCount) pagerState.scrollToPage(startPage)
+            }
+        }
+
+        // v1.7.1.0 翻页节流：动画进行中不重启动画，而是按 targetPage 继续递进并直接跳页。
+        // 旧实现每次连点都 animateScrollToPage(currentPage ± 1)，动画被反复取消 → "跟不上"。
+        suspend fun turn(delta: Int): Boolean {
+            val last = pagerState.pageCount - 1
+            val base = if (pagerState.isScrollInProgress) pagerState.targetPage else pagerState.currentPage
+            val target = base + delta
+            if (target < 0 || target > last) return false
+            if (pagerState.isScrollInProgress) pagerState.scrollToPage(target)
+            else pagerState.animateScrollToPage(target)
+            return true
+        }
+
         if (pageTurn != null) {
             LaunchedEffect(pageTurn, chapterIndex) {
                 pageTurn.collect { dir ->
                     if (dir > 0) {
-                        val last = pagerState.pageCount - 1
-                        if (pagerState.currentPage < last) pagerState.animateScrollToPage(pagerState.currentPage + 1)
-                        else onNextChapter()
+                        if (!turn(1)) onNextChapter()
                     } else {
-                        if (pagerState.currentPage > 0) pagerState.animateScrollToPage(pagerState.currentPage - 1)
-                        else onReachFirst()
+                        if (!turn(-1)) onReachFirst()
                     }
                 }
             }
@@ -1064,6 +1114,8 @@ private fun VerticalPagerNovel(
 
         LaunchedEffect(pagerState, pageCount) {
             snapshotFlow { pagerState.currentPage }.collect { page ->
+                // 分页未就绪（pageCount = 0）时不报页码，免得页码栏闪一下「1/0」
+                if (pageCount <= 0) return@collect
                 onPageTextChanged("${page + 1}/$pageCount")
                 onRatioChanged(if (pageCount <= 1) 0 else (page * 10000 / (pageCount - 1)))
             }
@@ -1104,6 +1156,16 @@ private fun VerticalPagerNovel(
                     paragraphSpacing = paragraphSpacing,
                     sidePadding = sidePadding,
                     textColor = textColor,
+                )
+            }
+        }
+
+        // v1.7.1.0：分页计算中的轻量加载态（同横向翻页）
+        if (!pagesReady) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(
+                    modifier = Modifier.width(28.dp),
+                    strokeWidth = 2.dp,
                 )
             }
         }
@@ -1158,8 +1220,12 @@ private fun PageContent(
             )
             Spacer(Modifier.height(16.dp))
         }
+        // v1.7.1.0：缓存 AnnotatedString —— 以前任何一次父级重组都会重建整页文本（含逐段 split）
+        val pageText = remember(pages, page, fontSize, paragraphSpacing, indent) {
+            buildReaderText(pages[page], fontSize, paragraphSpacing, indent)
+        }
         Text(
-            text = buildReaderText(pages[page], fontSize, paragraphSpacing, indent),
+            text = pageText,
             fontSize = fontSize.sp,
             fontFamily = fontFamily,
             fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
@@ -1295,14 +1361,13 @@ private fun paginateByMeasurement(
         }.getOrDefault(0f)
     } else 0f
 
-    fun measureHeight(text: String): Int = measurer.measure(
-        text = render(text), style = style, constraints = constraints,
-    ).size.height
-
-    fun fits(text: String, limitPx: Float): Boolean {
+    /** 同 [fits]，但把真实高度返回供复用 —— 避免同一串文本被重复测量（v1.7.1.0） */
+    fun fitsHeight(text: String, limitPx: Float): Int? {
         val m = measurer.measure(text = render(text), style = style, constraints = constraints)
-        return !m.didOverflowHeight && m.size.height <= limitPx
+        return if (!m.didOverflowHeight && m.size.height <= limitPx) m.size.height else null
     }
+
+    fun fits(text: String, limitPx: Float): Boolean = fitsHeight(text, limitPx) != null
 
     fun maxFittingLength(text: String, limitPx: Float): Int {
         var lo = 1
@@ -1344,10 +1409,11 @@ private fun paginateByMeasurement(
                 else -> "\n$para"
             }
             val trial = buffer.toString() + addition
-            if (!fits(trial, remainingHeight)) break
+            // 复用本次测量的高度：以前 fits() 量完 trial 后，又对完全相同的 buffer 再量一次（100% 冗余）
+            val trialHeight = fitsHeight(trial, remainingHeight) ?: break
             buffer.append(addition)
             queue.removeFirst()
-            if (measureHeight(buffer.toString()) >= remainingHeight * 0.92f) break
+            if (trialHeight >= remainingHeight * 0.92f) break
         }
         val current = buffer.toString()
         if (current.isEmpty()) {
@@ -1365,6 +1431,82 @@ private fun paginateByMeasurement(
         isFirstPage = false
     }
     return pages.ifEmpty { listOf("") }.filter { it.isNotEmpty() || pages.size == 1 }
+}
+
+/**
+ * **后台线程**计算分页结果（v1.7.1.0）。
+ *
+ * 以前分页是 `remember { paginateByMeasurement(...) }` —— 在**主线程的组合阶段同步执行**。
+ * 一章几千字要跑几十次二分排版测量，动辄几十到几百毫秒全砸在 UI 线程上，
+ * 表现就是「切章 / 改字号时整个界面卡住」。现在换成在 [Dispatchers.Default] 上算。
+ *
+ * 返回值：
+ * - `null` = **还在算**（刚切章 / 刚改字号），调用方应显示轻量加载态；
+ * - 非 null = 就绪（可能只有一页空串，表示本章无正文）。
+ *
+ * 关于线程安全：**不复用 `rememberTextMeasurer()` 的实例**，而是在后台协程里新建
+ * 一个 [androidx.compose.ui.text.TextMeasurer]（内部持有布局缓存，跨线程共享不安全）。
+ * [androidx.compose.ui.text.font.FontFamily.Resolver] 本身是线程安全的（Compose 在
+ * 任意线程排版文本都走它），因此新建实例不会引入竞态。
+ */
+@Composable
+private fun rememberPaginatedPages(
+    content: String,
+    chapterTitle: String,
+    hideChapterTitle: Boolean,
+    widthPx: Float,
+    heightPx: Float,
+    fontSize: Float,
+    lineHeightMultiplier: Float,
+    paragraphSpacingPx: Float,
+    titleSpacerPx: Float,
+    fontFamily: FontFamily,
+    bold: Boolean,
+    letterSpacing: Float,
+    indent: Boolean,
+): List<String>? {
+    val resolver = androidx.compose.ui.platform.LocalFontFamilyResolver.current
+    val density = LocalDensity.current
+    val layoutDirection = androidx.compose.ui.platform.LocalLayoutDirection.current
+    val style = readerTextStyle(fontSize, lineHeightMultiplier, fontFamily, bold, letterSpacing)
+    // buildReaderText 的段距用 dp 单位，这里从像素换算回去（与渲染完全同源）
+    val paragraphSpacingDp = paragraphSpacingPx / density.density
+    // 与渲染同源的字串构造（含段距占位行 / 首行缩进）——测量等于渲染，末行才不会被裁
+    val render: (String) -> AnnotatedString = { buildReaderText(it, fontSize, paragraphSpacingDp, indent) }
+
+    // 任一影响分页的输入变化 → 立刻退回「计算中」，避免旧分页短暂错位显示
+    var pages by remember(
+        content, chapterTitle, hideChapterTitle, widthPx, heightPx,
+        fontSize, lineHeightMultiplier, paragraphSpacingPx, titleSpacerPx,
+        fontFamily, bold, letterSpacing, indent,
+    ) { mutableStateOf<List<String>?>(null) }
+
+    LaunchedEffect(
+        content, chapterTitle, hideChapterTitle, widthPx, heightPx,
+        fontSize, lineHeightMultiplier, paragraphSpacingPx, titleSpacerPx,
+        fontFamily, bold, letterSpacing, indent,
+    ) {
+        pages = withContext(Dispatchers.Default) {
+            runCatching {
+                paginateByMeasurement(
+                    measurer = androidx.compose.ui.text.TextMeasurer(resolver, density, layoutDirection),
+                    content = content,
+                    chapterTitle = chapterTitle,
+                    showTitle = !hideChapterTitle,
+                    widthPx = widthPx,
+                    heightPx = heightPx,
+                    style = style,
+                    paragraphSpacingPx = paragraphSpacingPx,
+                    render = render,
+                    titleSpacerPx = titleSpacerPx,
+                )
+            }.getOrElse {
+                // 分页失败不该让正文消失：退化成「整章一页」
+                listOf(content)
+            }
+        }
+    }
+    return pages
 }
 
 private fun Context.findActivity(): Activity? {

@@ -48,10 +48,25 @@ class VeneraSourceAdapter(
      */
     override suspend fun exploreCategories(): List<ExploreCategory> {
         runtimeCategories()?.let { if (it.isNotEmpty()) return it }
-        return VeneraCategories.parse(code).map { name ->
+        return staticCategories()
+    }
+
+    /**
+     * 廉价兜底（v1.7.2.0）：**只读源码里的静态分类表**，不碰 WebView。
+     *
+     * 首页推荐要枚举几十个源的分类，运行时评估（[runtimeCategories]）虽然结果最准，
+     * 但每个源都要往隐藏 WebView 里派一次 `evaluateJavascript`：25 个漫画源串起来
+     * 是十几秒的主线程派发，个别源还有 `type:"dynamic"` 的 loader 要联网。
+     * 枚举阶段对超时的源改用这张静态表兜底，至少让该源以「按分类名搜索」的方式
+     * 参与聚合，而不是整源被丢掉。
+     */
+    override suspend fun fastExploreCategories(): List<ExploreCategory> = staticCategories()
+
+    /** 源码里 `category.parts[].categories` 声明的分类名 → 「按分类名搜索」入口 */
+    private fun staticCategories(): List<ExploreCategory> =
+        VeneraCategories.parse(code).map { name ->
             ExploreCategory(title = name, url = TagEntryUrl.search(name))
         }
-    }
 
     /** 在 WebView 里评估源的分类表 → 分类入口；失败 / 无分类返回 null */
     private suspend fun runtimeCategories(): List<ExploreCategory>? = runCatching {
@@ -256,6 +271,25 @@ class VeneraSourceAdapter(
         engine.call(key, "ping")
         true
     }.getOrDefault(false)
+
+    /**
+     * 图片加载失败 → 向源要下一个镜像地址（v1.7.1.0）。
+     *
+     * 源在 onImageLoad 里返回 `onLoadFailed`（多镜像回退，如禁漫天堂的 5 条线路），
+     * 官方 App 会自动调它重试；这里通过运行时新增的 `retryImage` 操作按需调用。
+     */
+    suspend fun fallbackImage(url: String): Pair<String, Map<String, String>>? = runCatching {
+        engine.putSource(key, code)
+        val json = engine.call(key, "retryImage", url)
+        if (json.isBlank() || json == "null") return@runCatching null
+        val obj = JsonParser.parseString(json).asJsonObject
+        val next = obj.get("url")?.takeIf { it.isJsonPrimitive }?.asString
+        if (next.isNullOrBlank()) return@runCatching null
+        val hs = obj.getAsJsonObject("headers")?.entrySet()
+            ?.associate { (k, v) -> k to (if (v.isJsonPrimitive) v.asString else v.toString()) }
+            ?: emptyMap()
+        next to sanitizeHeaders(hs)
+    }.getOrNull()
 
     // ===== 账号登录（v1.3.0.0：源管理页登录按钮）=====
 

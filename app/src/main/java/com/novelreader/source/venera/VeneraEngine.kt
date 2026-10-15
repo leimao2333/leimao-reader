@@ -6,6 +6,7 @@ import android.util.Base64
 import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -63,6 +64,7 @@ class VeneraEngine(private val context: Context) {
     /** callId -> 结果等待者 */
     private val pending = ConcurrentHashMap<String, CompletableDeferred<String>>()
 
+    @Volatile
     private var webView: WebView? = null
     private var readySignal: CompletableDeferred<Unit>? = null
     private val bootMutex = Mutex()
@@ -165,6 +167,52 @@ class VeneraEngine(private val context: Context) {
 
             var pageLoaded = false
             wv.webViewClient = object : WebViewClient() {
+                /**
+                 * 渲染进程崩溃 / 被系统回收时的兜底（API 26+）。
+                 *
+                 * **必须返回 true。** 不覆盖这个方法时默认实现返回 false，WebView 会认为
+                 * 「没有任何人处理这次崩溃」，于是直接把宿主 App 进程 abort 掉 ——
+                 * 实测 tombstone（2026-10-15）：
+                 * ```
+                 * Fatal signal 5 (SIGTRAP) in tid ... (com.novelreader)
+                 * Abort message: [FATAL:crashpad_client_linux.cc(732)] Render process
+                 *   (10349)'s crash wasn't handled by all associated webviews,
+                 *   triggering application crash.
+                 * ```
+                 * 用户看到的就是毫无征兆的闪退，而且发生在任何一个 Tab ——
+                 * 因为 Venera 引擎的隐藏 WebView 一直挂在后台。
+                 *
+                 * 这里返回 true 并自己回收实例：本次调用以异常收场（调用方本来就有
+                 * 超时 / runCatching 兜底），下次 `call()` 会重建一个 WebView
+                 * （见 [ensureStarted] 的 `webView == null` 分支），最坏只是慢一次。
+                 */
+                override fun onRenderProcessGone(
+                    view: WebView?,
+                    detail: RenderProcessGoneDetail?,
+                ): Boolean {
+                    Log.w(
+                        LOG_TAG,
+                        "Venera WebView 渲染进程已终止（didCrash=${detail?.didCrash()}），" +
+                            "回收实例，下次调用时重建",
+                    )
+                    webView = null
+                    readySignal?.let {
+                        if (!it.isCompleted) {
+                            it.completeExceptionally(
+                                IllegalStateException("WebView 渲染进程已终止"),
+                            )
+                        }
+                    }
+                    readySignal = null
+                    registered.clear()
+                    // 正在等的调用全部异常返回，避免永久挂起
+                    val gone = IllegalStateException("WebView 渲染进程已终止")
+                    pending.values.forEach { if (!it.isCompleted) it.completeExceptionally(gone) }
+                    pending.clear()
+                    runCatching { view?.destroy() }
+                    return true
+                }
+
                 override fun onPageFinished(view: WebView?, url: String?) {
                     if (pageLoaded) return
                     pageLoaded = true

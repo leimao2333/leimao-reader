@@ -23,6 +23,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -250,6 +252,27 @@ class HomeViewModel(
     /** 把来自成人源的条目稳定沉底（保持原有相对顺序） */
     private fun sinkAdults(items: List<MediaItem>, adultIds: Set<String>): List<MediaItem> =
         if (adultIds.isEmpty()) items else items.sortedBy { it.sourceId in adultIds }
+
+    /**
+     * 去掉「同名 + 同站点」的重复导入（v1.7.2.0）。
+     *
+     * 用户把同一份源包重复导入是常态 —— 实测漫画源里「酸奶漫画」有 4 份、
+     * 「漫画小屋」有 4 份、其余也各 2 份。它们内容完全一样，却会各自占掉
+     * 「每排 6 个源」里的一个名额，把聚合名额浪费在同一个站点上。
+     *
+     * 判定用「源名 + baseUrl 的 host」：同名但不同站点（镜像站）仍算两个源。
+     */
+    private fun dedupFeedSources(
+        list: List<Pair<SourceInfo, List<ExploreCategory>>>,
+    ): List<Pair<SourceInfo, List<ExploreCategory>>> {
+        val seen = HashSet<String>()
+        return list.filter { (info, _) ->
+            val host = runCatching { java.net.URI(info.baseUrl).host.orEmpty() }
+                .getOrDefault("")
+                .lowercase()
+            seen.add(info.name.trim().lowercase() + "|" + host)
+        }
+    }
 
     // ===== 影视首页（v1.3.3.0 起步，v1.3.4.0 改为 MoonTV 式多分区）=====
 
@@ -989,6 +1012,431 @@ class HomeViewModel(
         }
     }
 
+    // ===== 小说 / 漫画首页「推荐」分区（v1.7.1.0）=====
+    //
+    // 此前小说 / 漫画首页只有「书架」，发现要另外点顶栏按钮跳一个独立页面。
+    // 现在首页顶部是一枚胶囊：推荐（本段）/ 书架。原「发现」已**并进推荐视图** ——
+    // 推荐页顶部带「栏目」下拉，默认「推荐」= 横滑合览，选中具体栏目 = 该栏目聚合结果。
+    //
+    // 加载方式对齐影视首页 `loadVideoSections`：探测各源分类 → 合并成若干横滑排 →
+    // 每排跨源聚合去重 → **每完成一排先上屏**（不必等全部排都返回）→ 成功后落盘，
+    // 冷启动直接读缓存秒开，重新拉取只靠刷新按钮。
+
+    /** 推荐页的一排：标题 + 该排跨源聚合后的内容 */
+    data class FeedRow(
+        val categoryId: String,
+        val title: String,
+        val items: List<MediaItem>,
+    )
+
+    /**
+     * 推荐页状态（小说 / 漫画各一份，靠 [feedStateOf] 取）。
+     *
+     * 推荐与发现是**同一个视图的两个粒度**，共用这一份状态：
+     * - [selectedCategory] = [HomeFeedPlan.RECOMMEND_TITLE]（默认）→ 展示 [rows] 横滑排
+     * - [selectedCategory] = 某个具体栏目 → 展示 [items]（该栏目跨源聚合结果）
+     *
+     * @param aliveCount 顶栏「聚合 N 个源」=「推荐计划覆盖的源数」与「已产出内容的
+     *   源数」两者取大（v1.7.2.0）。此前只统计「产出过内容的源」，于是
+     *   「抽样枚举 12 个源 + 大部分源无内容」会让这个数字小到失真（实测 2）。
+     *   计划覆盖数在分类枚举完就能算出来，反映的是「这一屏聚合了多少个源」。
+     * @param categories 全部栏目名（「栏目」下拉用）
+     */
+    data class FeedHomeState(
+        val aliveCount: Int = 0,
+        val categories: List<String> = emptyList(),
+        val selectedCategory: String = com.novelreader.core.util.HomeFeedPlan.RECOMMEND_TITLE,
+        /** 栏目 = 推荐 时的横滑排 */
+        val rows: List<FeedRow> = emptyList(),
+        /** 栏目 = 具体分类 时的聚合结果 */
+        val items: List<MediaItem> = emptyList(),
+        val loading: Boolean = false,
+        val error: String? = null,
+        /** 首屏最近一次成功加载的时间戳（毫秒） */
+        val loadedAtMs: Long = 0L,
+    ) {
+        /** 当前是否停在「推荐」合览（false = 选中了具体栏目） */
+        val onRecommendTab: Boolean
+            get() = selectedCategory.isBlank() ||
+                selectedCategory == com.novelreader.core.util.HomeFeedPlan.RECOMMEND_TITLE
+
+        /** 是否已有内容（判断要不要重新拉首屏） */
+        val loaded: Boolean get() = rows.isNotEmpty()
+    }
+
+    private val _novelFeed = MutableStateFlow(FeedHomeState())
+    val novelFeed: StateFlow<FeedHomeState> = _novelFeed.asStateFlow()
+
+    private val _comicFeed = MutableStateFlow(FeedHomeState())
+    val comicFeed: StateFlow<FeedHomeState> = _comicFeed.asStateFlow()
+
+    private fun feedStateOf(type: SourceType): MutableStateFlow<FeedHomeState> = when (type) {
+        SourceType.COMIC -> _comicFeed
+        else -> _novelFeed
+    }
+
+    private val feedJobs = mutableMapOf<SourceType, kotlinx.coroutines.Job>()
+
+    /**
+     * 各类型的推荐计划（栏目名 → 各源地址），会话内缓存。
+     *
+     * 「栏目」下拉切到某个具体栏目时要按名字逐源翻译成各自地址，靠它完成；
+     * 内存版的推荐页已经加载过就直接跳转，不必重新探测分类。
+     */
+    private val feedPlans = mutableMapOf<SourceType, com.novelreader.core.util.HomeFeedPlan.Plan>()
+
+    /** 各类型的成人源 id（推荐页内容沉底用，与影视首页一致的约定） */
+    private val feedAdultIds = mutableMapOf<SourceType, Set<String>>()
+
+    /**
+     * 各类型「最近一轮枚举实际覆盖了几个源」。
+     *
+     * 冷启动时源从数据库异步恢复，推荐页若抢跑就会只枚举到零星几个源，
+     * 计划里只覆盖一个源（顶栏「聚合 1 个源」）。落盘时把这个数字一起写下，
+     * 恢复缓存时一比对就能认出「这是残缺计划」并作废重来 ——
+     * 否则这份残缺计划会被缓存固化，重装前一直是一。
+     */
+    private val feedEnumerated = mutableMapOf<SourceType, Int>()
+
+    /**
+     * 进入小说 / 漫画 Tab 的「推荐」视图时调用：幂等，可重复调用。
+     *
+     * 内存已有内容（或正在加载）就直接返回；否则先读磁盘缓存直接上屏，
+     * 缓存作废（无缓存 / 源集变化）才自动加载一次。
+     */
+    fun onFeedTabShown(type: SourceType) {
+        if (type == SourceType.VIDEO) return
+        val st = feedStateOf(type).value
+        if (st.loading || st.loaded) return
+        viewModelScope.launch {
+            if (!hydrateFeedFromCache(type)) loadFeed(type)
+        }
+    }
+
+    /** 下拉刷新 / 刷新按钮：强制重新探测并拉取 */
+    fun refreshFeed(type: SourceType) {
+        if (type == SourceType.VIDEO) return
+        loadFeed(type)
+    }
+
+    /**
+     * 切换「栏目」（v1.7.1.0，原发现页的分类下拉）。
+     *
+     * 选「推荐」= 回到横滑合览（不再发请求，[rows] 已在内存）；选具体栏目 = 聚合该栏目
+     * 各源内容填 [FeedHomeState.items]。
+     */
+    fun selectFeedCategory(type: SourceType, category: String) {
+        if (type == SourceType.VIDEO) return
+        val flow = feedStateOf(type)
+        if (category == flow.value.selectedCategory) return
+        flow.value = flow.value.copy(
+            selectedCategory = category,
+            items = emptyList(),
+            error = null,
+            loading = false,
+        )
+        if (category.isBlank() || category == com.novelreader.core.util.HomeFeedPlan.RECOMMEND_TITLE) return
+        loadFeedCategory(type, category)
+    }
+
+    /** 聚合某个具体栏目：跨源拉取 → 去重 → 上屏 */
+    private fun loadFeedCategory(type: SourceType, category: String) {
+        feedJobs[type]?.cancel()
+        feedJobs[type] = viewModelScope.launch {
+            val flow = feedStateOf(type)
+            flow.value = flow.value.copy(loading = true, error = null)
+            val targets = feedPlans[type]
+                ?.let { com.novelreader.core.util.HomeFeedPlan.targetsOf(it, category, MAX_FEED_CATEGORY_SOURCES) }
+                .orEmpty()
+            if (targets.isEmpty()) {
+                flow.value = flow.value.copy(
+                    loading = false,
+                    items = emptyList(),
+                    error = "该栏目暂无内容",
+                )
+                return@launch
+            }
+            // 单栏目页没有「排」的概念，一次就把该栏目能给的源都拉上，
+            // 但仍受全局并发闸保护（同 loadFeed 的说明）
+            val gate = Semaphore(MAX_FEED_CONCURRENCY)
+            val merged = coroutineScope {
+                targets.map { t -> async {
+                    gate.withPermit {
+                        runCatching {
+                            withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) {
+                                contentRepository.explore(t.sourceId, t.url, 1)
+                            }
+                        }.getOrNull().orEmpty()
+                    }
+                } }.awaitAll().flatten()
+            }
+            val seen = LinkedHashSet<String>()
+            val dedup = merged.filter { seen.add("${it.sourceId}:${it.id}") }
+                .map { it.copy(tags = it.tags + category) }
+            val cur = flow.value
+            // 期间用户可能又切了栏目 —— 只在仍是当前栏目时才写回，避免旧结果盖新的
+            if (cur.selectedCategory != category) return@launch
+            flow.value = cur.copy(
+                loading = false,
+                items = sinkAdults(dedup, feedAdultIds[type].orEmpty()),
+                error = if (dedup.isEmpty()) "该栏目暂无内容" else null,
+            )
+        }
+    }
+
+    private fun loadFeed(type: SourceType) {
+        feedJobs[type]?.cancel()
+        feedJobs[type] = viewModelScope.launch {
+            val flow = feedStateOf(type)
+            flow.value = flow.value.copy(loading = true, error = null)
+
+            // 1) 枚举该类型各源的分类。
+            //
+            // v1.7.2.0 不再「只取前 12 个源」：那个截断是为了躲开 Venera 源在 WebView 里
+            // 评估分类的耗时，结果把用户 100+ 个小说源 / 40+ 个漫画源里的大多数直接排除在
+            // 聚合之外（顶栏长期显示「聚合 2 个源」）。改成 exploreSourcesFast：
+            // 每源独立超时 + 整轮全局截止 + 慢源静态兜底（见 ContentRepositoryImpl），
+            // 于是「源多」不再等于「首页卡」。
+            //
+            // 返回值同时带回「这轮实际枚举了几个源」：仓库层已等过「源恢复完成」信号，
+            // 正常情况等于该类型已启用源数；万一还是偏小（源表尚未恢复完就发起了），
+            // 下面就不会把这份残缺计划落盘，避免「聚合 1 个源」被缓存固化。
+            val enumeration = runCatching {
+                withTimeoutOrNull(FEED_PROBE_TIMEOUT_MS) {
+                    contentRepository.exploreSourcesFast(type, MAX_FEED_SOURCES)
+                }
+            }.getOrNull() ?: com.novelreader.domain.repository.SourceEnumeration()
+            val all = enumeration.items
+            if (all.isEmpty()) {
+                // 源表为空（恢复没完成）与「源确实没有发现地址」要分开说，
+                // 否则用户会以为是自己导的源有问题。
+                val enabledCount = runCatching { currentEnabledFeedIds(type).size }.getOrDefault(0)
+                flow.value = flow.value.copy(
+                    loading = false,
+                    error = if (enabledCount == 0) {
+                        "还没有可用的书源，先去「源管理」导入或启用书源"
+                    } else {
+                        "当前类型的书源没有配置发现地址（源 JSON 需包含 exploreUrl / ruleExplore）"
+                    },
+                )
+                return@launch
+            }
+            // 同一份源包被导入多次很常见（实测有源重复 4 遍），
+            // 不去重的话「每排 N 个源」的名额会浪费在同一个站点上
+            val usable = dedupFeedSources(all)
+            feedEnumerated[type] = enumeration.enumerated
+
+            val sourceOrder = usable.map { it.first.id }
+            val catsBySource = usable.associate { it.first.id to it.second }
+            // 成人源内容统一沉底（与影视首页一致的既有约定），不抢占首屏
+            val adultIds = adultSourceIds(usable.map { it.first })
+            feedAdultIds[type] = adultIds
+            val fullPlan = com.novelreader.core.util.HomeFeedPlan.build(
+                sourceOrder = sourceOrder,
+                catsBySource = catsBySource,
+                maxRows = MAX_FEED_ROWS,
+                maxSourcesPerRow = MAX_FEED_ROW_SOURCES,
+            )
+            if (fullPlan.rows.isEmpty()) {
+                flow.value = flow.value.copy(
+                    loading = false,
+                    error = "当前类型的书源没有可用的发现分类",
+                )
+                return@launch
+            }
+            // 栏目下拉限长：合起来能有一千多个栏目名（各站自造栏目），
+            // 全塞进下拉菜单既没法用也会把菜单拖慢；按覆盖源数取前 N 个足够。
+            val plan = fullPlan.copy(categories = fullPlan.categories.take(MAX_FEED_CATEGORIES))
+            feedPlans[type] = plan
+
+            // 顶栏「聚合 N 个源」= 这些横滑排真正会去访问的源数（去重）。
+            // 计划一出就能算出来，不必等内容回来，用户一进页面就看到聚合规模。
+            val covered = plan.rows.flatMap { r -> r.targets.map { it.sourceId } }.toSet().size
+            flow.value = flow.value.copy(aliveCount = covered, categories = plan.categories)
+
+            // 2) 每排并发聚合各源内容，**每完成一排先上屏**。
+            //
+            // 全局并发闸（[MAX_FEED_CONCURRENCY]）是这里的关键：一次刷新会打出几十个
+            // 列表页请求，每个响应动辄上百 KB 到几 MB，还要进 Jsoup 建 DOM ——
+            // 不加闸实测把 Dalvik 堆顶到 209MB/210MB、单次 young GC 扫 497 万个对象，
+            // 几十个线程一起等 GC，界面直接卡死（就是之前那次 ANR 的成因）。
+            // 加闸后内存与 CPU 都在常数范围内，代价只是「排出来得慢一点」。
+            //
+            // 外面再套一层整轮硬上界（[FEED_ROW_DEADLINE_MS]）：一排里只要有一个源卡在
+            // 「连接 15s + 读取 20s」这种确定性失败上，整页就得等它；而且 `withTimeoutOrNull`
+            // 打断不了阻塞式的 socket 读，只会在它返回后才收场 —— 所以没有硬上界时实测
+            // 整轮能拖到分钟级（用户看到的就是「一直转圈」）。到点就用手上已有的排上屏，
+            // 慢的那些源下次刷新还有机会。
+            val gate = Semaphore(MAX_FEED_CONCURRENCY)
+            val rows = java.util.Collections.synchronizedList(mutableListOf<FeedRow>())
+            val aliveSources = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+            withTimeoutOrNull(FEED_ROW_DEADLINE_MS) {
+                coroutineScope {
+                    plan.rows.map { row -> async {
+                        val merged = coroutineScope {
+                            row.targets.map { t -> async {
+                                gate.withPermit {
+                                    runCatching {
+                                        withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) {
+                                            contentRepository.explore(t.sourceId, t.url, 1)
+                                        }
+                                    }.getOrNull().orEmpty()
+                                }
+                            } }.awaitAll().flatten()
+                        }
+                        if (merged.isEmpty()) return@async
+                        val seen = LinkedHashSet<String>()
+                        val dedup = merged.filter { seen.add("${it.sourceId}:${it.id}") }
+                            // 浏览上下文写进 tags：详情页顶部「标签小栏」据此展示
+                            .map { it.copy(tags = it.tags + row.title) }
+                        synchronized(aliveSources) { merged.forEach { aliveSources.add(it.sourceId) } }
+                        rows.add(
+                            FeedRow(
+                                categoryId = row.title,
+                                title = row.title,
+                                items = sinkAdults(dedup, adultIds),
+                            ),
+                        )
+                        val current = flow.value
+                        // 顶栏数字取「计划覆盖源数」与「已出内容的源数」的较大者：
+                        // 计划数是聚合规模（稳定），已出数是实测存活数，只增不减。
+                        flow.value = current.copy(
+                            loading = false,
+                            aliveCount = maxOf(covered, aliveSources.size),
+                            rows = rows.toList()
+                                .sortedBy { r -> plan.rows.indexOfFirst { it.title == r.categoryId } },
+                        )
+                    } }.awaitAll()
+                }
+            }
+
+            val ordered = rows.toList()
+                .sortedBy { r -> plan.rows.indexOfFirst { it.title == r.categoryId } }
+            flow.value = flow.value.copy(
+                loading = false,
+                aliveCount = maxOf(covered, aliveSources.size),
+                categories = plan.categories,
+                rows = ordered,
+                error = if (ordered.isEmpty()) "没有取到内容，可能是各源暂时不可用，稍后再试" else null,
+                loadedAtMs = if (ordered.isNotEmpty()) System.currentTimeMillis() else 0L,
+            )
+            if (ordered.isNotEmpty()) saveFeedCache(type)
+
+            // 刷新时若正停在某个具体栏目，顺带把它也重新拉一遍 —— 否则横滑排更新了、
+            // 用户正看的那个栏目还停在旧结果上。用独立协程发起：loadFeedCategory 会
+            // cancel(feedJobs[type])，直接调用等于取消自己。
+            val selected = flow.value.selectedCategory
+            if (ordered.isNotEmpty() &&
+                selected.isNotBlank() &&
+                selected != com.novelreader.core.util.HomeFeedPlan.RECOMMEND_TITLE &&
+                plan.categories.contains(selected)
+            ) {
+                viewModelScope.launch { loadFeedCategory(type, selected) }
+            }
+        }
+    }
+
+    /** 推荐页缓存 payload */
+    private data class FeedCachePayload(
+        val sourceIds: List<String> = emptyList(),
+        val aliveCount: Int = 0,
+        val categories: List<String> = emptyList(),
+        /**
+         * 栏目名 → 各源该栏目的源内地址。
+         *
+         * 必须一起缓存：栏目的**地址**没法从栏目**名字**还原（各源叫法 / 路径都不同），
+         * 只存名字的话冷启动后点栏目会查不到任何地址、显示成空栏目。
+         */
+        val urls: Map<String, List<com.novelreader.domain.model.CategorySource>> = emptyMap(),
+        /** 成人源 id：切栏目时内容沉底用（从缓存恢复后也要生效） */
+        val adultIds: List<String> = emptyList(),
+        /**
+         * 生成这份缓存时**实际枚举了几个源**（v1.7.2.0 起）。
+         *
+         * 用来识别「源还没从数据库恢复完就抢跑枚举」的残缺计划：那种情况下计划里
+         * 可能只覆盖 1 个源。缺这个字段（旧缓存 / 值为 0）一律认为是残缺，直接重载。
+         */
+        val enumerated: Int = 0,
+        val rows: List<FeedRow> = emptyList(),
+    )
+
+    /**
+     * 推荐页缓存 key。
+     *
+     * 带类型后缀（`feed_novel_v3` / `feed_comic_v3`），小说与漫画各存一份，
+     * 互不覆盖；版本号供 payload 结构或**推荐算法**变化时换代作废旧缓存用：
+     * - v1.7.2.0 第一次改挑源逻辑（全量枚举 + 轮转）时 `_v1` → `_v2`；
+     * - 紧跟着修冷启动竞态（枚举抢跑导致「聚合 1 个源」并被固化）时 `_v2` → `_v3`——
+     *   必须换代，因为已经落盘的 `_v2` 缓存里就躺着那份残缺计划，光靠校验位救不回来。
+     */
+    private fun feedCacheKey(type: SourceType) = "feed_${type.name.lowercase()}_v3"
+
+    /** 某类型当前启用源 id 集合（推荐页缓存有效性校验基准） */
+    private suspend fun currentEnabledFeedIds(type: SourceType): Set<String> = runCatching {
+        sourceRepository?.awaitRestored()
+        sourceRepository?.getSourcesByType(type).orEmpty().filter { it.enabled }
+    }.getOrDefault(emptyList()).map { it.id }.toSet()
+
+    /** 从磁盘恢复推荐内容；返回是否恢复成功（有缓存、源集一致、计划不残缺、rows 非空） */
+    private suspend fun hydrateFeedFromCache(type: SourceType): Boolean {
+        val cache = videoCache ?: return false
+        val raw = runCatching { cache.load(feedCacheKey(type)) }.getOrNull() ?: return false
+        val payload = runCatching {
+            cacheGson.fromJson(raw, FeedCachePayload::class.java)
+        }.getOrNull() ?: return false
+        if (payload.sourceIds.isEmpty() || payload.rows.isEmpty()) return false
+        val enabled = currentEnabledFeedIds(type)
+        if (payload.sourceIds.toSet() != enabled) return false
+        // 残缺计划不认：这份缓存的枚举只覆盖了一小撮源（源还没恢复完就抢跑），
+        // 计划里往往只有 1 个源 —— 让它上屏等于把「聚合 1 个源」永久固化。
+        // 允许「全局截止截掉的少数源」造成的差额（<= 一半），只拦明显残缺的。
+        if (payload.enumerated <= 0 || payload.enumerated * 2 < enabled.size) return false
+        feedStateOf(type).value = FeedHomeState(
+            aliveCount = payload.aliveCount,
+            categories = payload.categories,
+            selectedCategory = com.novelreader.core.util.HomeFeedPlan.RECOMMEND_TITLE,
+            rows = payload.rows,
+            loading = false,
+            error = null,
+            loadedAtMs = System.currentTimeMillis(),
+        )
+        // 缓存里带回了栏目地址表，直接重建计划：冷启动后点「栏目」下拉不用再探测一轮分类
+        if (payload.urls.isNotEmpty()) {
+            feedPlans[type] = com.novelreader.core.util.HomeFeedPlan.Plan(urls = payload.urls)
+        }
+        if (payload.adultIds.isNotEmpty()) feedAdultIds[type] = payload.adultIds.toSet()
+        feedEnumerated[type] = payload.enumerated
+        return true
+    }
+
+    /** 推荐页加载成功后落盘（失败静默，缓存只是加速） */
+    private suspend fun saveFeedCache(type: SourceType) {
+        val cache = videoCache ?: return
+        val st = feedStateOf(type).value
+        if (st.rows.isEmpty()) return
+        val enumerated = feedEnumerated[type] ?: 0
+        val enabled = currentEnabledFeedIds(type)
+        // 残缺计划不落盘（同 hydrateFeedFromCache 的判据）：源恢复没完成时枚举出来的
+        // 结果会被这次写入固化，用户之后每次冷启动都从缓存恢复，永远修不好。
+        if (enumerated <= 0 || enumerated * 2 < enabled.size) return
+        runCatching {
+            cache.save(
+                feedCacheKey(type),
+                cacheGson.toJson(
+                    FeedCachePayload(
+                        sourceIds = enabled.toList(),
+                        aliveCount = st.aliveCount,
+                        categories = st.categories,
+                        urls = feedPlans[type]?.urls.orEmpty(),
+                        adultIds = feedAdultIds[type].orEmpty().toList(),
+                        enumerated = enumerated,
+                        rows = st.rows,
+                    ),
+                ),
+            )
+        }
+    }
+
     // ===== 短剧频道（v1.3.9.0，对标抖音式竖屏沉浸短剧流） =====
 
     /**
@@ -1308,6 +1756,85 @@ class HomeViewModel(
 
         /** 「继续观看」最多展示条数 */
         private const val MAX_CONTINUE_ITEMS = 12
+
+        // ===== 小说 / 漫画推荐页（v1.7.1.0，v1.7.2.0 改为全量聚合）=====
+
+        /**
+         * 推荐页最多展示几排（含「推荐」排）。
+         *
+         * v1.7.2.0 从 6 → 8 → 10：每排挑源按「用过得最少」轮转，
+         * 排数直接决定能覆盖多少源（10 排 × 6 源 = 60 个源参与聚合）。
+         */
+        private const val MAX_FEED_ROWS = 10
+
+        /**
+         * 推荐页**最多枚举多少个源**的分类（v1.7.2.0）。
+         *
+         * 0 = 不截断（枚举该类型全部已启用源）。
+         *
+         * 历史：v1.7.1.0 只取前 12 个，因为当时「一源超时」会拖垮整轮枚举；
+         * 结果是用户 100+ 个小说源里的大多数根本没参与聚合（顶栏长期显示
+         * 「聚合 2 个源」）。v1.7.2.0 改成「每源独立超时 + 整轮全局截止 + 慢源静态
+         * 兜底 + fast 模式 2 秒短探测」（见 [ContentRepositoryImpl.enumerateSources]），
+         * 整轮耗时有硬上界，所以这里不再需要人为截断 —— 「聚合的源太少」的直接解药。
+         */
+        private const val MAX_FEED_SOURCES = 0
+
+        /**
+         * 推荐页**每排**最多聚合几个源（v1.7.2.0 从 8 降到 6）。
+         *
+         * 排数从 8 提到 10 之后，每排少取两个源可以保持总请求量（60 个）不变，
+         * 而**总覆盖面从 8 个源涨到 60 个源** —— 这正是「聚合的源太少」的解药。
+         * 一个热门分类（玄幻 / 都市）可能有 20+ 个源都有，靠轮转摊到不同排去用。
+         */
+        private const val MAX_FEED_ROW_SOURCES = 6
+
+        /**
+         * 选中**某个具体栏目**时最多聚合几个源。
+         *
+         * 栏目视图是整页三列网格（不是横滑排），没有「排与排之间轮转」的问题，
+         * 一次把该栏目能给的源都拉上，内容才够铺满；仍受 [MAX_FEED_CONCURRENCY] 约束。
+         */
+        private const val MAX_FEED_CATEGORY_SOURCES = 12
+
+        /**
+         * 推荐页取内容的**全局并发闸**（v1.7.2.0）。
+         *
+         * 一次刷新会打出几十个列表页请求，每个响应几百 KB 到几 MB、还要进 Jsoup 建 DOM。
+         * 不限并发实测把堆顶到 209MB/210MB、单次 young GC 扫 497 万个对象，
+         * 几十个线程一起等 GC，界面直接卡死（ANR）。加闸后内存与 CPU 都是常数级。
+         */
+        private const val MAX_FEED_CONCURRENCY = 6
+
+        /**
+         * 栏目下拉最多列出几个栏目（v1.7.2.0）。
+         *
+         * 各站自造的栏目名合起来能有一千多个（实测 115 个小说源 = 1458 个栏目），
+         * 全塞进下拉菜单既没法用也会把菜单拖慢；按覆盖源数取前 N 个已经够用。
+         */
+        private const val MAX_FEED_CATEGORIES = 60
+
+        /**
+         * 推荐页「枚举各源分类」整轮的**外层**有界超时（毫秒）。
+         *
+         * 真正的分级超时在仓库层（fast 模式每源最多 2s 探测 + 静态表兜底，
+         * 整轮 15s 全局截止），这里只是一道兜底：全局截止过后，排在后面的协程会
+         * 逐个拿到许可后立刻放弃，所以整轮实际耗时≈截止时长，这道 25s 留足余量。
+         */
+        private const val FEED_PROBE_TIMEOUT_MS = 25_000L
+
+        /**
+         * 推荐页「各排取内容」整轮的硬上界（毫秒）。
+         *
+         * 到点就用手上已经回来的排上屏，剩下的下次刷新再说。
+         *
+         * 为什么必须有：`withTimeoutOrNull` 只能取消挂起点，**打断不了阻塞式 socket 读**，
+         * 所以单排里一个走「连接 15s + 读取 20s」的坏源就能把整页拖住；几十个请求共享
+         * 并发闸时更是一排接一排地等。实测没有硬上界时整轮能到分钟级（用户看到的就是
+         * 「一直转圈」）。正常情况 60 个请求 / 6 路并发 × 2 秒左右 ≈ 20 秒内跑完，
+         * 35 秒留了足够余量，只有异常时才触发。
+         */
+        private const val FEED_ROW_DEADLINE_MS = 35_000L
 
         /** 「继续观看」随条目带出的续播集数 extras key */
         const val EXTRA_RESUME_INDEX = "resumeIndex"

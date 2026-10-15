@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -34,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -55,6 +57,7 @@ fun ComicDetailScreen(
     val detail by viewModel.detail.collectAsState()
     val chapters by viewModel.chapters.collectAsState()
     val loading by viewModel.loading.collectAsState()
+    val chapterError by viewModel.chapterError.collectAsState()
     val collected by viewModel.collected.collectAsState()
     val download by viewModel.download.collectAsState()
     val chapterDesc by viewModel.chapterDesc.collectAsState()
@@ -89,7 +92,12 @@ fun ComicDetailScreen(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    // enableEdgeToEdge 下自绘顶栏必须自行避让系统栏
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding(),
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -117,10 +125,28 @@ fun ComicDetailScreen(
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = "没有获取到章节，可能源已失效",
+                        text = if (chapterError != null) "目录拉取失败" else "没有获取到章节",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (chapterError != null) {
+                        Spacer(Modifier.height(6.dp))
+                        // v1.7.1.0：区分「源报错」与「确实没有目录」，不再一律说「源已失效」
+                        Text(
+                            text = "$chapterError\n可尝试换源，或检查网络 / 代理后重试",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 32.dp),
+                        )
+                    } else {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = "该源没有返回任何章节，可能源已失效",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Spacer(Modifier.height(12.dp))
                     OutlinedButton(onClick = { viewModel.load(item) }) { Text("重新加载") }
                 }

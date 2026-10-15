@@ -108,7 +108,6 @@ fun AppNavHost(
                 onOpenNovelSearch = { navController.navigate(Routes.novelSearch()) },
                 onOpenComicSearch = { navController.navigate(Routes.comicSearch()) },
                 onOpenVideoSearch = { navController.navigate(Routes.videoSearch()) },
-                onOpenExplore = { type -> navController.navigate(Routes.explore(type)) },
                 onOpenRss = { navController.navigate(Routes.RSS) },
                 onOpenHistory = { navController.navigate(Routes.HISTORY) },
                 onOpenTagSearch = { type, tag -> navController.navigate(Routes.tagSearch(type, tag)) },

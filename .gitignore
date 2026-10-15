@@ -24,3 +24,6 @@ Thumbs.db
 # 本地调试产物（设备数据备份 / 崩溃日志）
 backup-app-data/
 crashlogs/
+
+# 真机取证产物（run-as 导出的数据库 / 落盘缓存 / 截图），体积大且随时可重生成
+.backup/

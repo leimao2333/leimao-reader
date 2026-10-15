@@ -8,6 +8,27 @@ import com.novelreader.domain.model.SourceInfo
 import kotlinx.coroutines.flow.Flow
 
 /**
+ * 一轮「各源发现分类枚举」的结果。
+ *
+ * 除了 `源 → 该源的分类表`，还带上**这轮枚举实际覆盖了多少个源**（[enumerated]）——
+ * 冷启动时源是从数据库异步恢复的，推荐页若在恢复完成前就触发枚举，只会看到当时
+ * 已注册的零星几个源，聚合结果退化成「聚合 1 个源」（v1.7.2.0 实测：缓存里 10 排
+ * 内容全部来自同一个源，且被落盘缓存固化成常态）。调用方拿这个数字跟当前已启用
+ * 源数一比就知道这轮结果可不可信、能不能落盘。
+ */
+data class SourceEnumeration(
+    /** 源 → 该源的发现分类（无分类的源不出现在这里） */
+    val items: List<Pair<SourceInfo, List<com.novelreader.domain.model.ExploreCategory>>> = emptyList(),
+    /**
+     * 本轮**实际参与枚举**的源数（已启用源数，受 `limit` 截断）。
+     *
+     * 注意是「进过枚举循环」的源数，不等于「有分类的源数」——
+     * 大多数源本来就没有 `exploreUrl`，[items] 比它小是正常的。
+     */
+    val enumerated: Int = 0,
+)
+
+/**
  * 源仓库接口（Domain 层定义，Data 层实现）。
  *
  * 负责源的存储、加载、解析后的缓存，以及对外提供统一的查询入口。
@@ -166,6 +187,17 @@ interface ContentRepository {
     suspend fun content(chapter: ChapterItem): ContentResult
 
     /**
+     * 图片加载失败后的**备用地址**（v1.7.1.0）。
+     *
+     * Venera 源可用 `onImageLoad → onLoadFailed` 声明多镜像回退（禁漫天堂内置 5 个
+     * 备用域名）。此前该能力完全没接：Coil 按原地址加载失败就只能显示「图片加载失败」，
+     * 第一个域名被墙 == 整章都看不了。默认实现返回 null（不支持的源无影响）。
+     *
+     * @return (新地址, 该地址需要的请求头)；没有更多回退时返回 null
+     */
+    suspend fun fallbackImage(sourceId: String, url: String): Pair<String, Map<String, String>>? = null
+
+    /**
      * 获取**全部线路**的剧集（v1.3.6.0 播放页「换源」）。
      *
      * 默认实现把 [chapterList] 包成单条线路，单线路源无需改动。
@@ -197,6 +229,47 @@ interface ContentRepository {
         type: com.novelreader.domain.model.SourceType,
         includeDisabled: Boolean = false,
     ): List<Pair<SourceInfo, List<com.novelreader.domain.model.ExploreCategory>>>
+
+    /**
+     * 同 [exploreSources]，但**只枚举前 `limit` 个源**（v1.7.1.0）。
+     *
+     * 首页「推荐」只需要十来行横滑，没必要把全部源都问一遍 —— 漫画源里 Venera 占大半，
+     * 取分类要在隐藏 WebView 里真实评估源声明的分类表，36 个源逐个跑要几十秒，
+     * 且都是主线程派发的活（引擎的 `evaluateJavascript` 必须走主线程），
+     * 冷启动时容易把界面拖到 ANR。
+     *
+     * 默认实现退化为「枚举完再截断」：测试假实现无需跟着改。
+     */
+    suspend fun exploreSourcesLimited(
+        type: com.novelreader.domain.model.SourceType,
+        limit: Int,
+        includeDisabled: Boolean = false,
+    ): List<Pair<SourceInfo, List<com.novelreader.domain.model.ExploreCategory>>> =
+        if (limit <= 0) exploreSources(type, includeDisabled)
+        else exploreSources(type, includeDisabled).take(limit)
+
+    /**
+     * 首页推荐专用的**容错枚举**（v1.7.2.0）。
+     *
+     * 与 [exploreSourcesLimited] 的区别是「慢源不丢」：
+     * - 每个源的取分类有**独立超时**，不是整批共用一个超时；
+     * - 运行时评估超时 / 报错的源，用源码里的**静态分类表**兜底
+     *   （见 [com.novelreader.domain.model.SourceAdapter.fastExploreCategories]），
+     *   于是 Venera 源不会因为一次 WebView 评估慢就整源消失；
+     * - 整轮有全局截止，到点用已有结果收工。
+     *
+     * 返回值比 [exploreSources] 多带一个 [SourceEnumeration.enumerated]，
+     * 用来识别「源还没恢复完就开始枚举」的冷启动竞态（见 [SourceEnumeration]）。
+     * 默认实现退化为 [exploreSourcesLimited]，测试假实现无需跟着改。
+     */
+    suspend fun exploreSourcesFast(
+        type: com.novelreader.domain.model.SourceType,
+        limit: Int = 0,
+        includeDisabled: Boolean = false,
+    ): SourceEnumeration {
+        val items = exploreSourcesLimited(type, limit, includeDisabled)
+        return SourceEnumeration(items = items, enumerated = items.size)
+    }
 
     /** 按发现分类拉取书籍列表 */
     suspend fun explore(sourceId: String, url: String, page: Int): List<MediaItem>

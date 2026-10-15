@@ -17,6 +17,19 @@ import com.novelreader.source.parser.SourceParser
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
+ * 源的「优先级顺序」：手动排过序的靠前（按序号升序），未排序的排后按名称。
+ *
+ * 这个顺序**就是**「先问哪个源」的顺序 —— 首页推荐枚举按它决定 `take(limit)` 截到谁、
+ * 同名栏目跨源聚合时谁排前面。此前直接返回 `sourceMap` 的插入顺序（= 数据库
+ * `ORDER BY createdAt DESC`，即「最近导入的在前」），既不受用户「手动排序」影响，
+ * 也会随导入先后整体漂移。与源管理页 [SourceSortOrder.MANUAL] 用同一套比较器。
+ */
+private val SOURCE_PRIORITY: Comparator<SourceInfo> =
+    compareBy<SourceInfo> { it.sortOrder == 0 }
+        .thenBy { it.sortOrder }
+        .thenBy { it.name }
+
+/**
  * 导入结果：一个源及其原始内容。
  */
 data class ImportedSource(
@@ -342,11 +355,18 @@ class SourceManager(
 
     fun getAllSources(): List<SourceInfo> = sourceMap.values.toList()
 
+    /**
+     * 该类型下**已启用**的源，按 [SOURCE_PRIORITY] 排好序（顺序即优先级）。
+     *
+     * 调用方（搜索 / 首页推荐枚举）会直接按这个顺序决定「先问哪些源」，所以必须稳定、
+     * 且体现用户意图；不要退回 `sourceMap.values` 的原始迭代顺序。
+     */
     fun getEnabledSourcesByType(type: SourceType): List<SourceInfo> =
-        sourceMap.values.filter { it.type == type && it.enabled }
+        sourceMap.values.filter { it.type == type && it.enabled }.sortedWith(SOURCE_PRIORITY)
 
+    /** 该类型下全部源（含禁用），同样按 [SOURCE_PRIORITY] 排序 */
     fun getSourcesByType(type: SourceType): List<SourceInfo> =
-        sourceMap.values.filter { it.type == type }
+        sourceMap.values.filter { it.type == type }.sortedWith(SOURCE_PRIORITY)
 
     fun getAdapter(sourceId: String): SourceAdapter? = adapterCache[sourceId]
 

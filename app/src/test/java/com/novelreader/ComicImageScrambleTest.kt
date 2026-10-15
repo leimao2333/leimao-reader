@@ -4,6 +4,7 @@ import com.novelreader.core.image.ComicImageScramble
 import com.novelreader.domain.model.ContentResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -72,6 +73,49 @@ class ComicImageScrambleTest {
     fun `段数超出合理范围时不还原`() {
         assertNull(ComicImageScramble.bandCountFromScript(scrambleScript(0)))
         assertNull(ComicImageScramble.bandCountFromScript(scrambleScript(999)))
+    }
+
+    /**
+     * 禁漫天堂（JMComic）生成的脚本（v1.7.1.0 核实）。
+     *
+     * 它的 `num` 是运行时用 `md5(epId + 图片名)` 末位字符算出来的，但**写进脚本时是字面量**
+     * （`const num = ${num}` 插值），所以本项目的识别条件（`fillImageRangeAt` +
+     * `blockSize` + `num = <数字>` + `blocks.length - 1` + `i >= 0`）本就命中 ——
+     * 不需要为它单独写一套算法。这条用例把这个「能识别」的事实钉住，防止以后收紧条件时误伤。
+     */
+    @Test
+    fun `禁漫天堂形态的脚本同样能被识别`() {
+        val jm = """
+            let modifyImage = (image) => {
+                const num = 14
+                let blockSize = Math.floor(image.height / num)
+                let remainder = image.height % num
+                let blocks = []
+                for(let i = 0; i < num; i++) {
+                    let start = i * blockSize
+                    let end = start + blockSize + (i !== num - 1 ? 0 : remainder)
+                    blocks.push({
+                        start: start,
+                        end: end
+                    })
+                }
+                let res = Image.empty(image.width, image.height)
+                let y = 0
+                for(let i = blocks.length - 1; i >= 0; i--) {
+                    let block = blocks[i]
+                    let currentHeight = block.end - block.start
+                    res.fillImageRangeAt(0, y, image, 0, block.start, image.width, currentHeight)
+                    y += currentHeight
+                }
+                return res
+            }
+        """.trimIndent()
+        assertEquals(14, ComicImageScramble.bandCountFromScript(jm))
+        // 段数语义与几何与普通形态完全一致
+        assertEquals(
+            ComicImageScramble.bandHeights(1000, 14).sum(),
+            1000,
+        )
     }
 
     @Test
@@ -175,5 +219,32 @@ class ComicImageScrambleTest {
             true,
             text.contains("scripts[finalUrl] = r.modifyImage"),
         )
+    }
+
+    /**
+     * **单章图源的章节兜底**（v1.7.2.0）契约。
+     *
+     * nhentai / ehentai / galleriesindex 这类图库站的 `loadInfo` 只返回
+     * `thumbnails` / `maxPage`，**不返回 `chapters`** —— 因为「一个图库 = 一章」。
+     * 而详情页靠 `chapters` 渲染目录，于是这些源一律显示
+     * 「没有获取到章节 / 该源没有返回任何章节，可能源已失效」，一本都打不开，
+     * 且因为没抛异常，提示还会把排查方向引到「源已失效」。
+     *
+     * 修法是 `chaptersOf`：`chapters` 为空时按页面信息合成一章「全集」。
+     * 这里做字符串级断言，保证 `info` / `chapters` 两个 op 都走它。
+     */
+    @Test
+    fun `运行时资产对无章节的图库源做了章节兜底`() {
+        val asset = java.io.File("src/main/assets/venera/runtime.js")
+        if (!asset.isFile) return // 从模块根目录以外的 cwd 跑时跳过
+        val text = asset.readText()
+        assertTrue("必须实现图库兜底函数", text.contains("function galleryFallbackChapters("))
+        assertTrue("必须有 chaptersOf 包装（chaptersToPairs + 兜底）", text.contains("function chaptersOf("))
+        assertTrue(
+            "chapters 为空时要回退到图库兜底",
+            text.contains("if (pairs.length === 0) pairs = galleryFallbackChapters(d);"),
+        )
+        assertTrue("info 必须走 chaptersOf", text.contains("chapters: chaptersOf(d).map("))
+        assertTrue("chapters 必须走 chaptersOf", text.contains("chapters: chaptersOf(cached).map("))
     }
 }

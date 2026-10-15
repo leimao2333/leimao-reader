@@ -69,6 +69,23 @@ interface SourceAdapter {
     suspend fun exploreCategories(): List<ExploreCategory> = emptyList()
 
     /**
+     * 发现分类的**廉价枚举**（v1.7.2.0，首页推荐跨源聚合用）。
+     *
+     * 语义与 [exploreCategories] 相同（一级分类名 + 该源内的分类地址），区别只在
+     * **允许省略昂贵的运行时求值**：
+     *
+     * legado 源的分类本来就写在 `exploreUrl` 里，解析是纯本地字符串处理，零成本，
+     * 默认实现直接复用 [exploreCategories]；而 Venera 源的 `category.parts` 要在
+     * 隐藏 WebView 里真实评估（`dynamic` part 还会调用 loader 联网），25 个漫画源
+     * 逐个跑就是几十秒的主线程派发，冷启动足以把首页拖到 ANR —— 这类源应当改用
+     * 源码里的**静态分类表**（见 `VeneraSourceAdapter` 的覆写）。
+     *
+     * 调用方（首页推荐）需要的是「有哪些栏目、每个源各自的地址是什么」，
+     * 静态表已足够；点进栏目后真正取内容时仍走源自己的正常链路。
+     */
+    suspend fun fastExploreCategories(): List<ExploreCategory> = exploreCategories()
+
+    /**
      * 发现分类**完整层级树**（v1.6.7.0）。
      *
      * 部分源天然带父子分类（苹果 CMS 的 `class[].type_pid`：一级「电影 / 电视剧 /

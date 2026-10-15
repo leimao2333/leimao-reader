@@ -26,7 +26,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LibraryAdd
@@ -91,7 +90,6 @@ fun HomeScreen(
     onOpenNovelSearch: () -> Unit,
     onOpenComicSearch: () -> Unit,
     onOpenVideoSearch: () -> Unit,
-    onOpenExplore: (SourceType) -> Unit = {},
     /** 打开 RSS 订阅（v1.3.1.0） */
     onOpenRss: () -> Unit = {},
     onContinueReading: (MediaItem, List<ChapterItem>, ChapterItem?) -> Unit,
@@ -131,6 +129,11 @@ fun HomeScreen(
 
     // 影视首页状态（v1.3.3.0，MoonTV 风格）
     val videoHomeState by viewModel.videoHome.collectAsState()
+    // 小说 / 漫画「推荐」视图状态（v1.7.1.0）
+    val novelFeedState by viewModel.novelFeed.collectAsState()
+    val comicFeedState by viewModel.comicFeed.collectAsState()
+    // 小说 / 漫画 Tab 的视图：0=推荐 1=发现 2=书架（v1.7.1.0；与视频 Tab 的频道胶囊同构）
+    var contentSubTab by rememberSaveable { mutableIntStateOf(0) }
     // 视频 Tab 频道栏目：0=首页 1=电影 2=动漫 3=短剧 4=收藏（v1.5.0.0 持久化，重启恢复）
     var videoSubTab by rememberSaveable { mutableIntStateOf(0) }
     // 从持久化读回上次停留的频道（v1.5.0.0），并触发对应频道的加载
@@ -201,18 +204,16 @@ fun HomeScreen(
         if (selectedTab == 2) viewModel.onVideoTabShown()
     }
 
+    // 小说 / 漫画「推荐」视图：首次进入 / 切回时按需加载首屏（v1.7.1.0，幂等）
+    androidx.compose.runtime.LaunchedEffect(selectedTab, contentSubTab) {
+        if (selectedTab != 2 && contentSubTab == 0) viewModel.onFeedTabShown(currentType)
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text(tabs[selectedTab].label) },
                 actions = {
-                    // 发现入口：视频 tab 的发现与首页作用重合（都是聚合浏览），
-                    // 仅小说 / 漫画保留发现入口（v1.4.2.0）
-                    if (currentType != SourceType.VIDEO) {
-                        IconButton(onClick = { onOpenExplore(currentType) }) {
-                            Icon(Icons.Filled.Explore, contentDescription = "发现")
-                        }
-                    }
                     IconButton(onClick = onOpenRss) {
                         Icon(Icons.Filled.RssFeed, contentDescription = "订阅")
                     }
@@ -302,6 +303,29 @@ fun HomeScreen(
                     }
                 }
 
+                // 小说 / 漫画 Tab：推荐（首位）/ 书架 两视图切换（v1.7.1.0）
+                // 推荐与发现**合并为一个视图**：推荐页顶部带「栏目」下拉，
+                // 默认「推荐」= 各源推荐位的横滑合览；选中具体栏目 = 该栏目的聚合结果。
+                // 两者本就是同一件事的两个粒度（先扫一眼推荐位，不满意再按栏目精确找），
+                // 拆成两个平级视图反而让人多点一次。
+                if (selectedTab != 2) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        com.novelreader.ui.components.CapsuleSwitch(
+                            options = listOf("推荐", "书架"),
+                            selectedIndex = contentSubTab,
+                            onSelect = { idx ->
+                                contentSubTab = idx
+                                if (idx == 0) viewModel.onFeedTabShown(currentType)
+                            },
+                        )
+                    }
+                }
+
                 val showVideoHome = selectedTab == 2 && videoSubTab == 0
                 val showMovieChannel = selectedTab == 2 && videoSubTab == 1
                 val showAnimeChannel = selectedTab == 2 && videoSubTab == 2
@@ -366,26 +390,38 @@ fun HomeScreen(
                 }
 
                 // 书架内容（合并后的主内容区）
-                if (!showVideoHome && !showMovieChannel && !showAnimeChannel && !showShortDrama) BookshelfContent(
-                    books = books,
-                    currentType = currentType,
-                    progressMap = progressMap,
-                    lastChapterMap = lastChapterMap,
-                    chapterCountMap = chapterCountMap,
-                    gridMode = gridMode,
-                    onToggleGridMode = { gridMode = if (gridMode == 0) 1 else 0 },
-                    onImportLocalBook = { txtPicker.launch(arrayOf("text/plain", "text/*", "application/octet-stream")) },
-                    groupNames = groupNames,
-                    selectedGroup = selectedGroup,
-                    onSelectGroup = { viewModel.selectGroup(it) },
-                    onManageGroup = { manageGroup = it },
-                    onAssignGroup = { assignTarget = it },
-                    onItemClick = { item ->
-                        viewModel.continueReading(item) { chapters, target ->
-                            onContinueReading(item, chapters, target)
-                        }
-                    },
-                )
+                // 视频 Tab 的「收藏」视图同样落在这里，所以对视频强制走书架分支
+                val contentTab = if (selectedTab == 2) 1 else contentSubTab
+                if (!showVideoHome && !showMovieChannel && !showAnimeChannel && !showShortDrama) when (contentTab) {
+                    // 推荐（v1.7.1.0，含原「发现」）：顶部栏目下拉 + 横滑排 / 栏目聚合网格
+                    0 -> FeedContent(
+                        state = if (currentType == SourceType.COMIC) comicFeedState else novelFeedState,
+                        onItemClick = if (currentType == SourceType.COMIC) onOpenComicItem else onOpenNovelItem,
+                        onRefresh = { viewModel.refreshFeed(currentType) },
+                        onSelectCategory = { viewModel.selectFeedCategory(currentType, it) },
+                        onOpenSearch = onOpenSearch,
+                    )
+                    else -> BookshelfContent(
+                        books = books,
+                        currentType = currentType,
+                        progressMap = progressMap,
+                        lastChapterMap = lastChapterMap,
+                        chapterCountMap = chapterCountMap,
+                        gridMode = gridMode,
+                        onToggleGridMode = { gridMode = if (gridMode == 0) 1 else 0 },
+                        onImportLocalBook = { txtPicker.launch(arrayOf("text/plain", "text/*", "application/octet-stream")) },
+                        groupNames = groupNames,
+                        selectedGroup = selectedGroup,
+                        onSelectGroup = { viewModel.selectGroup(it) },
+                        onManageGroup = { manageGroup = it },
+                        onAssignGroup = { assignTarget = it },
+                        onItemClick = { item ->
+                            viewModel.continueReading(item) { chapters, target ->
+                                onContinueReading(item, chapters, target)
+                            }
+                        },
+                    )
+                }
 
                 // 分组管理弹窗（长按分组 chip 触发：重命名 / 删除）
                 manageGroup?.let { g ->

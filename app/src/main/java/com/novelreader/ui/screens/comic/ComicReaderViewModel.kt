@@ -147,6 +147,41 @@ class ComicReaderViewModel(
     /** 当前已加载的章节，用于失败重试 */
     private var lastChapter: ChapterItem? = null
 
+    /** 已尝试过备用镜像的地址（每地址只回退一次，避免失败循环） */
+    private val fallbackTried = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * 图片加载失败 → 向源要备用镜像地址并替换该图（v1.7.1.0）。
+     *
+     * 禁漫天堂等源在 `onImageLoad` 里给出 `onLoadFailed`（内置 5 条备用域名），
+     * 官方 App 会自动换域名重试；我们这边此前完全没接 ——
+     * 第一个域名被墙就等于整章图片全加载不出来。
+     */
+    fun onImageFailed(url: String) {
+        val item = currentItem ?: return
+        if (url.isBlank()) return
+        if (!fallbackTried.add(url)) return
+        viewModelScope.launch {
+            val fb = runCatching { contentRepository.fallbackImage(item.sourceId, url) }
+                .getOrNull() ?: return@launch
+            val next = fb.first
+            val extraHeaders = fb.second
+            if (next.isBlank() || next == url) return@launch
+            val list = _images.value
+            val idx = list.indexOf(url)
+            if (idx < 0) return@launch
+            // 乱序还原脚本按地址查，换址要一并搬过去，否则新地址的图会显示成乱序
+            val script = _imageScripts.value[url]
+            _images.value = list.toMutableList().also { it[idx] = next }
+            if (!script.isNullOrBlank()) {
+                _imageScripts.value = (_imageScripts.value - url) + (next to script)
+            }
+            if (extraHeaders.isNotEmpty()) {
+                _imageHeaders.value = _imageHeaders.value + extraHeaders
+            }
+        }
+    }
+
     fun loadContent(chapter: ChapterItem) {
         currentChapter = chapter
         lastChapter = chapter
@@ -154,6 +189,8 @@ class ComicReaderViewModel(
         _currentPage.value = 0
         _images.value = emptyList()
         _imageScripts.value = emptyMap()
+        // 换章后重置图片回退记录，避免同一地址在别的话里被误判为「已回退过」
+        fallbackTried.clear()
         syncPosition()
         viewModelScope.launch {
             _loading.value = true
@@ -180,7 +217,14 @@ class ComicReaderViewModel(
                     _imageScripts.value = result.comicImageScripts
                     // 图片列表为空时不进入渲染分支，避免纯黑屏无提示
                     if (imgs.isEmpty()) {
-                        _error.value = "本章暂无可用图片，可能源已失效或章节待更新"
+                        // v1.7.1.0：区分「源报错」与「确实没有图片」
+                        val why = com.novelreader.core.source.SourceErrorLog
+                            .describe(chapter.sourceId)
+                        _error.value = if (why != null) {
+                            "本章图片拉取失败（$why）\n可尝试换源，或检查网络 / 代理后重试"
+                        } else {
+                            "本章暂无可用图片，可能源已失效或章节待更新"
+                        }
                     } else {
                         saveProgress()
                         preloadNextChapters(chapter.index)

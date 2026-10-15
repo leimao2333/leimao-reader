@@ -155,7 +155,9 @@ class NovelReaderViewModel(
     private fun putMemory(index: Int, raw: String) {
         if (raw.isBlank()) return
         memoryCache[index] = raw
-        while (memoryCache.size > 8) {
+        // v1.7.1.0：8 → 16。预取窗口现在前后各 3 章，容量太小会把刚预取好的章节立刻淘汰，
+        // 连翻几章后又退化成现拉网络。
+        while (memoryCache.size > 16) {
             val eldest = memoryCache.keys.firstOrNull() ?: break
             memoryCache.remove(eldest)
         }
@@ -163,8 +165,22 @@ class NovelReaderViewModel(
 
     private fun clearMemory() = memoryCache.clear()
 
-    /** 预加载任务（切章时取消重启） */
-    private var preloadJob: Job? = null
+    /**
+     * 预取请求：最新要阅读的章节下标（v1.7.1.0）。
+     *
+     * 以前是 `preloadJob?.cancel()` 每次切章整体重启 —— 快速连翻时旧任务被反复取消，
+     * 后面的章节永远来不及预取完，于是每次翻到下一章仍要现拉网络，越翻越卡（恶性循环）。
+     * 现在改为「单一常驻消费协程 + 请求去重」：新请求只覆盖目标，不再掐断正在进行的预取。
+     */
+    private val preloadRequest = MutableStateFlow(-1)
+
+    init {
+        viewModelScope.launch {
+            preloadRequest.collect { index ->
+                if (index >= 0) runPreloadWindow(index)
+            }
+        }
+    }
 
     /**
      * 预缓存话数（向后预取接下来 N 章，默认 3；v1.6.0.0 改可调）。
@@ -770,32 +786,40 @@ class NovelReaderViewModel(
     }
 
     /**
-     * 预加载当前章之后的 [preloadChapters] 个章节（v1.6.0.0 改可调）。
+     * 请求预取当前章前后各 [preloadChapters] 章（v1.6.0.0 改可调、v1.7.1.0 不再整体重启）。
+     * 这里只登记请求，实际抓取由常驻协程 [runPreloadWindow] 消费。
+     */
+    private fun preloadAround(index: Int) {
+        preloadRequest.value = index
+    }
+
+    /**
+     * 实际预取：**先向后** [preloadChapters] 章（马上要读的），再向前同样数量（回看）。
      *
      * 取内容顺序：内存预加载缓存 → 本地章节缓存 → 网络。
      * 命中缓存时不显示 loading 遮罩，做到「切章秒开」。
+     * 一旦发现请求的章节已变（用户连翻），立刻收尾交给新一轮，不白等旧窗口。
      */
-    private fun preloadAround(index: Int) {
-        preloadJob?.cancel()
+    private suspend fun runPreloadWindow(index: Int) {
         val count = preloadChapters.value.coerceIn(0, 5)
         if (count == 0) return
         val chapters = _chapters.value
-        // 取 index+1..index+count；不足则取到底（不存在则跳过）
-        val targets = (1..count).mapNotNull { chapters.getOrNull(index + it) }
-        if (targets.isEmpty()) return
-        preloadJob = viewModelScope.launch {
-            for (ch in targets) {
-                if (memoryCache[ch.index]?.isNotBlank() == true) continue
-                if (ch.index == currentChapter?.index) continue
-                val item = currentItem ?: break
-                // 先本地章节缓存（单章缓存也是「预缓存」的一部分——用户已读过的章都缓存了）
-                val cached = chapterCacheRepository?.let {
-                    runCatching { it.getCached(item.sourceId, item.id, ch.index) }.getOrNull()
-                }
-                if (!cached.isNullOrBlank()) {
-                    putMemory(ch.index, cached)
-                    continue
-                }
+        val anchor = currentItem ?: return
+        val targets = buildList {
+            (1..count).forEach { chapters.getOrNull(index + it)?.let(::add) }
+            (1..count).forEach { chapters.getOrNull(index - it)?.let(::add) }
+        }
+        for (ch in targets) {
+            if (memoryCache[ch.index]?.isNotBlank() == true) continue
+            if (ch.index == currentChapter?.index) continue
+            val item = currentItem ?: anchor
+            // 先本地章节缓存（单章缓存也是「预缓存」的一部分——用户已读过的章都缓存了）
+            val cached = chapterCacheRepository?.let {
+                runCatching { it.getCached(item.sourceId, item.id, ch.index) }.getOrNull()
+            }
+            if (!cached.isNullOrBlank()) {
+                putMemory(ch.index, cached)
+            } else {
                 // 再网络预取
                 val raw = runCatching { contentRepository.content(ch) }
                     .getOrNull()?.novelText?.trim().orEmpty()
@@ -808,8 +832,10 @@ class NovelReaderViewModel(
                     }
                 }
             }
-            refreshCachedIndices()
+            // 请求已更新（用户连翻）→ 放弃本轮剩余目标，避免白等旧窗口
+            if (preloadRequest.value != index) return
         }
+        refreshCachedIndices()
     }
 
     /**

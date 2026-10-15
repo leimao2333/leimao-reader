@@ -616,6 +616,16 @@
 
     var SOURCES = {};
     var INFO_CACHE = {};
+    /**
+     * 逐图「失败回退」表（v1.7.1.0）。
+     *
+     * 源可以在 onImageLoad 的返回值里给出 `onLoadFailed`（函数），
+     * 它在图片 404/403 时返回**下一个镜像地址**。Venera 官方会自己调它重试；
+     * 我们这边图片由 Coil 直接加载，函数也无法跨桥传递，因此这里按地址把函数
+     * 存起来，再由 `retryImage` 操作按需调用 —— 否则「5 个内置备用域名」等于白给，
+     * 第一个域名被墙就整章图都加载不出来。
+     */
+    var IMG_RETRY = {};
 
     function registerSource(key) {
         var code = B.getSource(String(key));
@@ -779,6 +789,39 @@
         return out;
     }
 
+    /**
+     * 单章图源的章节兜底（v1.7.2.0）。
+     *
+     * nhentai / ehentai / galleriesindex 这类**图库站**的 `loadInfo` 只返回
+     * `thumbnails`（页面缩略图）与 `maxPage`，**根本不返回 `chapters`** ——
+     * 因为「一个图库 = 一章」，页面列表就是章节本身。
+     *
+     * 我们的详情页依赖 `chapters` 渲染目录，于是这些源一律显示
+     * 「没有获取到章节 / 该源没有返回任何章节，可能源已失效」：**一本都打不开**，
+     * 而且因为 `loadInfo` 其实成功返回了（没抛异常），错误提示还会把用户
+     * 往「源已失效」的方向误导。
+     *
+     * 这里探测「没有 chapters 但有页面信息」 → 合成一章「全集」。
+     * `loadEp(comicId, epId)` 对这类源本来就忽略 epId（直接返回全部页面），
+     * 传 `"0"` 即可。
+     */
+    function galleryFallbackChapters(d) {
+        if (!d) return [];
+        var thumbs = d.thumbnails;
+        var hasThumbs = Array.isArray(thumbs) && thumbs.length > 0;
+        var maxPage = Number(d.maxPage || 0);
+        if (!hasThumbs && !(maxPage > 0)) return [];
+        var pages = hasThumbs ? thumbs.length : maxPage;
+        return [['0', pages > 0 ? '全集（' + pages + ' 页）' : '全集']];
+    }
+
+    /** `chaptersToPairs` + 单章图源兜底：得到最终的 `[epId, 标题]` 对数组 */
+    function chaptersOf(d) {
+        var pairs = chaptersToPairs(d && d.chapters);
+        if (pairs.length === 0) pairs = galleryFallbackChapters(d);
+        return pairs;
+    }
+
     function chapterTitle(v) {
         if (v === null || v === undefined) return '';
         if (typeof v === 'string') return v;
@@ -814,10 +857,18 @@
      * 的图片还原回正常顺序。这个脚本必须跟着地址一起交给 app，
      * 否则读者看到的就是一页页乱序的图片。
      */
-    async function serializeImages(list, src, comicId, epId) {
+    async function serializeImages(list, src, comicId, epId, topHeaders) {
         var urls = [];
         var headers = {};
         var scripts = {};
+        // v1.7.1.0：loadEp 也可能返回 `{ images: [...], headers: {...} }` —— 顶层请求头。
+        // 以前只从**单张图片对象**里取 headers、且只在 headers 还空着时才取，
+        // 于是「顶层头」与「后续图片自带的头」全被丢弃，防盗链站点直接 403 →「图片加载失败」。
+        if (topHeaders && typeof topHeaders === 'object') {
+            for (var tk in topHeaders) {
+                if (topHeaders[tk] != null) headers[tk] = String(topHeaders[tk]);
+            }
+        }
         var arr = list || [];
         for (var i = 0; i < arr.length; i++) {
             var item = arr[i];
@@ -827,8 +878,13 @@
             }
             if (!item) continue;
             if (item.url) urls.push(item.url);
-            if (item.headers && Object.keys(item.headers).length && Object.keys(headers).length === 0) {
-                headers = item.headers;
+            if (item.headers && Object.keys(item.headers).length) {
+                // 逐图头**补齐**已有键（不覆盖顶层头），而不是「只有第一份生效」
+                for (var hk in item.headers) {
+                    if (item.headers[hk] != null && headers[hk] == null) {
+                        headers[hk] = String(item.headers[hk]);
+                    }
+                }
             }
         }
         // onImageLoad：源用它补签名 / 防盗链头 / 二次解析真实地址 / 给出乱序还原脚本
@@ -844,12 +900,20 @@
                         finalUrl = r;
                     } else if (r && typeof r === 'object') {
                         if (typeof r.url === 'string' && r.url) finalUrl = r.url;
-                        if (r.headers && Object.keys(r.headers).length && Object.keys(headers).length === 0) {
-                            headers = r.headers;
+                        if (r.headers && Object.keys(r.headers).length) {
+                            // v1.7.1.0：onImageLoad 给出的头是最具体的（常带签名 / 时效 token），
+                            // 直接并入并覆盖同名键 —— 以前只在 headers 全空时才用，等于白给。
+                            for (var rk in r.headers) {
+                                if (r.headers[rk] != null) headers[rk] = String(r.headers[rk]);
+                            }
                         }
                         // modifyImage 多为代码字符串；函数无法跨桥传递，只能跳过
                         if (typeof r.modifyImage === 'string' && r.modifyImage) {
                             scripts[finalUrl] = r.modifyImage;
+                        }
+                        // 失败回退函数存起来，供 retryImage 按需调用（见 IMG_RETRY 说明）
+                        if (typeof r.onLoadFailed === 'function') {
+                            IMG_RETRY[finalUrl] = r.onLoadFailed;
                         }
                     }
                 } catch (e) {
@@ -1060,6 +1124,27 @@
             case 'ping':
                 return { ok: true, name: src.name, version: src.version };
 
+            // 图片加载失败 → 向源要下一个镜像地址（v1.7.1.0，见 IMG_RETRY 说明）
+            case 'retryImage': {
+                var retryFn = IMG_RETRY[args[0]];
+                if (typeof retryFn !== 'function') return null;
+                var nr = null;
+                try {
+                    nr = await retryFn();
+                } catch (e) {
+                    log('warning', 'onLoadFailed', String(e));
+                }
+                if (!nr || !nr.url) {
+                    delete IMG_RETRY[args[0]];
+                    return null;
+                }
+                // 把回退函数转挂到新地址上：源里的 tried 计数器会继续前进，
+                // 于是「第 2、3…个镜像」还能接着回退（否则一次就到底）。
+                IMG_RETRY[nr.url] = retryFn;
+                delete IMG_RETRY[args[0]];
+                return { url: nr.url, headers: nr.headers || {} };
+            }
+
             case 'search': {
                 // 两种契约：load(keyword, options, page) 与 loadNext(keyword, options, next)
                 // （loadNext 用于「下一页 token」型源；两者都存在时 load 优先，与官方一致）
@@ -1115,7 +1200,7 @@
                     description: (d && d.description) || '',
                     tags: flattenTags(d && d.tags),
                     updateTime: (d && d.updateTime) || '',
-                    chapters: chaptersToPairs(d && d.chapters).map(function (p) {
+                    chapters: chaptersOf(d).map(function (p) {
                         return [String(p[0]), chapterTitle(p[1])];
                     }),
                 };
@@ -1128,7 +1213,7 @@
                     INFO_CACHE[key + '|' + args[0]] = cached;
                 }
                 return {
-                    chapters: chaptersToPairs(cached && cached.chapters).map(function (p) {
+                    chapters: chaptersOf(cached).map(function (p) {
                         return [String(p[0]), chapterTitle(p[1])];
                     }),
                 };
@@ -1139,7 +1224,10 @@
                 if (typeof loadEp !== 'function') throw new Error('该源没有实现章节图片加载（comic.loadEp）');
                 var res = await loadEp.call(src, args[0], args[1]);
                 var imgs = res && (res.images || res);
-                return await serializeImages(imgs, src, args[0], args[1]);
+                // v1.7.1.0：把 loadEp 的顶层 headers 一并下传（见 serializeImages 的说明）
+                var topHeaders = res && res.headers && typeof res.headers === 'object'
+                    ? res.headers : null;
+                return await serializeImages(imgs, src, args[0], args[1], topHeaders);
             }
 
             // ===== 账号（v1.3.0：源管理页登录按钮）=====

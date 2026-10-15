@@ -135,8 +135,8 @@ fun ComicReaderScreen(
         if (!menuVisible.value) showSettings.value = false
     }
 
-    // 当前是否有图片处于「放大」状态：放大时锁住翻页 / 滚动，专心查看细节
-    val zoomed = remember { mutableStateOf(false) }
+    // 缩放态（是否有图片放大）自 v1.7.1.0 起由各阅读器内部按「具体图片 url」自行跟踪：
+    // 共享的单一布尔会被相邻页 / 预加载页的回调互相覆盖，导致放大后翻页被永久锁死。
 
     // C3 方向锁定：锁定后设备旋转不改变屏幕方向，退出阅读页自动恢复
     val orientationLocked = remember { mutableStateOf(false) }
@@ -226,10 +226,9 @@ fun ComicReaderScreen(
                     onNextChapter = { viewModel.nextChapter() },
                     onTap = toggleMenu,
                     bottomContentPadding = barTotalHeight,
-                    zoomed = zoomed.value,
-                    onZoomChanged = { zoomed.value = it },
                     preloadCount = preloadCount,
                     canPreload = canPreload,
+                    onImageFailed = viewModel::onImageFailed,
                 )
             }
             else -> {
@@ -244,11 +243,10 @@ fun ComicReaderScreen(
                     onTap = toggleMenu,
                     onPrevChapter = { viewModel.prevChapter() },
                     onNextChapter = { viewModel.nextChapter() },
-                    zoomed = zoomed.value,
-                    onZoomChanged = { zoomed.value = it },
                     preloadCount = preloadCount,
                     canPreload = canPreload,
                     doublePage = doublePage,
+                    onImageFailed = viewModel::onImageFailed,
                 )
             }
         }
@@ -479,13 +477,18 @@ private fun VerticalScrollReader(
     onNextChapter: () -> Unit,
     onTap: () -> Unit,
     bottomContentPadding: Dp,
-    zoomed: Boolean,
-    onZoomChanged: (Boolean) -> Unit,
     preloadCount: Int,
     canPreload: Boolean,
+    onImageFailed: (String) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val context = LocalContext.current
+
+    // v1.7.1.0：缩放态按「具体图片 url」判定，不再用外层共享布尔 ——
+    // 相邻图片各自回调 true/false 会互相覆盖，导致放大后列表滚动 / 切话被永久锁死。
+    var zoomedUrl by remember { mutableStateOf<String?>(null) }
+    val anyZoomed = zoomedUrl != null
+    LaunchedEffect(chapterIndex) { zoomedUrl = null }
 
     // 切话后回到顶部：LazyListState 在同一个 Composable 实例上会保留上一话的滚动位置，
     // 不重置的话点「下一话」会直接停在新一话的末尾。
@@ -510,8 +513,8 @@ private fun VerticalScrollReader(
             .edgeOverscroll(
                 resetKey = chapterIndex,
                 vertical = true,
-                canScrollBackward = { listState.canScrollBackward && !zoomed },
-                canScrollForward = { listState.canScrollForward && !zoomed },
+                canScrollBackward = { listState.canScrollBackward && !anyZoomed },
+                canScrollForward = { listState.canScrollForward && !anyZoomed },
                 onOverscrollStart = onPrevChapter,
                 onOverscrollEnd = onNextChapter,
             )
@@ -535,7 +538,10 @@ private fun VerticalScrollReader(
                     .height(240.dp),
                 headers = headers,
                 script = scripts[url],
-                onZoomStateChanged = onZoomChanged,
+                onZoomStateChanged = { z ->
+                    zoomedUrl = if (z) url else if (zoomedUrl == url) null else zoomedUrl
+                },
+                onLoadFailed = onImageFailed,
             )
         }
     }
@@ -557,11 +563,10 @@ private fun HorizontalPagerReader(
     onTap: () -> Unit,
     onPrevChapter: () -> Unit = {},
     onNextChapter: () -> Unit = {},
-    zoomed: Boolean,
-    onZoomChanged: (Boolean) -> Unit,
     preloadCount: Int,
     canPreload: Boolean,
     doublePage: Boolean,
+    onImageFailed: (String) -> Unit = {},
 ) {
     // C3 双页模式：每屏并排展示两张图（左图 = 偶数下标），页数 = ceil(n/2)。
     // currentPage 语义统一为「左侧图片下标」（单页模式即图片下标），进度/翻页逻辑不受影响。
@@ -613,18 +618,26 @@ private fun HorizontalPagerReader(
         }
     }
 
+    // v1.7.1.0：缩放态按「具体图片 url」判定（同 VerticalScrollReader 的说明）
+    var zoomedUrl by remember { mutableStateOf<String?>(null) }
+    val anyZoomed = zoomedUrl != null
+    LaunchedEffect(chapterIndex) { zoomedUrl = null }
+    fun onImgZoom(url: String, z: Boolean) {
+        zoomedUrl = if (z) url else if (zoomedUrl == url) null else zoomedUrl
+    }
+
     HorizontalPager(
         state = pagerState,
         // 放大查看细节时禁止滑动翻页（缩放组件会自己吞掉拖动事件，这里双保险）
-        userScrollEnabled = !zoomed,
+        userScrollEnabled = !anyZoomed,
         modifier = Modifier
             .fillMaxSize()
             // 末页继续拖 → 下一话；首页往前拖 → 上一话
             .edgeOverscroll(
                 resetKey = chapterIndex,
                 vertical = false,
-                canScrollBackward = { pagerState.currentPage > 0 && !zoomed },
-                canScrollForward = { pagerState.currentPage < pageCountSafe - 1 && !zoomed },
+                canScrollBackward = { pagerState.currentPage > 0 && !anyZoomed },
+                canScrollForward = { pagerState.currentPage < pageCountSafe - 1 && !anyZoomed },
                 onOverscrollStart = onPrevChapter,
                 onOverscrollEnd = onNextChapter,
             ),
@@ -665,7 +678,8 @@ private fun HorizontalPagerReader(
                         placeholderModifier = Modifier.fillMaxSize(),
                         headers = headers,
                         script = scripts[images.getOrNull(leftImg) ?: ""],
-                        onZoomStateChanged = onZoomChanged,
+                        onZoomStateChanged = { z -> onImgZoom(images.getOrNull(leftImg) ?: "", z) },
+                        onLoadFailed = onImageFailed,
                     )
                     ZoomableComicImage(
                         url = images.getOrNull(rightImg) ?: "",
@@ -676,7 +690,8 @@ private fun HorizontalPagerReader(
                         placeholderModifier = Modifier.fillMaxSize(),
                         headers = headers,
                         script = scripts[images.getOrNull(rightImg) ?: ""],
-                        onZoomStateChanged = onZoomChanged,
+                        onZoomStateChanged = { z -> onImgZoom(images.getOrNull(rightImg) ?: "", z) },
+                        onLoadFailed = onImageFailed,
                     )
                 }
             } else {
@@ -687,7 +702,8 @@ private fun HorizontalPagerReader(
                     placeholderModifier = Modifier.fillMaxSize(),
                     headers = headers,
                     script = scripts[images.getOrNull(page) ?: ""],
-                    onZoomStateChanged = onZoomChanged,
+                    onZoomStateChanged = { z -> onImgZoom(images.getOrNull(page) ?: "", z) },
+                    onLoadFailed = onImageFailed,
                 )
             }
         }
@@ -812,6 +828,8 @@ internal fun ComicImage(
     placeholderModifier: Modifier = Modifier,
     headers: Map<String, String> = emptyMap(),
     script: String? = null,
+    /** 加载失败回调：交给上层向源要备用镜像地址（v1.7.1.0） */
+    onLoadFailed: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     // 重试计数：并入缓存键，点击重试时产生全新请求
@@ -831,6 +849,9 @@ internal fun ComicImage(
                         IMAGE_LOG_TAG,
                         "图片加载失败 err=${result.throwable?.javaClass?.simpleName}",
                     )
+                    // v1.7.1.0：先让上层试一次备用镜像（禁漫天堂等源有 5 条线路），
+                    // 拿到新地址后 url 变化会让本组件以新地址重新加载
+                    onLoadFailed(url)
                 },
             )
             .build()
@@ -842,7 +863,15 @@ internal fun ComicImage(
         modifier = modifier,
         contentScale = contentScale,
         loading = { ComicLoading(placeholderModifier) },
-        error = { ComicError(placeholderModifier, onRetry = { retry++ }) },
+        error = {
+            ComicError(
+                placeholderModifier,
+                onRetry = {
+                    onLoadFailed(url)
+                    retry++
+                },
+            )
+        },
     )
 }
 

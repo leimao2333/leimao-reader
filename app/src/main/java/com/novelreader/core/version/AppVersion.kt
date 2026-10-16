@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.7.4.0"
+    const val CURRENT_VERSION = "1.7.5.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,19 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.7.5.0",
+            date = "2026-10-16",
+            changes = listOf(
+                "**漫画源一个都不丢（两段式枚举）**：旧枚举整轮 15 秒硬上界到点直接丢弃没跑完的源 —— 25 个 Venera 源串行过引擎要 20~75 秒，截止后没轮到的源整体丢失，缓存只覆盖 28/34。现在拆成两段：第一段全量**本地静态分类**（Venera 读 `category.parts`、legado 读 `ruleExplore`，纯本地毫秒级），一个源都不丢，零分类源挂虚拟题材词入口；第二段仅 Venera 源**串行**跑运行时评估（`exploreCategories`），把静态入口升级成 `vcat::` 真分类页，升不完的源**保留静态入口绝不丢弃**。真机实测 `枚举完成：34 源（Venera 25 个升级 21~23 个）`，仅 ehentai / 少年ジャンプ＋ 退化为虚拟题材入口。缓存键升版（`_v4`）作废残缺旧缓存。",
+                "**首页补「更多源」兜底行**：`MAX_FEED_ROWS=10` 限制下，普通栏目按覆盖源数倒序只能覆盖约 15/25 源，长尾独有名栏目的源排不进去。新增「更多源」兜底行把 leftover 源全收进去（兜底行不入栏目下拉、不受 10 排限制），保证聚合源数贴近全部启用源。实测 aliveCount=34 / enumerated=34（全 34 漫画源进首页）。",
+                "**设置新增「隐藏成人内容」开关 + 成人识别补漏**：设置页加开关，开启后成人源内容沉底 / 隐藏；配套按**站点名**与 **Venera 源 key**（`nhentai` / `ehentai` / `jm` / `wnacg` / `hitomi` 等）识别漏网成人源，综合站（MangaDex / 拷贝漫画 / 包子漫画）即使有成人分区也不误伤。",
+                "**Venera 运行时两处根因修复（runtime.js）**：① 拷贝漫画的 `refreshAppApi` 把 `settings.base_url` **整个换成值**，旧实现只认 `{default:...}` 对象，返回 null 让 URL 变成 `https://null/api/...`、搜索全空 —— 现在按值返回。② `init` 先置完成标记后 `await` 的竞态：调用方 30s 上界超时放弃后 init 仍在后台跑，后续调用看到标记已置就跳过、拿到半初始化源（baseUrl 未填好），表现「接口地址是 null」—— 现在把 init 的 Promise 共享，后来的调用等同一个 init 落地，谁也不跳过。",
+                "**新增源修复表（包子漫画域名）**：默认主域名 `bzmgcn.com` 已服务器级 403（2026-10-16 实测），备选 `webmota.com` 首页 / 分类 API / 搜索均 200 且正常出数。按「源 key → 设置名 → 可用值」声明一次性修复，经 `ensureSetting` 只在用户没显式设置过时写入引擎存储 —— 不覆盖用户选择、重新导入仍有效。",
+                "**协程取消安全捕获 `runCatchingCc`**：首页给每源 10s 预算（`withTimeoutOrNull`），到点抛 `CancellationException`，而调用链里凡用 stdlib `runCatching` 包住的会吞掉取消，于是「预算到头却继续跑」、单源实烧 16~90s（`categoryComics` 超时后还要跑 `search` 回落，两次引擎调用叠加）把共享引擎的 JS 线程排爆，整页只剩零星源出数。现在协程内捕获一律用 `runCatchingCc`，取消原样上抛让 `withTimeout` 正常收场。",
+                "**新增 / 调整单测**：`HomeFeedPlanTest` 新增「长尾源收进更多源兜底行保证全覆盖」并修正轮转 / 无推荐语义栏目的两条断言；`SourceAdultsTest` 新增成人识别补漏用例。全量 540 用例 0 失败。",
+            ),
+        ),
         VersionEntry(
             version = "1.7.4.0",
             date = "2026-10-16",

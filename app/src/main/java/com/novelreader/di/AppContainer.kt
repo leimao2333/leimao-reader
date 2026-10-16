@@ -68,7 +68,10 @@ class AppContainer(context: Context) {
     // ===== 源引擎 =====
     /** Venera 源运行时（隐藏 WebView，懒启动：只有真正用到 Venera 源时才创建 WebView） */
     val veneraEngine: com.novelreader.source.venera.VeneraEngine by lazy {
-        com.novelreader.source.venera.VeneraEngine(appContext)
+        com.novelreader.source.venera.VeneraEngine(appContext).also { engine ->
+            // 已知失效配置的一次性修复（如包子漫画的默认域名），见 SourceRepairs 注释
+            com.novelreader.source.venera.SourceRepairs.applyAll(engine)
+        }
     }
 
     /** 影视首页 / 频道内容磁盘缓存（v1.5.7.0「加载一次之后固定」） */
@@ -107,7 +110,7 @@ class AppContainer(context: Context) {
     }
 
     val contentRepository: ContentRepository by lazy {
-        ContentRepositoryImpl(sourceManager, localBookStore)
+        ContentRepositoryImpl(sourceManager, localBookStore, preferencesManager)
     }
 
     val bookRepository: BookRepository by lazy {

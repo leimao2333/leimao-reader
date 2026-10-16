@@ -18,6 +18,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -40,6 +41,7 @@ class TagSearchViewModel(
     private val sourceRepository: SourceRepository?,
     val type: SourceType,
     initialTag: String,
+    private val preferencesManager: com.novelreader.core.preferences.PreferencesManager? = null,
 ) : ViewModel() {
 
     /** 全部可用标签（自动收集） */
@@ -264,8 +266,9 @@ class TagSearchViewModel(
             } else {
                 searchCompound(knownEntries)
             }
-            val final = if (type == SourceType.VIDEO) sinkAdults(found) else found
-
+            // v1.7.5.0：成人源内容按「隐藏成人内容」开关过滤（默认隐藏，直接剔除；
+            // 关闭时沉底）。此前只对视频生效，漫画标签搜索里 nhentai 等照样排前面。
+            val final = filterAdults(found)
             _activeTags.value = known
             _results.value = final
             _progress.value = null
@@ -403,18 +406,20 @@ class TagSearchViewModel(
         }.awaitAll()
     }
 
-    /** 视频：18+ 成人源内容沉底（与首页 / 搜索一致） */
-    private suspend fun sinkAdults(items: List<MediaItem>): List<MediaItem> {
+    /** 成人源内容过滤：默认隐藏直接剔除，关闭时沉底（v1.7.5.0 扩到全部类型） */
+    private suspend fun filterAdults(items: List<MediaItem>): List<MediaItem> {
         if (items.isEmpty()) return items
         val adultIds = runCatching {
-            sourceRepository?.getSourcesByType(SourceType.VIDEO)
+            sourceRepository?.getSourcesByType(type)
                 .orEmpty()
                 .filter { it.isAdult }
                 .map { it.id }
                 .toSet()
         }.getOrDefault(emptySet())
         if (adultIds.isEmpty()) return items
-        return items.sortedBy { it.sourceId in adultIds }
+        val hide = preferencesManager?.hideAdultFlow?.first() ?: true
+        return if (hide) items.filterNot { it.sourceId in adultIds }
+        else items.sortedBy { it.sourceId in adultIds }
     }
 
     companion object {

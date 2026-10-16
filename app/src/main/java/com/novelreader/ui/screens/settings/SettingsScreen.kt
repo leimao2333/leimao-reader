@@ -93,6 +93,7 @@ fun SettingsScreen(
     val videoAutoNext by viewModel.videoAutoNext.collectAsState()
     val videoVerticalSwipeSwitch by viewModel.videoVerticalSwipeSwitch.collectAsState()
     val videoPipEnabled by viewModel.videoPipEnabled.collectAsState()
+    val hideAdult by viewModel.hideAdult.collectAsState()
 
     // 应用更新（v1.5.4.0）
     val updateBusy by viewModel.updateBusy.collectAsState()
@@ -241,6 +242,20 @@ fun SettingsScreen(
                 valueRange = 1f..16f,
                 steps = 15,
             )
+
+            Spacer(Modifier.height(24.dp))
+
+            // ===== 内容过滤（v1.7.5.0） =====
+            SectionTitle("内容过滤")
+            SettingRow(
+                title = "隐藏成人内容",
+                subtitle = "首页推荐、搜索、标签结果里不再出现 18+ 成人源的内容（默认开启）",
+            ) {
+                Switch(
+                    checked = hideAdult,
+                    onCheckedChange = { viewModel.setHideAdult(it) },
+                )
+            }
 
             Spacer(Modifier.height(24.dp))
 

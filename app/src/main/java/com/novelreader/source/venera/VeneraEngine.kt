@@ -13,20 +13,26 @@ import android.webkit.WebViewClient
 import com.google.gson.Gson
 import com.google.gson.JsonParser
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.ResponseBody
+import okio.Buffer
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -68,6 +74,20 @@ class VeneraEngine(private val context: Context) {
     private var webView: WebView? = null
     private var readySignal: CompletableDeferred<Unit>? = null
     private val bootMutex = Mutex()
+
+    /**
+     * 调用串行锁（v1.7.5.0）。
+     *
+     * 隐藏 WebView 的 JS 线程与 JavaBridge 线程都是**单线程**：任何在飞的 Venera 调用
+     * （含源自己 `init()` 里的联网、dynamic loader）都会阻塞其它调用。冷启动时枚举层
+     * 会并发派出一二十个 `categories`，旧代码里它们无条件排队，一个卡死的源就能把
+     * 整条队列拖到 60s 超时（实测整页推荐 0 条）。
+     *
+     * 现在同一时刻只放一个调用真正执行；排不上队的调用最多等
+     * [ENGINE_QUEUE_WAIT_MS]，超时直接快速失败（调用方按普通错误处理），
+     * 把「无限期饿死」变成「快速失败 + 下一轮再来」。
+     */
+    private val callMutex = Mutex()
     private val callSeq = java.util.concurrent.atomic.AtomicInteger(0)
 
     /** 独立 Cookie Jar：与 legado 源隔离，避免互相污染；登录态 Cookie 持久化到本地 */
@@ -75,9 +95,19 @@ class VeneraEngine(private val context: Context) {
 
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            .writeTimeout(30, TimeUnit.SECONDS)
+            // v1.7.5.0：超时全面收紧。旧值 connect 20s / read 60s，遇上「运营商丢包」
+            // 型不可达站点（手机 WiFi/数据网最常见）时，单个请求能占用共享的
+            // JavaBridge / JS 线程 20~80 秒 —— 而 Venera 引擎是**全应用一个 WebView**，
+            // 一个卡死的 init()/loader 会把后面所有源全部堵到 60s 超时（实测冷启动
+            // 9 个 categories 同时超时、整页推荐 0 条）。现在：
+            // - connect 6s：不可达站点快速失败
+            // - read 10s + callTimeout 12s：连上但拖数据的请求也有硬上界。
+            //   read 15s→10s 是为了让「源顺序发多个请求」时总耗时仍压在
+            //   CALL_TIMEOUT_MS(30s) 以内，否则这类源永远等不到结果。
+            .connectTimeout(6, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .writeTimeout(10, TimeUnit.SECONDS)
+            .callTimeout(12, TimeUnit.SECONDS)
             .cookieJar(cookieJar)
             .followRedirects(true)
             .build()
@@ -88,6 +118,19 @@ class VeneraEngine(private val context: Context) {
         val old = sources.put(key, code)
         // 源码变了（编辑 / 更新）→ 清掉注册标记，下次调用时重新求值
         if (old != code) registered.remove(key)
+    }
+
+    /**
+     * 源设置修复入口（v1.7.5.0，见 [SourceRepairs]）。
+     *
+     * 仅当该设置**用户没有显式设过**时写入默认值；用户设过（含设为空串以外的
+     * 任何值）则保持原样。写入格式与运行时的 `saveSetting` 一致（JSON 字符串），
+     * `loadSetting` 会 `JSON.parse` 后返回。
+     */
+    fun ensureSetting(sourceKey: String, name: String, value: String) {
+        val prefKey = "venera:setting:$sourceKey:$name"
+        if (!prefs().getString(prefKey, null).isNullOrBlank()) return
+        prefs().edit().putString(prefKey, gson.toJson(value)).apply()
     }
 
     fun removeSource(key: String) {
@@ -104,56 +147,140 @@ class VeneraEngine(private val context: Context) {
      * 所以这里对这一类失败重试一次即可无感恢复（search/info/chapters/content 都是
      * 幂等读，重试无副作用）。
      */
-    suspend fun call(sourceKey: String, op: String, vararg args: Any?): String {
+    suspend fun call(sourceKey: String, op: String, vararg args: Any?): String =
+        callInternal(sourceKey, op, ENGINE_QUEUE_WAIT_MS, *args)
+
+    /**
+     * 预热：串行 ping 一批源，触发各自的 `init()`（v1.7.5.0）。
+     *
+     * 为什么需要：引擎是全应用一个 JS 线程，源的 `init()` 常联网（拷贝漫画拉接口
+     * 清单、少年Jump+ 拉 2MB 页面、JM 拉域名表）。若不在后台提前付掉这笔一次性
+     * 成本，首页聚合的每次 explore 都要现场跑 init，单源耗时翻几倍，整页推荐
+     * 直接被 init 风暴拖空（实测冷启动整页 0 条）。
+     *
+     * 与首页抢引擎的处理：ping 的排队等待取 [PREWARM_QUEUE_WAIT_MS]（远小于正常
+     * 调用的 25s）—— 引擎闲就顺手预热一个，忙就立刻让位，绝不让首页的 explore
+     * 等在我们后面。单个源失败（真死 / 超时）不影响后面的源。
+     */
+    suspend fun prewarm(keys: List<String>) {
+        keys.forEach { key ->
+            android.util.Log.i("VeneraPrewarm", "ping $key ...")
+            runCatching { callInternal(key, "ping", PREWARM_QUEUE_WAIT_MS) }
+                .onFailure { android.util.Log.w("VeneraPrewarm", "ping $key 失败：${it.message}") }
+            // 让位间隔：刚放锁的瞬间，排队的首页协程要先够得着锁
+            kotlinx.coroutines.delay(PREWARM_GAP_MS)
+        }
+        android.util.Log.i("VeneraPrewarm", "预热完成")
+    }
+
+    private suspend fun callInternal(
+        sourceKey: String,
+        op: String,
+        queueWaitMs: Long,
+        vararg args: Any?,
+    ): String {
         try {
-            return callOnce(sourceKey, op, *args)
+            return callOnce(sourceKey, op, queueWaitMs, *args)
         } catch (e: Exception) {
             if (e.message?.contains("渲染进程已终止") != true) throw e
             android.util.Log.w(LOG_TAG, "渲染进程崩溃，重建 WebView 后重试一次 op=$op")
-            return callOnce(sourceKey, op, *args)
+            return callOnce(sourceKey, op, queueWaitMs, *args)
         }
     }
 
-    private suspend fun callOnce(sourceKey: String, op: String, vararg args: Any?): String {
-        val code = sources[sourceKey] ?: throw IllegalStateException("源未注册：$sourceKey")
-        ensureStarted(code, sourceKey)
-
+    private suspend fun callOnce(sourceKey: String, op: String, queueWaitMs: Long, vararg args: Any?): String {
+        // 引擎串行 + 准入：等不上就快速失败，不参与无限期排队（见 callMutex 注释）。
+        // 注意拿锁与 try/finally 必须紧邻：超时未拿到锁时直接抛错，不能进 finally 解锁。
+        val locked = if (callMutex.tryLock()) {
+            true
+        } else {
+            withTimeoutOrNull(queueWaitMs) {
+                callMutex.lock()
+                true
+            }
+        }
+        if (locked == null) {
+            throw IllegalStateException("Venera 引擎繁忙（已有调用执行中，稍后重试）")
+        }
         val callId = "c" + callSeq.incrementAndGet()
         val deferred = CompletableDeferred<String>()
         pending[callId] = deferred
-
-        val argsJson = gson.toJson(args.toList())
-        val script = buildString {
-            if (registered.add(sourceKey)) {
-                // 首次调用（或 WebView 重建后）先把源注册进 JS 侧
-                append("__veneraRegister(").append(jsString(sourceKey)).append(");")
+        val startedAt = System.currentTimeMillis()
+        try {
+            try {
+                dispatchLocked(sourceKey, op, callId, deferred, *args)
+                return withTimeout(CALL_TIMEOUT_MS) { deferred.await() }
+            } catch (e: TimeoutCancellationException) {
+                // 可能是本调用的 30s 到点，也可能是父协程（首页单源预算）取消顺带
+                // 触发的 —— 两者异常类型相同，用实际耗时区分，日志才不至于误导
+                val elapsed = System.currentTimeMillis() - startedAt
+                android.util.Log.w(LOG_TAG, "call(op=$op) 超时（实际 ${elapsed}ms）")
+                throw IllegalStateException("Venera 源执行超时（${CALL_TIMEOUT_MS / 1000}s）")
+            } catch (e: CancellationException) {
+                // 父协程取消：不是源的错，照常抛出让 withTimeout 收场；
+                // JS 侧善后在下面的 finally 里等落地
+                throw e
+            } catch (e: Exception) {
+                // 源内部异常（JS 抛错 / 网络失败 / 派发失败）在这里落地，方便排查；
+                // 消息本身会透给 UI，且常带接口地址，先脱敏再写日志。
+                android.util.Log.w(
+                    LOG_TAG,
+                    "call(op=$op) 失败：${com.novelreader.core.util.LogSanitizer.sanitize(e.message)}",
+                )
+                throw e
             }
-            append("__veneraCall(")
-                .append(jsString(callId)).append(',')
-                .append(jsString(sourceKey)).append(',')
-                .append(jsString(op)).append(',')
-                .append(jsString(argsJson))
-                .append(");true;")
-        }
-
-        withContext(Dispatchers.Main) { webView?.evaluateJavascript(script, null) }
-
-        return try {
-            withTimeout(CALL_TIMEOUT_MS) { deferred.await() }
-        } catch (e: TimeoutCancellationException) {
-            // 日志里不出现源标识与地址（见 core/util/LogSanitizer 的说明）
-            android.util.Log.w(LOG_TAG, "call(op=$op) 超时")
-            throw IllegalStateException("Venera 源执行超时（${CALL_TIMEOUT_MS / 1000}s）")
-        } catch (e: Exception) {
-            // 源内部异常（JS 抛错 / 网络失败）在这里落地，方便排查；消息本身会透给 UI。
-            // 消息里常常带接口地址，先脱敏再写日志。
-            android.util.Log.w(
-                LOG_TAG,
-                "call(op=$op) 失败：${com.novelreader.core.util.LogSanitizer.sanitize(e.message)}",
-            )
-            throw e
         } finally {
+            // **关键**：无论成功 / 自身超时 / 被父协程取消，都要等 JS 侧这段工作
+            // 真正落地才放锁。`@JavascriptInterface` 是同步调用，占着 JS 线程；
+            // 放任不管的话，下一个调用会排在这段「没人要但还在跑」的工作后面
+            // （实测冷启动整页推荐 0 条、漫画首页成批 30s 超时的根因）。
+            // NonCancellable 保证父协程已取消时也等得完；宽限时间兜底防永久挂死。
+            // runCatching：postError 会让 await 抛错，不能把原始异常顶掉。
+            if (!deferred.isCompleted) {
+                withContext(NonCancellable) {
+                    runCatching { withTimeoutOrNull(ABANDON_GRACE_MS) { deferred.await() } }
+                }
+            }
             pending.remove(callId)
+            callMutex.unlock()
+        }
+    }
+
+    /**
+     * 派发一次调用（注册源 + evaluateJavascript）。
+     *
+     * 与等待分离：派发失败时要把 [deferred] 立即判失败，好让 [callOnce] 的
+     * 收尾逻辑不必白等宽限时间。
+     */
+    private suspend fun dispatchLocked(
+        sourceKey: String,
+        op: String,
+        callId: String,
+        deferred: CompletableDeferred<String>,
+        vararg args: Any?,
+    ) {
+        try {
+            val code = sources[sourceKey] ?: throw IllegalStateException("源未注册：$sourceKey")
+            ensureStarted(code, sourceKey)
+
+            val argsJson = gson.toJson(args.toList())
+            val script = buildString {
+                if (registered.add(sourceKey)) {
+                    // 首次调用（或 WebView 重建后）先把源注册进 JS 侧
+                    append("__veneraRegister(").append(jsString(sourceKey)).append(");")
+                }
+                append("__veneraCall(")
+                    .append(jsString(callId)).append(',')
+                    .append(jsString(sourceKey)).append(',')
+                    .append(jsString(op)).append(',')
+                    .append(jsString(argsJson))
+                    .append(");true;")
+            }
+
+            withContext(Dispatchers.Main) { webView?.evaluateJavascript(script, null) }
+        } catch (e: Throwable) {
+            deferred.completeExceptionally(e)
+            throw e
         }
     }
 
@@ -276,16 +403,27 @@ class VeneraEngine(private val context: Context) {
         }
 
         @JavascriptInterface
-        fun getSource(key: String): String? = sources[key]
+        fun getSource(key: String): String? =
+            runCatching { sources[key] }.getOrElse { null }
 
         @JavascriptInterface
         fun postResult(callId: String, json: String) {
-            pending.remove(callId)?.complete(json)
+            // 结果载荷上限：字符串参数在进入 Java 前已完成转换（防不住转换本身），
+            // 这里至少不再把它复制 / 透传给等待方，避免数百 MB 的串在堆里流转。
+            val deferred = pending.remove(callId) ?: return
+            if (json.length > MAX_RESULT_CHARS) {
+                deferred.completeExceptionally(IllegalStateException("结果载荷超过 ${MAX_RESULT_CHARS / 1024 / 1024}M 字符上限"))
+                return
+            }
+            deferred.complete(json)
         }
 
         @JavascriptInterface
         fun postError(callId: String, message: String) {
-            pending.remove(callId)?.completeExceptionally(IllegalStateException(message))
+            val deferred = pending.remove(callId) ?: return
+            deferred.completeExceptionally(
+                IllegalStateException(message.take(MAX_ERROR_CHARS)),
+            )
         }
 
         @JavascriptInterface
@@ -307,69 +445,91 @@ class VeneraEngine(private val context: Context) {
 
         @JavascriptInterface
         fun setCookie(url: String, lines: String) {
-            val httpUrl = runCatching { url.toHttpUrl() }.getOrNull() ?: return
-            lines.split('\n').forEach { line ->
-                runCatching {
-                    Cookie.parse(httpUrl, line)?.let { cookieJar.saveFromResponse(httpUrl, listOf(it)) }
+            runCatching {
+                val httpUrl = url.toHttpUrlOrNull() ?: return@runCatching
+                lines.split('\n').forEach { line ->
+                    runCatching {
+                        Cookie.parse(httpUrl, line)?.let { cookieJar.saveFromResponse(httpUrl, listOf(it)) }
+                    }
                 }
             }
         }
 
         @JavascriptInterface
-        fun getCookie(url: String): String {
-            val httpUrl = runCatching { url.toHttpUrl() }.getOrNull() ?: return ""
-            return cookieJar.loadForRequest(httpUrl).joinToString("; ") { "${it.name}=${it.value}" }
-        }
+        fun getCookie(url: String): String = runCatching {
+            val httpUrl = url.toHttpUrlOrNull() ?: return@runCatching ""
+            cookieJar.loadForRequest(httpUrl).joinToString("; ") { "${it.name}=${it.value}" }
+        }.getOrDefault("")
 
         @JavascriptInterface
         fun deleteCookies(url: String) {
-            val httpUrl = runCatching { url.toHttpUrl() }.getOrNull() ?: return
-            cookieJar.clear(httpUrl)
+            runCatching {
+                val httpUrl = url.toHttpUrlOrNull() ?: return@runCatching
+                cookieJar.clear(httpUrl)
+            }
         }
 
         @JavascriptInterface
-        fun storageGet(key: String): String? = prefs().getString(key, null)
+        fun storageGet(key: String): String? = runCatching {
+            prefs().getString(key, null)
+        }.getOrElse { null }
 
         @JavascriptInterface
         fun storageSet(key: String, value: String) {
-            prefs().edit().putString(key, value).apply()
+            runCatching { prefs().edit().putString(key, value).apply() }
         }
 
         @JavascriptInterface
         fun storageDelete(key: String) {
-            prefs().edit().remove(key).apply()
+            runCatching { prefs().edit().remove(key).apply() }
         }
 
         @JavascriptInterface
-        fun digest(algo: String, dataB64: String): String {
+        fun digest(algo: String, dataB64: String): String = bridgeCrypto(dataB64) {
             val md = MessageDigest.getInstance(algo.uppercase())
-            return md.digest(Base64.decode(dataB64, Base64.DEFAULT)).toHex()
+            md.digest(Base64.decode(dataB64, Base64.DEFAULT)).toHex()
         }
 
         @JavascriptInterface
-        fun hmac(algo: String, keyB64: String, dataB64: String): String {
+        fun hmac(algo: String, keyB64: String, dataB64: String): String = bridgeCrypto(keyB64, dataB64) {
             val macAlgo = "Hmac" + algo.uppercase()
             val mac = Mac.getInstance(macAlgo)
             mac.init(SecretKeySpec(Base64.decode(keyB64, Base64.DEFAULT), macAlgo))
-            return mac.doFinal(Base64.decode(dataB64, Base64.DEFAULT)).toHex()
+            mac.doFinal(Base64.decode(dataB64, Base64.DEFAULT)).toHex()
         }
 
         @JavascriptInterface
-        fun aesDecrypt(mode: String, dataB64: String, keyB64: String, ivB64: String, blockSize: Int): String {
-            val transformation = when (mode.lowercase()) {
-                "ecb" -> "AES/ECB/PKCS5Padding"
-                "cbc" -> "AES/CBC/PKCS5Padding"
-                "cfb" -> "AES/CFB/NoPadding"
-                "ofb" -> "AES/OFB/NoPadding"
-                else -> "AES/CBC/PKCS5Padding"
+        fun aesDecrypt(mode: String, dataB64: String, keyB64: String, ivB64: String, blockSize: Int): String =
+            bridgeCrypto(dataB64, keyB64, ivB64) {
+                val transformation = when (mode.lowercase()) {
+                    "ecb" -> "AES/ECB/PKCS5Padding"
+                    "cbc" -> "AES/CBC/PKCS5Padding"
+                    "cfb" -> "AES/CFB/NoPadding"
+                    "ofb" -> "AES/OFB/NoPadding"
+                    else -> "AES/CBC/PKCS5Padding"
+                }
+                val cipher = Cipher.getInstance(transformation)
+                val key = SecretKeySpec(Base64.decode(keyB64, Base64.DEFAULT), "AES")
+                val iv = Base64.decode(ivB64, Base64.DEFAULT)
+                val spec = if (iv.isEmpty()) null else IvParameterSpec(iv)
+                if (spec != null) cipher.init(Cipher.DECRYPT_MODE, key, spec) else cipher.init(Cipher.DECRYPT_MODE, key)
+                val out = cipher.doFinal(Base64.decode(dataB64, Base64.DEFAULT))
+                Base64.encodeToString(out, Base64.NO_WRAP)
             }
-            val cipher = Cipher.getInstance(transformation)
-            val key = SecretKeySpec(Base64.decode(keyB64, Base64.DEFAULT), "AES")
-            val iv = Base64.decode(ivB64, Base64.DEFAULT)
-            val spec = if (iv.isEmpty()) null else IvParameterSpec(iv)
-            if (spec != null) cipher.init(Cipher.DECRYPT_MODE, key, spec) else cipher.init(Cipher.DECRYPT_MODE, key)
-            val out = cipher.doFinal(Base64.decode(dataB64, Base64.DEFAULT))
-            return Base64.encodeToString(out, Base64.NO_WRAP)
+    }
+
+    /**
+     * 加解密桥的统一兜底：输入限长 + 异常不出线程。
+     *
+     * 这三个方法以前没有任何保护：源一旦传入超大 Base64（或算法名非法），
+     * 异常会直接在 JavaBridge 线程爆掉、整个进程陪葬。现在超限返回空串
+     * （源侧表现为该次取数失败，由 UI 层的错误提示兜底），异常一律吞掉。
+     */
+    private inline fun bridgeCrypto(vararg b64Inputs: String, block: () -> String): String {
+        if (b64Inputs.any { it.length > MAX_CRYPTO_B64_CHARS }) return ""
+        return runCatching { block() }.getOrElse { e ->
+            android.util.Log.w(LOG_TAG, "桥加解密失败：${friendly(e)}")
+            ""
         }
     }
 
@@ -410,7 +570,7 @@ class VeneraEngine(private val context: Context) {
         builder.method(m, body)
 
         client.newCall(builder.build()).execute().use { response ->
-            val bytes = response.body?.bytes() ?: ByteArray(0)
+            val bytes = readCapped(response.body)
             val respHeaders = linkedMapOf<String, String>()
             response.headers.names().forEach { name ->
                 respHeaders[name] = response.header(name).orEmpty()
@@ -435,6 +595,33 @@ class VeneraEngine(private val context: Context) {
                 )
             }
         }
+    }
+
+    /**
+     * 限长读取响应体。
+     *
+     * 背景（2026-10-16 真机闪退）：某个源取回的响应体巨大，旧代码直接用
+     * `ResponseBody.bytes()` 按全长分配 ByteArray，随后 Base64 / String / Gson
+     * 再放大数倍，在 WebView 的 JavaBridge 线程触发 7.78 亿字节的单次分配，
+     * 而应用堆上限只有 384MB —— ART 在分配前就抛 OOM，线程直接死亡、进程闪退。
+     *
+     * 这里分块读、超限即抛错（由桥方法的 runCatching 收成 error JSON 返回给源），
+     * 把下游所有分配都压死在 24MB 量级：文本 String ≤ 48MB、Base64 ≤ 32MB、
+     * Gson JSON ≤ 64MB，峰值也远低于堆上限。
+     */
+    private fun readCapped(body: ResponseBody?): ByteArray {
+        if (body == null) return ByteArray(0)
+        val sink = Buffer()
+        val source = body.source()
+        while (true) {
+            if (source.read(sink, READ_CHUNK_BYTES) == -1L) break
+            if (sink.size > MAX_HTTP_BODY_BYTES) {
+                throw IllegalStateException(
+                    "响应体超过 ${MAX_HTTP_BODY_BYTES / 1024 / 1024}MB 上限",
+                )
+            }
+        }
+        return sink.readByteArray()
     }
 
     private fun parseHeaders(json: String?): Map<String, String> {
@@ -582,9 +769,59 @@ class VeneraEngine(private val context: Context) {
             "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         private const val START_TIMEOUT_MS = 20_000L
-        private const val CALL_TIMEOUT_MS = 60_000L
+
+        /**
+         * 单次调用（含 init / dynamic loader）的执行上界。
+         *
+         * v1.7.5.0 从 60s 降到 30s：内部每次 HTTP 已有 15s callTimeout 兜底，
+         * 30s 对「一次操作里顺序发多个请求」的源仍够用；而 60s 的旧值意味着
+         * 一个卡死的源能堵死共享引擎整整一分钟，整页推荐全部 0 条。
+         */
+        private const val CALL_TIMEOUT_MS = 30_000L
+
+        /**
+         * 引擎锁的排队上界：等不上就快速失败，调用方按普通错误处理
+         * （首页推荐排会放弃该源，用户搜索则看到「引擎繁忙」）。
+         *
+         * v1.7.5.0 从 15s 提到 25s：首页每源预算提到 30s 后，6 路并发探一个
+         * 约 5s 的调用时，排在第 6 位的要等 ~25s；15s 会把它误杀成「繁忙」，
+         * 而它本来是能在预算内跑完的。
+         */
+        private const val ENGINE_QUEUE_WAIT_MS = 25_000L
+
+        /**
+         * 调用被放弃（自身超时 / 父协程取消）后，等 JS 侧工作落地的宽限时间。
+         *
+         * 同步桥调用占着 JS 线程，不等它就放锁，下一个调用只会排在这段孤儿
+         * 工作后面 —— 实测是「整页推荐 0 条」的直接成因。15s 足够覆盖
+         * 「一次慢请求（≤12s）+ 收尾」。
+         */
+        private const val ABANDON_GRACE_MS = 15_000L
+
+        /**
+         * 预热 ping 的排队上界：引擎忙（首页正在聚合）立刻让位，不跟首页抢。
+         */
+        private const val PREWARM_QUEUE_WAIT_MS = 4_000L
+
+        /** 预热相邻两次 ping 的间隔，给排队中的首页协程留出抢锁窗口 */
+        private const val PREWARM_GAP_MS = 350L
 
         /** Cookie 持久化 prefs key 前缀：venera_store 里 "ck_<host>" → 多行 Set-Cookie 文本 */
         private const val COOKIE_PREF_PREFIX = "ck_"
+
+        /** 单次 HTTP 响应体硬上限（24MB），详见 [readCapped] 的崩溃背景说明 */
+        private const val MAX_HTTP_BODY_BYTES = 24L * 1024 * 1024
+
+        /** 响应体分块读取的块大小 */
+        private const val READ_CHUNK_BYTES = 64L * 1024
+
+        /** 加解密桥的 Base64 输入长度上限（8M 字符 ≈ 解码后 6MB），超限直接返回空串 */
+        private const val MAX_CRYPTO_B64_CHARS = 8 * 1024 * 1024
+
+        /** JS 回传结果载荷上限（16M 字符 ≈ 32MB String） */
+        private const val MAX_RESULT_CHARS = 16 * 1024 * 1024
+
+        /** JS 回传错误消息长度上限（防异常消息里带进整页响应体） */
+        private const val MAX_ERROR_CHARS = 2_000
     }
 }

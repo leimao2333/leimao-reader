@@ -344,6 +344,14 @@ class SourceRepositoryImpl(
     fun lastImportSkipped(): Int = sourceManager.lastImportSkipped
 
     /**
+     * 预热 Venera 漫画源（v1.7.5.0）：后台串行 ping，触发各自 `init()`。
+     *
+     * 详见 [SourceManager.prewarmVenera]：把一次性 init 联网成本从首页聚合的
+     * 关键时刻挪走，否则冷启动第一次刷新整页推荐 0 条。
+     */
+    suspend fun prewarmVeneraComics() = sourceManager.prewarmVenera(SourceType.COMIC)
+
+    /**
      * 从数据库恢复所有源到 SourceManager（应用启动时调用）。
      */
     suspend fun restoreSources() {

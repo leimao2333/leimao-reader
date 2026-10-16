@@ -3,6 +3,7 @@ package com.novelreader.ui.screens.common
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novelreader.core.util.VideoFilters
+import com.novelreader.core.util.runCatchingCc
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.ExploreCategory
 import com.novelreader.domain.model.MediaItem
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -47,6 +49,21 @@ class HomeViewModel(
     /** 影视首页 / 频道内容磁盘缓存（v1.5.7.0「加载一次之后固定」，测试可传 null） */
     private val videoCache: com.novelreader.data.cache.VideoHomeCache? = null,
 ) : ViewModel() {
+
+    /**
+     * 是否隐藏成人内容（v1.7.5.0）。默认开启；由 [PreferencesManager] 驱动，
+     * 首帧读一次当前值，后续在 [init] 里订阅 Flow 实时刷新。
+     */
+    @Volatile
+    private var hideAdult: Boolean = true
+
+    init {
+        preferencesManager?.let { pm ->
+            viewModelScope.launch {
+                pm.hideAdultFlow.collect { hideAdult = it }
+            }
+        }
+    }
 
     /** 本地 TXT 导入结果提示（首页 Toast 展示） */
     private val _importMessage = MutableStateFlow<String?>(null)
@@ -249,9 +266,17 @@ class HomeViewModel(
     private fun adultSourceIds(sources: List<SourceInfo>): Set<String> =
         sources.filter { it.isAdult }.map { it.id }.toSet()
 
-    /** 把来自成人源的条目稳定沉底（保持原有相对顺序） */
-    private fun sinkAdults(items: List<MediaItem>, adultIds: Set<String>): List<MediaItem> =
-        if (adultIds.isEmpty()) items else items.sortedBy { it.sourceId in adultIds }
+    /** 把来自成人源的条目沉底或剔除（保持原有相对顺序） */
+    private fun sinkAdults(items: List<MediaItem>, adultIds: Set<String>): List<MediaItem> {
+        if (adultIds.isEmpty()) return items
+        // v1.7.5.0：默认「隐藏成人内容」——直接剔除，而不是排内沉底。
+        // 沉底只是换个位置，横滑排里照样滑得到（漫画推荐排此前 65% 是成人图）。
+        return if (hideAdult) {
+            items.filterNot { it.sourceId in adultIds }
+        } else {
+            items.sortedBy { it.sourceId in adultIds }
+        }
+    }
 
     /**
      * 去掉「同名 + 同站点」的重复导入（v1.7.2.0）。
@@ -692,10 +717,10 @@ class HomeViewModel(
         val catsBySource = java.util.concurrent.ConcurrentHashMap<String, List<ExploreCategory>>()
         coroutineScope {
             all.map { src -> async {
-                val cats = runCatching {
+                val cats = runCatchingCc {
                     withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) { contentRepository.exploreCategoryTreeOf(src.id) }
                 }.getOrNull().orEmpty()
-                val ok = cats.isNotEmpty() || runCatching {
+                val ok = cats.isNotEmpty() || runCatchingCc {
                     withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) { contentRepository.explore(src.id, "", 1).isNotEmpty() }
                 }.getOrNull() == true
                 if (ok) {
@@ -753,7 +778,7 @@ class HomeViewModel(
                 )
                 val merged = coroutineScope {
                     targets.map { t -> async {
-                        runCatching {
+                        runCatchingCc {
                             withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) {
                                 contentRepository.explore(t.sourceId, t.url, 1)
                             }
@@ -834,7 +859,7 @@ class HomeViewModel(
 
         val fetched = coroutineScope {
             targets.map { t -> async {
-                runCatching {
+                runCatchingCc {
                     contentRepository.exploreFiltered(t.sourceId, t.url, nextPage, filters)
                 }.getOrDefault(emptyList())
             } }.awaitAll().flatten()
@@ -1162,7 +1187,7 @@ class HomeViewModel(
             val merged = coroutineScope {
                 targets.map { t -> async {
                     gate.withPermit {
-                        runCatching {
+                        runCatchingCc {
                             withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) {
                                 contentRepository.explore(t.sourceId, t.url, 1)
                             }
@@ -1301,7 +1326,7 @@ class HomeViewModel(
                             row.targets.map { t -> async {
                                 val ts = System.currentTimeMillis()
                                 val r = gate.withPermit {
-                                    runCatching {
+                                    runCatchingCc {
                                         withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) {
                                             contentRepository.explore(t.sourceId, t.url, 1)
                                         }
@@ -1412,7 +1437,10 @@ class HomeViewModel(
      * - 紧跟着修冷启动竞态（枚举抢跑导致「聚合 1 个源」并被固化）时 `_v2` → `_v3`——
      *   必须换代，因为已经落盘的 `_v2` 缓存里就躺着那份残缺计划，光靠校验位救不回来。
      */
-    private fun feedCacheKey(type: SourceType) = "feed_${type.name.lowercase()}_v3"
+    // v1.7.5.0：v3 → v4。v3 及以前的缓存是「15s 枚举截止」时代的产物 ——
+    // 没轮到探测的源整体出局，计划只覆盖 28/34 个漫画源；源集没变所以旧校验
+    // 会一直认这份残缺缓存，修复（两段式枚举）永远不生效。升键作废重来。
+    private fun feedCacheKey(type: SourceType) = "feed_${type.name.lowercase()}_v4"
 
     /** 某类型当前启用源 id 集合（推荐页缓存有效性校验基准） */
     private suspend fun currentEnabledFeedIds(type: SourceType): Set<String> = runCatching {
@@ -1794,8 +1822,21 @@ class HomeViewModel(
          */
         private const val MAX_AGGREGATE_SOURCES = 512
 
-        /** 单个源探测 / 分类行内容请求的有界超时（毫秒）——死源快速失败，不拖累整页 */
-        private const val SOURCE_PROBE_TIMEOUT_MS = 10_000L
+        /**
+         * 单个源探测 / 分类行内容请求的有界超时（毫秒）——死源快速失败，不拖累整页。
+         *
+         * v1.7.5.0 从 10s 提到 30s。旧值对 legado 源（毫秒级）无所谓，但对
+         * Venera 源是**必然砍死排队中的健康源**：引擎全应用一个 JS 线程、
+         * 一次只放一个调用，6 路并发探第 6 个源时光排队就要 ~25s（引擎排队
+         * 上界 [VeneraEngine.ENGINE_QUEUE_WAIT_MS] 就是按这个数配的）。
+         * 10s 预算下只有前 2 个探得到内容，剩下的源全部 0 条 —— 实测漫画
+         * 首页 40 个 Venera 目标只有 3 个出数。
+         *
+         * 代价：一个真死的源从「10s 后放弃」变成「30s 后放弃」。但引擎侧
+         * 已有调用被放弃后的善后等待（ABANDON_GRACE_MS），JS 线程不会
+         * 被孤儿工作占住，30s 花得起。
+         */
+        private const val SOURCE_PROBE_TIMEOUT_MS = 30_000L
 
         /** 「继续观看」最多展示条数 */
         private const val MAX_CONTINUE_ITEMS = 12
@@ -1860,11 +1901,13 @@ class HomeViewModel(
         /**
          * 推荐页「枚举各源分类」整轮的**外层**有界超时（毫秒）。
          *
-         * 真正的分级超时在仓库层（fast 模式每源最多 2s 探测 + 静态表兜底，
-         * 整轮 15s 全局截止），这里只是一道兜底：全局截止过后，排在后面的协程会
-         * 逐个拿到许可后立刻放弃，所以整轮实际耗时≈截止时长，这道 25s 留足余量。
+         * v1.7.5.0：枚举改成两段式（仓库层）—— 第一段全量静态分类毫秒级出结果，
+         * 第二段把 Venera 源升级成真分类页入口（fast 模式截止 40s，含在途探测的
+         * 自然耗时约再 +20s）。这道外层超时只兜「仓库层失约」的底，必须大于
+         * 第二段截止：25s 会在升级跑到一半时把整轮枚举炸成空结果（首页直接报
+         * 「没有配置发现地址」），放到 70s。
          */
-        private const val FEED_PROBE_TIMEOUT_MS = 25_000L
+        private const val FEED_PROBE_TIMEOUT_MS = 70_000L
 
         /**
          * 推荐页「各排取内容」的**软上界**（毫秒）。

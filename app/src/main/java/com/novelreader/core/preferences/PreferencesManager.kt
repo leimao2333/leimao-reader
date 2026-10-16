@@ -204,6 +204,9 @@ class PreferencesManager(private val context: Context) {
         /** 模糊搜索开关 */
         val KEY_FUZZY_SEARCH = booleanPreferencesKey("fuzzy_search")
 
+        /** 隐藏成人内容（v1.7.5.0）：默认开启，首页/搜索/标签直接剔除成人源内容 */
+        val KEY_HIDE_ADULT = booleanPreferencesKey("hide_adult")
+
         /** 小说搜索历史记录（按时间倒序的字符串列表） */
         val KEY_SEARCH_HISTORY_NOVEL = stringPreferencesKey("search_history_novel")
         /** 漫画搜索历史记录 */
@@ -726,6 +729,14 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setFuzzySearch(value: Boolean) {
         context.dataStore.edit { it[KEY_FUZZY_SEARCH] = value }
+    }
+
+    /** 隐藏成人内容开关（默认开启） */
+    val hideAdultFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_HIDE_ADULT] ?: true }
+
+    suspend fun setHideAdult(value: Boolean) {
+        context.dataStore.edit { it[KEY_HIDE_ADULT] = value }
     }
 
     /** 按类型取搜索历史的 key */

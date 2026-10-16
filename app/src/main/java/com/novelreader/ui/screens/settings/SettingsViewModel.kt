@@ -275,6 +275,10 @@ class SettingsViewModel(
     private val _searchConcurrency = MutableStateFlow(PreferencesManager.DEFAULT_SEARCH_CONCURRENCY)
     val searchConcurrency: StateFlow<Int> = _searchConcurrency.asStateFlow()
 
+    /** 隐藏成人内容（v1.7.5.0，默认开启） */
+    private val _hideAdult = MutableStateFlow(true)
+    val hideAdult: StateFlow<Boolean> = _hideAdult.asStateFlow()
+
     // ===== 视频播放（v1.3.2.0） =====
     /** 进入播放页默认全屏 */
     private val _videoFullscreenDefault = MutableStateFlow(false)
@@ -359,6 +363,14 @@ class SettingsViewModel(
         viewModelScope.launch {
             preferencesManager.videoPipEnabledFlow.collect { _videoPipEnabled.value = it }
         }
+        viewModelScope.launch {
+            preferencesManager.hideAdultFlow.collect { _hideAdult.value = it }
+        }
+    }
+
+    /** 切换「隐藏成人内容」开关 */
+    fun setHideAdult(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setHideAdult(value) }
     }
 
     fun setDarkTheme(value: Boolean) {

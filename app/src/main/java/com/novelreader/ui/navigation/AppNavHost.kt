@@ -236,6 +236,7 @@ fun AppNavHost(
                         it.sourceRepository,
                         type,
                         initialTag,
+                        it.preferencesManager,
                     )
                 }
             )

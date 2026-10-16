@@ -4,6 +4,7 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.novelreader.core.util.TagEntryUrl
+import com.novelreader.core.util.runCatchingCc
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.ContentResult
 import com.novelreader.domain.model.ExploreCategory
@@ -69,12 +70,12 @@ class VeneraSourceAdapter(
         }
 
     /** 在 WebView 里评估源的分类表 → 分类入口；失败 / 无分类返回 null */
-    private suspend fun runtimeCategories(): List<ExploreCategory>? = runCatching {
+    private suspend fun runtimeCategories(): List<ExploreCategory>? = runCatchingCc {
         engine.putSource(key, code)
         val obj = JsonParser.parseString(engine.call(key, "categories")).asJsonObject
         val defaults: List<JsonElement> =
             obj.getAsJsonArray("options")?.toList() ?: emptyList()
-        val parts = obj.getAsJsonArray("parts") ?: return@runCatching null
+        val parts = obj.getAsJsonArray("parts") ?: return@runCatchingCc null
         val out = mutableListOf<ExploreCategory>()
         for (partEl in parts) {
             val items = partEl.asJsonObject.getAsJsonArray("items") ?: continue
@@ -116,7 +117,10 @@ class VeneraSourceAdapter(
     ): List<MediaItem> {
         val entry = TagEntryUrl.categoryOf(url)
         if (entry != null && entry.kind != SEARCH_KIND) {
-            val comics = runCatching {
+            // 注意用 runCatchingCc：首页给每源的预算到头时取消必须照常传播，
+            // 吞掉它会接着跑下面的 search 回落，一次探测烧掉两倍引擎时间
+            // （实测单源 16~90s，把共享 JS 线程排爆）。
+            val comics = runCatchingCc {
                 engine.putSource(key, code)
                 parseComics(
                     engine.call(key, "categoryComics", entry.name, entry.param, entry.options, page),
@@ -266,7 +270,7 @@ class VeneraSourceAdapter(
     private fun sanitizeHeaders(raw: Map<String, String>): Map<String, String> =
         raw.filterKeys { it.lowercase() !in DROPPED_HEADERS }
 
-    override suspend fun test(): Boolean = runCatching {
+    override suspend fun test(): Boolean = runCatchingCc {
         engine.putSource(key, code)
         engine.call(key, "ping")
         true
@@ -278,13 +282,13 @@ class VeneraSourceAdapter(
      * 源在 onImageLoad 里返回 `onLoadFailed`（多镜像回退，如禁漫天堂的 5 条线路），
      * 官方 App 会自动调它重试；这里通过运行时新增的 `retryImage` 操作按需调用。
      */
-    suspend fun fallbackImage(url: String): Pair<String, Map<String, String>>? = runCatching {
+    suspend fun fallbackImage(url: String): Pair<String, Map<String, String>>? = runCatchingCc {
         engine.putSource(key, code)
         val json = engine.call(key, "retryImage", url)
-        if (json.isBlank() || json == "null") return@runCatching null
+        if (json.isBlank() || json == "null") return@runCatchingCc null
         val obj = JsonParser.parseString(json).asJsonObject
         val next = obj.get("url")?.takeIf { it.isJsonPrimitive }?.asString
-        if (next.isNullOrBlank()) return@runCatching null
+        if (next.isNullOrBlank()) return@runCatchingCc null
         val hs = obj.getAsJsonObject("headers")?.entrySet()
             ?.associate { (k, v) -> k to (if (v.isJsonPrimitive) v.asString else v.toString()) }
             ?: emptyMap()
@@ -298,7 +302,7 @@ class VeneraSourceAdapter(
      *
      * @return (是否支持登录, 是否已登录)；引擎异常时返回 (false, false)
      */
-    suspend fun accountInfo(): Pair<Boolean, Boolean> = runCatching {
+    suspend fun accountInfo(): Pair<Boolean, Boolean> = runCatchingCc {
         engine.putSource(key, code)
         engine.accountInfo(key)
     }.getOrDefault(Pair(false, false))

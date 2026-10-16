@@ -574,6 +574,11 @@
             var defs = this.settings;
             var def = defs && defs[name];
             if (def && Object.prototype.hasOwnProperty.call(def, 'default')) return def.default;
+            // v1.7.5.0：源在运行时把 settings[name] **整个换成值** 的情况。
+            // 典型是拷贝漫画的 refreshAppApi：`this.settings.base_url = 接口主机名`。
+            // 旧实现只认 { default: ... } 对象，于是返回 null，URL 变成
+            // `https://null/api/v3/...`（实测该源搜索全空）。官方运行时按值返回。
+            if (def !== null && def !== undefined && typeof def !== 'object') return def;
             return null;
         }
 
@@ -651,16 +656,27 @@
 
     async function ensureSource(key) {
         var src = SOURCES[key] || registerSource(key);
-        if (!INIT_DONE[key]) {
-            INIT_DONE[key] = true;
-            if (typeof src.init === 'function') {
-                try {
-                    await src.init();
-                } catch (e) {
-                    log('warning', 'init', key + ' ' + ((e && e.message) || e));
+        // v1.7.5.0：把「init 进行中」的 Promise 存下来共享，而不是先置完成标记。
+        //
+        // 旧写法 `INIT_DONE[key] = true` 在 `await src.init()` **之前**就置位：
+        // 调用方（Kotlin 侧有 30s 上界）一旦放弃，init 仍在后台跑，而下一个调用
+        // 看到标记已置就直接继续 —— 拿到的是半初始化的源（baseUrl / apiDomains
+        // 还没填好），表现为「接口地址是 null」这类莫名错误。共享 Promise 后，
+        // 后来的调用会等价地等同一个 init 落地，谁也不跳过。
+        var inflight = INIT_DONE[key];
+        if (!inflight) {
+            inflight = (async function () {
+                if (typeof src.init === 'function') {
+                    try {
+                        await src.init();
+                    } catch (e) {
+                        log('warning', 'init', key + ' ' + ((e && e.message) || e));
+                    }
                 }
-            }
+            })();
+            INIT_DONE[key] = inflight;
         }
+        await inflight;
         return src;
     }
 

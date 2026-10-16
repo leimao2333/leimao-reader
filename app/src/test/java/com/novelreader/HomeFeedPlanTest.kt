@@ -93,10 +93,13 @@ class HomeFeedPlanTest {
             maxRows = 2,
             maxSourcesPerRow = 2,
         )
-        assertEquals(listOf("玄幻", "都市"), plan.rows.map { it.title })
+        // 玄幻、都市两排之后，没轮到的 S3 收进「更多源」兜底行（v1.7.5.0 保证全覆盖）
+        assertEquals(listOf("玄幻", "都市", HomeFeedPlan.EXTRA_SOURCES_TITLE), plan.rows.map { it.title })
         // 玄幻排用掉 S1、S2；都市排里 S4 还没被用过 → 排到第一位，
         // 即使它在 sourceOrder 里排在最后
         assertEquals(listOf("S4", "S1"), plan.rows[1].targets.map { it.sourceId })
+        // 兜底行收进两排都没轮到的 S3
+        assertEquals(listOf("S3"), plan.rows.last().targets.map { it.sourceId })
     }
 
     @Test
@@ -230,5 +233,36 @@ class HomeFeedPlanTest {
         assertTrue(
             HomeFeedPlan.build(listOf("S1"), mapOf("S1" to listOf(cat("玄幻", "/x"))), 8, 0).rows.isEmpty(),
         )
+    }
+
+    /**
+     * 兜底行（v1.7.5.0）：普通栏目排被 [maxRows] 截断后，还留在长尾 / 零分类的源
+     * 不能整源隐形，要在「更多源」兜底行里露面。
+     *
+     * 3 个源：S1 有热门栏目「玄幻」；S2 / S3 只有各自的独有名栏目。maxRows=1 只够排
+     * 「玄幻」一行，S2 / S3 进兜底行，于是三个源全部覆盖。
+     */
+    @Test
+    fun `长尾源收进更多源兜底行保证全覆盖`() {
+        val plan = HomeFeedPlan.build(
+            sourceOrder = listOf("S1", "S2", "S3"),
+            catsBySource = mapOf(
+                "S1" to listOf(cat("玄幻", "/x")),
+                "S2" to listOf(cat("独家栏目A", "/a")),
+                "S3" to listOf(cat("独家栏目B", "/b")),
+            ),
+            maxRows = 1,
+            maxSourcesPerRow = 2,
+        )
+        // 没有推荐语义栏目，第一排是覆盖最广的热门栏目，最后多出一个兜底行
+        assertEquals("玄幻", plan.rows.first().title)
+        assertEquals(HomeFeedPlan.EXTRA_SOURCES_TITLE, plan.rows.last().title)
+        // 三个源全部覆盖（S2 / S3 在兜底行）
+        assertEquals(
+            setOf("S1", "S2", "S3"),
+            plan.rows.flatMap { r -> r.targets.map { it.sourceId } }.toSet(),
+        )
+        // 兜底行不污染栏目下拉
+        assertTrue(plan.categories.none { it == HomeFeedPlan.EXTRA_SOURCES_TITLE })
     }
 }

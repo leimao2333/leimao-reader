@@ -44,6 +44,28 @@ class NovelReaderApp : Application(), ImageLoaderFactory {
                     ?.restoreSources()
             }
         }
+
+        // Venera 源 init 预热（v1.7.5.0）。
+        //
+        // 背景：Venera 引擎是全应用**一个**隐藏 WebView，JS 线程单线程，任何在飞的
+        // 调用（含源自己 `init()` 里的联网）都会阻塞其它调用。而首页聚合一刷新就是
+        // 几十个 explore 同时排队 —— 若每个源的第一次调用都要现场跑 init（拷贝漫画
+        // 拉接口清单、少年Jump+ 拉 2MB 苹果页、JM 拉域名表…），整页推荐会被 init
+        // 风暴拖成 0 条（实测冷启动整页 0、热态才出内容）。
+        //
+        // 这里在恢复完成后**串行** ping 一遍漫画源：`ping` 本身不联网，但运行时的
+        // `ensureSource` 会先 `await src.init()`，等于把一次性 init 成本挪到后台
+        // 慢慢付掉；引擎忙时预热主动让位（排队等待只有 4s），不与首页抢。之后的
+        // 首页 / 标签 / 搜索拿到的都是热引擎。
+        applicationScope.launch {
+            runCatching {
+                (container.sourceRepository as? com.novelreader.data.repository.SourceRepositoryImpl)
+                    ?.let { repo ->
+                        repo.awaitRestored()
+                        repo.prewarmVeneraComics()
+                    }
+            }
+        }
     }
 
     /**

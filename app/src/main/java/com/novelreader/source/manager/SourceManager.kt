@@ -368,6 +368,27 @@ class SourceManager(
     fun getSourcesByType(type: SourceType): List<SourceInfo> =
         sourceMap.values.filter { it.type == type }.sortedWith(SOURCE_PRIORITY)
 
+    /**
+     * 预热 Venera 引擎（v1.7.5.0）：串行 ping 该类型下所有 Venera 源。
+     *
+     * `ping` 不联网，但运行时的 `ensureSource` 会先 `await src.init()` —— 源的
+     * init 常联网（拷贝漫画拉接口清单、少年Jump+ 拉 2MB 页面、JM 拉域名表）。
+     * 不在后台提前付掉这笔一次性成本，首页聚合每次 explore 都要现场跑 init，
+     * 整页推荐会被 init 风暴拖空（实测冷启动整页 0 条）。
+     *
+     * 引擎侧对预热 ping 用 4s 的排队上界：忙就让位给首页，不抢。
+     */
+    suspend fun prewarmVenera(type: SourceType) {
+        val engine = veneraEngine ?: return
+        val keys = sourceMap.values
+            .filter { it.type == type && it.format == SourceFormat.VENERA && it.enabled }
+            .sortedWith(SOURCE_PRIORITY)
+            .map { it.id }
+        if (keys.isEmpty()) return
+        android.util.Log.i("SourceManager", "Venera 预热：${keys.size} 个源")
+        engine.prewarm(keys)
+    }
+
     fun getAdapter(sourceId: String): SourceAdapter? = adapterCache[sourceId]
 
     /** 获取源原始内容（供编辑） */

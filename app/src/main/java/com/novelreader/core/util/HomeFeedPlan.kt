@@ -23,6 +23,9 @@ object HomeFeedPlan {
     /** 第一排的标题（推荐语义分类的合览排） */
     const val RECOMMEND_TITLE = "推荐"
 
+    /** 兜底行的标题：普通栏目排排满后，还没挤进去的源（长尾 / 零分类源）收在这里 */
+    const val EXTRA_SOURCES_TITLE = "更多源"
+
     /** 带这些词（不区分大小写）的分类名视为「推荐语义」，汇入第一排 */
     private val RECOMMEND_WORDS = listOf(
         "推荐", "热门", "排行", "精选", "榜单", "人气", "最新", "新书", "完结", "top",
@@ -146,6 +149,23 @@ object HomeFeedPlan {
             if (rows.size >= maxRows) break
             val targets = pick(urls[name].orEmpty(), maxSourcesPerRow)
             if (targets.isNotEmpty()) rows.add(Row(name, targets))
+        }
+
+        // 兜底：普通栏目排排满（maxRows）后，可能还有源没挤进任何排
+        // （典型是长尾独有名栏目源 / 零分类源只能拿虚拟题材词入口，挤不进热门栏目）。
+        // 直接收进「更多源」行，保证「聚合的源数」尽量贴近全部启用源——
+        // 否则这些源在首页推荐页整源隐形，只能到栏目下拉里找（用户实测漫画源少一截的根因之一）。
+        // 兜底行不参与栏目下拉（不写进 urls），且不受 maxRows 限制（否则又回到截断）。
+        val covered = rows.flatMap { it.targets }.map { it.sourceId }.toSet()
+        val leftover = sourceOrder.filter { it !in covered }
+        var i = 0
+        while (i < leftover.size) {
+            val chunk = leftover.subList(i, minOf(i + maxSourcesPerRow, leftover.size))
+            val targets = chunk.mapNotNull { sid ->
+                catsBySource[sid]?.firstOrNull()?.let { CategorySource(sid, it.url) }
+            }
+            if (targets.isNotEmpty()) rows.add(Row(EXTRA_SOURCES_TITLE, targets))
+            i += maxSourcesPerRow
         }
 
         // 「栏目」下拉：首项固定「推荐」（横滑合览），其余按覆盖源数倒序 —— 与原发现页一致。

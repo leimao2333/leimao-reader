@@ -46,6 +46,11 @@ object SourceAdults {
         "picacg", "哔咔",
         // 中文里漫聚合
         "热辣漫画", "热辣", "熱辣",
+        // v1.7.5.0 漏网补充：mycomic 是英文成人漫画站（Venera 里显示名是「x」、
+        // key 是 `mycomic`），此前只按名字判，被整批漏掉、成人图直接抢占推荐第一屏
+        "mycomic", "18mh", "mh18",
+        // 通用 18+ 标记词（源名 / desc 里出现即判成人，比站点名更稳）
+        "r-18", "r18", "18+", "18禁", "hentai", "ecchi", "ero", "mature", "nsfw",
     )
 
     /**

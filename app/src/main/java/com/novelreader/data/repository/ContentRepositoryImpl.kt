@@ -1,11 +1,15 @@
 package com.novelreader.data.repository
 
 import com.novelreader.core.source.SourceErrorLog
+import com.novelreader.core.util.runCatchingCc
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.ChapterLine
 import com.novelreader.domain.model.ContentResult
 import com.novelreader.domain.model.MediaItem
+import com.novelreader.domain.model.ExploreCategory
 import com.novelreader.domain.model.SearchState
+import com.novelreader.domain.model.SourceAdapter
+import com.novelreader.domain.model.SourceFormat
 import com.novelreader.domain.model.SourceInfo
 import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.ContentRepository
@@ -39,6 +43,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 class ContentRepositoryImpl(
     private val sourceManager: SourceManager,
     private val localBookStore: com.novelreader.core.local.LocalBookStore? = null,
+    private val preferencesManager: com.novelreader.core.preferences.PreferencesManager? = null,
 ) : ContentRepository {
 
     /**
@@ -57,7 +62,11 @@ class ContentRepositoryImpl(
 
     override suspend fun search(type: SourceType, keyword: String, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
-            val adapters = sourceManager.getEnabledSourcesByType(type)
+            val sources = sourceManager.getEnabledSourcesByType(type)
+            // v1.7.5.0：隐藏成人时跳过成人源（与 searchWithProgress 同口径）
+            val hideAdult = preferencesManager?.hideAdultFlow?.first() ?: true
+            val adapters = sources
+                .filter { !hideAdult || !com.novelreader.source.category.SourceAdults.isAdult(it) }
                 .mapNotNull { sourceManager.getAdapter(it.id) }
 
             // 并发搜索（8 路）：此前串行逐源请求，一个死源就要等满它的超时，
@@ -67,7 +76,7 @@ class ContentRepositoryImpl(
                 adapters.map { adapter ->
                     async {
                         semaphore.withPermit {
-                            runCatching { adapter.search(keyword, page) }.getOrDefault(emptyList())
+                            runCatchingCc { adapter.search(keyword, page) }.getOrDefault(emptyList())
                         }
                     }
                 }.awaitAll().flatten()
@@ -101,13 +110,22 @@ class ContentRepositoryImpl(
             .filter { com.novelreader.source.category.SourceAdults.isAdult(it) }
             .map { it.id }
             .toSet()
-        val orderedAdapters = adapters.sortedBy { (info, _) -> info.id in adultSourceIds }
+        // v1.7.5.0：默认「隐藏成人内容」时**根本不搜**成人源（既省请求也彻底不出成人结果）。
+        val hideAdult = preferencesManager?.hideAdultFlow?.first() ?: true
+        val effectiveAdapters = if (hideAdult) {
+            adapters.filter { (info, _) -> info.id !in adultSourceIds }
+        } else {
+            adapters
+        }
+        val orderedAdapters = effectiveAdapters.sortedBy { (info, _) -> info.id in adultSourceIds }
+        val effectiveTotal = orderedAdapters.size
+        val effectiveAdultIds = if (hideAdult) emptySet() else adultSourceIds
 
         // 初始状态：开始搜索
         emit(
             SearchState(
                 searchedCount = 0,
-                totalCount = total,
+                totalCount = effectiveTotal,
                 currentSource = "",
                 isSearching = true,
                 hasSearched = true,
@@ -115,7 +133,7 @@ class ContentRepositoryImpl(
             )
         )
 
-        if (total == 0) {
+        if (effectiveTotal == 0) {
             emit(
                 SearchState(
                     searchedCount = 0,
@@ -143,14 +161,14 @@ class ContentRepositoryImpl(
         val seenKeys = HashSet<String>()
         coroutineScope {
             val channel = kotlinx.coroutines.channels.Channel<Pair<String, List<MediaItem>>>(
-                capacity = total.coerceAtLeast(1)
+                capacity = effectiveTotal.coerceAtLeast(1)
             )
 
             val searchJobs = orderedAdapters.map { (info, adapter) ->
                 async {
                     semaphore.withPermit {
                         // 超时按「空结果」处理并照常计入进度，不再让单个源无限期占着并发槽
-                        val batch = runCatching {
+                        val batch = runCatchingCc {
                             kotlinx.coroutines.withTimeoutOrNull(perSourceTimeoutMs) {
                                 adapter.search(keyword, page)
                             }
@@ -201,14 +219,14 @@ class ContentRepositoryImpl(
                     SearchState(
                         results = results.toList(),
                         searchedCount = received,
-                        totalCount = total,
+                        totalCount = effectiveTotal,
                         currentSource = sourceName,
-                        isSearching = received < total,
+                        isSearching = received < effectiveTotal,
                         hasSearched = true,
                         fuzzyEnabled = fuzzyEnabled,
                     )
                 )
-                if (received >= total) break
+                if (received >= effectiveTotal) break
             }
 
             searchJobs.forEach { it.cancel() }
@@ -223,12 +241,12 @@ class ContentRepositoryImpl(
             FuzzyMatch.exactRank(results, keyword)
         }
         // v1.5.8.0：18+ 成人源的结果统一沉底（稳定排序，不打乱上面的匹配度顺序）
-        val finalResults = rankedResults.sortedBy { it.sourceId in adultSourceIds }
+        val finalResults = rankedResults.sortedBy { it.sourceId in effectiveAdultIds }
         emit(
             SearchState(
                 results = finalResults,
                 searchedCount = total,
-                totalCount = total,
+                totalCount = effectiveTotal,
                 currentSource = "",
                 isSearching = false,
                 hasSearched = true,
@@ -340,25 +358,32 @@ class ContentRepositoryImpl(
         enumerateSources(type, includeDisabled, limit = limit, fast = true)
 
     /**
-     * 枚举各源的发现分类。
+     * 枚举各源的发现分类（v1.7.5.0 重写为**两段式**）。
      *
-     * 四条硬约束（v1.7.2.0 重写，此前是「只枚举前 12 个源」的粗暴截断）：
+     * 背景：Venera 源的分类要在隐藏 WebView 里真实评估（引擎全应用一个 JS 线程，
+     * 一次只放一个调用），25 个漫画源串行约 20~75s。旧结构是「先运行时探测、
+     * 超时再静态兜底」，整轮共用一个截止（[ENUM_DEADLINE_MS]）—— 截止一到，
+     * **还没轮到探测的源直接整体出局**（实测 34 个漫画源只有 28 个进首页计划），
+     * 用户看到的「聚合 N 个源」永远差一截。
+     *
+     * 现在顺序倒过来，两段各自有截止：
      *
      * 0. **先等源恢复完成**（冷启动竞态防护）—— 源由后台协程从数据库异步恢复，
      *    首页推荐可能在恢复完成前就发起枚举，那时源表里只有零星几个源，
-     *    结果退化成「聚合 1 个源」并被落盘缓存**固化成常态**（用户实测：缓存里
-     *    10 排内容全部来自同一个源）。等待信号与 [searchWithProgress] 同款，
-     *    恢复已完成时立即通过、零开销。
-     * 1. **每个源独立超时**（[ENUM_PER_SOURCE_MS]）—— 此前整批共用一个 20s 超时，
-     *    一个慢源就能把整轮枚举拖成空结果，首页直接报「没有可用的发现分类」；
-     * 2. **整轮有全局截止**（[ENUM_DEADLINE_MS]）—— 到点就用手上已有的结果收工，
-     *    没轮到的源只影响排数，不会让首页一直空转；
-     * 3. **[fast] 模式两段式**：先给运行时评估一个很短的预算，超时 / 为空就立刻用
-     *    源码里的**静态分类表**兜底 —— 保证「有分类的源一个都不漏」，同时整轮耗时
-     *    由 `源数 / 并发 × 短预算` 封顶，不会因为 Venera 源的 WebView 评估慢而缩水。
-     *
-     * 并发 8 路：legado 源的分类是纯本地解析，毫秒级；Venera 源要往隐藏 WebView 派
-     * `evaluateJavascript`（引擎内部会串行化），慢，靠上面几条兜住。
+     *    结果退化成「聚合 1 个源」并被落盘缓存**固化成常态**。等待信号与
+     *    [searchWithProgress] 同款，恢复已完成时立即通过、零开销。
+     * 1. **第一段：全量静态 / 本地分类** —— 所有源一起拿「不碰引擎」的分类表
+     *    （Venera 解析源码里的 `category.parts`，legado 解析 `ruleExplore`，
+     *    都是毫秒级的纯本地活）。**这一段就决定哪些源参与聚合，一个源都不丢**；
+     *    连静态表都没有的源挂一组虚拟题材搜索入口（见 [virtualCategories]）。
+     * 2. **第二段：Venera 源升级真分类页入口** —— 仅 [SourceFormat.VENERA] 的源，
+     *    **串行**跑运行时评估（`exploreCategories`），把第一段的「按分类名搜索」
+     *    入口换成 `vcat::` 真分类页（走源自己的 `categoryComics.load`）。
+     *    串行是因为引擎一次只放一个调用，并发只会让排后面的源把预算烧在排队上
+     *    （旧代码 8 路并发实测只有排头一两个源够得着运行时评估）。
+     *    每源独立预算 [perSourceTimeoutMs]，整段截止 [ENUM_UPGRADE_DEADLINE_MS]
+     *    （[fast] 模式）或 [deadlineMs]（发现页 / 标签池）；没升级的源保留第一段
+     *    的静态入口，只是首页排退化为搜索，绝不丢弃。
      *
      * @param limit 最多枚举几个源（<= 0 = 全部）。首页推荐已不再用它做「防 ANR 截断」，
      *   只作为极端情况下的保险丝（源列表异常膨胀时）。
@@ -384,56 +409,90 @@ class ContentRepositoryImpl(
             else sourceManager.getEnabledSourcesByType(type)
             val infos = if (limit > 0) all.take(limit) else all
             val started = System.currentTimeMillis()
+
+            // ---- 第一段：全量静态 / 本地分类（毫秒级，不碰引擎）----
             val semaphore = Semaphore(8)
-            val items = coroutineScope {
+            val entries = coroutineScope {
                 infos.map { info -> async {
                     semaphore.withPermit {
-                        // 全局截止必须在**拿到许可之后**再算：所有协程都是同时启动的，
-                        // 在许可之前算的话每个协程看到的都是「刚启动」，截止形同虚设。
-                        // 排到后面的源如果已经超时就直接放弃（不抛异常，调用方用已有结果）。
+                        val adapter = sourceManager.getAdapter(info.id) ?: return@withPermit null
                         val left = deadlineMs - (System.currentTimeMillis() - started)
                         if (left <= 0) return@withPermit null
-                        sourceManager.getAdapter(info.id)?.let { adapter ->
-                            val budget = minOf(perSourceTimeoutMs, left)
-                            val cats = runCatching {
-                                withTimeoutOrNull(if (fast) minOf(budget, ENUM_FAST_PROBE_MS) else budget) {
-                                    adapter.exploreCategories()
-                                }
-                            }.getOrNull().orEmpty()
-                            // 运行时评估超时 / 报错 → 用源码里的静态分类表兜底
-                            // （Venera 专用；legado 两者等价，等于原样返回）
-                            val finalCats = if (cats.isNotEmpty()) cats else if (fast) {
-                                runCatching {
-                                    withTimeoutOrNull(minOf(ENUM_FALLBACK_MS, left)) {
-                                        adapter.fastExploreCategories()
-                                    }
-                                }.getOrNull().orEmpty()
-                            } else emptyList()
-                            // v1.7.4.0：一个分类都没枚举出来的源，挂一组「按题材搜索」
-                            // 的虚拟栏目，而不是整源丢弃。
-                            //
-                            // 实测 138 个小说源里 **36 个（26%）`ruleExplore` 为空**：
-                            // 枚举出 0 个分类 = 推荐计划里根本没有它 = 首页一排都不会打给
-                            // 它，用户只有到搜索页才够得着 —— 导入的源越多，首页反而越窄。
-                            // 而这些源**全都配了 ruleSearch**（138/138），且 `search::<词>`
-                            // 伪入口在 [exploreFiltered] 里会自动转成源自己的搜索请求，
-                            // 于是给它们挂上跨源通用的题材词当栏目即可复用整条聚合链路。
-                            val effective = if (finalCats.isNotEmpty()) finalCats
-                            else if (type == SourceType.NOVEL || type == SourceType.COMIC) {
-                                virtualCategories().also {
-                                    android.util.Log.i(
-                                        "SourceEnum",
-                                        "源「${info.name}」无发现分类，改用 ${it.size} 个题材词搜索入口参与聚合",
-                                    )
-                                }
-                            } else emptyList()
-                            if (effective.isEmpty()) null else info to effective
-                        }
+                        // runCatchingCc：withTimeoutOrNull 到点时取消必须照常传播，
+                        // stdlib runCatching 会吞掉它，让已放弃的活继续占着引擎。
+                        val cats = runCatchingCc {
+                            withTimeoutOrNull(minOf(ENUM_FALLBACK_MS, left)) {
+                                adapter.fastExploreCategories()
+                            }
+                        }.getOrNull().orEmpty()
+                        // v1.7.4.0：一个分类都没枚举出来的源，挂一组「按题材搜索」
+                        // 的虚拟栏目，而不是整源丢弃。
+                        //
+                        // 实测 138 个小说源里 **36 个（26%）`ruleExplore` 为空**：
+                        // 枚举出 0 个分类 = 推荐计划里根本没有它 = 首页一排都不会打给
+                        // 它，用户只有到搜索页才够得着 —— 导入的源越多，首页反而越窄。
+                        // 而这些源**全都配了 ruleSearch**（138/138），且 `search::<词>`
+                        // 伪入口在 [exploreFiltered] 里会自动转成源自己的搜索请求，
+                        // 于是给它们挂上跨源通用的题材词当栏目即可复用整条聚合链路。
+                        val effective = if (cats.isNotEmpty()) cats
+                        else if (type == SourceType.NOVEL || type == SourceType.COMIC) {
+                            virtualCategories().also {
+                                android.util.Log.i(
+                                    "SourceEnum",
+                                    "源「${info.name}」无发现分类，改用 ${it.size} 个题材词搜索入口参与聚合",
+                                )
+                            }
+                        } else emptyList()
+                        if (effective.isEmpty()) null else EnumEntry(info, adapter, effective)
                     }
                 } }.awaitAll().filterNotNull()
             }
-            SourceEnumeration(items = items, enumerated = infos.size)
+
+            // ---- 第二段：Venera 源「静态搜索入口 → 真分类页入口」升级 ----
+            val veneraCount = entries.count { it.info.format == SourceFormat.VENERA }
+            if (veneraCount > 0) {
+                val upgradeDeadline =
+                    started + if (fast) ENUM_UPGRADE_DEADLINE_MS else deadlineMs
+                var upgraded = 0
+                for (e in entries) {
+                    if (e.info.format != SourceFormat.VENERA) continue
+                    val left = upgradeDeadline - (System.currentTimeMillis() - started)
+                    if (left <= 0) break
+                    val t0 = System.currentTimeMillis()
+                    // exploreCategories = 运行时评估优先，失败退回静态（与第一段等价，
+                    // 无害）；只有非空才原地替换，绝不用空结果覆盖第一段的成果。
+                    val cats = runCatchingCc {
+                        withTimeoutOrNull(minOf(perSourceTimeoutMs, left)) {
+                            e.adapter.exploreCategories()
+                        }
+                    }.getOrNull()
+                    if (!cats.isNullOrEmpty()) {
+                        e.cats = cats
+                        upgraded++
+                        android.util.Log.i(
+                            "SourceEnum",
+                            "源「${e.info.name}」升级真分类页入口：${cats.size} 个，${System.currentTimeMillis() - t0}ms",
+                        )
+                    }
+                }
+                android.util.Log.i(
+                    "SourceEnum",
+                    "枚举完成：${entries.size} 源（Venera $veneraCount 个升级 $upgraded 个），总耗时 ${System.currentTimeMillis() - started}ms",
+                )
+            }
+
+            SourceEnumeration(
+                items = entries.map { it.info to it.cats },
+                enumerated = infos.size,
+            )
         }
+
+    /** 枚举中间产物：源的静态分类，第二段可被原地升级成真分类页入口 */
+    private class EnumEntry(
+        val info: SourceInfo,
+        val adapter: SourceAdapter,
+        var cats: List<ExploreCategory>,
+    )
 
     /**
      * 无发现分类的源的兜底栏目（v1.7.4.0）。
@@ -554,24 +613,25 @@ class ContentRepositoryImpl(
         const val ENUM_PER_SOURCE_MS = 8_000L
 
         /**
-         * `fast` 模式下**先给运行时评估**的短预算。
+         * `fast` 模式下第二段（Venera 源运行时升级）的整段截止。
          *
-         * 目的是把整轮枚举的耗时封顶在 `源数 / 并发 × 这个值` 附近：legado 源是纯本地
-         * 解析（毫秒级就返回真分类），Venera 源要在隐藏 WebView 里评估（约 100~500ms），
-         * 2 秒对两类都够用；真遇到卡死的 JS 也不用等满 [ENUM_PER_SOURCE_MS]，
-         * 直接落到下面的静态表兜底 —— 宁可用源码里的等价分类，也不要整源消失。
+         * 第一段静态分类毫秒级出结果、覆盖率 100%，所以第二段可以放心给足时间：
+         * 预热过的引擎上 25 个 Venera 源串行评估约 20s（快的源几十毫秒，
+         * `type:"dynamic"` loader 要联网的源 1~7s）。40s 留足余量；
+         * 没升完的源保留静态入口参与聚合，绝不丢弃。调用方
+         * （HomeViewModel 的 [FEED_PROBE_TIMEOUT_MS]）按这个数放宽到 70s。
          */
-        const val ENUM_FAST_PROBE_MS = 2_000L
+        const val ENUM_UPGRADE_DEADLINE_MS = 40_000L
 
         /** 静态表兜底的超时（纯字符串解析，实际上毫秒级） */
         const val ENUM_FALLBACK_MS = 1_500L
 
         /**
-         * 枚举整轮的全局截止：到点用已有结果收工，没轮到的源不再等。
+         * 枚举的全局截止：第一段（静态分类）的保险丝，以及非 fast 模式
+         * （发现页 / 标签池）第二段升级的截止。
          *
-         * 用户实测：115 个小说源（全 legado，本地解析）≈ 1 秒；
-         * 47 个漫画源（含 25 个 Venera，WebView 串行）≈ 3~6 秒。
-         * 15 秒能覆盖正常情况，异常时也不会把首页拖到分钟级。
+         * 第一段是毫秒级的纯本地解析，15 秒对 167 个源也绰绰有余；
+         * 非 fast 模式到点就停止升级，没升的源用静态入口，不会把页面拖住。
          */
         const val ENUM_DEADLINE_MS = 15_000L
     }

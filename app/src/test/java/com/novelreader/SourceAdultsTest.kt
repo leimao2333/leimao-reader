@@ -133,6 +133,26 @@ class SourceAdultsTest {
     }
 
     @Test
+    /** 漏网源回归（v1.7.5.0）：mycomic 显示名是「x」，只按名字判会整批漏掉 */
+    fun `漏网的英文成人站按 key 识别`() {
+        // mycomic 是英文成人漫画站，Venera 里显示名「x」、key=mycomic
+        assertTrue(SourceAdults.isAdult("x", author = "mycomic"))
+        // mh18 / 18mh 也判成人
+        assertTrue(SourceAdults.isAdult("18漫画", author = "mh18"))
+        assertTrue(SourceAdults.isAdult("18漫画"))
+    }
+
+    @Test
+    fun `综合站与普通漫画不误伤`() {
+        // 拷贝漫画 / MangaDex / 包子漫画 是综合站，虽有成人分区也不该整个判成人
+        assertFalse(SourceAdults.isAdult("拷贝漫画", author = "copy_manga"))
+        assertFalse(SourceAdults.isAdult("MangaDex", author = "manga_dex"))
+        assertFalse(SourceAdults.isAdult("包子漫画", author = "baozi"))
+        assertFalse(SourceAdults.isAdult("CCC追漫台", author = "ccc"))
+        assertFalse(SourceAdults.isAdult("GoDa漫画", author = "goda"))
+    }
+
+    @Test
     fun `手动排序未排序项沉底且按名称`() {
         val list = listOf(
             src("1", "🔞成人站").copy(sortOrder = 1),

@@ -131,6 +131,19 @@ class ComicReaderViewModel(
         viewModelScope.launch { preferences.setComicLandscapeDoublePage(value) }
     }
 
+    /**
+     * 边缘竖滑调亮度 / 音量手势（v1.7.6.0，默认关闭）。
+     *
+     * 关闭时不挂载边缘窄条 —— 左右边缘的竖划会原样交给内容的滚动 / 翻页处理，
+     * 不会出现「翻页翻到屏幕最左 / 最右却被当成调亮度」的情况。
+     */
+    val edgeGesture: StateFlow<Boolean> = preferences.comicEdgeGestureFlow
+        .let { flow ->
+            val state = MutableStateFlow(false)
+            viewModelScope.launch { flow.collectLatest { state.value = it } }
+            state
+        }
+
     /** 当前页索引（左右翻页模式用） */
     private val _currentPage = MutableStateFlow(0)
     val currentPage: StateFlow<Int> = _currentPage.asStateFlow()

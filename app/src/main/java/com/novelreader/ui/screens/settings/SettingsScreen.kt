@@ -86,6 +86,7 @@ fun SettingsScreen(
     val comicPageMode by viewModel.comicPageMode.collectAsState()
     val comicPreloadCount by viewModel.comicPreloadCount.collectAsState()
     val comicPreloadWifiOnly by viewModel.comicPreloadWifiOnly.collectAsState()
+    val comicEdgeGesture by viewModel.comicEdgeGesture.collectAsState()
     val searchConcurrency by viewModel.searchConcurrency.collectAsState()
     val videoFullscreenDefault by viewModel.videoFullscreenDefault.collectAsState()
     val videoLongPressSpeed by viewModel.videoLongPressSpeed.collectAsState()
@@ -220,6 +221,17 @@ fun SettingsScreen(
                 Switch(
                     checked = comicPreloadWifiOnly,
                     onCheckedChange = { viewModel.setComicPreloadWifiOnly(it) },
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+            SettingRow(
+                title = "边缘滑动调亮度 / 音量",
+                subtitle = "阅读时在屏幕左 / 右边缘竖滑调亮度或音量。可能与上下滚动、左右翻页误触，默认关闭",
+            ) {
+                Switch(
+                    checked = comicEdgeGesture,
+                    onCheckedChange = { viewModel.setComicEdgeGesture(it) },
                 )
             }
 

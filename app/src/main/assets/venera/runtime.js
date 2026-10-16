@@ -1282,11 +1282,33 @@
         }
     }
 
+    /**
+     * 结果串的字符上限（v1.7.6.0）。
+     *
+     * `postResult` 的字符串要**穿过 JNI 边界**一次性转成 Java String —— 如果源造出
+     * 几百 MB 的结果（例如按 `num_pages` 循环生成图片地址、或某个列表异常膨胀），
+     * 这个转换本身就会 `OutOfMemoryError` 并**直接崩进程**：它跑在 WebView 的
+     * JavaBridge 线程上，Kotlin 侧的 try/catch 与 `MAX_RESULT_CHARS` 检查都发生在
+     * 转换**之后**，根本来不及拦（真机崩溃日志：单次申请 668351688 字节）。
+     *
+     * 因此必须在 JS 侧先按字符数卡一道，超限就回一个明确的错误，而不是把巨型串
+     * 丢给 JNI。8M 字符 ≈ 16MB 的 UTF-16，远低于常见堆预算。
+     */
+    var MAX_PAYLOAD_CHARS = 8 * 1024 * 1024;
+
     async function runCall(callId, key, op, argsJson) {
         try {
             var args = argsJson ? JSON.parse(argsJson) : [];
             var out = await doCall(key, op, args || []);
-            B.postResult(String(callId), JSON.stringify(out === undefined ? null : out));
+            var payload = JSON.stringify(out === undefined ? null : out);
+            if (typeof payload === 'string' && payload.length > MAX_PAYLOAD_CHARS) {
+                B.postError(
+                    String(callId),
+                    '源返回的数据过大已丢弃（' + payload.length + ' 字符 > ' + MAX_PAYLOAD_CHARS + '）',
+                );
+                return;
+            }
+            B.postResult(String(callId), payload);
         } catch (e) {
             var msg = (e && (e.message || e.toString())) || String(e);
             // window.__veneraDebug = true 时附带堆栈（离线验证台用），应用内保持简洁

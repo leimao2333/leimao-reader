@@ -142,6 +142,15 @@ class PreferencesManager(private val context: Context) {
          * 一个是阅读完当前话后自动预取后续几话的完整图片列表（落到 Coil 缓存）。
          */
         val KEY_COMIC_PRELOAD_CHAPTERS = intPreferencesKey("comic_preload_chapters")
+        /**
+         * 边缘竖滑调亮度 / 音量（v1.7.6.0，默认**关闭**）。
+         *
+         * 该手势原本是为对齐主流漫画 App 加的，但它是**视频播放器**的典型交互，
+         * 漫画阅读里左右边缘各 1/6 的竖滑区很容易与「上下滚动阅读 / 左右翻页」误触 ——
+         * 正常翻页划到边缘就被吃掉、亮度被改掉。因此改为默认关闭，想要的用户可在
+         * 设置里自行开启。
+         */
+        val KEY_COMIC_EDGE_GESTURE = booleanPreferencesKey("comic_edge_gesture")
 
         // ===== 视频 =====
         val KEY_VIDEO_AUTO_PLAY = booleanPreferencesKey("video_auto_play")
@@ -593,6 +602,19 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setComicPreloadChapters(value: Int) {
         context.dataStore.edit { it[KEY_COMIC_PRELOAD_CHAPTERS] = value.coerceIn(0, 5) }
+    }
+
+    /**
+     * 漫画阅读页「边缘竖滑调亮度 / 音量」手势（v1.7.6.0）。
+     *
+     * 默认 **false（关闭）** —— 这是视频播放器的交互范式，在漫画里会与阅读手势误触。
+     * 关闭时边缘窄条不再挂载，点击事件全部透传给内容。
+     */
+    val comicEdgeGestureFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_COMIC_EDGE_GESTURE] ?: false }
+
+    suspend fun setComicEdgeGesture(value: Boolean) {
+        context.dataStore.edit { it[KEY_COMIC_EDGE_GESTURE] = value }
     }
 
     // ===== 视频 =====

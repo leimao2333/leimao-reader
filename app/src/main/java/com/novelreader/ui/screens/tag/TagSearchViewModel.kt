@@ -218,7 +218,11 @@ class TagSearchViewModel(
             // 标签计划还没收集好就等一下（首次冷启动直进标签搜索的场景）
             ensurePlan()
             // 计划就绪后重解析：含空格的标签要靠池才能正确合并
-            val tags = TagQuery.parseWithPool(_query.value, tagPlan.tags).ifEmpty { firstParse }
+            val tags = TagQuery.parseWithPool(_query.value, tagPlan.tags)
+                .ifEmpty { firstParse }
+                // v1.7.6.0：互为译名的标签合并成一个条件 —— 否则「无码」与「無修正」
+                // 会被当成两个不同标签去求交，而它们分散在不同源上，交集必然为空。
+                .let { TagAlias.dedupeAliases(it) }
 
             val enabledIds = enabledSourceIds()
             if (enabledIds != null && enabledIds.isEmpty()) {

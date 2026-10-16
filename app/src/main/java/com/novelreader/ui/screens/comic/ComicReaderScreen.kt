@@ -104,6 +104,7 @@ fun ComicReaderScreen(
     val preloadCount by viewModel.preloadCount.collectAsState()
     val preloadWifiOnly by viewModel.preloadWifiOnly.collectAsState()
     val landscapeDoublePage by viewModel.landscapeDoublePage.collectAsState()
+    val edgeGesture by viewModel.edgeGesture.collectAsState()
 
     LaunchedEffect(item, chapter) {
         viewModel.init(item, chapters, chapter)
@@ -251,8 +252,13 @@ fun ComicReaderScreen(
             }
         }
 
-        // ===== 边缘竖滑调亮度 / 音量（C2）：覆盖在内容之上，只在左右边缘起手时响应 =====
-        ComicReaderEdgeGestures()
+        // ===== 边缘竖滑调亮度 / 音量（C2）=====
+        // v1.7.6.0：默认关闭 —— 这是视频播放器的交互范式，在漫画里左右边缘各 1/6 的竖滑区
+        // 容易与「上下滚动阅读 / 左右翻页」误触（正常翻页划到最左/最右就被吃掉且亮度被改）。
+        // 需要时在「设置 → 漫画」里打开；关闭时这里完全不挂载，边缘的竖划如实交给内容。
+        if (edgeGesture) {
+            ComicReaderEdgeGestures()
+        }
 
         // ===== 菜单 = 顶部栏 + 设置面板 + 底部章节条，由「点击画面」统一呼出 / 收起 =====
         // 此前顶部栏与底部章节条是常驻的，会一直压着图片；现在它们都属于菜单，

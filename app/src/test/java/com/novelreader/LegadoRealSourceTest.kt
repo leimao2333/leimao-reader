@@ -777,4 +777,61 @@ ${'$'}.chapters[*]
         }
         assumeTrue("候选漫画源本次均未跑通（网络/站点因素）：\n" + errors.joinToString("\n"), false)
     }
+
+    // ===== v1.7.6.0：多段链式规则（legado 语义：逐行接力，result 传递） =====
+
+    /** 最小可用的书源 JSON（只用来构造 adapter，规则求值本身不碰网络） */
+    private fun stubAdapter(): LegadoSourceAdapter = adapter(
+        """{"bookSourceName":"stub","bookSourceUrl":"https://example.com","bookSourceType":0}"""
+    )
+
+    @Test
+    fun `多段链式规则 - 取值加JS加模板result回填`() {
+        // 真实形态（小说源的 bookUrl）：先取 bid，JS 偏移成 bookid，再拼进详情地址。
+        // 修复前整条规则被当成一个表达式，`{{result}}` 无处取值 → 详情地址缺 bookid。
+        val ad = stubAdapter()
+        val node = com.google.gson.JsonParser.parseString(
+            """{"bid":"465030","title":"测试书"}"""
+        ).asJsonObject
+        val rule = "\$.bid\n" +
+            "<js>1100000000+parseInt(result)</js>\n" +
+            "https://bookshelf.html5.qq.com/qbread/api/novel/intro-info?bookid={{result}}"
+        assertEquals(
+            "https://bookshelf.html5.qq.com/qbread/api/novel/intro-info?bookid=1100465030",
+            ad.renderJsonRule(rule, node),
+        )
+    }
+
+    @Test
+    fun `多段链式规则 - 独立的atjs引导行吞掉后续多行函数体`() {
+        // 真实形态（源的 coverUrl）：`@js:` 单独一行，函数体自带换行，
+        // 按行切片会把函数体切碎 —— 因此引导行要一直吞到规则末尾。
+        val ad = stubAdapter()
+        val node = com.google.gson.JsonParser.parseString("""{"bid":"1"}""").asJsonObject
+        val rule = """
+            ${'$'}.bid
+            @js:
+            var s = result
+            return 'http://img.test/cover/'+s+'.jpg'
+            """.trimIndent()
+        assertEquals("http://img.test/cover/1.jpg", ad.renderJsonRule(rule, node))
+    }
+
+    @Test
+    fun `多段链式规则 - 正则净化段`() {
+        val ad = stubAdapter()
+        val node = com.google.gson.JsonParser.parseString("""{"kind":"20000:小说,20014:仙侠"}""").asJsonObject
+        val rule = "\$.kind\n##\\d.*?:(.*?),(?:.*?)##$1"
+        val v = ad.renderJsonRule(rule, node)
+        assertNotNull("多段含正则替换时应有结果", v)
+        println("[多段正则] $v")
+    }
+
+    @Test
+    fun `单行规则行为不变 - 普通JSONPath与模板`() {
+        val ad = stubAdapter()
+        val node = com.google.gson.JsonParser.parseString("""{"name":"A","id":7}""").asJsonObject
+        assertEquals("A", ad.renderJsonRule("\$.name", node))
+        assertEquals("id=7", ad.renderJsonRule("id={{$.id}}", node))
+    }
 }

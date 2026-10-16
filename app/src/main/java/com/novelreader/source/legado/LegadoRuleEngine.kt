@@ -457,6 +457,25 @@ object LegadoRuleEngine {
         return evalJsRich(code, json, json, baseUrl).first
     }
 
+    /**
+     * 多段链式规则中的 JS 段求值（v1.7.6.0）。
+     *
+     * 与 [evalJsonJs] 的区别：`result` 变量绑定的是**上一段规则的结果**，
+     * 而不是整个 JSON —— legado 的多段规则（`$.bid` / `<js>...</js>` / `{{result}}`）
+     * 就是把上一段的值接力传下去。JSON 原文仍在 `src` 里可取。
+     *
+     * @param carry 上一段规则的结果；为 null 时退化为与 [evalJsonJs] 相同（result = 整个 JSON）
+     */
+    fun evalJsonJsCarry(
+        code: String,
+        node: com.google.gson.JsonElement?,
+        baseUrl: String,
+        carry: String?,
+    ): String? {
+        val json = node?.toString()
+        return evalJsRich(code, carry ?: json, json, baseUrl).first
+    }
+
     /** 供 JS 桥接使用：按规则选取元素列表（支持 @ 链、@css:、- 倒置） */
     fun selectElements(content: String, rule: String): List<Element> {
         val doc = Jsoup.parse(content)

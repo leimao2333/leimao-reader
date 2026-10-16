@@ -116,6 +116,20 @@ object TagAlias {
         // ===== 分级 =====
         setOf("成人", "限制级", "18禁", "r18", "hentai", "adult", "18+", "ero", "ecchi"),
         setOf("全年龄", "一般向", "all ages", "general", "safe"),
+        // ===== 「有无修饰」的写法变体（v1.7.6.0）=====
+        // 各站对同一件事的叫法不统一，而它们**分布在不同源上**：只按字面匹配时，
+        // 选其中一个标签只会打到收录它的那几个源，其余源明明有同类内容却整个不参与。
+        // 这一组把它们打通，让「无码」也能命中只标了「無修正」的源。
+        setOf("无码", "無碼", "无修正", "無修正", "uncensored", "no mosaic", "nomosaic"),
+        setOf("有码", "有碼", "修正", "censored", "mosaic"),
+        // ===== 画质 / 字幕（各站写法差异）=====
+        setOf("高清", "高画质", "hd", "high definition", "high quality", "hq"),
+        setOf("超清", "超高清", "uhd", "4k", "ultra hd"),
+        setOf("中字", "中文字幕", "中文配音", "chinese subtitle", "chs", "gb"),
+        setOf("生肉", "无字幕", "no subtitle", "raw"),
+        // ===== 独占 / 来源 =====
+        setOf("独家", "独占", "exclusive"),
+        setOf("cosplay", "角色扮演", "コスプレ"),
     )
 
     /** 归一化：去空白 + 小写（与 [TagQuery.normalizeTitle] 同口径） */
@@ -140,6 +154,32 @@ object TagAlias {
         val out = LinkedHashSet<String>()
         out.add(key)
         group.forEach { out.add(norm(it)) }
+        return out
+    }
+
+    /**
+     * 把互为译名的一类标签**合并成一个**（v1.7.6.0）。
+     *
+     * 复合搜索是按「同时满足所有标签」求交的，所以「无码」与「無修正」若同时出现在
+     * 输入里，会被当成**两个不同条件**去求交 —— 而它们各自分布在不同的源上，
+     * 交集必然被切得很窄甚至为空。这和「点了两个标签却什么都搜不到」是一个道理。
+     *
+     * 这里按译名集合是否相交来判定重复，保留最先出现的那个名字，
+     * 保持输入顺序（其余逻辑依赖「第一个标签决定源的排列顺序」）。
+     *
+     * @return 去重后的标签；无别名关系时原样返回同一批实例
+     */
+    fun dedupeAliases(tags: List<String>): List<String> {
+        if (tags.size < 2) return tags
+        val out = ArrayList<String>(tags.size)
+        val seenKeys = HashSet<String>()
+        for (tag in tags) {
+            val keys = aliasesOf(tag)
+            // 与已保留标签共享任一译名 → 视为同一个条件，跳过
+            if (keys.any { it in seenKeys }) continue
+            seenKeys.addAll(keys)
+            out.add(tag)
+        }
         return out
     }
 

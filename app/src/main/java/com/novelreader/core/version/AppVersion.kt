@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.7.5.0"
+    const val CURRENT_VERSION = "1.7.6.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,18 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.7.6.0",
+            date = "2026-10-17",
+            changes = listOf(
+                "**修复点开漫画源闪退（真机崩溃日志定位）**：崩溃栈是 `JniAndroid\$UncaughtExceptionException`，`Caused by: OutOfMemoryError: Failed to allocate a 668351688 byte allocation`，发生在 WebView 的 **JavaBridge 线程**。根因是源返回的结果串经 `postResult` 穿 JNI 边界时要一次性转成 Java String —— 源一旦造出几百 MB 的结果，转换本身就 OOM 崩进程，而 Kotlin 侧的 `MAX_RESULT_CHARS` 检查发生在转换**之后**，拦不住。现在在 JS 侧先按 8M 字符卡一道，超限直接回错误，巨型串根本不过边界。同一份日志复现了 4 次（10-16 两次、10-17 两次，单次申请 633~668MB）。",
+                "**小说源支持多段链式规则**：legado 源的字段规则常写成多行接力，每行的 `result` 接上一行的值（如 `bookUrl` = `$.bid` → `<js>1100000000+parseInt(result)</js>` → `https://…?bookid={{result}}`）。此前整条规则被当成一个表达式，`{{result}}` 无处取值被替换成空 → 详情地址缺参数 → 站点返回错误体，表现为「这个源的小说点进去什么都没有」。现在按行分段求值并接力传递；**整条规则本身就是一个跨行 JS 块时保持原路径**（`<js>…</js>` / `@js:` 带换行的写法不会被切碎），单行规则行为完全不变。",
+                "**同义标签在复合搜索里合并成一个条件**：「无码」与「無修正」分布在不同源上，同时选中会被当成**两个条件求交**，交集必然为空。现在互为译名的标签先合并成一个再搜；同时补齐一批同义组（无码 / 無碼 / 无修正 / 無修正 / uncensored、有码 / 修正 / censored、高清 / HD、中字 / 中文字幕 等）。",
+                "**漫画阅读页的「边缘滑动调亮度 / 音量」改为默认关闭**：这是视频播放器的交互范式，在漫画里左右边缘各 1/6 的竖滑区容易与上下滚动、左右翻页误触（正常翻页划到最左 / 最右就被吃掉且亮度被改）。现在默认不挂载边缘手势层，边缘的竖划如实交给内容；想要的话在「设置 → 漫画」里打开。",
+                "**漫画题材词 66 → 182**：按受众、都市情感、玄幻修真、科幻末世、武侠古风、悬疑猎奇拆出细分标签（复仇、权谋、宫斗、赛博朋克、时间循环、剑客、密室、怪谈 等），取自主流中文漫画站的真实分类名，标签页能按更细的颗粒度找书。",
+                "**新增单测 4 条**（多段链式规则的取值→JS→模板接力、独立 `@js:` 引导行吞掉多行函数体、正则净化段、单行规则行为不变），全量 544 用例 0 失败。",
+            ),
+        ),
         VersionEntry(
             version = "1.7.5.0",
             date = "2026-10-16",

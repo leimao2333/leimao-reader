@@ -371,8 +371,34 @@ class LegadoSourceAdapter(
      * @param node 当前 JSON 节点
      * @param contextUrl 用于 {{baseUrl}} 替换的上下文 URL（目录章节场景为 tocUrl）
      */
-    private fun renderJsonRule(rule: String, node: com.google.gson.JsonElement, contextUrl: String = baseUrl): String? {
+    // internal：单测要直接对「多段链式规则」写断言（同 module 可见）
+    internal fun renderJsonRule(rule: String, node: com.google.gson.JsonElement, contextUrl: String = baseUrl): String? {
         if (rule.isBlank()) return null
+
+        // ===== v1.7.6.0：多段链式规则（legado 语义）=====
+        // 真实书源里一条规则常常写成**多行**，逐行接力，每行的 `result` 就是上一行的值。
+        // 典型写法（企鹅阅读的 bookUrl）：
+        //     $.bid
+        //     <js>1100000000+parseInt(result)</js>
+        //     https://.../intro-info?bookid={{result}}
+        // 此前整条规则被当成「一个表达式」处理：多行串既不是合法 JSONPath 也不含 `{{result}}` 的
+        // 取值来源，`{{result}}` 被替换成空 → 详情地址缺 bookid → 站点返回 "incorrect referer"
+        // 之类的错误体，表现为「这个源的小说点进去什么都没有」。
+        // 只有**确实存在多行**时才走链式，单行规则仍走原来的路径（行为完全不变）。
+        // **整条规则本身就是一个跨行 JS 块时不能参与切分** —— 源里大量存在
+        // `<js>\n"https://h/d?c="+id\n</js>`、`@js:\nt=...;\nsign=...;\n b=...;` 这种写法，
+        // 它的换行属于 JS 代码本身；此时按行切会把 `<js>` 与 `</js>` 拆到不同段、
+        // 把多行函数体切碎。这类规则只有一段，交给下面的既有逻辑处理（含
+        // `{{$.字段}}` 先替换再执行 JS），行为与修复前完全一致。
+        val withoutTrailing = rule.trim()
+        if (!startsWithJsBlock(withoutTrailing)) {
+            val segments = withoutTrailing.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+            if (segments.size > 1) {
+                val chained = evalChainedRule(segments, node, contextUrl)
+                if (!chained.isNullOrBlank()) return chained
+                // 链式没解出来时继续尝试原逻辑，保证不比修复前更差
+            }
+        }
 
         // `@put:{k:v}` 写入变量、`@get:{k}` 回填（legado 变量机制）。
         // JSON API 源常用它把搜索结果里的 ID 传给后续的目录 / 正文规则。
@@ -413,6 +439,108 @@ class LegadoSourceAdapter(
     }
 
     /**
+     * 整条规则是否就是一个 JS 块（`@js:` 或 `<js>` 开头）。
+     *
+     * 这类规则里的换行属于 JS 代码本身 —— 参与按行切分会把它切碎，
+     * 因此 [renderJsonRule] 遇到它时必须保持原有（单段）的处理路径。
+     */
+    private fun startsWithJsBlock(rule: String): Boolean =
+        rule.startsWith("@js:", ignoreCase = true) || rule.startsWith("<js>")
+
+    /**
+     * 多段链式规则求值（legado 语义，v1.7.6.0）：逐行处理，`result` 接力。
+     *
+     * 每行按出现顺序可以是：
+     * - **取值**：JSONPath（`$.bid` / `@json:$.a.b`），仅在尚无结果时替换当前值；
+     * - **JS**：`<js>...</js>` 或 `@js:...`，作用域里的 `result` 是上一段的值；
+     *   单独成行的 `@js:` 是「JS 块引导」，会吞掉它之后的所有行作为函数体
+     *   （真实源的 `coverUrl` 常这么写，函数体里难免有换行）；
+     * - **正则净化 / 替换**：`A##B##C`（legado 的 `##` 语法）；
+     * - **模板**：含 `{{...}}`，`{{result}}` 回填上一段的值。
+     *
+     * @return 最后一段的结果；全部失败时返回 null（由调用方回退到原逻辑）
+     */
+    private fun evalChainedRule(
+        segments: List<String>,
+        node: com.google.gson.JsonElement,
+        contextUrl: String,
+    ): String? {
+        var carry: String? = null
+        var i = 0
+        while (i < segments.size) {
+            val seg = segments[i]
+            i++
+
+            // 单独的 @js: 引导行 → JS 体一直延伸到本规则末尾（遇 </js> 提前收尾）
+            val bareJs = seg.equals("@js:", ignoreCase = true) ||
+                seg.trimEnd(':').equals("@js", ignoreCase = true)
+            if (bareJs) {
+                val rest = segments.drop(i).joinToString("\n")
+                val js = rest.substringBeforeOrAll("</js>")
+                carry = evalJsSegment(js, node, contextUrl, carry)
+                break
+            }
+
+            carry = when {
+                seg.startsWith("@js:", ignoreCase = true) -> {
+                    // "@js:" 固定 4 个字符，大小写不影响长度
+                    val js = seg.drop(4).substringBeforeOrAll("</js>")
+                    evalJsSegment(js, node, contextUrl, carry)
+                }
+                seg.startsWith("<js>") -> {
+                    val js = seg.substringAfter("<js>").substringBeforeOrAll("</js>")
+                    evalJsSegment(js, node, contextUrl, carry)
+                }
+                seg.contains("##") -> {
+                    val parts = seg.split("##")
+                    val base = carry ?: extractJsonPath(node, parts[0].trim())
+                    base?.let { applyLegadoReplace(it, parts.drop(1)) } ?: base
+                }
+                seg.contains("{{") -> renderJsonTemplate(seg, node, contextUrl, carry)
+                else -> {
+                    // 取值段：第一段通常没有 carry；后续段若已有值就别用选择器覆盖掉
+                    val value = extractJsonPath(node, seg)
+                    if (value.isNullOrBlank()) carry else value
+                }
+            }
+        }
+        return carry
+    }
+
+    /**
+     * 链式规则里的 JS 段求值。
+     *
+     * 与既有 `jsBodyOf` 分支同口径：**先替换 `{{...}}` 再执行 JS** ——
+     * `{{$.字段}}` 取节点值、`{{result}}` 回填上一段的结果。
+     * 直接求值会让模板原样留在输出里。
+     */
+    private fun evalJsSegment(
+        js: String,
+        node: com.google.gson.JsonElement,
+        contextUrl: String,
+        carry: String?,
+    ): String? {
+        val script = renderJsonTemplate(js, node, contextUrl, carry) ?: js
+        // 顶层 `return` 在 Rhino 里是语法错误。legado 源的 JS 惯例是「最后一行写表达式」，
+        // 但也有源在链式 JS 里写 `return ...` —— 检测到就包一层立即执行函数吃掉它。
+        val callable = if (TOP_RETURN.containsMatchIn(script)) {
+            "(function(){\n$script\n})()"
+        } else {
+            script
+        }
+        return LegadoRuleEngine.evalJsonJsCarry(callable, node, contextUrl, carry)
+    }
+
+    /** 顶层 return 的判别（行首出现 return） */
+    private val TOP_RETURN = Regex("(^|\\n)\\s*return\\b")
+
+    /** 取某个分隔串之前的子串；没有该分隔串时返回整串 */
+    private fun String.substringBeforeOrAll(delimiter: String): String {
+        val idx = indexOf(delimiter, ignoreCase = true)
+        return if (idx >= 0) substring(0, idx) else this
+    }
+
+    /**
      * 判断整条规则是否就是一段 JS，是则返回 JS 代码。
      *
      * 支持 `@js:代码` 与 `<js>代码</js>` 两种写法；
@@ -441,7 +569,18 @@ class LegadoSourceAdapter(
      * - {{baseUrl}} → 上下文 URL（默认源地址，目录章节场景为 tocUrl）
      * - {{baseUrl.replace('a','b')}} → 简单 JS 表达式（用 Rhino）
      */
-    private fun renderJsonTemplate(template: String, node: com.google.gson.JsonElement, contextUrl: String = baseUrl): String? {
+    /**
+     * 渲染含 `{{...}}` 的模板。
+     *
+     * @param carry 多段链式规则里**上一段的结果**；出现 `{{result}}` 时回填它
+     *              （legado 的 `result` 就是上一段的值，v1.7.6.0）
+     */
+    private fun renderJsonTemplate(
+        template: String,
+        node: com.google.gson.JsonElement,
+        contextUrl: String = baseUrl,
+        carry: String? = null,
+    ): String? {
         return runCatching {
             var result = template
             // 逐段替换 {{...}} 表达式
@@ -449,7 +588,7 @@ class LegadoSourceAdapter(
             val matches = regex.findAll(template).toList()
             for (m in matches) {
                 val expr = m.groupValues[1].trim()
-                val value = evalTemplateExpr(expr, node, contextUrl)
+                val value = if (expr == "result") carry else evalTemplateExpr(expr, node, contextUrl)
                 result = result.replace(m.value, value ?: "")
             }
             result

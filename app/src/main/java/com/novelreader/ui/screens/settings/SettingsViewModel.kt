@@ -271,6 +271,10 @@ class SettingsViewModel(
     private val _comicPreloadWifiOnly = MutableStateFlow(false)
     val comicPreloadWifiOnly: StateFlow<Boolean> = _comicPreloadWifiOnly.asStateFlow()
 
+    /** 漫画阅读页「边缘竖滑调亮度 / 音量」手势（v1.7.6.0，默认关闭） */
+    private val _comicEdgeGesture = MutableStateFlow(false)
+    val comicEdgeGesture: StateFlow<Boolean> = _comicEdgeGesture.asStateFlow()
+
     /** 并行搜索线程数 */
     private val _searchConcurrency = MutableStateFlow(PreferencesManager.DEFAULT_SEARCH_CONCURRENCY)
     val searchConcurrency: StateFlow<Int> = _searchConcurrency.asStateFlow()
@@ -343,6 +347,9 @@ class SettingsViewModel(
             preferencesManager.comicPreloadWifiOnlyFlow.collect { _comicPreloadWifiOnly.value = it }
         }
         viewModelScope.launch {
+            preferencesManager.comicEdgeGestureFlow.collect { _comicEdgeGesture.value = it }
+        }
+        viewModelScope.launch {
             preferencesManager.searchConcurrencyFlow.collect { _searchConcurrency.value = it }
         }
         viewModelScope.launch {
@@ -404,6 +411,10 @@ class SettingsViewModel(
 
     fun setComicPreloadWifiOnly(value: Boolean) {
         viewModelScope.launch { preferencesManager.setComicPreloadWifiOnly(value) }
+    }
+
+    fun setComicEdgeGesture(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setComicEdgeGesture(value) }
     }
 
     fun setSearchConcurrency(value: Int) {

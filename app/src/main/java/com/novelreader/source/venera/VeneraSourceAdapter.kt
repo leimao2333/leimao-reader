@@ -219,8 +219,8 @@ class VeneraSourceAdapter(
     }
 
     override suspend fun content(chapter: ChapterItem): ContentResult {
-        val comicId = chapter.url.substringBefore(CHAPTER_SEP)
-        val epId = chapter.url.substringAfter(CHAPTER_SEP, chapter.id)
+        // 章节地址可能是 `comicId|epId`（常见）或 `vj:{json}`（两段自身含 `|` 时，见 VeneraChapterCodec）
+        val (comicId, epId) = VeneraChapterCodec.decode(chapter.url, chapter.id)
         engine.putSource(key, code)
         val json = engine.call(key, "content", comicId, epId)
         val obj = JsonParser.parseString(json).asJsonObject
@@ -322,7 +322,8 @@ class VeneraSourceAdapter(
     /** 本地登录标记（只读 prefs，不启动 WebView，供列表即时刷新徽标） */
     fun isLoginMarked(): Boolean = engine.isLoginMarked(key)
 
-    private fun encodeChapterUrl(comicId: String, epId: String) = "$comicId$CHAPTER_SEP$epId"
+    private fun encodeChapterUrl(comicId: String, epId: String) =
+        VeneraChapterCodec.encode(comicId, epId)
 
     private fun JsonObject.str(name: String): String? {
         val el = get(name) ?: return null
@@ -332,7 +333,6 @@ class VeneraSourceAdapter(
 
     companion object {
         private const val TAG = "VeneraAdapter"
-        private const val CHAPTER_SEP = "|"
 
         /** 分类项的 itemType：走分类页（默认） */
         private const val CATEGORY_KIND = "category"

@@ -6,6 +6,33 @@
 >
 > 撰写约定：说明里出现 legado 规则语法（`@put` / `@get` / `@js` 等）时**必须用反引号包裹** —— 否则 GitHub 会把它们当成用户提及，Release 页面的 Contributors 会凭空多出同名用户。
 
+## v1.7.6.5（2026-10-17）
+
+### 修复
+
+- **源管理「检测可用性」：能搜到书但读不了目录的源，现在一并算失效**
+  此前这类源只打一个橙色「能搜·读不了」标签，不计入 `failedCount`，「禁用失效 / 删除失效」也覆盖不到 → 半死源一直留着，点进去一章都没有。
+  现在判定改为「搜索成功 **且** 目录读得出来」才算可用（新增 `core/util/SourceHealth` 纯逻辑 + 4 条守卫单测）。
+  目录判定仍**只在搜索成功之后**才做 —— 搜索本身没结果（关键词不适用）不会被误杀。
+- **目录地址带请求配置时，配置被编码掉（引擎缺陷）**
+  `tocUrl` 常写成 `地址,{"method":"POST",...}`。此前先做 URL 绝对化，`sanitizeUrl` 会把 `,{` 里的引号与花括号百分号编码，`splitUrlOptions` 再也认不出配置 → 整串被当成 URL 去 GET → 目录恒为空。
+  改为**先拆请求配置、再做绝对化**。
+- **点外漫画（manhwatop）取不到目录**
+  站点已废弃 madara 的 `admin-ajax.php` 目录接口（`manga_get_chapters` 一律 400），真实接口是详情页后缀 `ajax/chapters/`（POST）。
+  规则改为 `{{baseUrl}}ajax/chapters/`，列表规则改为 `class.listing-chapters_wrap@tag.li`；实测 **12 章**、正文 **9 张图**。
+  正文规则同时改为 `@css:div.page-break img` + `imageStyle=data-src`（站点用 lazyload，`src` 是占位图）。
+- **H-Comic 等 Venera 源「搜得到、点进去没内容」**
+  章节地址原本用 `comicId|epId` 拼接，但 H-Comic 的条目 id 是 `id|title`、章节 id 是 `source|media_id|pages`，**两段都自带竖线** → 还原时被截断（comicId 变成 `11`、epId 变成 `Test Comic|abc|42|3`），`loadInfo` 拼出 `/comics/view/1?id=11` 直接 404。
+  新增 `VeneraChapterCodec`：只在含竖线时改用 `vj:{json}` 承载，普通源与历史进度数据格式不变。
+
+### 新增
+
+- `app/testsite/venera_source_check.js`：用 Node 假 WebView 跑 Venera 源的分类 / 搜索 / 详情 / 正文，不需要模拟器也不需要真站点。本次用它确认 **H-Comic 规则本身完好**（分类 29 项、详情目录 1 章、正文 3 张图）。
+
+### 测试
+
+- 全量单测 **566 用例 / 0 失败**（新增 `SourceHealthTest` 4 条、`VeneraChapterCodecTest` 7 条）。
+
 ## v1.7.6.4（2026-10-17）
 
 ### 修复

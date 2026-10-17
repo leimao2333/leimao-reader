@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.7.6.4"
+    const val CURRENT_VERSION = "1.7.6.5"
 
     /**
      * 更新日志。
@@ -25,6 +25,18 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.7.6.5",
+            date = "2026-10-17",
+            changes = listOf(
+                "**源管理「检测可用性」：能搜到书但读不了目录的源，一并标为失效**。此前这类源只打「能搜·读不了」的橙色标签，`failedCount` 不算它，「禁用失效 / 删除失效」也不会覆盖 → 半死源一直留着，点进去没有章节。现在判定为「搜索成功 **且** 目录读得出来」才算可用（新增 `core/util/SourceHealth` 纯逻辑 + 4 条守卫单测）；目录判定仍只在搜索成功后才做，搜索本身没结果（关键词不适用）不会被误杀。",
+                "**目录地址带请求配置时配置被编码掉（引擎缺陷）**：`tocUrl` 常写成 `地址,{...POST 配置...}`，此前先做 URL 绝对化，`sanitizeUrl` 会把 `,{` 里的引号花括号百分号编码，`splitUrlOptions` 认不出配置 → 整串当 URL 去 GET，目录恒为空。改为**先拆配置再绝对化**。",
+                "**点外漫画（manhwatop）目录取不到**：站点已废弃 madara 的 `admin-ajax.php` 目录接口（`manga_get_chapters` 一律 400），真实接口是详情页后缀 `ajax/chapters/`（POST）。规则改为 `{{baseUrl}}ajax/chapters/` 后实测 **12 章**、正文 **9 张图**；正文规则同时改为 `@css:div.page-break img` + `imageStyle=data-src`（站点用 lazyload，`src` 是占位图）。",
+                "**H-Comic 等源「点进去没有内容」**：Venera 章节地址用 `comicId|epId` 拼接，但 H-Comic 的条目 id 是 `id|title`、章节 id 是 `source|media_id|pages`，两段都自带竖线 → 还原时被截断（comicId 变成 `11`、epId 变成 `Test Comic|abc|42|3`），`loadInfo` 拼出 `/comics/view/1?id=11` 404。新增 `VeneraChapterCodec`：只在含竖线时改用 `vj:{json}` 承载，普通源与历史进度数据格式不变。",
+                "新增离线走查工具 `app/testsite/venera_source_check.js`：用 Node 假 WebView 跑 Venera 源的分类/搜索/详情/正文（不需要模拟器、不需要真站点），本次用它确认 H-Comic 规则本身完好（分类 29 项、详情 1 章、正文 3 图）。",
+                "全量单测 **566 用例 / 0 失败**（新增 `SourceHealthTest` 4 条、`VeneraChapterCodecTest` 7 条）。",
+            ),
+        ),
         VersionEntry(
             version = "1.7.6.4",
             date = "2026-10-17",

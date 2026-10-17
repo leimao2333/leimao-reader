@@ -781,11 +781,17 @@ class LegadoSourceAdapter(
         // 2. ruleBookInfo.tocUrl（需从详情页渲染/提取，baseUrl 指详情页 URL）
         val tocUrlRaw = rule["url"]?.takeIf { it.isNotBlank() }
             ?: source.ruleBookInfo["tocUrl"]?.takeIf { it.isNotBlank() }
-        val tocUrl = LegadoRuleEngine.withVariables(vars) {
+        val tocResolved = LegadoRuleEngine.withVariables(vars) {
             tocUrlRaw?.let { resolveTocUrl(it, content, detailUrl) }
-        }?.let { LegadoRuleEngine.toAbsoluteUrl(detailUrl, it) }
+        }
+        // 重要：**先拆请求配置再绝对化**。
+        // tocUrl 常写成 `地址,{"method":"POST","body":"..."}`，若先 toAbsoluteUrl，
+        // sanitizeUrl 会把 JSON 里的 `"` `{` `}` 百分号编码（`,{` → `,%7B`），
+        // 于是 splitUrlOptions 认不出配置、整串被当成 URL 去 GET ——
+        // 目录接口因此恒为空（点外漫画、madara 主题的 ajax 目录都是这种形态）。
+        val (tocUrlPart, tocOptions) = splitUrlOptions(tocResolved)
         // 目录地址后可能跟请求配置（`url,{...}`）：地址用于取值与相对拼接，配置用于发请求
-        val (tocUrlClean, tocOptions) = splitUrlOptions(tocUrl)
+        val tocUrlClean = LegadoRuleEngine.toAbsoluteUrl(detailUrl, tocUrlPart).orEmpty()
         val effectiveTocOptions = tocOptions.ifBlank { detailOptions }
         val usesOwnPage = tocUrlClean.isNotBlank() && tocUrlClean != detailUrl
         val firstPageUrl = if (usesOwnPage) tocUrlClean else detailUrl

@@ -611,12 +611,16 @@ class SourceManageViewModel(
     val testRunning: StateFlow<Boolean> = _testRunning.asStateFlow()
 
     /**
-     * **搜得到但读不了目录**的源 id（v1.7.4.0）。
+     * **搜得到但读不了目录**的源 id（v1.7.4.0，v1.7.6.5 起计入失效）。
      *
      * 典型是站点改过版 / 换了域名：`test()` 用「测试」关键词搜索还能返回结果
      * （于是判为「可用」），但 `ruleToc` 早就对不上新页面，点进去一本都读不了
-     * （52PO小说就是：301 跳到 pokanwen.com 且页面重做，目录恒为 0 章）。
-     * 对「这个源好不好用」来说这是**半死**的源，和真正可用的必须分开标。
+     * （52PO小说：301 跳到 pokanwen.com 且页面重做，目录恒为 0 章；点外漫画：
+     * 目录走 `admin-ajax.php`，被站点 WAF 一律 400）。
+     *
+     * 这类源**留着没用**（点进去没章节可读），所以 v1.7.6.5 起
+     * [testResults] 里同步记为 `false`，`failed` 统计与「禁用失效 / 删除失效」
+     * 一并覆盖；这里单独留一份只为 UI 能显示「为什么失效」。
      *
      * 只放**确认读不了**的：搜索压根没结果时无法判定（可能只是关键词不匹配），不放。
      */
@@ -629,8 +633,10 @@ class SourceManageViewModel(
      * 逐个调用 [SourceAdapter.test]（内部以「测试」关键词搜索，返回结果非空即视为可用）。
      * 检测结果写入 [testResults]，UI 据此标记失效源。
      *
-     * v1.7.4.0 追加一步：判定可用的源还会拿一本真实的书去要一次目录，
-     * 取不到章节的另记进 [unreadable] —— 只多打一个请求，只针对活源。
+     * v1.7.4.0 追加一步：判定可用的源还会拿一本真实的书去要一次目录。
+     * v1.7.6.5 起：取不到章节的源**直接记为失效**（`testResults[id] = false`），
+     * 让 `failed` 统计与「禁用失效 / 删除失效」一并覆盖——能搜到书却一章都读不了
+     * 的源留着没有意义。同时仍记进 [unreadable]，UI 用来交代失效原因。
      *
      * @param sources 待检测的源；默认检测当前全部源
      */
@@ -659,11 +665,18 @@ class SourceManageViewModel(
                             // 用 runCatching 捕获 Throwable（Rhino 等可能抛 Error，非 Exception），
                             // 任何异常都视为「不可用」，绝不因此崩溃。
                             val adapter = sourceRepository.getAdapter(source.id)
-                            val ok = kotlinx.coroutines.withTimeoutOrNull(20_000L) {
+                            val searchOk = kotlinx.coroutines.withTimeoutOrNull(20_000L) {
                                 runCatching { adapter?.test() ?: true }.getOrDefault(false)
                             } ?: false
+                            // 搜得到才值得再探一次目录（搜索就失败时无法判定，不能算「无目录」）
+                            val readable: Boolean? = if (searchOk && adapter != null) {
+                                probeReadable(adapter)
+                            } else {
+                                null
+                            }
+                            val ok = com.novelreader.core.util.SourceHealth.isUsable(searchOk, readable)
                             synchronized(map) { map[source.id] = ok }
-                            if (ok && adapter != null && probeReadable(adapter) == false) {
+                            if (com.novelreader.core.util.SourceHealth.isNoToc(searchOk, readable)) {
                                 unreadableSet += source.id
                             }
                             _testing.value = _testing.value - source.id
@@ -679,10 +692,18 @@ class SourceManageViewModel(
             _testProgress.value = null
             _testRunning.value = false
             val failed = results.count { !it.value }
-            val partial = _unreadable.value.size
+            val noToc = _unreadable.value.size
             _message.value = buildString {
-                append(if (failed == 0) "检测完成：全部源可连通" else "检测完成：${results.size} 个源中 $failed 个疑似失效")
-                if (partial > 0) append("；另有 $partial 个搜得到但读不了目录（站点可能已改版）")
+                append(
+                    if (failed == 0) {
+                        "检测完成：全部源可用"
+                    } else {
+                        "检测完成：${results.size} 个源中 $failed 个失效"
+                    },
+                )
+                if (noToc > 0) {
+                    append("（其中 $noToc 个能搜到书但读不了目录，已一并记为失效）")
+                }
             }
         }
     }

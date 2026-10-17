@@ -362,11 +362,8 @@ fun SourceManageScreen(
                             testResults.isEmpty() -> "尚未检测源可用性"
                             failedCount == 0 && partialCount == 0 -> "检测完成：全部可用"
                             else -> buildString {
-                                if (failedCount > 0) append("检测到 $failedCount 个疑似失效")
-                                if (partialCount > 0) {
-                                    if (isNotEmpty()) append("，")
-                                    append("$partialCount 个能搜但读不了目录")
-                                }
+                                append("检测到 $failedCount 个失效")
+                                if (partialCount > 0) append("（其中 $partialCount 个能搜到书但没有目录）")
                             }
                         },
                         style = MaterialTheme.typography.bodySmall,
@@ -1222,7 +1219,7 @@ private fun CategoryBadge(category: String) {
     )
 }
 
-/** 由「连通性结果 + 目录可读性」合成展示状态（v1.7.4.0） */
+/** 由「连通性结果 + 目录可读性」合成展示状态（v1.7.4.0，v1.7.6.5 起无目录 = 失效） */
 private fun statusOf(
     id: String,
     testing: Set<String>,
@@ -1230,8 +1227,9 @@ private fun statusOf(
     unreadable: Set<String>,
 ): SourceTestStatus = when {
     id in testing -> SourceTestStatus.TESTING
+    // 搜得到但读不了目录：判为失效，只是标签上交代失效原因
+    testResults[id] == false -> if (id in unreadable) SourceTestStatus.PARTIAL else SourceTestStatus.FAILED
     testResults[id] == true -> if (id in unreadable) SourceTestStatus.PARTIAL else SourceTestStatus.OK
-    testResults[id] == false -> SourceTestStatus.FAILED
     else -> SourceTestStatus.UNKNOWN
 }
 
@@ -1240,7 +1238,10 @@ private fun statusOf(
  *
  * [PARTIAL]（v1.7.4.0）= **搜得到但读不了目录**：站还通、搜索也返回结果，
  * 但目录规则对不上改版后的页面（52PO小说这类），点进去一本都读不了。
- * 和 [FAILED] 分开标，因为它不是「连不上」，换源或等源更新才有解。
+ *
+ * v1.7.6.5 起 [PARTIAL] 在结论上**等同于失效**（计入 `failedCount`，
+ * 「禁用失效 / 删除失效」会一并处理），保留独立状态只是让用户知道
+ * 它为什么失效 —— 不是连不上，而是目录取不到。
  */
 enum class SourceTestStatus { UNKNOWN, TESTING, OK, PARTIAL, FAILED }
 
@@ -1250,7 +1251,7 @@ private fun SourceTestBadge(status: SourceTestStatus) {
     val (label, color) = when (status) {
         SourceTestStatus.TESTING -> "检测中" to MaterialTheme.colorScheme.onSurfaceVariant
         SourceTestStatus.OK -> "可用" to Color(0xFF2E7D32)
-        SourceTestStatus.PARTIAL -> "能搜·读不了" to Color(0xFFE07A00)
+        SourceTestStatus.PARTIAL -> "失效·无目录" to MaterialTheme.colorScheme.error
         SourceTestStatus.FAILED -> "疑似失效" to MaterialTheme.colorScheme.error
         SourceTestStatus.UNKNOWN -> return
     }

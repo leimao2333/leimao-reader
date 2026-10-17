@@ -97,7 +97,7 @@ NovelReader/
 
 发版时四处同步：`app/build.gradle.kts`（`versionCode` / `versionName`）、`AppVersion.CURRENT_VERSION`、`CHANGELOG.md` 与 `AppVersion.CHANGELOG` 顶部条目、git tag `v顶端.大.小.修订`。
 
-> 历史遗留与重排：早期版本号曾在第 3 / 第 4 位递增（`1.0.x`、`1.1.x`、`1.2.x`，其中 `1.2.10` / `1.2.11` 已超出两位），之后 `1.3.0`~`1.5.0` 又跳到第 2 位。现已**全量重排为四段式**：`1.0.x` 原样保留，`1.1.x` / `1.2.x` / `1.3.0` 补全第四段（如 `1.2.11 → 1.2.11.0`），原 `v1.4.0 → v1.3.1.0`、`v1.5.0 → v1.3.2.0`。GitHub 上的 tag / Release / APK 与本仓库代码、CHANGELOG 均已同步。**当前版本 `1.7.0.0`**（`1.6.9.0` 已把小版本走满十个数，按规范进大版本、小版本归零）。
+> 历史遗留与重排：早期版本号曾在第 3 / 第 4 位递增（`1.0.x`、`1.1.x`、`1.2.x`，其中 `1.2.10` / `1.2.11` 已超出两位），之后 `1.3.0`~`1.5.0` 又跳到第 2 位。现已**全量重排为四段式**：`1.0.x` 原样保留，`1.1.x` / `1.2.x` / `1.3.0` 补全第四段（如 `1.2.11 → 1.2.11.0`），原 `v1.4.0 → v1.3.1.0`、`v1.5.0 → v1.3.2.0`。GitHub 上的 tag / Release / APK 与本仓库代码、CHANGELOG 均已同步。**当前版本以 `AppVersion.CURRENT_VERSION` 为准**（不再在 README 里硬编码，避免过期）。
 
 ## 如何构建
 
@@ -106,6 +106,18 @@ NovelReader/
 3. 运行到设备或模拟器（minSdk 24，即 Android 7.0+）
 
 > 注意：首次构建需联网下载依赖，Rhino 来自 jitpack 仓库。
+
+## 发版与签名（务必遵守）
+
+> **所有 release 必须使用同一把密钥签名**。更换密钥会导致已安装用户无法覆盖升级（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`）。
+
+- **密钥文件**：`keystore/leimao-release.jks`（PKCS12，RSA 2048，有效期 10000 天，别名 `leimao`）
+- **密码配置**：`keystore.properties`（`storeFile` / `storePassword` / `keyAlias` / `keyPassword`）
+- **证书指纹（SHA-256）**：`8ea0d34e5ddeeb2aa4ae2801572ccdf46c6eba002274a93208660774d3d147f2`
+- 两个文件均已写入 `.gitignore`，**绝不提交到仓库**；换机 / 重装系统前必须单独备份，丢失后无法再发布可覆盖安装的更新。
+- 构建：`gradle assembleRelease` → 产物 `app/build/outputs/apk/release/app-release.apk`（已签名，v2 方案）。
+- 发版前必检：`apksigner verify -v app-release.apk`，必须看到 `Verified using v2 scheme (APK Signature Scheme v2): true`。
+- 若 `keystore.properties` 缺失，构建会退化为**未签名**（`app-release-unsigned.apk`）——这种包**装不上**，禁止发布。
 
 ## 核心设计
 

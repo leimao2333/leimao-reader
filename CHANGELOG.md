@@ -6,6 +6,26 @@
 >
 > 撰写约定：说明里出现 legado 规则语法（`@put` / `@get` / `@js` 等）时**必须用反引号包裹** —— 否则 GitHub 会把它们当成用户提及，Release 页面的 Contributors 会凭空多出同名用户。
 
+## v1.7.6.1（2026-10-17）
+
+代码审查整改 + 源健康遍历工具。
+
+### 修复
+
+- **主线程磁盘 IO**：首页 / 频道 / 推荐页的 6 个缓存读写函数（`VideoHomeCache.load/save` + Gson 序列化）此前在 `viewModelScope`（主线程）直接执行，缓存较大时冷启动会掉帧甚至 ANR。现在统一放到可注入的 `cacheDispatcher`（默认 `Dispatchers.IO`）；单测注入 TestDispatcher 保持确定性。
+- **标签别名去重**：`TagAlias` 中 `shounen/shonen`、`detective`、`轻小说`、`生肉/raw` 同时属于两个等价组，`groupOf` 后写覆盖前写会让 `aliasesOf` 变成非对称（「日语」含 `raw`、而「生肉」不含日语），复合搜索可能把不同概念误合并。现已清理为「一词一组」，并新增 2 条守卫单测。
+- **源地址 URL 片段清理**：源包里 22 个小说源 + 2 个漫画源的 `bookSourceUrl` 带 `#🎃` / `#pb1101` 等片段，`{{baseUrl}}/path` 会拼出 `site.com#🎃/path`（片段之后全被当作锚点），请求退化成站点根 → 目录 / 正文集体取不到。现在 `baseUrl` 统一去掉 `#` 之后的部分。
+- **消除可避免的非空断言**：`LegadoSourceAdapter` / `RssParser` / `JsSourceAdapter` 中三处 `!!` 改为局部变量 / 显式判空。
+
+### 其他
+
+- 新增 `SourceHealthProbeTest`：按「搜索 → 详情 → 目录 → 正文」遍历源，搜索无果时改用发现页取真书，报告落 `build/source-health-*.json`（环境变量门控，不参与日常单测）。
+- `build.gradle.kts` 把 `LEIMAO_*` 环境变量转发进测试 worker，并支持 `-PKEY=VALUE`，真实源测试可正常触发。
+
+### 验证
+
+- 全量单测 **547 用例 / 0 失败**（新增 TagAlias 守卫 2 条 + 源健康探针 1 条）。
+
 ## v1.7.6.0（2026-10-17）
 
 **修复点开漫画源闪退（真机崩溃日志定位）**：崩溃栈是 `JniAndroid$UncaughtExceptionException`，`Caused by: OutOfMemoryError: Failed to allocate a 668351688 byte allocation`，发生在 WebView 的 **JavaBridge 线程**。根因是源返回的结果串经 `postResult` 穿 JNI 边界时要一次性转成 Java `String` —— 源一旦造出几百 MB 的结果，转换本身就 OOM 崩掉进程，而 Kotlin 侧的 `MAX_RESULT_CHARS` 检查发生在转换**之后**，根本拦不住。现在在 JS 侧先按 8M 字符卡一道，超限直接回错误，巨型串不再过边界。同一份日志在 10-16 / 10-17 复现 4 次（单次申请 633~668MB）。

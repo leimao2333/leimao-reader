@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.7.6.0"
+    const val CURRENT_VERSION = "1.7.6.1"
 
     /**
      * 更新日志。
@@ -25,6 +25,19 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.7.6.1",
+            date = "2026-10-17",
+            changes = listOf(
+                "**主线程磁盘 IO 修复**：首页 / 频道 / 推荐页的 6 个缓存读写函数（`VideoHomeCache.load/save` + Gson 序列化）此前在 `viewModelScope`（主线程）里直接执行，缓存较大时冷启动会掉帧甚至 ANR。现在统一放到可注入的 `cacheDispatcher`（默认 `Dispatchers.IO`），单测注入 TestDispatcher 保持确定性。",
+                "**标签别名去重**：`TagAlias` 里 `shounen/shonen`、`detective`、`轻小说`、`生肉/raw` 同时属于两个等价组，`groupOf` 后写覆盖前写会让 `aliasesOf` 变成非对称（「日语」含 raw、而「生肉」不含日语），复合搜索可能把不同概念误合并。现已清理为「一词一组」，并新增 2 条守卫单测。",
+                "**源地址 URL 片段清理**：源包里 22 个小说源 + 2 个漫画源的 `bookSourceUrl` 带 `#🎃` / `#pb1101` 等片段，`{{baseUrl}}/path` 会拼出 `site.com#🎃/path`（片段之后全被当作锚点），请求退化成站点根 → 目录 / 正文集体取不到。现在 `baseUrl` 统一去掉 `#` 之后的部分。",
+                "**消除可避免的非空断言**：`LegadoSourceAdapter` / `RssParser` / `JsSourceAdapter` 里三处 `!!` 改为局部变量 / 显式判空。",
+                "**新增源健康遍历工具**：`SourceHealthProbeTest` 按「搜索 → 详情 → 目录 → 正文」遍历源，搜索无果时改用发现页取真书，报告落 `build/source-health-*.json`（环境变量门控，不参与日常单测）。",
+                "**测试环境变量转发**：`build.gradle.kts` 把 `LEIMAO_*` 环境变量转发进测试 worker，并支持 `-PKEY=VALUE`，真实源测试可正常触发。",
+                "全量单测 **547 用例 0 失败**（新增 TagAlias 守卫 2 条 + 源健康探针 1 条）。",
+            ),
+        ),
         VersionEntry(
             version = "1.7.6.0",
             date = "2026-10-17",

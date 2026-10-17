@@ -1,5 +1,7 @@
 package com.novelreader
 
+import com.novelreader.domain.model.ChapterItem
+import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceFormat
 import com.novelreader.domain.model.SourceInfo
 import com.novelreader.domain.model.SourceType
@@ -20,15 +22,17 @@ import java.io.File
 /**
  * 源健康遍历（手动触发，不参与日常单测）。
  *
- * 环境变量：
+ * 环境变量 / 项目属性：
  * - `LEIMAO_REAL_TESTS=1`            必须，否则跳过
- * - `LEIMAO_HEALTH_FILE`             源包路径，默认 `../leimao-sources/novel.json`
+ * - `LEIMAO_HEALTH_FILE`             源包路径（建议绝对路径）
  * - `LEIMAO_HEALTH_LIMIT`            只测前 N 个（0/缺省 = 全部）
  * - `LEIMAO_HEALTH_CONCURRENCY`      并发数，默认 8
- * - `LEIMAO_HEALTH_KEYWORD`          探测关键词，默认「斗破苍穹」
+ * - `LEIMAO_HEALTH_KEYWORD`          搜索探测词，默认「斗破苍穹」
+ * - `LEIMAO_HEALTH_OUT`              报告输出路径（建议绝对路径）
  *
- * 对每个源依次跑：搜索 → 详情 → 目录 → 第一章正文，记录卡在哪一步、数量与异常。
- * 报告写到 `build/source-health-report.json`，并在 stdout 打印一行摘要。
+ * 探测策略（v2）：**不把单一关键词的无结果当成源坏了**。
+ * 先用关键词搜索；拿不到可读章节时，改用该源自己的「发现页」取一本真书再试。
+ * 这样言情/文学站（没有「斗破苍穹」）不会被误判成目录为空。
  */
 class SourceHealthProbeTest {
 
@@ -36,6 +40,7 @@ class SourceHealthProbeTest {
         val name: String,
         val type: String,
         val stage: String,
+        val via: String,
         val counts: String,
         val error: String?,
     ) {
@@ -44,7 +49,6 @@ class SourceHealthProbeTest {
 
     @Test
     fun `遍历源健康检查`() {
-        // 便于排查环境变量是否真的传进了 worker
         println("SOURCE_HEALTH_ENV=" + System.getenv().filterKeys { it.startsWith("LEIMAO") })
         assumeTrue("需要 LEIMAO_REAL_TESTS=1", System.getenv("LEIMAO_REAL_TESTS") == "1")
         val path = System.getenv("LEIMAO_HEALTH_FILE") ?: "../leimao-sources/novel.json"
@@ -62,9 +66,7 @@ class SourceHealthProbeTest {
         val sem = Semaphore(concurrency.coerceIn(1, 16))
         val results = runBlocking {
             coroutineScope {
-                all.map { src ->
-                    async(Dispatchers.IO) { sem.withPermit { probe(src, keyword) } }
-                }.awaitAll()
+                all.map { src -> async(Dispatchers.IO) { sem.withPermit { probe(src, keyword) } } }.awaitAll()
             }
         }
 
@@ -82,7 +84,7 @@ class SourceHealthProbeTest {
         results.forEach { r ->
             println(
                 "SOURCE_HEALTH ${if (r.ok) "OK  " else "FAIL"} ${r.type} ${r.name} " +
-                    "[${r.stage}] ${r.counts}${r.error?.let { " :: $it" } ?: ""}",
+                    "[${r.stage}/${r.via}] ${r.counts}${r.error?.let { " :: $it" } ?: ""}",
             )
         }
     }
@@ -109,35 +111,31 @@ class SourceHealthProbeTest {
         val ad = LegadoSourceAdapter(info, src)
 
         // 1) 搜索
-        val search = runCatching { withTimeoutOrNull(20_000) { ad.search(keyword, 1) } }
-        val items = search.getOrNull().orEmpty()
-        if (items.isEmpty()) {
-            return Probe(
-                src.name, typeName, "search", "0",
-                search.exceptionOrNull()?.let { it.javaClass.simpleName + ": " + (it.message ?: "") }
-                    ?: "搜索无结果",
-            )
-        }
+        val searchItems = runCatching { withTimeoutOrNull(20_000) { ad.search(keyword, 1) } }
+            .getOrNull().orEmpty()
+        var via = "search"
+        var chapters = findChapters(ad, searchItems.take(3))
 
-        // 2) 详情 + 目录：首个结果可能无效（下架/VIP/搜索结果其实是分类页），
-        //    依次多试几个，取第一个拿得到目录的。
-        var chapters: List<com.novelreader.domain.model.ChapterItem> = emptyList()
-        var detailOk = false
-        for (candidate in items.take(3)) {
-            val detail = runCatching { withTimeoutOrNull(15_000) { ad.detail(candidate) } }.getOrNull()
-                ?: continue
-            detailOk = true
-            val toc = runCatching { withTimeoutOrNull(20_000) { ad.chapterList(detail) } }.getOrNull().orEmpty()
-            if (toc.isNotEmpty()) {
-                chapters = toc
-                break
+        // 2) 搜索拿不到可读章节 → 用该源的发现页取一本真书（避免关键词不适用造成误判）
+        if (chapters.isEmpty()) {
+            val cats = runCatching { withTimeoutOrNull(15_000) { ad.exploreCategories() } }
+                .getOrNull().orEmpty()
+            for (cat in cats.take(4)) {
+                val list = runCatching { withTimeoutOrNull(20_000) { ad.explore(cat.url, 1) } }
+                    .getOrNull().orEmpty()
+                if (list.isEmpty()) continue
+                val toc = findChapters(ad, list.take(3))
+                if (toc.isNotEmpty()) {
+                    chapters = toc
+                    via = "discovery"
+                    break
+                }
             }
         }
-        if (!detailOk) {
-            return Probe(src.name, typeName, "detail", "搜索${items.size}", "详情为空/超时")
-        }
+
         if (chapters.isEmpty()) {
-            return Probe(src.name, typeName, "toc", "搜索${items.size}", "目录 0 章（试了前 3 个结果）")
+            val detail = if (searchItems.isEmpty() && via == "search") "搜索无结果、发现页也无可用书" else "目录 0 章"
+            return Probe(src.name, typeName, "toc", via, "搜索${searchItems.size}", detail)
         }
 
         // 3) 正文：卷首/公告章可能为空，试前几章，取第一个有内容的
@@ -152,11 +150,26 @@ class SourceHealthProbeTest {
         val body = if (src.isComic) "图${imgN}" else "字${textLen}"
         if (textLen == 0 && imgN == 0) {
             return Probe(
-                src.name, typeName, "content", "搜索${items.size} 目录${chapters.size}",
-                "正文为空（试了前 3 章）",
+                src.name, typeName, "content", via,
+                "搜索${searchItems.size} 目录${chapters.size}", "正文为空（试了前 3 章）",
             )
         }
-        return Probe(src.name, typeName, "-", "搜索${items.size} 目录${chapters.size} $body", null)
+        return Probe(
+            src.name, typeName, "-", via,
+            "搜索${searchItems.size} 目录${chapters.size} $body", null,
+        )
+    }
+
+    /** 依次对候选书取详情+目录，返回第一个非空目录 */
+    private suspend fun findChapters(ad: LegadoSourceAdapter, items: List<MediaItem>): List<ChapterItem> {
+        for (candidate in items) {
+            val detail = runCatching { withTimeoutOrNull(15_000) { ad.detail(candidate) } }.getOrNull()
+                ?: continue
+            val toc = runCatching { withTimeoutOrNull(20_000) { ad.chapterList(detail) } }
+                .getOrNull().orEmpty()
+            if (toc.isNotEmpty()) return toc
+        }
+        return emptyList()
     }
 
     private fun toJson(results: List<Probe>): String {
@@ -166,6 +179,7 @@ class SourceHealthProbeTest {
                 addProperty("name", r.name)
                 addProperty("type", r.type)
                 addProperty("stage", r.stage)
+                addProperty("via", r.via)
                 addProperty("counts", r.counts)
                 addProperty("ok", r.ok)
                 addProperty("error", r.error)

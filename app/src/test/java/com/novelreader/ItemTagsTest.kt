@@ -4,6 +4,7 @@ import com.novelreader.core.util.ItemTags
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -117,8 +118,9 @@ class ItemTagsTest {
 
     @Test
     fun `多值字段按分隔符拆分`() {
+        // v1.7.9.0：「东方玄幻」是「玄幻」的同义写法，展示时归一（不再并排出现两个）
         assertEquals(
-            listOf("玄幻", "东方玄幻", "奇幻"),
+            listOf("玄幻", "奇幻"),
             ItemTags.of(item(SourceType.NOVEL, extras = mapOf("kind" to "玄幻, 东方玄幻、奇幻"))),
         )
         assertEquals(
@@ -157,5 +159,64 @@ class ItemTagsTest {
         assertEquals(ItemTags.MAX_TAGS, out.size)
         assertEquals("标签1", out.first())
         assertEquals("标签${ItemTags.MAX_TAGS}", out.last())
+    }
+
+    // ===== 同义归一 + 标题补标签（v1.7.9.0）=====
+
+    @Test
+    fun `同义标签统一成规范名`() {
+        // 源里「妖精」「elf」「エルフ」三种写法是同一个题材，展示时只留「精灵」
+        val out = ItemTags.of(
+            item(SourceType.COMIC, extras = mapOf(ItemTags.EXTRAS_TAGS to "妖精,elf,エルフ")),
+        )
+        assertEquals(listOf("精灵"), out)
+    }
+
+    @Test
+    fun `语义相近但不同义的组不被归一`() {
+        // 「恶魔/天使」「妹妹/姐姐」只是常一起出现，合并展示会误导
+        val out = ItemTags.of(
+            item(SourceType.COMIC, extras = mapOf(ItemTags.EXTRAS_TAGS to "恶魔,妹妹")),
+        )
+        assertTrue("恶魔不应变成天使：$out", out.contains("恶魔"))
+        assertTrue("妹妹不应变成姐姐：$out", out.contains("妹妹"))
+    }
+
+    @Test
+    fun `标题能补充题材标签`() {
+        // 源只给一个分类时，标题里的题材词要能补上
+        val item = MediaItem(
+            id = "1",
+            title = "转生成为史莱姆的那件事",
+            type = SourceType.COMIC,
+        )
+        val out = ItemTags.of(item)
+        assertTrue("应补出「转生」：$out", out.contains("转生"))
+    }
+
+    @Test
+    fun `源自带标签优先于标题补充`() {
+        val item = MediaItem(
+            id = "1",
+            title = "转生成为史莱姆的那件事",
+            type = SourceType.COMIC,
+            extras = mapOf(ItemTags.EXTRAS_TAGS to "转生"),
+        )
+        val out = ItemTags.of(item)
+        // 源自带的排在最前，补充的不重复
+        assertEquals("转生", out.first())
+        assertEquals(1, out.count { it == "转生" })
+    }
+
+    @Test
+    fun `视频不从简介抽标签`() {
+        // 影视简介多是剧情复述，抽出来噪声大于收益
+        val item = MediaItem(
+            id = "1",
+            title = "无题",
+            type = SourceType.VIDEO,
+            desc = "一个吸血鬼与恋爱故事",
+        )
+        assertTrue("视频不应从简介补标签：${ItemTags.of(item)}", ItemTags.of(item).isEmpty())
     }
 }

@@ -24,7 +24,15 @@ import com.novelreader.domain.model.SourceType
 object ItemTags {
 
     /** 单个条目最多展示几个标签（小栏展开后也沿用，防止异常源刷屏） */
-    const val MAX_TAGS = 8
+    const val MAX_TAGS = 12
+
+    /**
+     * 从标题 / 简介里**补充**的标签上限（v1.7.9.0）。
+     *
+     * 源自带标签优先（语义最准），这里只补不足的部分，避免简介里随口提到的词
+     * 把真实题材挤掉。
+     */
+    private const val MAX_ENRICH_TAGS = 6
 
     /**
      * [MediaItem.extras] 里「源自带标签」的键（逗号分隔，v1.7.0.0）。
@@ -71,6 +79,21 @@ object ItemTags {
                 addSplit(out, item.extras[EXTRAS_TAGS], dropStatus = true)
             }
         }
+        // 3) 标题 + 简介里能认出更多题材（v1.7.9.0）。
+        // 不少源只给 0~1 个标签，只靠 extras 时详情页标签栏几乎空白；
+        // 标题（「转生成为史莱姆」「魔王与勇者的日常」）与简介本身就写着题材。
+        // 只对小说 / 漫画做 —— 影视简介多是剧情复述，抽出来噪声更大。
+        if (item.type == SourceType.NOVEL || item.type == SourceType.COMIC) {
+            val text = buildString {
+                append(item.title)
+                item.desc?.takeIf { it.isNotBlank() }?.let {
+                    append(' ')
+                    append(it)
+                }
+            }
+            ComicTagLexicon.match(text, limit = MAX_ENRICH_TAGS, exclude = out)
+                .forEach { out.add(it) }
+        }
         if (out.size > MAX_TAGS) return out.take(MAX_TAGS)
         return out.toList()
     }
@@ -88,7 +111,10 @@ object ItemTags {
             val tag = part.trim()
             if (tag.isEmpty()) return@forEach
             if (dropStatus && isStatusLike(tag)) return@forEach
-            out.add(tag)
+            // v1.7.9.0：同义写法统一成规范名（妖精 / elf / エルフ → 精灵），
+            // 否则同一部作品上会并排出现「妖精」和「精灵」两个意思一样的标签。
+            // 语义相邻但不同义的组（天使/恶魔、姐姐/妹妹…）不在归一范围内。
+            out.add(TagAlias.canonicalOf(tag))
         }
     }
 }

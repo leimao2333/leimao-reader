@@ -2,6 +2,7 @@ package com.novelreader
 
 import com.novelreader.core.util.TagAlias
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -98,5 +99,46 @@ class TagAliasTest {
                 assertEquals("「$name」的译名应覆盖整组", normalized, TagAlias.aliasesOf(name))
             }
         }
+    }
+
+    // ===== 展示归一（v1.7.9.0）=====
+
+    @Test
+    fun `同义写法归一成规范名`() {
+        // 源里同一题材的四种写法都该收成「精灵」
+        assertEquals("精灵", TagAlias.canonicalOf("妖精"))
+        assertEquals("精灵", TagAlias.canonicalOf("elf"))
+        assertEquals("精灵", TagAlias.canonicalOf("エルフ"))
+        assertEquals("精灵", TagAlias.canonicalOf("요정"))
+        // 首尾空白不影响
+        assertEquals("精灵", TagAlias.canonicalOf(" 精灵 "))
+    }
+
+    @Test
+    fun `语义相邻但不同义的组保持原词`() {
+        // 「恶魔/天使」「妹妹/姐姐」「性转/变身」只是常一起出现，
+        // 归一展示会把意思改掉（用户看到「恶魔」片被打上「天使」标签）
+        assertEquals("恶魔", TagAlias.canonicalOf("恶魔"))
+        assertEquals("妹妹", TagAlias.canonicalOf("妹妹"))
+        assertEquals("性转", TagAlias.canonicalOf("性转"))
+        assertEquals("格斗", TagAlias.canonicalOf("格斗"))
+    }
+
+    @Test
+    fun `未登记的词原样返回`() {
+        assertEquals("本周推荐", TagAlias.canonicalOf("本周推荐"))
+        assertEquals("", TagAlias.canonicalOf(""))
+        assertFalse(TagAlias.isKnownAlias("本周推荐"))
+        assertTrue(TagAlias.isKnownAlias("妖精"))
+    }
+
+    @Test
+    fun `日韩英文别名都能归一到中文规范名`() {
+        assertEquals("魔王", TagAlias.canonicalOf("마왕"))
+        assertEquals("勇者", TagAlias.canonicalOf("용사"))
+        assertEquals("女仆", TagAlias.canonicalOf("メイド"))
+        assertEquals("兽人", TagAlias.canonicalOf("orc"))
+        assertEquals("公主", TagAlias.canonicalOf("princess"))
+        assertEquals("恋爱", TagAlias.canonicalOf("연애"))
     }
 }

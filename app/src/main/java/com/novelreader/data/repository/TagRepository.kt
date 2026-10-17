@@ -76,10 +76,14 @@ class TagRepository(
                 // 被当成两个标签、热词推荐分散、用户搜不到同名内容。
                 val clean = TagPlan.normalizeTag(cat.title)
                 if (clean.isEmpty()) continue
+                // v1.7.9.0：同义写法收成一个标签（妖精 / elf / エルフ / 요정 → 精灵）。
+                // 以前各源用不同语言声明同一题材时，标签池里会并排出现好几个入口，
+                // 每个下面只有一部分源；合并后入口唯一、每个标签覆盖的源也更全。
+                val canonical = com.novelreader.core.util.TagAlias.canonicalOf(clean)
                 // v1.6.6.0：丢掉「全部 / 最近更新 / 排行榜 / 连载中」这类
                 // 入口词与状态词，它们不是内容题材（详见 TagPlan.isNoiseTag）
-                if (TagPlan.isNoiseTag(clean)) continue
-                plan.getOrPut(clean) { mutableListOf() }.add(info.id to cat.url)
+                if (TagPlan.isNoiseTag(canonical)) continue
+                plan.getOrPut(canonical) { mutableListOf() }.add(info.id to cat.url)
             }
         }
         // v1.6.6.0：漫画补充通用题材词，绑到「按题材搜索」入口

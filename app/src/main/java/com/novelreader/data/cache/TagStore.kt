@@ -195,6 +195,6 @@ class TagStore(private val dir: File) {
          * v4：v1.7.6.3 漫画题材词 182 → 394，且改为「全源轮转」绑定
          * （每个漫画源都能分到题材词，不再只限没有分类能力的前 8 个源）。
          */
-        const val LOGIC_VERSION = 4
+        const val LOGIC_VERSION = 5
     }
 }

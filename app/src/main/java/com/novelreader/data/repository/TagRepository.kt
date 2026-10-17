@@ -68,10 +68,7 @@ class TagRepository(
         val sources = runCatching { contentRepository.exploreSources(type, includeDisabled = true) }
             .getOrDefault(emptyList())
         val plan = LinkedHashMap<String, MutableList<Pair<String, String>>>()
-        /** 自己有分类能力的源（v1.7.0.0）：通用题材词不再给它们绑搜索入口 */
-        val withCategories = mutableSetOf<String>()
         for ((info, cats) in sources) {
-            if (cats.isNotEmpty()) withCategories += info.id
             for (cat in cats) {
                 // v1.6.2.0 清洗：源数据可能带前后空格、内部多空格、
                 // \n / \t / 全角空格等噪声。复用 [TagPlan.normalizeTag] 与
@@ -86,7 +83,7 @@ class TagRepository(
             }
         }
         // v1.6.6.0：漫画补充通用题材词，绑到「按题材搜索」入口
-        attachComicGenres(type, plan, withCategories)
+        attachComicGenres(type, plan)
         val snapshot = TagPlan(
             collectedAtMs = if (plan.isEmpty()) 0L else System.currentTimeMillis(),
             plan = plan,
@@ -99,39 +96,47 @@ class TagRepository(
     }
 
     /**
-     * 给漫画标签池补通用题材词（v1.6.6.0）。
+     * 给漫画标签池补通用题材词（v1.6.6.0；v1.7.6.3 改为「全源轮转」）。
      *
      * 漫画源里有一部分**没有分类能力**：legado 漫画源大多没配 `exploreUrl`，
-     * 少数 Venera 源也解析不出 `category.parts`。只靠源分类时标签池会很小。
-     * 这里把 [ComicGenres.ALL] 里的题材词绑到这些源的**搜索入口**
-     * （[TagEntryUrl.search]），点击标签即跨源按题材搜索——不依赖分类页。
+     * Venera 源也常解析不出 `category.parts`。这里把 [ComicGenres.ALL] 里的题材词
+     * 绑到源的**搜索入口**（[TagEntryUrl.search]），点击标签即按题材搜索。
      *
-     * v1.7.0.0：**跳过已经有分类能力的源**（[withCategories]）。Venera 源现在
-     * 走的是真分类页（`vcat::` 入口），再给它绑一个「按标题搜」的搜索入口，
-     * 只会把搜标题撞出来的无关作品混进标签结果里，反而降低质量。
+     * v1.7.6.3：原来只给「没有分类能力的前 8 个源」绑定，绝大多数漫画源拿不到
+     * 新增题材词（用户实测标签池里没有「精灵」之类）。现在改为**全源轮转**：
+     * 用游标在全部可搜索漫画源之间依次分配，每个题材词最多绑
+     * [ComicGenres.MAX_SOURCES_PER_GENRE] 个源 —— 每个源都能分到大量题材词，
+     * 而单个标签的搜索源数仍有上界（不会把标签搜索拖到几十秒）。
      *
-     * 只给排序靠前的 [ComicGenres.MAX_SOURCES_PER_GENRE] 个源绑定：标签搜索是
-     * 等全部源返回再展示，绑太多会把等待时间拉到几十秒（见该常量注释）。
-     * 与源自带分类同名的词（如「热血」）只合并 entries，不覆盖。
+     * 源已经有同名真实分类时**跳过**该源的搜索入口：既避免同一标签下同一个源
+     * 出现两条（真分类 + 标题搜索），也避免把搜标题撞出来的无关作品混进分类结果。
      */
     private suspend fun attachComicGenres(
         type: SourceType,
         plan: LinkedHashMap<String, MutableList<Pair<String, String>>>,
-        withCategories: Set<String> = emptySet(),
     ) {
         if (type != SourceType.COMIC) return
-        val sourceIds = runCatching {
+        val pool = runCatching {
             contentRepository.searchableSourceIds(type, 0)
-        }.getOrDefault(emptyList())
-            .filter { it !in withCategories }
-            .take(ComicGenres.MAX_SOURCES_PER_GENRE)
-        if (sourceIds.isEmpty()) return
+        }.getOrDefault(emptyList()).distinct()
+        if (pool.isEmpty()) return
+
+        var cursor = 0
         for (genre in ComicGenres.ALL) {
             val entries = plan.getOrPut(genre) { mutableListOf() }
-            sourceIds.forEach { id ->
-                val entry = id to TagEntryUrl.search(genre)
-                if (entry !in entries) entries.add(entry)
+            // 该题材已有足够入口（通常是多个源的真分类）→ 不再补搜索入口
+            if (entries.size >= ComicGenres.MAX_SOURCES_PER_GENRE) continue
+            val already = entries.mapTo(HashSet()) { it.first }
+            var need = ComicGenres.MAX_SOURCES_PER_GENRE - entries.size
+            var scanned = 0
+            while (need > 0 && scanned < pool.size) {
+                val sid = pool[(cursor + scanned) % pool.size]
+                scanned++
+                if (sid in already) continue
+                entries.add(sid to TagEntryUrl.search(genre))
+                need--
             }
+            cursor = (cursor + scanned) % pool.size
         }
     }
 

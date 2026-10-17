@@ -140,7 +140,7 @@ class TagRepositoryComicGenresTest {
     }
 
     @Test
-    fun `有分类能力的源不再绑题材词搜索入口`() = runBlocking {
+    fun `源已有同名分类时不重复绑搜索入口 - 其他题材词仍会补`() = runBlocking {
         val r = repo(
             withCategories = listOf(
                 info("legado_1", "铅笔漫画") to listOf(ExploreCategory("热血", "/list/31")),
@@ -149,15 +149,31 @@ class TagRepositoryComicGenresTest {
             searchable = listOf("legado_1", "legado_2"),
         )
         val plan = r.refresh(SourceType.COMIC)
-        val entries = plan.entriesFor("热血")
-        // legado_1 只留一条「真分类」入口；题材词的搜索入口只给没有分类能力的 legado_2
-        assertEquals(1, entries.count { it.first == "legado_1" })
-        assertEquals("/list/31", entries.first { it.first == "legado_1" }.second)
-        assertEquals(listOf("legado_2"), entries.filter { it.first != "legado_1" }.map { it.first })
+        val hot = plan.entriesFor("热血")
+        // 「热血」：legado_1 只留一条「真分类」入口；legado_2 补搜索入口
+        assertEquals(1, hot.count { it.first == "legado_1" })
+        assertEquals("/list/31", hot.first { it.first == "legado_1" }.second)
+        assertEquals(listOf("legado_2"), hot.filter { it.first != "legado_1" }.map { it.first })
         assertEquals(
             "热血",
-            TagEntryUrl.searchKeywordOf(entries.first { it.first == "legado_2" }.second),
+            TagEntryUrl.searchKeywordOf(hot.first { it.first == "legado_2" }.second),
         )
+
+        // v1.7.6.3：有分类能力的源也能拿到**其他**题材词（每个漫画都有更多标签）
+        val elf = plan.entriesFor("精灵")
+        assertTrue(
+            "legado_1 应通过搜索入口拿到「精灵」",
+            elf.any { it.first == "legado_1" && TagEntryUrl.searchKeywordOf(it.second) == "精灵" },
+        )
+    }
+
+    @Test
+    fun `全源轮转让每个漫画源都分到题材词`() = runBlocking {
+        val many = (1..12).map { "venera_$it" }
+        val r = repo(withCategories = emptyList(), searchable = many)
+        val plan = r.refresh(SourceType.COMIC)
+        val covered = plan.tags.flatMap { plan.entriesFor(it) }.map { it.first }.toSet()
+        assertEquals(many.toSet(), covered)
     }
 
     @Test

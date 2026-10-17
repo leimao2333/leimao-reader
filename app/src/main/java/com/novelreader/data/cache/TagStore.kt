@@ -189,7 +189,12 @@ class TagStore(private val dir: File) {
     fun fileOf(typeName: String) = File(dir, "$typeName.$LOGIC_VERSION.json")
 
     companion object {
-        /** 标签收集逻辑版本；**改动收集口径时必须 +1** */
-        const val LOGIC_VERSION = 3
+        /**
+         * 标签收集逻辑版本；**改动收集口径时必须 +1**。
+         *
+         * v4：v1.7.6.3 漫画题材词 182 → 394，且改为「全源轮转」绑定
+         * （每个漫画源都能分到题材词，不再只限没有分类能力的前 8 个源）。
+         */
+        const val LOGIC_VERSION = 4
     }
 }

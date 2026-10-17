@@ -52,9 +52,20 @@ class ComicGenresTest {
         // v1.7.0.0：32 → 66（补上主流漫画站同样高频的题材 / 受众词）
         // v1.7.6.0：66 → 182（按受众 / 都市情感 / 玄幻修真 / 科幻末世 /
         //   武侠古风 / 悬疑猎奇 拆出细分标签，让标签页能按细粒度找书）
-        assertEquals(182, ComicGenres.ALL.size)
+        // v1.7.6.3：182 → 394（补精灵 / 兽人 / 魔王 / 勇者 / 魔法少女 等奇幻、
+        //   异世界、角色属性、娱乐圈、无限流、刑侦、生活经营等词）
+        assertEquals(394, ComicGenres.ALL.size)
         assertEquals(ComicGenres.ALL.size, ComicGenres.ALL.distinct().size)
         assertTrue(ComicGenres.ALL.all { it.isNotBlank() })
+    }
+
+    @Test
+    fun `新增题材词包含精灵等奇幻与角色词`() {
+        listOf(
+            "精灵", "兽人", "魔族", "魔王", "勇者", "骑士", "魔法少女",
+            "恶役千金", "吸血鬼", "狼人", "异世界", "转生", "克苏鲁",
+            "萝莉", "御姐", "女仆", "巫女", "千金", "娱乐圈", "无限流",
+        ).forEach { assertTrue("题材词应包含「$it」", it in ComicGenres.ALL) }
     }
 
     @Test

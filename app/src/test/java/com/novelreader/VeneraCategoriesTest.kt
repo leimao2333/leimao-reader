@@ -2,6 +2,7 @@ package com.novelreader
 
 import com.novelreader.source.venera.VeneraCategories
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -155,5 +156,55 @@ class VeneraCategoriesTest {
             categories: ["只看这个"];
         """.trimIndent()
         assertEquals(listOf("只看这个"), VeneraCategories.parse(code))
+    }
+
+    // ===== 发现页 explore（v1.7.8.0）=====
+
+    private val exploreCode = """
+        class Demo extends ComicSource {
+          name = "Demo";
+          explore = [
+            {
+              title: "カドコミ",
+              type: "singlePageWithMultiPart",
+              load: async () => {
+                const res = { resources: {} };
+                return { "今日の更新": [ new Comic({ id: 1, title: "漫画A" }) ] };
+              }
+            },
+            {
+              title: "Lanraragi",
+              type: "multiPageComicList",
+              load: async (page = 1) => ({ comics: [], maxPage: 3 })
+            },
+          ]
+        }
+    """.trimIndent()
+
+    @Test
+    fun `解析 explore 的标题与类型`() {
+        val entries = VeneraCategories.parseExplore(exploreCode)
+        assertEquals(listOf("カドコミ", "Lanraragi"), entries.map { it.title })
+        assertEquals(
+            listOf("singlePageWithMultiPart", "multiPageComicList"),
+            entries.map { it.type },
+        )
+    }
+
+    @Test
+    fun `explore 里函数体的 title 不会被当成发现页`() {
+        // load 里的 `new Comic({ title: "漫画A" })` 在对象第二层，必须被跳过
+        val titles = VeneraCategories.parseExplore(exploreCode).map { it.title }
+        assertFalse("函数体里的漫画标题不能混进来：$titles", titles.any { it == "漫画A" })
+    }
+
+    @Test
+    fun `没有 explore 的源返回空`() {
+        val code = """
+            class Baozi extends ComicSource {
+              category = { parts: [ { name: "题材", categories: ["恋爱"] } ] }
+            }
+        """.trimIndent()
+        assertTrue(VeneraCategories.parseExplore(code).isEmpty())
     }
 }

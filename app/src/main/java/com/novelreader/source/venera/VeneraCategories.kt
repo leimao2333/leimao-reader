@@ -59,9 +59,103 @@ object VeneraCategories {
         return out.toList()
     }
 
+    /** 发现页（explore）的一个入口：源码里声明的标题与返回形态（v1.7.8.0） */
+    data class ExploreEntry(val title: String, val type: String)
+
+    /** 发现页数组的开头：`explore = [` */
+    private val EXPLORE_KEY = Regex("""explore\s*=\s*\[""")
+
+    /**
+     * 解析源声明的**发现页**（`explore` 数组）。
+     *
+     * 少数源没有 `category.parts`，只有 `explore`：
+     *
+     * ```js
+     * explore = [
+     *   { title: "カドコミ", type: "singlePageWithMultiPart", load: async () => ({ "今日の更新": [...] }) },
+     *   { title: "Lanraragi", type: "multiPageComicList", load: async (page) => ({ comics, maxPage }) },
+     * ]
+     * ```
+     *
+     * 以前这类源在 App 里连一个分类项都没有（浏览页整页空白、只能靠搜索），
+     * 现在按这里的标题生成入口，点进去走 runtime 的 `explore` op 真取内容。
+     *
+     * **只取顶层键**：`load` 函数体里也有大量 `title:`（那是每部漫画的标题），
+     * 若按全层级扫描会把漫画名当成发现页名字，所以深度限定在对象第一层。
+     */
+    fun parseExplore(code: String): List<ExploreEntry> {
+        val out = mutableListOf<ExploreEntry>()
+        var from = 0
+        while (true) {
+            val m = EXPLORE_KEY.find(code, from) ?: break
+            val (body, end) = arrayBody(code, m.range.last + 1)
+            for (obj in topLevelObjects(body)) {
+                val kv = firstLevelStrings(obj)
+                val title = kv["title"]?.trim().orEmpty()
+                if (title.isEmpty()) continue
+                out.add(ExploreEntry(title, kv["type"]?.trim().orEmpty()))
+            }
+            from = if (end > m.range.last) end else m.range.last + 1
+        }
+        return out
+    }
+
+    /** 把数组体按「顶层 `{...}`」切开（{} 配对），返回每个对象的原文（含花括号） */
+    private fun topLevelObjects(body: String): List<String> {
+        val out = mutableListOf<String>()
+        var depth = 0
+        var start = -1
+        var i = 0
+        while (i < body.length) {
+            when (body[i]) {
+                '{' -> {
+                    if (depth == 0) start = i
+                    depth++
+                }
+                '}' -> {
+                    depth--
+                    if (depth == 0 && start >= 0) {
+                        out.add(body.substring(start, i + 1))
+                        start = -1
+                    }
+                }
+                // 字符串里的花括号不能参与配对（标题/正则里很常见）
+                '"', '\'' -> {
+                    val (_, next) = readString(body, i)
+                    i = next
+                    continue
+                }
+            }
+            i++
+        }
+        return out
+    }
+
+    /** 对象第一层的 `键: "字符串值"`（跳过嵌套对象与函数体） */
+    private fun firstLevelStrings(obj: String): Map<String, String> {
+        val map = mutableMapOf<String, String>()
+        var depth = 0
+        var i = 0
+        while (i < obj.length) {
+            when (obj[i]) {
+                '{' -> { depth++; i++ }
+                '}' -> { depth--; i++ }
+                '"', '\'' -> {
+                    val (literal, next) = readString(obj, i)
+                    if (literal != null && depth == 1) {
+                        val key = precedingKey(obj, i)
+                        if (key != null && key !in map) map[key] = literal
+                    }
+                    i = next
+                }
+                else -> i++
+            }
+        }
+        return map
+    }
+
     /** 从 `[` 之后扫到配对的 `]`，返回数组体与结束下标（`]` 之后） */
-    private fun arrayBody(code: String, start: Int): Pair<String, Int> {
-        val sb = StringBuilder()
+    private fun arrayBody(code: String, start: Int): Pair<String, Int> {        val sb = StringBuilder()
         var depth = 1
         var i = start
         while (i < code.length && depth > 0) {

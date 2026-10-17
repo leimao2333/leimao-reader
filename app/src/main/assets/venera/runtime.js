@@ -1206,6 +1206,54 @@
                 };
             }
 
+            // ===== 发现页（explore，v1.7.8.0）=====
+            // 少数源**没有 `category`，只有 `explore` 数组**（如 カドコミ / Lanraragi / Komga）：
+            // 每项 `{ title, type, load }`，type 决定 `load` 的返回形态：
+            //   - multiPartPage / singlePageWithMultiPart：多组内容
+            //   - multiPageComicList / mixed：一组 + 可翻页
+            // 以前这类源在 App 里只能搜索、浏览页整页空白（连分类项都没有），
+            // 现在按 explore 的下标取内容，App 侧再用 `vexp::<下标>` 伪 URL 调进来。
+            case 'explore': {
+                var exList = Array.isArray(src.explore) ? src.explore : [];
+                var exIndex = typeof args[0] === 'number' ? args[0] : parseInt(args[0], 10);
+                var exPage = args[1] || 1;
+                var exItem = (exIndex >= 0 && exIndex < exList.length) ? exList[exIndex] : null;
+                if (!exItem || typeof exItem.load !== 'function') {
+                    throw new Error('该源没有第 ' + exIndex + ' 个发现页（explore）');
+                }
+                var exRaw = await exItem.load.call(src, exPage);
+                var exSections = [];
+                var exMaxPage = null;
+                if (Array.isArray(exRaw)) {
+                    // multiPartPage：[{title, comics}]
+                    for (var ei = 0; ei < exRaw.length; ei++) {
+                        var g = exRaw[ei];
+                        if (!g || !Array.isArray(g.comics)) continue;
+                        exSections.push({ title: String(g.title || ''), comics: serializeComics(g.comics) });
+                    }
+                } else if (exRaw && typeof exRaw === 'object') {
+                    if (Array.isArray(exRaw.comics)) {
+                        // multiPageComicList / mixed：{comics, maxPage}
+                        exSections.push({ title: String(exItem.title || ''), comics: serializeComics(exRaw.comics) });
+                        exMaxPage = exRaw.maxPage || null;
+                    } else {
+                        // singlePageWithMultiPart：{ 分组名: Comic[] }
+                        var exKeys = Object.keys(exRaw);
+                        for (var ek = 0; ek < exKeys.length; ek++) {
+                            var ev = exRaw[exKeys[ek]];
+                            if (!Array.isArray(ev)) continue;
+                            exSections.push({ title: exKeys[ek], comics: serializeComics(ev) });
+                        }
+                    }
+                }
+                return {
+                    title: String(exItem.title || ''),
+                    type: String(exItem.type || ''),
+                    sections: exSections,
+                    maxPage: exMaxPage,
+                };
+            }
+
             case 'info': {
                 var d = await src.comic.loadInfo.call(src, args[0]);
                 INFO_CACHE[key + '|' + args[0]] = d;

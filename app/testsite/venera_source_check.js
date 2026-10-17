@@ -44,6 +44,7 @@ function bodyFor(url) {
 }
 
 const pending = new Map();
+const storage = {};
 let callSeq = 0;
 
 const sandbox = {
@@ -84,6 +85,16 @@ sandbox.NativeBridge = {
         const p = pending.get(String(callId));
         if (p) { pending.delete(String(callId)); p.reject(new Error(msg)); }
     },
+    // 源设置 / 登录态都存在这里（App 侧是 DataStore，这里用内存顶替）
+    storageGet(key) { return Object.prototype.hasOwnProperty.call(storage, key) ? storage[key] : null; },
+    storageSet(key, value) { storage[key] = String(value); },
+    storageDelete(key) { delete storage[key]; },
+    // 加解密只做「不报错」的占位：离线走查关注的是解析链路，不是密文正确性
+    digest() { return ''; },
+    digestHex() { return ''; },
+    hmac() { return ''; },
+    aesDecrypt() { return ''; },
+    aesEncrypt() { return ''; },
     setCookie() {}, getCookie() { return ''; }, deleteCookies() {},
     log(level, tag, msg) { console.log('[bridge:' + level + ']', tag, msg); },
 };
@@ -143,14 +154,31 @@ function call(op, args) {
     }
 
     // 分类浏览
+    let categoryItems = 0;
     try {
         const cc = await call('categoryComics', ['全部', null, ['latest-最近更新'], 1]);
         const n = ((cc && cc.comics) || []).length;
+        categoryItems = n;
         console.log('  categoryComics 返回 ' + n + ' 条');
         check('分类浏览能取到作品', n > 0, '返回 0 条（fixture 里没有对应页面？）');
         if (n > 0) console.log('    样本：' + JSON.stringify(cc.comics[0]).slice(0, 200));
     } catch (e) {
         check('分类浏览', false, e.message);
+    }
+
+    // 发现页（explore，v1.7.8.0）：只有 explore、没有 category 的源靠它浏览
+    try {
+        const ex = await call('explore', [0, 1]);
+        const sections = (ex && ex.sections) || [];
+        const total = sections.reduce((n, s) => n + (s.comics || []).length, 0);
+        console.log('  explore[0] 分组=' + sections.length + ' 作品=' + total +
+            (sections.length ? ' 组名=' + sections.map(s => s.title).join('/') : ''));
+        if (categoryItems === 0) {
+            check('发现页能取到作品', total > 0, 'explore 也没内容');
+        }
+    } catch (e) {
+        if (categoryItems === 0) check('发现页', false, e.message);
+        else console.log('  （该源无 explore，跳过）');
     }
 
     // 搜索

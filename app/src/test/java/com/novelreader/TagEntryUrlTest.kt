@@ -95,4 +95,23 @@ class TagEntryUrlTest {
         assertTrue(url.startsWith(TagEntryUrl.CATEGORY_PREFIX))
         assertEquals("""奇怪"名字\分类""", TagEntryUrl.categoryOf(url)?.name)
     }
+
+    // ===== 发现页入口 vexp::（v1.7.8.0）=====
+
+    @Test
+    fun `发现页入口能往返下标`() {
+        assertEquals("vexp::0", TagEntryUrl.explore(0))
+        assertEquals(0, TagEntryUrl.exploreIndexOf("vexp::0"))
+        assertEquals(7, TagEntryUrl.exploreIndexOf("vexp::7"))
+    }
+
+    @Test
+    fun `不是发现页入口时返回 null`() {
+        assertNull(TagEntryUrl.exploreIndexOf("vcat::{}"))
+        assertNull(TagEntryUrl.exploreIndexOf("search::恋爱"))
+        assertNull(TagEntryUrl.exploreIndexOf("https://example.com/x"))
+        // 负数 / 非数字都当无效
+        assertNull(TagEntryUrl.exploreIndexOf("vexp::-1"))
+        assertNull(TagEntryUrl.exploreIndexOf("vexp::abc"))
+    }
 }

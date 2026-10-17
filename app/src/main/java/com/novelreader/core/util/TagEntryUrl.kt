@@ -38,6 +38,16 @@ object TagEntryUrl {
     /** 伪 URL 前缀：Venera 源的分类页浏览 */
     const val CATEGORY_PREFIX = "vcat::"
 
+    /**
+     * 伪 URL 前缀：Venera 源的**发现页**（`explore` 数组里的第 N 项）。
+     *
+     * 少数源（カドコミ / Lanraragi / Komga 等）没有 `category.parts`，只有 `explore`。
+     * 它们以前在 App 里一个分类入口都没有（浏览页整页空白、只能靠搜索），
+     * 现在用 `vexp::<下标>` 指向源码里 `explore[i]`，点进去由 runtime 的
+     * `explore` op 真去加载（v1.7.8.0）。
+     */
+    const val EXPLORE_PREFIX = "vexp::"
+
     /** 分类入口 */
     data class CategoryEntry(
         /** 分类名（人看的，也是标签名） */
@@ -106,4 +116,14 @@ object TagEntryUrl {
     }
 
     private fun gson() = Gson()
+
+    /** 构造「发现页」入口：`vexp::<explore 下标>` */
+    fun explore(index: Int): String = EXPLORE_PREFIX + index
+
+    /** 取发现页下标；不是发现页入口 / 负载不是非负整数则返回 null */
+    fun exploreIndexOf(url: String): Int? {
+        val u = url.trim()
+        if (!u.startsWith(EXPLORE_PREFIX)) return null
+        return u.removePrefix(EXPLORE_PREFIX).trim().toIntOrNull()?.takeIf { it >= 0 }
+    }
 }

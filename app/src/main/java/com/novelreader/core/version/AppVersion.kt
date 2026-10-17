@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.7.7.1"
+    const val CURRENT_VERSION = "1.7.8.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,18 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.7.8.0",
+            date = "2026-10-17",
+            changes = listOf(
+                "**Venera 漫画源 25 → 33**（对齐官方 venera-configs）：新增 comick、优酷漫画、再漫画、漫画柜、漫蛙吧、Lanraragi、Komga、カドコミ。源包 `venera/index.json`、`manifest.json`、`all.json` 与源站页面计数同步更新（总源 169 → 177）。",
+                "**支持源的发现页 `explore`（新能力）**：少数源没有 `category.parts`、只有 `explore` 数组（カドコミ / Lanraragi / Komga），它们以前在 App 里**连一个浏览入口都没有**（点进去整页空白，只能靠搜索）。现在 runtime 新增 `explore` op（兼容 multiPartPage / singlePageWithMultiPart / multiPageComicList 三种返回形态），源码静态解析出 entry 标题，用 `vexp::<下标>` 伪 URL 调进去；多组内容按 id 去重后平铺展示。",
+                "新增 `VeneraCategories.parseExplore`（只取对象第一层键，跳过 `load` 函数体里每部漫画的 `title`，否则漫画名会被当成发现页名字）与 `TagEntryUrl.explore/exploreIndexOf`；分类表为空的源自动回退到 explore 入口，有分类的源不受影响。",
+                "离线走查工具 `app/testsite/venera_source_check.js` 补齐 `storageGet/Set/Delete` 等桥方法（此前跑真实源会报 `B.storageGet is not a function` 的假失败），并新增 explore 检查项。",
+                "**已知限制**：Komga / Lanraragi 需要填自己的服务器地址（源用 `settings` 声明，App 侧还没有「Venera 源设置」表单），目前只能走源的默认值。",
+                "全量单测 **581 用例 / 0 失败**（新增 explore 解析 3 条 + vexp 伪 URL 2 条）。",
+            ),
+        ),
         VersionEntry(
             version = "1.7.7.1",
             date = "2026-10-17",

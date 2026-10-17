@@ -49,6 +49,8 @@ class VeneraSourceAdapter(
      */
     override suspend fun exploreCategories(): List<ExploreCategory> {
         runtimeCategories()?.let { if (it.isNotEmpty()) return it }
+        // 没有 `category.parts` 的源：用源码里 `explore` 声明的发现页当浏览入口（v1.7.8.0）
+        exploreEntries().takeIf { it.isNotEmpty() }?.let { return it }
         return staticCategories()
     }
 
@@ -61,12 +63,27 @@ class VeneraSourceAdapter(
      * 枚举阶段对超时的源改用这张静态表兜底，至少让该源以「按分类名搜索」的方式
      * 参与聚合，而不是整源被丢掉。
      */
-    override suspend fun fastExploreCategories(): List<ExploreCategory> = staticCategories()
+    override suspend fun fastExploreCategories(): List<ExploreCategory> {
+        val static = staticCategories()
+        if (static.isNotEmpty()) return static
+        return exploreEntries()
+    }
 
     /** 源码里 `category.parts[].categories` 声明的分类名 → 「按分类名搜索」入口 */
     private fun staticCategories(): List<ExploreCategory> =
         VeneraCategories.parse(code).map { name ->
             ExploreCategory(title = name, url = TagEntryUrl.search(name))
+        }
+
+    /**
+     * 源码里 `explore[]` 声明的发现页 → 浏览入口（`vexp::<下标>`）。
+     *
+     * 只给**没有分类表**的源用（见 [exploreCategories]）：有分类的源里
+     * `explore` 往往是「首页推荐」，把它混进分类列表会让人分不清哪个是分类。
+     */
+    private fun exploreEntries(): List<ExploreCategory> =
+        VeneraCategories.parseExplore(code).mapIndexed { index, entry ->
+            ExploreCategory(title = entry.title, url = TagEntryUrl.explore(index))
         }
 
     /** 在 WebView 里评估源的分类表 → 分类入口；失败 / 无分类返回 null */
@@ -115,6 +132,16 @@ class VeneraSourceAdapter(
         page: Int,
         filters: Map<String, String>,
     ): List<MediaItem> {
+        // 发现页（explore）入口：直接调 runtime 的 explore op（v1.7.8.0）
+        val exploreIndex = TagEntryUrl.exploreIndexOf(url)
+        if (exploreIndex != null) {
+            val items = runCatchingCc {
+                engine.putSource(key, code)
+                parseExploreSections(engine.call(key, "explore", exploreIndex, page))
+            }.getOrDefault(emptyList())
+            // 只有一页的源（singlePageWithMultiPart）第 2 页起返回空，不要退化成搜索
+            if (items.isNotEmpty() || page > 1) return items
+        }
         val entry = TagEntryUrl.categoryOf(url)
         if (entry != null && entry.kind != SEARCH_KIND) {
             // 注意用 runCatchingCc：首页给每源的预算到头时取消必须照常传播，
@@ -140,26 +167,56 @@ class VeneraSourceAdapter(
      */
     private fun parseComics(json: String): List<MediaItem> {
         val obj = JsonParser.parseString(json).asJsonObject
-        val arr = obj.getAsJsonArray("comics") ?: return emptyList()
-        return arr.mapNotNull { el ->
-            val c = el.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
-            val id = c.str("id")
-            if (id.isNullOrBlank()) return@mapNotNull null
-            val extras = mutableMapOf<String, String>()
-            itemTags(c)?.let { extras[com.novelreader.core.util.ItemTags.EXTRAS_TAGS] = it }
-            MediaItem(
-                id = id,
-                title = c.str("title").orEmpty(),
-                cover = c.str("cover")?.takeIf { it.isNotBlank() },
-                author = c.str("subTitle")?.takeIf { it.isNotBlank() },
-                desc = c.str("description")?.takeIf { it.isNotBlank() },
-                type = SourceType.COMIC,
-                detailUrl = id,
-                sourceId = info.id,
-                sourceName = info.name,
-                extras = extras,
-            )
+        return parseComicArray(obj.getAsJsonArray("comics"))
+    }
+
+    /**
+     * 发现页（explore）返回的是**多组**内容：`{sections:[{title, comics:[…]}]}`。
+     *
+     * App 的浏览列表是扁平的，这里按顺序拼接各组并按 id 去重（同一部片可能在
+     * 「今日更新」和「注目作品」里都出现）。
+     */
+    private fun parseExploreSections(json: String): List<MediaItem> {
+        val obj = JsonParser.parseString(json).asJsonObject
+        val sections = obj.getAsJsonArray("sections") ?: return emptyList()
+        val seen = LinkedHashSet<String>()
+        val out = mutableListOf<MediaItem>()
+        for (sec in sections) {
+            val comics = sec.takeIf { it.isJsonObject }?.asJsonObject?.getAsJsonArray("comics") ?: continue
+            for (item in parseComicArray(comics)) {
+                if (seen.add(item.id)) out.add(item)
+            }
         }
+        return out
+    }
+
+    private fun parseComicArray(arr: com.google.gson.JsonArray?): List<MediaItem> {
+        if (arr == null) return emptyList()
+        val out = ArrayList<MediaItem>(arr.size())
+        for (el in arr) {
+            val obj = el.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+            toMediaItem(obj)?.let { out.add(it) }
+        }
+        return out
+    }
+
+    private fun toMediaItem(c: com.google.gson.JsonObject): MediaItem? {
+        val id = c.str("id")
+        if (id.isNullOrBlank()) return null
+        val extras = mutableMapOf<String, String>()
+        itemTags(c)?.let { extras[com.novelreader.core.util.ItemTags.EXTRAS_TAGS] = it }
+        return MediaItem(
+            id = id,
+            title = c.str("title").orEmpty(),
+            cover = c.str("cover")?.takeIf { it.isNotBlank() },
+            author = c.str("subTitle")?.takeIf { it.isNotBlank() },
+            desc = c.str("description")?.takeIf { it.isNotBlank() },
+            type = SourceType.COMIC,
+            detailUrl = id,
+            sourceId = info.id,
+            sourceName = info.name,
+            extras = extras,
+        )
     }
 
     /**

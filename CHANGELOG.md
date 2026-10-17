@@ -6,6 +6,34 @@
 >
 > 撰写约定：说明里出现 legado 规则语法（`@put` / `@get` / `@js` 等）时**必须用反引号包裹** —— 否则 GitHub 会把它们当成用户提及，Release 页面的 Contributors 会凭空多出同名用户。
 
+## v1.7.8.0（2026-10-17）
+
+### 新增
+
+- **Venera 漫画源 25 → 33**（对齐官方 `venera-app/venera-configs`）
+  新增 8 个：`comick`、`优酷漫画`、`再漫画`、`漫画柜`、`漫蛙吧`、`Lanraragi`、`Komga`、`カドコミ`。
+  源包 `venera/index.json` 同步（官方顺序，保留本地更新的 `ehentai 1.2.0`），`manifest.json` / `all.json` / 源站页面计数一并更新：**总源 169 → 177**。
+- **支持源声明的发现页 `explore`**
+  少数源没有 `category.parts`，只有 `explore` 数组（カドコミ / Lanraragi / Komga）。这类源以前在 App 里**连一个浏览入口都没有** —— 浏览页整页空白，只能靠搜索。
+  现在：
+  - runtime 新增 `explore` op，兼容三种返回形态：`multiPartPage`（多组）、`singlePageWithMultiPart`（多组对象）、`multiPageComicList`（单组 + 可翻页）
+  - 静态解析源码里 `explore[].title / type`，用 `vexp::<下标>` 伪 URL 作为分类入口
+  - 多组内容按 id 去重后平铺（同一部片常同时出现在「今日更新」和「注目作品」）
+  - 有 `category.parts` 的源不受影响（explore 在那些源里是「首页推荐」，混进分类会让人分不清）
+
+### 修复
+
+- 离线走查工具 `app/testsite/venera_source_check.js` 补齐 `storageGet/Set/Delete` 等桥方法 —— 此前跑任何用 `loadSetting` 的源都会报 `B.storageGet is not a function`，是工具缺口，不是 App 的问题。
+
+### 已知限制
+
+- **Komga / Lanraragi 需要填自己的服务器地址**：源用 `settings` 声明（`base_url` / `api` + `apiKey`），App 侧目前还没有「Venera 源设置」表单，只能走源里的默认值。Komga 默认值为空 → 该源现在点进去仍会失败，等源设置 UI 落地后才可用。
+
+### 测试
+
+- 新增 `VeneraCategories.parseExplore` 3 条（解析标题/类型、函数体里的漫画标题不混入、无 explore 返回空）、`TagEntryUrl` vexp 伪 URL 2 条（往返、非法输入）。
+- 全量单测 **581 用例 / 0 失败**。
+
 ## v1.7.7.1（2026-10-17）
 
 ### 新增

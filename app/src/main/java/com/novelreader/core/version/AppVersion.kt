@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.7.6.5"
+    const val CURRENT_VERSION = "1.7.7.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,18 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.7.7.0",
+            date = "2026-10-17",
+            changes = listOf(
+                "**播放进度条现在能看到「缓存到哪了」**：原来用的是 Material3 Slider，只有「已播 / 未播」两段，弱网下进度条走到底开始转圈时完全看不出来是卡在缓冲。改成自绘三段进度条 —— 未加载（暗）/ **已缓冲**（亮白）/ 已播（绿），上方一行小字显示 `缓存 37%`，缓冲满显示 `已缓存`。拖动/点按 seek 手势保留（拖动中只预览时间，松手才真正 seek，避免拖动过程疯狂 seek 打爆缓冲）。",
+                "**视频边播边缓存（512MB，LRU 自动淘汰）**：新增 `core/media/VideoMediaCache`，用 media3 的 `SimpleCache` + `CacheDataSource` 把播放中的分片落到本地 `cacheDir/video_media`。回退重播、快退重看、断线重连都优先读本地，不再每次重新拉分片（采集站的 m3u8 分片重拉经常就是几秒空白）。此前只有带防盗链请求头的源才走自定义数据源，**没有请求头的源等于完全没有缓存**，现在统一都走缓存。",
+                "**缓冲策略调优**：默认 min/max 缓冲都是 50s、起播只要 2.5s，分片一慢就「缓冲中→卡一下」。改成至少攒 30s 再开播、最多缓 120s，卡顿后要攒到 4s 才恢复播放（避免「播半秒又卡」的抖动）。",
+                "**弱网更稳**：数据源连接/读取超时从默认 8s 放宽到 15s/20s —— 采集站分片偶发 5~10s 才响应，默认超时会把「正常但慢」的分片判死、直接触发线路错误。",
+                "**拔耳机自动暂停**（`setHandleAudioBecomingNoisy`），不再突然外放。",
+                "全量单测 **572 用例 / 0 失败**（新增 `VideoCacheProgressTest` 6 条，锁住百分比取整、1% 下限、满格文案、时长未知不显示等边界）。",
+            ),
+        ),
         VersionEntry(
             version = "1.7.6.5",
             date = "2026-10-17",

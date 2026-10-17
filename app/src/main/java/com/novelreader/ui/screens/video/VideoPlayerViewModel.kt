@@ -13,7 +13,6 @@ import androidx.media3.common.Format
 import androidx.media3.common.Tracks
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.TrackSelectionParameters
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
@@ -502,16 +501,10 @@ class VideoPlayerViewModel(
 
         // 重建媒体（带字幕轨道）并从原位置续播
         val mediaItem = buildMediaItem(url)
-        if (lastVideoHeaders.isNotEmpty()) {
-            val httpFactory = DefaultHttpDataSource.Factory()
-                .setUserAgent("NovelReader/1.0")
-                .setDefaultRequestProperties(lastVideoHeaders)
-                .setAllowCrossProtocolRedirects(true)
-            val mediaSourceFactory = DefaultMediaSourceFactory(httpFactory)
-            player.setMediaSource(mediaSourceFactory.createMediaSource(mediaItem))
-        } else {
-            player.setMediaItem(mediaItem)
-        }
+        val mediaSourceFactory = DefaultMediaSourceFactory(
+            com.novelreader.core.media.VideoMediaCache.dataSourceFactory(lastVideoHeaders),
+        )
+        player.setMediaSource(mediaSourceFactory.createMediaSource(mediaItem))
         player.prepare()
         player.setPlaybackSpeed(normalSpeed)
         applySubtitleEnabled()
@@ -534,16 +527,10 @@ class VideoPlayerViewModel(
         _subtitleEnabled.value = false
 
         val mediaItem = buildMediaItem(url)
-        if (lastVideoHeaders.isNotEmpty()) {
-            val httpFactory = DefaultHttpDataSource.Factory()
-                .setUserAgent("NovelReader/1.0")
-                .setDefaultRequestProperties(lastVideoHeaders)
-                .setAllowCrossProtocolRedirects(true)
-            val mediaSourceFactory = DefaultMediaSourceFactory(httpFactory)
-            player.setMediaSource(mediaSourceFactory.createMediaSource(mediaItem))
-        } else {
-            player.setMediaItem(mediaItem)
-        }
+        val mediaSourceFactory = DefaultMediaSourceFactory(
+            com.novelreader.core.media.VideoMediaCache.dataSourceFactory(lastVideoHeaders),
+        )
+        player.setMediaSource(mediaSourceFactory.createMediaSource(mediaItem))
         player.prepare()
         player.setPlaybackSpeed(normalSpeed)
         if (position > 0) player.seekTo(position)
@@ -864,18 +851,14 @@ class VideoPlayerViewModel(
 
         val mediaItem = buildMediaItem(url)
 
-        // 防盗链请求头：通过 DefaultHttpDataSource.Factory 注入
-        if (headers.isNotEmpty()) {
-            val httpFactory = DefaultHttpDataSource.Factory()
-                .setUserAgent("NovelReader/1.0")
-                .setDefaultRequestProperties(headers)
-                .setAllowCrossProtocolRedirects(true)
-            val mediaSourceFactory = DefaultMediaSourceFactory(httpFactory)
-            val mediaSource = mediaSourceFactory.createMediaSource(mediaItem)
-            player.setMediaSource(mediaSource)
-        } else {
-            player.setMediaItem(mediaItem)
-        }
+        // 防盗链请求头 + 磁盘缓存（v1.7.7.0）：边播边把分片落到本地，
+        // 回退重播 / 快退 / 重连都直接读缓存，弱网下卡顿明显减少。
+        // 没有请求头的源同样走缓存（以前这条分支直接 setMediaItem，等于没缓存）。
+        val mediaSourceFactory = DefaultMediaSourceFactory(
+            com.novelreader.core.media.VideoMediaCache.dataSourceFactory(headers),
+        )
+        val mediaSource = mediaSourceFactory.createMediaSource(mediaItem)
+        player.setMediaSource(mediaSource)
 
         player.prepare()
         player.setPlaybackSpeed(normalSpeed)

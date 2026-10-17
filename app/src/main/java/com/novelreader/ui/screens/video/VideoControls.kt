@@ -3,8 +3,11 @@ package com.novelreader.ui.screens.video
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -60,8 +63,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -291,29 +300,49 @@ fun BoxScope.VideoControlsOverlay(
                 )
                 .padding(horizontal = 12.dp, vertical = 6.dp),
         ) {
-            // 进度条：拖动时显示目标时间
+            // 缓存状态（v1.7.7.0）：固定占 14dp 高，避免文案出现/消失时整条进度条上下跳
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(14.dp),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                com.novelreader.core.util.VideoCacheProgress.label(bufferedMs, duration)
+                    ?.let { label ->
+                        Text(
+                            text = label,
+                            color = Color.White.copy(alpha = 0.55f),
+                            fontSize = 10.sp,
+                        )
+                    }
+            }
+            // 进度条：拖动时显示目标时间；三段 = 未加载 / 已缓冲 / 已播
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = formatDuration(((dragValue ?: if (duration > 0) positionMs / duration.toFloat() else 0f) * duration).toLong()),
                     color = Color.White,
                     fontSize = 12.sp,
                 )
-                Slider(
-                    value = dragValue ?: if (duration > 0) (positionMs / duration.toFloat()).coerceIn(0f, 1f) else 0f,
-                    onValueChange = { dragValue = it },
-                    onValueChangeFinished = {
-                        dragValue?.let { onSeek((it * duration).toLong()) }
-                        dragValue = null
-                    },
-                    enabled = duration > 0,
+                VideoBufferProgressBar(
+                    playedFraction = dragValue
+                        ?: com.novelreader.core.util.VideoCacheProgress.playedFraction(positionMs, duration),
+                    bufferedFraction = com.novelreader.core.util.VideoCacheProgress
+                        .bufferedFraction(bufferedMs, duration)
+                        // 缓冲段不能短于已播段，否则看着像「已经播到没缓存的地方」
+                        .coerceAtLeast(
+                            dragValue
+                                ?: com.novelreader.core.util.VideoCacheProgress.playedFraction(positionMs, duration),
+                        ),
+                    durationMs = duration,
                     modifier = Modifier
                         .weight(1f)
                         .padding(horizontal = 10.dp),
-                    colors = SliderDefaults.colors(
-                        thumbColor = Color.White,
-                        activeTrackColor = Color(0xFF4CAF50),
-                        inactiveTrackColor = Color.White.copy(alpha = 0.3f),
-                    ),
+                    onProgressChange = { dragValue = it },
+                    onCommit = { f ->
+                        dragValue = null
+                        if (duration > 0) onSeek((f * duration).toLong())
+                    },
+                    onCancel = { dragValue = null },
                 )
                 Text(
                     text = formatDuration(duration),
@@ -1252,4 +1281,112 @@ private fun QualityChip(label: String, selected: Boolean, onClick: () -> Unit) {
 private fun Modifier.horizontalScrollable(): Modifier {
     val scrollState = androidx.compose.foundation.rememberScrollState()
     return this.then(horizontalScroll(scrollState))
+}
+
+/**
+ * 播放进度条（v1.7.7.0）——自绘三段：**未加载 / 已缓冲 / 已播**。
+ *
+ * 为什么不用 Material3 的 [Slider]：Slider 只有 active/inactive 两条轨道，
+ * 表达不了「已经缓冲到哪」，而这恰恰是弱网下用户最想知道的信息
+ * （进度条走到底却开始转圈，就知道是卡在缓冲了）。
+ *
+ * 手势自己实现（Slider 的拖动回调也拿不到「松手」这个时机做精确 seek）：
+ * - 点按 → 立即 seek 到该位置
+ * - 拖动 → 拖动中只更新预览时间，松手才 seek（避免拖动过程疯狂 seek 打爆缓冲）
+ */
+@Composable
+private fun VideoBufferProgressBar(
+    playedFraction: Float,
+    bufferedFraction: Float,
+    durationMs: Long,
+    onProgressChange: (Float) -> Unit,
+    onCommit: (Float) -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val density = LocalDensity.current
+    val trackHeight = with(density) { 4.dp.toPx() }
+    val thumbRadius = with(density) { 6.dp.toPx() }
+    val draggingThumbRadius = with(density) { 8.dp.toPx() }
+
+    var widthPx by remember { mutableStateOf(1f) }
+    var dragging by remember { mutableStateOf(false) }
+    var dragFraction by remember { mutableStateOf<Float?>(null) }
+
+    val enabled = durationMs > 0L
+    val played = (dragFraction ?: playedFraction).coerceIn(0f, 1f)
+    // 缓冲段不能短于已播段，否则视觉上像「已经播到没缓存的地方」
+    val buffered = bufferedFraction.coerceIn(0f, 1f).coerceAtLeast(played)
+
+    Canvas(
+        modifier = modifier
+            .height(26.dp)
+            .onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                detectTapGestures { offset ->
+                    val f = (offset.x / widthPx).coerceIn(0f, 1f)
+                    onProgressChange(f)
+                    onCommit(f)
+                }
+            }
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                detectHorizontalDragGestures(
+                    onDragStart = { offset ->
+                        dragging = true
+                        val f = (offset.x / widthPx).coerceIn(0f, 1f)
+                        dragFraction = f
+                        onProgressChange(f)
+                    },
+                    onDragEnd = {
+                        dragging = false
+                        val f = dragFraction
+                        dragFraction = null
+                        if (f != null) onCommit(f) else onCancel()
+                    },
+                    onDragCancel = {
+                        dragging = false
+                        dragFraction = null
+                        onCancel()
+                    },
+                ) { change, _ ->
+                    val f = (change.position.x / widthPx).coerceIn(0f, 1f)
+                    dragFraction = f
+                    onProgressChange(f)
+                }
+            },
+    ) {
+        val cy = size.height / 2f
+        val radius = trackHeight / 2f
+        val thumb = if (dragging) draggingThumbRadius else thumbRadius
+
+        drawRoundRect(
+            color = Color.White.copy(alpha = 0.22f),
+            topLeft = Offset(0f, cy - radius),
+            size = Size(size.width, trackHeight),
+            cornerRadius = CornerRadius(radius, radius),
+        )
+        if (buffered > 0f) {
+            drawRoundRect(
+                color = Color.White.copy(alpha = 0.5f),
+                topLeft = Offset(0f, cy - radius),
+                size = Size(size.width * buffered, trackHeight),
+                cornerRadius = CornerRadius(radius, radius),
+            )
+        }
+        if (played > 0f) {
+            drawRoundRect(
+                color = Color(0xFF4CAF50),
+                topLeft = Offset(0f, cy - radius),
+                size = Size(size.width * played, trackHeight),
+                cornerRadius = CornerRadius(radius, radius),
+            )
+        }
+        drawCircle(
+            color = Color.White,
+            radius = thumb,
+            center = Offset(size.width * played, cy),
+        )
+    }
 }

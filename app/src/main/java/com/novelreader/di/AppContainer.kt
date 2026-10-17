@@ -30,6 +30,20 @@ import com.novelreader.source.manager.SourceManager
  */
 class AppContainer(context: Context) {
 
+    /**
+     * 视频磁盘缓存预热（v1.7.7.0）。
+     *
+     * `SimpleCache` 要打开缓存目录与索引数据库，放主线程会拖慢冷启动，所以丢后台。
+     * 没就绪时 [com.novelreader.core.media.VideoMediaCache.dataSourceFactory] 会退化为
+     * 纯网络数据源 —— 不影响播放，只是第一次看没有缓存命中。
+     */
+    init {
+        val ctx = context.applicationContext
+        Thread({
+            runCatching { com.novelreader.core.media.VideoMediaCache.init(ctx) }
+        }, "video-media-cache-init").apply { isDaemon = true }.start()
+    }
+
     // ===== 基础设施 =====
     private val appContext = context.applicationContext
 

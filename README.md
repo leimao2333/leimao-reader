@@ -117,6 +117,8 @@ NovelReader/
 - 两个文件均已写入 `.gitignore`，**绝不提交到仓库**；换机 / 重装系统前必须单独备份，丢失后无法再发布可覆盖安装的更新。
 - 构建：`gradle assembleRelease` → 产物 `app/build/outputs/apk/release/app-release.apk`（已签名，v2 方案）。
 - 发版前必检：`apksigner verify -v app-release.apk`，必须看到 `Verified using v2 scheme (APK Signature Scheme v2): true`。
+- **发版前必须在模拟器实际安装验证**（用户明确要求）：启动 `legado_test` AVD → `adb install app-release.apk` → 拉起 MainActivity 确认首页正常渲染。若模拟器上残留旧包且签名不同会报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`，先 `adb uninstall com.novelreader` 再装。
+- **只上传 release 构建的包，禁止上传 debug 包**：debug 包含 `application-debuggable`、Compose live edit 支持代码与 ui-tooling，体积大 ~8MB（~25MB vs ~17.6MB），且签名证书是 `CN=Android Debug`（不是正式密钥），无法覆盖升级。v1.7.6.0 及更早的大部分 Release 都误传过 debug 包，v1.7.6.1 起才固定用 release 构建。
 - 若 `keystore.properties` 缺失，构建会退化为**未签名**（`app-release-unsigned.apk`）——这种包**装不上**，禁止发布。
 
 ## 核心设计

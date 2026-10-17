@@ -28,8 +28,11 @@ class LegadoSourceAdapter(
 ) : SourceAdapter {
 
     private val headers: Map<String, String> = source.parseHeaders()
-    // 清理 baseUrl：去掉末尾的 # 和 /
-    private val baseUrl: String = source.url.trim().removeSuffix("#").trimEnd('/')
+    // 清理 baseUrl：去掉 URL 片段（#…）与末尾斜杠。
+    // 源包里不少源写成 `https://site.com#🎃` / `#pb1101` 这类带标记的地址；
+    // 片段保留会让 `{{baseUrl}}/path` 模板拼出 `site.com#🎃/path` —— 片段之后
+    // 全部被当作锚点，真实请求只会打到站点根，目录/正文集体取不到（本次修复）。
+    private val baseUrl: String = source.url.trim().substringBefore('#').trimEnd('/')
 
     init {
         // 源级请求头注册进封面注册表：书架/搜索/详情的封面由 Coil 直接加载，
@@ -205,11 +208,12 @@ class LegadoSourceAdapter(
         // 36 个 `ruleExplore` 没配 coverUrl（52PO小说、飞卢、猫九…），探索列表整排
         // 变成首字占位块；而两条规则解析的是同一套站点结构，搜索的封面选择器在
         // 发现页通常同样命中。只在确实缺失时补，不覆盖源自己写的规则。
+        val searchCover = source.ruleSearch["coverUrl"]
         val rule = if (
             source.ruleExplore["coverUrl"].isNullOrBlank() &&
-            !source.ruleSearch["coverUrl"].isNullOrBlank()
+            !searchCover.isNullOrBlank()
         ) {
-            source.ruleExplore + ("coverUrl" to source.ruleSearch["coverUrl"]!!)
+            source.ruleExplore + ("coverUrl" to searchCover)
         } else {
             source.ruleExplore
         }

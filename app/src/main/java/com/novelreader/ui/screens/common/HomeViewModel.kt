@@ -16,8 +16,10 @@ import com.novelreader.domain.repository.ProgressRepository
 import com.novelreader.domain.repository.ReadingProgress
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -48,6 +50,15 @@ class HomeViewModel(
     private val preferencesManager: com.novelreader.core.preferences.PreferencesManager? = null,
     /** 影视首页 / 频道内容磁盘缓存（v1.5.7.0「加载一次之后固定」，测试可传 null） */
     private val videoCache: com.novelreader.data.cache.VideoHomeCache? = null,
+    /**
+     * 缓存读写的调度器。
+     *
+     * 缓存 load/save 是阻塞文件 IO + Gson 序列化，必须离开主线程；但单测里
+     * `viewModelScope` 被 `Dispatchers.setMain(UnconfinedTestDispatcher())` 接管，
+     * 真实 IO 调度器不受 `advanceUntilIdle()` 控制 —— 因此做成可注入，
+     * 测试传 TestDispatcher 即可保持确定性。
+     */
+    private val cacheDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
 
     /**
@@ -953,10 +964,11 @@ class HomeViewModel(
     /** 从磁盘恢复首页分区内容；返回是否恢复成功（有缓存、源集一致、rows 非空） */
     private suspend fun hydrateHomeFromCache(): Boolean {
         val cache = videoCache ?: return false
-        val raw = runCatching { cache.load(homeCacheKey()) }.getOrNull() ?: return false
-        val payload = runCatching {
-            cacheGson.fromJson(raw, HomeCachePayload::class.java)
-        }.getOrNull() ?: return false
+        // 磁盘读 + JSON 解析可能上百 KB，放 IO 线程，避免主线程卡顿
+        val payload = withContext(cacheDispatcher) {
+            runCatching { cache.load(homeCacheKey()) }.getOrNull()
+                ?.let { raw -> runCatching { cacheGson.fromJson(raw, HomeCachePayload::class.java) }.getOrNull() }
+        } ?: return false
         if (payload.sourceIds.isEmpty() || payload.rows.isEmpty()) return false
         if (payload.sourceIds.toSet() != currentEnabledVideoIds()) return false
         val s = _videoHome.value
@@ -981,31 +993,35 @@ class HomeViewModel(
         val cache = videoCache ?: return
         val s = _videoHome.value
         if (s.rows.isEmpty() || s.sources.isEmpty()) return
-        runCatching {
-            cache.save(
-                homeCacheKey(),
-                cacheGson.toJson(
-                    HomeCachePayload(
-                        sourceIds = currentEnabledVideoIds().toList(),
-                        currentSourceId = s.currentSourceId,
-                        rows = s.rows,
-                        categoryTree = s.categoryTree,
-                        categoryPlan = s.categoryPlan,
-                        categoryTypeUrls = s.categoryTypeUrls,
-                        availableSources = s.availableSources,
+        val sourceIds = currentEnabledVideoIds().toList()
+        // 序列化 + 落盘放 IO 线程（主线程写盘会掉帧，慢存储冷启动可能 ANR）
+        withContext(cacheDispatcher) {
+            runCatching {
+                cache.save(
+                    homeCacheKey(),
+                    cacheGson.toJson(
+                        HomeCachePayload(
+                            sourceIds = sourceIds,
+                            currentSourceId = s.currentSourceId,
+                            rows = s.rows,
+                            categoryTree = s.categoryTree,
+                            categoryPlan = s.categoryPlan,
+                            categoryTypeUrls = s.categoryTypeUrls,
+                            availableSources = s.availableSources,
+                        ),
                     ),
-                ),
-            )
+                )
+            }
         }
     }
 
     /** 从磁盘恢复频道内容；返回是否恢复成功 */
     private suspend fun hydrateChannelFromCache(channel: VideoChannel): Boolean {
         val cache = videoCache ?: return false
-        val raw = runCatching { cache.load(channelCacheKey(channel)) }.getOrNull() ?: return false
-        val p = runCatching {
-            cacheGson.fromJson(raw, ChannelCachePayload::class.java)
-        }.getOrNull() ?: return false
+        val p = withContext(cacheDispatcher) {
+            runCatching { cache.load(channelCacheKey(channel)) }.getOrNull()
+                ?.let { raw -> runCatching { cacheGson.fromJson(raw, ChannelCachePayload::class.java) }.getOrNull() }
+        } ?: return false
         if (p.items.isEmpty() || p.categories.isEmpty()) return false
         if (p.sourceIds.toSet() != currentEnabledVideoIds()) return false
         stateOf(channel).value = VideoChannelState(
@@ -1022,18 +1038,21 @@ class HomeViewModel(
         val cache = videoCache ?: return
         val st = stateOf(channel).value
         if (st.items.isEmpty() || st.categories.isEmpty()) return
-        runCatching {
-            cache.save(
-                channelCacheKey(channel),
-                cacheGson.toJson(
-                    ChannelCachePayload(
-                        sourceIds = currentEnabledVideoIds().toList(),
-                        categories = st.categories,
-                        selectedCategory = st.selectedCategory,
-                        items = st.items,
+        val sourceIds = currentEnabledVideoIds().toList()
+        withContext(cacheDispatcher) {
+            runCatching {
+                cache.save(
+                    channelCacheKey(channel),
+                    cacheGson.toJson(
+                        ChannelCachePayload(
+                            sourceIds = sourceIds,
+                            categories = st.categories,
+                            selectedCategory = st.selectedCategory,
+                            items = st.items,
+                        ),
                     ),
-                ),
-            )
+                )
+            }
         }
     }
 
@@ -1451,10 +1470,10 @@ class HomeViewModel(
     /** 从磁盘恢复推荐内容；返回是否恢复成功（有缓存、源集一致、计划不残缺、rows 非空） */
     private suspend fun hydrateFeedFromCache(type: SourceType): Boolean {
         val cache = videoCache ?: return false
-        val raw = runCatching { cache.load(feedCacheKey(type)) }.getOrNull() ?: return false
-        val payload = runCatching {
-            cacheGson.fromJson(raw, FeedCachePayload::class.java)
-        }.getOrNull() ?: return false
+        val payload = withContext(cacheDispatcher) {
+            runCatching { cache.load(feedCacheKey(type)) }.getOrNull()
+                ?.let { raw -> runCatching { cacheGson.fromJson(raw, FeedCachePayload::class.java) }.getOrNull() }
+        } ?: return false
         if (payload.sourceIds.isEmpty() || payload.rows.isEmpty()) return false
         val enabled = currentEnabledFeedIds(type)
         if (payload.sourceIds.toSet() != enabled) return false
@@ -1490,21 +1509,23 @@ class HomeViewModel(
         // 残缺计划不落盘（同 hydrateFeedFromCache 的判据）：源恢复没完成时枚举出来的
         // 结果会被这次写入固化，用户之后每次冷启动都从缓存恢复，永远修不好。
         if (enumerated <= 0 || enumerated * 2 < enabled.size) return
-        runCatching {
-            cache.save(
-                feedCacheKey(type),
-                cacheGson.toJson(
-                    FeedCachePayload(
-                        sourceIds = enabled.toList(),
-                        aliveCount = st.aliveCount,
-                        categories = st.categories,
-                        urls = feedPlans[type]?.urls.orEmpty(),
-                        adultIds = feedAdultIds[type].orEmpty().toList(),
-                        enumerated = enumerated,
-                        rows = st.rows,
+        withContext(cacheDispatcher) {
+            runCatching {
+                cache.save(
+                    feedCacheKey(type),
+                    cacheGson.toJson(
+                        FeedCachePayload(
+                            sourceIds = enabled.toList(),
+                            aliveCount = st.aliveCount,
+                            categories = st.categories,
+                            urls = feedPlans[type]?.urls.orEmpty(),
+                            adultIds = feedAdultIds[type].orEmpty().toList(),
+                            enumerated = enumerated,
+                            rows = st.rows,
+                        ),
                     ),
-                ),
-            )
+                )
+            }
         }
     }
 

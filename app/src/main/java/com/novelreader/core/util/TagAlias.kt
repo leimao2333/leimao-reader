@@ -21,18 +21,18 @@ object TagAlias {
      *
      * 新增词条时按「同一含义」分组即可，顺序无所谓；组内第一个词仅用于日志可读性。
      */
-    private val GROUPS: List<Set<String>> = listOf(
+    internal val GROUPS: List<Set<String>> = listOf(
         // ===== 题材 =====
         setOf("校园", "学院", "学园", "学校", "school", "campus", "academy"),
         setOf("科幻", "科学幻想", "scifi", "sci-fi", "science fiction", "sf"),
         setOf("奇幻", "魔幻", "fantasy", "magic"),
         setOf("魔法", "magical", "witch", "wizard", "sorcery"),
-        setOf("热血", "少年", "动作", "格斗", "shounen", "shonen", "action", "battle action"),
+        setOf("热血", "少年", "动作", "格斗", "action", "battle action"),
         setOf("冒险", "adventure", "quest"),
         setOf("恋爱", "爱情", "言情", "纯爱", "romance", "love", "romantic"),
         setOf("后宫", "harem"),
         setOf("逆后宫", "乙女", "reverse harem", "otome"),
-        setOf("悬疑", "推理", "悬念", "mystery", "suspense", "detective"),
+        setOf("悬疑", "推理", "悬念", "mystery", "suspense"),
         setOf("恐怖", "惊悚", "灵异", "horror", "thriller", "ghost"),
         setOf("治愈", "疗愈", "healing", "iyashikei", "heartwarming"),
         setOf("日常", "生活", "日常系", "slice of life", "daily life", "sol"),
@@ -103,7 +103,7 @@ object TagAlias {
         setOf("收藏", "favorite", "favourite", "bookmark"),
         // ===== 语言 / 地区 =====
         setOf("英语", "英文", "eng", "english", "英語", "english scanlation"),
-        setOf("日语", "日文", "生肉", "japanese", "jp", "raw", "日本語"),
+        setOf("日语", "日文", "japanese", "jp", "日本語"),
         setOf("中文", "汉化", "翻译", "chinese", "cn", "zh", "汉化组", "translated"),
         setOf("韩漫", "韩国", "韩文", "korean", "manhwa", "kr"),
         setOf("国产", "国漫", "chinese comic", "domestic"),
@@ -111,7 +111,7 @@ object TagAlias {
         // ===== 载体 =====
         setOf("漫画", "comic", "manga", "comics", "卡通", "cartoon"),
         setOf("动画", "动漫", "anime", "animation"),
-        setOf("小说", "novel", "轻小说", "web novel"),
+        setOf("小说", "novel", "web novel"),
         setOf("剧集", "drama"),
         // ===== 分级 =====
         setOf("成人", "限制级", "18禁", "r18", "hentai", "adult", "18+", "ero", "ecchi"),

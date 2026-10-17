@@ -386,7 +386,7 @@ object RssParser {
     private fun itemImage(item: Element, contentHtml: String, base: String): String {
         val enclosure = item.children().firstOrNull { matches(it.tagName(), "enclosure") }
         val encUrl = enclosure?.attr("url").orEmpty()
-        if (encUrl.isNotBlank() && !enclosure!!.attr("type").lowercase().startsWith("audio")) {
+        if (enclosure != null && encUrl.isNotBlank() && !enclosure.attr("type").lowercase().startsWith("audio")) {
             return resolve(base, encUrl)
         }
         val media = childMatching(item, "content", "thumbnail")

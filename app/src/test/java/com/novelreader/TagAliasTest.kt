@@ -71,4 +71,32 @@ class TagAliasTest {
         assertTrue("百合" in aliases)
         assertEquals(aliases.size, aliases.distinct().size)
     }
+
+    @Test
+    fun `每个别名只属于一个等价组`() {
+        // groupOf 构建时「后写覆盖前写」，同一个词出现在两组会让 aliasesOf 变成非对称
+        // （例如「日语」含 raw、而「生肉」不含日语），复合搜索还可能把不同概念误合并。
+        // 这里把跨组重复直接拦在测试里，新增词条时一重复就红。
+        val seen = HashMap<String, Int>()
+        val dups = mutableListOf<String>()
+        TagAlias.GROUPS.forEachIndexed { index, group ->
+            group.forEach { name ->
+                val key = name.filterNot { it.isWhitespace() }.lowercase()
+                val prev = seen.put(key, index)
+                if (prev != null && prev != index) dups.add(name)
+            }
+        }
+        assertTrue("跨组重复别名：$dups", dups.isEmpty())
+    }
+
+    @Test
+    fun `同一组内互为译名`() {
+        // 逐组校验 aliasesOf 能覆盖整组：若某词被另一组覆盖，这里的期望值就对不上。
+        TagAlias.GROUPS.forEach { group ->
+            val normalized = group.map { it.filterNot { c -> c.isWhitespace() }.lowercase() }.toSet()
+            group.forEach { name ->
+                assertEquals("「$name」的译名应覆盖整组", normalized, TagAlias.aliasesOf(name))
+            }
+        }
+    }
 }

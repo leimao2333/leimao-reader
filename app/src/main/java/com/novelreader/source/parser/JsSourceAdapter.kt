@@ -77,17 +77,19 @@ class JsSourceAdapter(
         val result = SourceJsEngine.callFunction(scope, "content", chapter.url)
         val map = toMap(result)
 
+        val text = map.str("text")
+        val videoUrl = map.str("url")
         return when {
             // 小说：text 字段
-            map.str("text") != null -> ContentResult.novel(map.str("text")!!)
+            text != null -> ContentResult.novel(text)
             // 漫画：images 字段（数组）
             map.has("images") -> {
                 val images = unwrapList(map.raw("images")).mapNotNull { toMap(it).str("src") ?: (it as? String) }
                 ContentResult.comic(images)
             }
             // 视频：url 字段
-            map.str("url") != null -> {
-                ContentResult.video(map.str("url")!!, map.headers())
+            videoUrl != null -> {
+                ContentResult.video(videoUrl, map.headers())
             }
             else -> ContentResult()
         }

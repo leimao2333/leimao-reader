@@ -136,3 +136,23 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
+
+// 真实源测试（LegadoRealSourceTest / SourceHealthProbeTest）靠环境变量门控。
+// 环境变量在部分场景下传不进测试 worker，因此同时支持 `-PKEY=VALUE` 项目属性。
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    listOf(
+        "LEIMAO_REAL_TESTS",
+        "LEIMAO_HEALTH_FILE",
+        "LEIMAO_HEALTH_LIMIT",
+        "LEIMAO_HEALTH_CONCURRENCY",
+        "LEIMAO_HEALTH_KEYWORD",
+        "LEIMAO_HEALTH_OUT",
+        "LEIMAO_SOURCE_FILE",
+        "LEIMAO_SRC_NOVEL_A",
+        "LEIMAO_SRC_NOVEL_B",
+        "LEIMAO_SRC_NOVEL_C",
+    ).forEach { key ->
+        val value = providers.gradleProperty(key).orNull ?: System.getenv(key)
+        if (value != null) environment(key, value)
+    }
+}

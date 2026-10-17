@@ -240,6 +240,8 @@ class VideoHomeCacheTest {
         sourceRepository = CacheTestSourceRepository(sources),
         preferencesManager = null,
         videoCache = VideoHomeCache(cacheDir),
+        // 缓存读写要离开主线程；单测里用测试调度器，才能被 advanceUntilIdle() 控制
+        cacheDispatcher = dispatcher,
     )
 }
 

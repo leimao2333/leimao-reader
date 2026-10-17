@@ -39,7 +39,10 @@ import com.novelreader.domain.repository.BookCacheSummary
 /**
  * 缓存管理页（#30，v1.6.0.0 扩展）。
  *
- * 展示本地已缓存章节（按书聚合，按类型分组）+ 视频预加载，支持清理单本 / 全部 / 视频预加载。
+ * 三类缓存分区：
+ * - **视频播放缓存**（v1.7.7.1）：边播边存的视频分片，真正占空间的那类，可单独清理；
+ * - **视频预加载**（v1.6.0.0）：播放地址 / 解析结果，很小；
+ * - **章节缓存**：按书聚合，可单本删除或全清。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -52,11 +55,16 @@ fun CacheManageScreen(
     val totalSize by viewModel.totalSize.collectAsState()
     val videoPrefetchSize by viewModel.videoPrefetchSize.collectAsState()
     val videoPrefetchCount by viewModel.videoPrefetchCount.collectAsState()
+    val videoPlayCacheSize by viewModel.videoPlayCacheSize.collectAsState()
     val message by viewModel.message.collectAsState()
 
     var confirmClearAll by remember { mutableStateOf(false) }
     var pendingRemove by remember { mutableStateOf<BookCacheSummary?>(null) }
     var pendingClearVideoPrefetch by remember { mutableStateOf(false) }
+    var pendingClearVideoPlay by remember { mutableStateOf(false) }
+
+    /** 三类缓存的总占用（概览与「清空」文案共用） */
+    val allCacheSize = totalSize + videoPrefetchSize + videoPlayCacheSize
 
     Scaffold(
         topBar = {
@@ -68,7 +76,7 @@ fun CacheManageScreen(
                     }
                 },
                 actions = {
-                    if (books.isNotEmpty() || videoPrefetchSize > 0) {
+                    if (books.isNotEmpty() || videoPrefetchSize > 0 || videoPlayCacheSize > 0) {
                         TextButton(onClick = { confirmClearAll = true }) {
                             Text("清空")
                         }
@@ -94,12 +102,26 @@ fun CacheManageScreen(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
-                    text = "占用 ${viewModel.formatSize(totalSize + videoPrefetchSize)}",
+                    text = "占用 ${viewModel.formatSize(allCacheSize)}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.primary,
                 )
             }
             HorizontalDivider()
+
+            // 视频播放缓存分区（v1.7.7.1）：边播边存的分片，是真正占空间的那一类
+            CacheSection(
+                title = "视频播放缓存",
+                subtitle = if (videoPlayCacheSize > 0) {
+                    viewModel.formatSize(videoPlayCacheSize)
+                } else {
+                    "暂无"
+                },
+                description = "播放时边播边存的视频分片（上限 512MB，自动淘汰最久未看的）。" +
+                    "清理后重新播放会再生成缓存，正在播放的视频会短暂重新加载。",
+                actionLabel = if (videoPlayCacheSize > 0) "清理" else null,
+                onAction = { pendingClearVideoPlay = true },
+            )
 
             // 视频预加载分区（v1.6.0.0）
             CacheSection(
@@ -202,15 +224,41 @@ fun CacheManageScreen(
         )
     }
 
-    // 清空全部确认（含视频预加载）
+    // 清空视频播放缓存确认（v1.7.7.1）
+    if (pendingClearVideoPlay) {
+        AlertDialog(
+            onDismissRequest = { pendingClearVideoPlay = false },
+            title = { Text("清理视频播放缓存") },
+            text = {
+                Text(
+                    "确定清理全部视频播放缓存（${viewModel.formatSize(videoPlayCacheSize)}）？\n" +
+                        "清理后继续观看会自动重新生成；正在播放的视频会短暂重新加载。",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.clearVideoPlayCache()
+                    pendingClearVideoPlay = false
+                }) { Text("清理") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingClearVideoPlay = false }) { Text("取消") }
+            },
+        )
+    }
+
+    // 清空全部确认（含视频预加载 + 播放缓存）
     if (confirmClearAll) {
         AlertDialog(
             onDismissRequest = { confirmClearAll = false },
             title = { Text("清空全部缓存") },
             text = {
                 Text(
-                    "确定清空全部章节缓存 + 视频预加载（共 ${viewModel.formatSize(totalSize + videoPrefetchSize)}）？\n" +
-                        "此操作不可恢复。"
+                    "确定清空全部缓存（章节 ${viewModel.formatSize(totalSize)}、" +
+                        "视频预加载 ${viewModel.formatSize(videoPrefetchSize)}、" +
+                        "播放缓存 ${viewModel.formatSize(videoPlayCacheSize)}，" +
+                        "共 ${viewModel.formatSize(allCacheSize)}）？\n" +
+                        "此操作不可恢复。",
                 )
             },
             confirmButton = {

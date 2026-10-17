@@ -20,6 +20,21 @@ class CacheManageViewModel(
     private val chapterCacheRepository: ChapterCacheRepository,
     private val videoPrefetchCache: VideoPrefetchCache,
     private val preferences: PreferencesManager,
+    /**
+     * 视频播放缓存（边播边存，v1.7.7.1）。
+     *
+     * 默认走真实的 media3 `SimpleCache`；单测注入假实现，避免依赖 Android Context。
+     */
+    private val videoPlayCache: com.novelreader.data.cache.VideoPlayCacheStore =
+        com.novelreader.data.cache.VideoMediaCacheStore,
+    /**
+     * 磁盘缓存统计/清理跑在哪个调度器上。
+     *
+     * 默认 IO；单测注入 `UnconfinedTestDispatcher` —— 真实的 `Dispatchers.IO`
+     * 不受 `runTest` 的虚拟时间控制，断言时任务可能还没跑完（v1.7.7.1 踩过）。
+     */
+    private val ioDispatcher: kotlinx.coroutines.CoroutineDispatcher =
+        kotlinx.coroutines.Dispatchers.IO,
 ) : ViewModel() {
 
     private val _books = MutableStateFlow<List<BookCacheSummary>>(emptyList())
@@ -38,6 +53,15 @@ class CacheManageViewModel(
     /** 视频预加载条目数（v1.6.0.0） */
     private val _videoPrefetchCount = MutableStateFlow(0)
     val videoPrefetchCount: StateFlow<Int> = _videoPrefetchCount.asStateFlow()
+
+    /**
+     * 视频播放缓存占用（边播边存的分片，v1.7.7.1）。
+     *
+     * 和上面的「视频预加载」是两码事：预加载存的是**播放地址/解析结果**（很小），
+     * 这里存的是**真实的视频分片**（几百 MB 级别），也是唯一需要用户主动清理的。
+     */
+    private val _videoPlayCacheSize = MutableStateFlow(0L)
+    val videoPlayCacheSize: StateFlow<Long> = _videoPlayCacheSize.asStateFlow()
 
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
@@ -58,6 +82,10 @@ class CacheManageViewModel(
             _totalSize.value = runCatching { chapterCacheRepository.totalSize() }.getOrDefault(0L)
             _videoPrefetchSize.value = runCatching { videoPrefetchCache.totalSize() }.getOrDefault(0L)
             _videoPrefetchCount.value = runCatching { videoPrefetchCache.count() }.getOrDefault(0)
+            // 读磁盘缓存占用（SimpleCache.cacheSpace 是内存计数，但保险起见放 IO）
+            _videoPlayCacheSize.value = kotlinx.coroutines.withContext(ioDispatcher) {
+                runCatching { videoPlayCache.sizeBytes() }.getOrDefault(0L)
+            }
             _loading.value = false
         }
     }
@@ -105,15 +133,37 @@ class CacheManageViewModel(
         }
     }
 
-    /** 一键清空（章节缓存 + 视频预加载，v1.6.0.0） */
+    /**
+     * 清空视频播放缓存（边播边存的分片，v1.7.7.1）。
+     *
+     * 清完会立即重建缓存目录，后续播放照常边播边存 —— 不是「关掉缓存」。
+     */
+    fun clearVideoPlayCache() {
+        viewModelScope.launch {
+            val before = _videoPlayCacheSize.value
+            val freed = kotlinx.coroutines.withContext(ioDispatcher) {
+                runCatching { videoPlayCache.clear() }.getOrDefault(0L)
+            }
+            // freed 可能因为计数时机比 UI 显示的小而偏低，取两者较大值以免提示「清空 0 B」
+            val shown = if (freed > 0L) freed else before
+            _message.value = "已清空视频播放缓存（${formatSize(shown)}）"
+            refresh()
+        }
+    }
+
+    /** 一键清空（章节缓存 + 视频预加载 + 视频播放缓存，v1.6.0.0 / v1.7.7.1） */
     fun clearAllIncludingPrefetch() {
         viewModelScope.launch {
             val size = _videoPrefetchSize.value
+            val playSize = _videoPlayCacheSize.value
             runCatching {
                 chapterCacheRepository.clearAll()
                 videoPrefetchCache.clear()
             }.onSuccess {
-                _message.value = "已清空全部缓存（含视频预加载 ${formatSize(size)}）"
+                kotlinx.coroutines.withContext(ioDispatcher) {
+                    runCatching { videoPlayCache.clear() }
+                }
+                _message.value = "已清空全部缓存（含视频预加载 ${formatSize(size)}、播放缓存 ${formatSize(playSize)}）"
                 refresh()
             }.onFailure {
                 _message.value = "清空失败：${it.message}"

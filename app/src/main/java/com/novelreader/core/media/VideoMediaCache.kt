@@ -48,6 +48,10 @@ object VideoMediaCache {
     @Volatile
     private var database: StandaloneDatabaseProvider? = null
 
+    /** 保存 applicationContext：清空缓存后要能自己重建，调用方不必再传 */
+    @Volatile
+    private var appContext: Context? = null
+
     /** 是否已初始化（UI 侧判断要不要显示「已缓存」相关文案） */
     val ready: Boolean get() = cache != null
 
@@ -58,6 +62,7 @@ object VideoMediaCache {
         if (cache != null) return
         synchronized(this) {
             if (cache != null) return
+            appContext = context.applicationContext
             val dir = File(context.applicationContext.cacheDir, "video_media")
             val db = StandaloneDatabaseProvider(context.applicationContext)
             database = db
@@ -104,11 +109,34 @@ object VideoMediaCache {
     /** 磁盘缓存当前占用（供「清除缓存」等场景展示） */
     fun cacheSizeBytes(): Long = runCatching { cache?.cacheSpace ?: 0L }.getOrDefault(0L)
 
-    /** 清空磁盘缓存（播放中调用会中断当前流的缓存写入，因此只在离开播放页后调用） */
-    fun clear() {
-        runCatching { cache?.release() }
-        cache = null
-        runCatching { database?.close() }
-        database = null
+    /**
+     * 清空磁盘缓存并**立即重建**（v1.7.7.1）。
+     *
+     * 只 release 不重建会让清完之后彻底没有缓存（`init` 只在 App 启动时跑一次），
+     * 用户清完缓存继续看视频反而更卡，所以这里清完就重新开一个。
+     * 重建失败也只是退化成「无缓存」，不影响播放。
+     *
+     * @return 释放的字节数（用于提示文案）
+     *
+     * ⚠️ 播放中调用会让当前流重新拉分片（画面可能短暂卡一下），
+     * 因此缓存管理页的确认框要写明这一点。
+     */
+    fun clearAndReset(): Long {
+        val ctx = appContext ?: return 0L
+        synchronized(this) {
+            val freed = runCatching { cache?.cacheSpace ?: 0L }.getOrDefault(0L)
+            runCatching { cache?.release() }
+            cache = null
+            runCatching { database?.close() }
+            database = null
+            val dir = File(ctx.cacheDir, "video_media")
+            runCatching { dir.deleteRecursively() }
+            runCatching {
+                val db = StandaloneDatabaseProvider(ctx)
+                database = db
+                cache = SimpleCache(dir, LeastRecentlyUsedCacheEvictor(MAX_BYTES), db)
+            }
+            return freed
+        }
     }
 }

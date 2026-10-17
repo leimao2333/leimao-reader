@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.7.7.0"
+    const val CURRENT_VERSION = "1.7.7.1"
 
     /**
      * 更新日志。
@@ -25,6 +25,18 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.7.7.1",
+            date = "2026-10-17",
+            changes = listOf(
+                "**缓存管理页新增「视频播放缓存」分区**：v1.7.7.0 引入的边播边存（最多 512MB）此前只进不出、也没有入口，现在能看到占了多少，并能单独「清理」。",
+                "**清理后立即重建缓存目录**：只释放不重建会让清完缓存后彻底没有缓存（`init` 只在 App 启动时跑一次），继续看视频反而更卡。现在清完就重开一个；即使重建失败也只是退化成无缓存，不影响播放。",
+                "**「清空全部」也覆盖播放缓存**，概览里的「占用」与确认弹窗都按「章节 + 视频预加载 + 播放缓存」三部分分别列明。",
+                "确认弹窗写明「正在播放的视频会短暂重新加载」，避免用户以为卡了。",
+                "新增 `CacheManageViewModelVideoCacheTest` 4 条（刷新读到容量、清理后归零且提示带释放容量、一键清空也清、无缓存时提示 `0 B`）。顺带把该 ViewModel 的磁盘操作调度器做成可注入 —— 真实 `Dispatchers.IO` 不受 `runTest` 虚拟时间控制，断言时任务可能还没跑完。",
+                "全量单测 **576 用例 / 0 失败**。",
+            ),
+        ),
         VersionEntry(
             version = "1.7.7.0",
             date = "2026-10-17",

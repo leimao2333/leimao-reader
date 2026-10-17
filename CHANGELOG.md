@@ -6,6 +6,12 @@
 >
 > 撰写约定：说明里出现 legado 规则语法（`@put` / `@get` / `@js` 等）时**必须用反引号包裹** —— 否则 GitHub 会把它们当成用户提及，Release 页面的 Contributors 会凭空多出同名用户。
 
+## v1.7.6.2（2026-10-17）
+
+**补上 release 签名**：此前的 release APK 是未签名的（`app-release-unsigned.apk`），Android 无法安装。现在配置了长期使用的 release 密钥并随构建自动签名，产物为 `app-release.apk`。
+
+密钥保存在本地 `keystore/leimao-release.jks` + `keystore.properties`（均已加入 `.gitignore`）。**后续版本升级必须沿用同一密钥**，否则无法覆盖安装；请务必备份这两个文件。
+
 ## v1.7.6.1（2026-10-17）
 
 代码审查整改 + 源健康遍历工具。

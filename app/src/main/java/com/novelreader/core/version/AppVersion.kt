@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.7.6.1"
+    const val CURRENT_VERSION = "1.7.6.2"
 
     /**
      * 更新日志。
@@ -25,6 +25,14 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.7.6.2",
+            date = "2026-10-17",
+            changes = listOf(
+                "**补上 release 签名**：此前 release APK 是未签名的（`app-release-unsigned.apk`），Android 无法安装。现在配置了长期使用的 release 密钥并随构建自动签名，产物为 `app-release.apk`。",
+                "密钥保存在本地 `keystore/leimao-release.jks` + `keystore.properties`（均已加入 `.gitignore`）。**后续版本升级必须沿用同一密钥**，否则无法覆盖安装；请务必备份这两个文件。",
+            ),
+        ),
         VersionEntry(
             version = "1.7.6.1",
             date = "2026-10-17",

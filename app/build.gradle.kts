@@ -1,3 +1,6 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -9,6 +12,26 @@ android {
     namespace = "com.novelreader"
     compileSdk = 35
 
+    // release 签名密钥：项目根 keystore.properties（与 keystore/ 一起被 .gitignore）
+    // 缺失时退化为不签名（CI/他人克隆不会因此构建失败）。
+    val keystorePropsFile = rootProject.file("keystore.properties")
+    val keystoreProps = Properties().apply {
+        if (keystorePropsFile.exists()) {
+            FileInputStream(keystorePropsFile).use { load(it) }
+        }
+    }
+
+    signingConfigs {
+        create("release") {
+            if (keystorePropsFile.exists()) {
+                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     defaultConfig {
         applicationId = "com.novelreader"
         minSdk = 24
@@ -16,8 +39,8 @@ android {
         // 版本规范：四段式 顶端版本.大版本.小版本.修订
         // 小版本每版 +1；小版本满 10 进大版本；大版本满 10 进顶端版本
         // versionCode = 顶端版本 * 1000000 + 大版本 * 10000 + 小版本 * 100 + 修订
-        versionCode = 1070601
-        versionName = "1.7.6.1"
+        versionCode = 1070602
+        versionName = "1.7.6.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -32,6 +55,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (keystorePropsFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

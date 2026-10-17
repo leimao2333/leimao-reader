@@ -21,6 +21,10 @@ Thumbs.db
 # GitHub 认证 token（本地私密，勿提交）
 .github_token
 
+# release 签名密钥（本地私密，勿提交；换机前务必备份 keystore/ 与 keystore.properties）
+keystore/
+keystore.properties
+
 # 本地调试产物（设备数据备份 / 崩溃日志）
 backup-app-data/
 crashlogs/

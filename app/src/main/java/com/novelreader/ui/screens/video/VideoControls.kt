@@ -500,7 +500,7 @@ fun BoxScope.VideoControlsOverlay(
                             }
                             Text(
                                 text = "亮度 ${(brightnessValue * 100).toInt()}%",
-                                color = Color.White.copy(alpha = 0.6f),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 12.sp,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                             )
@@ -515,7 +515,7 @@ fun BoxScope.VideoControlsOverlay(
                                     .padding(horizontal = 12.dp)
                                     .width(220.dp),
                             )
-                            HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
                             // 音量滑块（v1.6.0.0）
                             var volumeValue by remember {
@@ -523,7 +523,7 @@ fun BoxScope.VideoControlsOverlay(
                             }
                             Text(
                                 text = "音量 ${(volumeValue * 100).toInt()}%",
-                                color = Color.White.copy(alpha = 0.6f),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 12.sp,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                             )
@@ -538,12 +538,12 @@ fun BoxScope.VideoControlsOverlay(
                                     .padding(horizontal = 12.dp)
                                     .width(220.dp),
                             )
-                            HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
                             if (qualityTracks.isNotEmpty()) {
                                 Text(
                                     text = "清晰度",
-                                    color = Color.White.copy(alpha = 0.6f),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontSize = 12.sp,
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                                 )

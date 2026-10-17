@@ -796,8 +796,7 @@ class HomeViewModel(
                         }.getOrNull().orEmpty()
                     } }.awaitAll().flatten()
                 }
-                val seen = LinkedHashSet<String>()
-                val dedup = merged.filter { seen.add("${it.sourceId}:${it.id}") }
+                val dedup = com.novelreader.core.util.VideoDedupe.byTitle(merged)
                     // v1.6.5.0：分区标题（分类名）写进 tags，详情页标签小栏用
                     //（「全部」兜底行不是真分类，跳过）
                     .map { if (title.isNotBlank()) it.copy(tags = it.tags + title) else it }
@@ -886,7 +885,7 @@ class HomeViewModel(
         val gridTag = current.effectiveCategory.takeIf { it.isNotBlank() }
         _videoHome.value = current.copy(
             items = sinkAdults(
-                merged.distinctBy { "${it.sourceId}:${it.id}" }
+                com.novelreader.core.util.VideoDedupe.byTitle(merged)
                     .map { if (gridTag != null) it.copy(tags = it.tags + gridTag) else it },
                 adultIds,
             ),
@@ -1758,7 +1757,7 @@ class HomeViewModel(
             flow.value = current.copy(
                 // 短剧条目打「短剧」标记：详情页 / 播放页据此默认竖屏播放 + 红果式选集
                 items = sinkAdults(
-                    merged.distinctBy { "${it.sourceId}:${it.id}" }
+                    com.novelreader.core.util.VideoDedupe.byTitle(merged)
                         .map {
                             // v1.6.5.0：分类名写进 tags，详情页标签小栏用
                             val tagged = it.copy(tags = it.tags + category)

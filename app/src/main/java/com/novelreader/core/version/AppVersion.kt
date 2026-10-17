@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.7.6.3"
+    const val CURRENT_VERSION = "1.7.6.4"
 
     /**
      * 更新日志。
@@ -25,6 +25,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.7.6.4",
+            date = "2026-10-17",
+            changes = listOf(
+                "**视频首页重复海报**：同一部片被多个采集源收录时，网格里会重复出现（实测「童年阴影」连出 4 张）。新增 `core/util/VideoDedupe`，按「归一化标题 + 年份」合并，同标题优先保留有封面的条目；分区横滑、影视网格、频道网格三处统一生效。",
+                "**亮度/音量浮层文字看不见**：播放器「更多」菜单（清晰度 / 亮度 / 音量）是浅色 DropdownMenu，但标签文字硬编码为白色 → 白底白字。改用 `MaterialTheme.colorScheme.onSurfaceVariant`，分割线改用 `outlineVariant`。",
+                "全量单测 **555 用例 / 0 失败**（新增 `VideoDedupeTest` 6 条）。",
+            ),
+        ),
         VersionEntry(
             version = "1.7.6.3",
             date = "2026-10-17",

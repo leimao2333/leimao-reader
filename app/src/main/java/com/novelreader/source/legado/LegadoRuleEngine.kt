@@ -206,15 +206,42 @@ object LegadoRuleEngine {
                 extractJsonPath(com.google.gson.JsonParser.parseString(content), path)
             }.getOrNull()
         }
+        val contentIsJson = content.trimStart().let { it.startsWith("{") || it.startsWith("[") }
+        // 尾部 JS 规则 + JSON 内容（如 `$.data.list@js:...`）：前段按 JSONPath 取值后交给 JS。
+        // HTML 内容的尾部 JS 由 extractFromElement 内的 extractJsSuffix 处理（前段是选择器），
+        // 这里只补 JSON 内容这一路 —— legado 的 splitSourceRule 对两种内容都成立。
+        if (contentIsJson) {
+            splitJsSuffixLegado(trimmed)?.let { (pre, js) ->
+                val preValue = if (pre.isBlank()) {
+                    content
+                } else {
+                    val path = pre.substringBefore("##").trim()
+                    val v = runCatching { extractJsonPathFromRoot(content, path) }.getOrNull()
+                    if (v != null && pre.contains("##")) {
+                        applyReplace(v, pre.substringAfter("##"))
+                    } else {
+                        v ?: ""
+                    }
+                }
+                return evalFieldJs(js, preValue, baseUrl)
+            }
+            // JSON 内容优先：裸键（`turl`）、`$.a.b` 路径都按 JSON 取（legado 的 isJSON 语义：
+            // 内容为 JSON 时 SourceRule 直接走 Mode.Json，不会再当 HTML 选择器）。
+            // 取不到再退回 HTML 解析，保证「同一规则两用」的源不受影响。
+            val path = trimmed.substringBefore("##").trim()
+            val jsonValue = runCatching { extractJsonPathFromRoot(content, path) }.getOrNull()
+            if (!jsonValue.isNullOrBlank()) {
+                return if (trimmed.contains("##")) {
+                    applyReplace(jsonValue, trimmed.substringAfter("##"))
+                } else {
+                    jsonValue
+                }
+            }
+        }
         // 裸 JSONPath（如 `$.data.list`、`$.a.b[0]`）：legado 中 JSON 源的规则常直接写 `$...`。
         // 内容确实是 JSON 时才按路径取；取不到再退回 HTML 解析（同一规则可能两用）。
         // 形如 `$.data.images@js:...` 的尾部 JS 规则，其前缀也依赖这里取到 result。
-        if (trimmed.startsWith("$") && !trimmed.contains('@')) {
-            val contentIsJson = content.trimStart().startsWith("{") || content.trimStart().startsWith("[")
-            if (contentIsJson) {
-                extractJsonPathFromRoot(content, trimmed)?.let { return it }
-            }
-        }
+        // （JSON 内容已在上面统一处理，这里只补 HTML 内容里嵌 `$` 规则的兼容。）
         val doc = Jsoup.parse(content)
         return extractFromElement(doc.body() ?: doc, rule, baseUrl)
     }
@@ -284,10 +311,12 @@ object LegadoRuleEngine {
         }
 
         // 尾部 JS 规则：`xxx@js:代码` 或 `xxx<js>代码</js>`（legado 语义：
-        // 前段取值注入 result 变量，JS 返回值为最终结果）
+        // 前段取值注入 result 变量，JS 返回值为最终结果）。
+        // 桥的当前内容 = 规则所在元素（legado 里字段规则就是 setContent(item) 后求值的，
+        // JS 内的 java.getString('text') / java.getElements('class.x') 都读这个元素）。
         extractJsSuffix(expr)?.let { (pre, js) ->
             val preValue = if (pre.isBlank()) root.text() else selectAndExtract(root, pre, baseUrl)
-            return evalFieldJs(js, preValue, baseUrl)
+            return evalFieldJs(js, preValue, baseUrl, root)
         }
 
         // @css: 直接选择器，支持 `@css:选择器@属性`（如 @css:img@src）
@@ -364,8 +393,19 @@ object LegadoRuleEngine {
     }
 
     /** 用 Rhino 求值字段 JS：注入 result（前段取值）、baseUrl 与 legado 风格 java.* */
-    private fun evalFieldJs(code: String, result: String?, baseUrl: String): String? =
-        evalJsRich(code, result, src = null, baseUrl = baseUrl).first
+    private fun evalFieldJs(
+        code: String,
+        result: String?,
+        baseUrl: String,
+        element: Element? = null,
+    ): String? = evalJsInternal(
+        code,
+        result,
+        // legado 语义：字段规则求值时 content = 规则所在元素，故 src 也是该元素
+        src = element?.outerHtml(),
+        baseUrl = baseUrl,
+        elementForBridge = element,
+    ).text
 
     /**
      * 求值正文类规则（支持尾部 `@js:` / `<js>`），返回 (取值, JS 设置的 headers JSON)。
@@ -387,6 +427,15 @@ object LegadoRuleEngine {
     /**
      * Rhino 求值：注入 `result` / `src` / `baseUrl` / `java.*`，
      * 返回 (字符串结果, JS 设置的 headers JSON)。任何异常都不得抛出，避免中断整条书源解析。
+     *
+     * 结果转换规则（对齐 legado `AnalyzeRule.evalJS` 的消费方式）：
+     * - `undefined` / `null` → null（legado 的 RhinoScriptEngine 把 Undefined 转 null，
+     *   早期实现用 `Context.toString(Undefined)` 得到字面量 "undefined"，
+     *   会让 `java.put("a",baseUrl)` 这类只写变量不返回值的 init 规则把整个响应体替换成 "undefined"）；
+     * - 数字 → 整数去掉小数点（legado：`Double && %1.0==0.0 → "%.0f"`）；
+     * - 对象 / 数组（Scriptable）→ `NativeJSON.stringify`（否则 `Context.toString` 得到
+     *   "[object Object]"，安稳小说的 init 返回 `{'turl':...}` 后就再也取不到 tocUrl）；
+     * - 其余 → toString。
      */
     private fun evalJsRich(
         code: String,
@@ -394,10 +443,80 @@ object LegadoRuleEngine {
         src: String?,
         baseUrl: String,
     ): Pair<String?, String?> {
+        val r = evalJsInternal(code, result, src, baseUrl)
+        return r.text to r.headers
+    }
+
+    /** JS 求值结果（原始值 + 字符串化值 + headers），字符串化必须在 Context 内完成 */
+    private class JsResult(val raw: Any?, val text: String?, val headers: String?)
+
+    /** Rhino 求值公共实现：raw / text / headers 一次算出 */
+    private fun evalJsInternal(
+        code: String,
+        result: Any?,
+        src: String?,
+        baseUrl: String,
+        contentForBridge: Any? = result,
+        elementForBridge: Element? = null,
+    ): JsResult {
+        return runCatching {
+            val ctx = org.mozilla.javascript.Context.enter()
+            try {
+                // legado 大量源规则使用 `let` 声明（如中文书城的目录 JS），
+                // Rhino 1.7.15 只有在语言版本 >= 1.8 时才认识 `let`（默认版本会报
+                // "missing ; before statement" 直接解析失败）。
+                ctx.optimizationLevel = -1
+                ctx.languageVersion = org.mozilla.javascript.Context.VERSION_1_8
+                val scope = ctx.initSafeStandardObjects()
+                scope.put("result", scope, result ?: "")
+                scope.put("baseUrl", scope, baseUrl)
+                if (src != null) scope.put("src", scope, src)
+                // legado 在 JS 作用域暴露 `book` 对象：海棠书屋的目录地址 JS 用
+                // `book.origin + "/mytool/getVerify/..."` 拼验证码接口。
+                // 这里给最小可用集（origin = 上下文 URL 的 scheme://host）。
+                val bookObj = ctx.newObject(scope)
+                bookObj.put("origin", scope, originOf(baseUrl))
+                bookObj.put("bookUrl", scope, baseUrl)
+                bookObj.put("name", scope, LegadoRuleEngine.variables["bookName"].orEmpty())
+                bookObj.put("author", scope, LegadoRuleEngine.variables["author"].orEmpty())
+                scope.put("book", scope, bookObj)
+                val bridge = if (elementForBridge != null) {
+                    LegadoJavaBridge(elementForBridge, src, baseUrl)
+                } else {
+                    LegadoJavaBridge(contentForBridge as? String, src as? String, baseUrl)
+                }
+                scope.put(
+                    "java",
+                    scope,
+                    org.mozilla.javascript.Context.javaToJS(bridge, scope),
+                )
+                val v = ctx.evaluateString(scope, code, "<rule-js>", 1, null)
+                JsResult(v, jsValueToString(v, ctx, scope), readJsHeaders(scope))
+            } finally {
+                org.mozilla.javascript.Context.exit()
+            }
+        }.getOrNull() ?: JsResult(null, null, null)
+    }
+
+    /**
+     * 求值一段 JS 并把结果归一为「列表项」集合（供列表规则使用）。
+     *
+     * JS 段的常见返回形态与处理：
+     * - 元素列表（`List<Element>` / Rhino NativeArray 包元素）→ 原样返回，
+     *   调用方按元素提取字段（海马读书 / 废纸文学的目录重排 JS 即此形态）；
+     * - 对象数组（中文书城 / 轻菠萝包 / 繁星四月的目录 JS）→ 整体 JSON 化后逐项当 JSON 节点；
+     * - JSON 文本（`[...]` / `{...}`）→ 解析成节点；
+     * - 其它（含普通字符串）→ 单元素列表，由调用方决定如何提取。
+     *
+     * @param result 绑定到 JS `result` 变量的值（选择器结果 / JSON 文本 / 页面文本）
+     * @param src 绑定到 JS `src` 的原始页面文本（同时作为 `java.*` 桥的当前内容）
+     */
+    fun evalJsListResult(code: String, result: Any?, src: String?, baseUrl: String): List<Any>? {
         return runCatching {
             val ctx = org.mozilla.javascript.Context.enter()
             try {
                 ctx.optimizationLevel = -1
+                ctx.languageVersion = org.mozilla.javascript.Context.VERSION_1_8
                 val scope = ctx.initSafeStandardObjects()
                 scope.put("result", scope, result ?: "")
                 scope.put("baseUrl", scope, baseUrl)
@@ -405,15 +524,137 @@ object LegadoRuleEngine {
                 scope.put(
                     "java",
                     scope,
-                    org.mozilla.javascript.Context.javaToJS(LegadoJavaBridge(result, src, baseUrl), scope),
+                    org.mozilla.javascript.Context.javaToJS(
+                        LegadoJavaBridge(src, src, baseUrl),
+                        scope,
+                    ),
                 )
                 val v = ctx.evaluateString(scope, code, "<rule-js>", 1, null)
-                val value = org.mozilla.javascript.Context.toString(v).takeIf { it.isNotBlank() }
-                value to readJsHeaders(scope)
+                jsValueToItems(v, ctx, scope)
             } finally {
                 org.mozilla.javascript.Context.exit()
             }
-        }.getOrNull() ?: (null to null)
+        }.getOrNull()
+    }
+
+    /** 剥离 Rhino 的 Java 对象包装（NativeJavaObject 等） */
+    private fun unwrapJs(v: Any?): Any? {
+        var cur = v
+        while (cur is org.mozilla.javascript.Wrapper) {
+            cur = cur.unwrap()
+        }
+        return cur
+    }
+
+    /**
+     * 把 JS 求值结果转成列表项集合。
+     *
+     * 必须在 Rhino Context 内调用（对象数组的 JSON 化依赖当前 Context / scope）。
+     */
+    private fun jsValueToItems(
+        v: Any?,
+        cx: org.mozilla.javascript.Context,
+        scope: org.mozilla.javascript.Scriptable,
+    ): List<Any>? {
+        val raw = unwrapJs(v) ?: return null
+        return when (raw) {
+            is List<*> -> {
+                val items: List<Any> = raw.mapNotNull { unwrapJs(it) }
+                // 含元素 → 元素列表（字段规则按 HTML 元素提取）
+                if (items.any { it is Element }) {
+                    items
+                } else if (items.any { it is com.google.gson.JsonElement }) {
+                    // 已经是 JSON 节点（JSON 路径取出的节点经 JS 原样返回，
+                    // 如安稳小说 `$.data.chapterList[0].volumeList<js>...result</js>`）
+                    // → 直接当节点，不能再整体 JSON 化（NativeJavaObject 会被序列化成bean属性）
+                    items
+                } else {
+                    // 纯 JS 值数组 → 整体 JSON 化，逐项当 JSON 节点
+                    val json = runCatching {
+                        org.mozilla.javascript.NativeJSON.stringify(cx, scope, v, null, null)?.toString()
+                    }.getOrNull()
+                    if (!json.isNullOrBlank()) {
+                        val jsonItems: List<Any> = runCatching {
+                            val el = com.google.gson.JsonParser.parseString(json)
+                            if (el.isJsonArray) el.asJsonArray.toList() else listOf<Any>(el)
+                        }.getOrElse { items }
+                        jsonItems
+                    } else {
+                        items
+                    }
+                }
+            }
+
+            is String -> {
+                val t = raw.trim()
+                if (t.startsWith("[") || t.startsWith("{")) {
+                    runCatching {
+                        val el = com.google.gson.JsonParser.parseString(t)
+                        if (el.isJsonArray) el.asJsonArray.toList() else listOf(el)
+                    }.getOrElse { listOf(raw) }
+                } else {
+                    listOf(raw)
+                }
+            }
+
+            is Map<*, *> -> runCatching {
+                listOf(com.google.gson.JsonParser.parseString(com.google.gson.Gson().toJson(raw)))
+            }.getOrElse { listOf(raw) }
+
+            // JS 数组 / 对象（NativeArray / NativeObject，如中文万维目录 JS 返回的
+            // `[{name,url},...]`）：JSON 化后逐项当 JSON 节点。
+            is org.mozilla.javascript.Scriptable -> {
+                if (raw is org.mozilla.javascript.NativeArray) {
+                    // 数组里包 Java 对象（Element 等）时直接剥出，避免 JSON 化丢类型
+                    val unwrapped = (0 until raw.length.toInt()).mapNotNull { i -> unwrapJs(raw.get(i, raw)) }
+                    if (unwrapped.any { it is Element }) unwrapped else jsScriptableToItems(raw, cx, scope)
+                } else {
+                    jsScriptableToItems(raw, cx, scope)
+                }
+            }
+
+            else -> listOf(raw)
+        }
+    }
+
+    /** JS 数组/对象 → 列表项（JSON 化后逐项当节点；失败时原样包一项） */
+    private fun jsScriptableToItems(
+        raw: org.mozilla.javascript.Scriptable,
+        cx: org.mozilla.javascript.Context,
+        scope: org.mozilla.javascript.Scriptable,
+    ): List<Any> = runCatching {
+        val json = org.mozilla.javascript.NativeJSON.stringify(cx, scope, raw, null, null)?.toString()
+        if (!json.isNullOrBlank()) {
+            val el = com.google.gson.JsonParser.parseString(json)
+            if (el.isJsonArray) el.asJsonArray.toList() else listOf<Any>(el)
+        } else {
+            listOf(raw)
+        }
+    }.getOrElse { listOf(raw) }
+
+    /** JS 求值结果 → 字符串（供字段 / 正文规则使用）；必须在 Rhino Context 内调用 */
+    private fun jsValueToString(
+        v: Any?,
+        cx: org.mozilla.javascript.Context,
+        scope: org.mozilla.javascript.Scriptable,
+    ): String? {
+        val raw = unwrapJs(v) ?: return null
+        return when (raw) {
+            is String -> raw
+            is Double -> if (raw % 1.0 == 0.0) String.format("%.0f", raw) else raw.toString()
+            is Float -> if (raw % 1.0f == 0.0f) String.format("%.0f", raw) else raw.toString()
+            is Int, is Long, is Boolean, is CharSequence -> raw.toString()
+            is org.mozilla.javascript.Scriptable -> runCatching {
+                org.mozilla.javascript.NativeJSON.stringify(cx, scope, raw, null, null)
+                    ?.toString()?.takeIf { it.isNotBlank() && it != "null" }
+            }.getOrNull()
+
+            is Map<*, *>, is Collection<*> -> runCatching {
+                com.google.gson.Gson().toJson(raw)
+            }.getOrElse { raw.toString() }
+
+            else -> raw.toString()
+        }
     }
 
     /** 读取 JS 作用域中 `headers` / `header` 变量（JSON 对象）为 JSON 字符串 */
@@ -451,6 +692,23 @@ object LegadoRuleEngine {
     fun evalJsWithContent(code: String, content: String, baseUrl: String): String? =
         evalJsRich(code, content, content, baseUrl).first
 
+    /**
+     * 渲染 URL / 请求配置模板里的 `{{JS 表达式}}` 占位（legado 语义）。
+     *
+     * `{{baseUrl}}` 之类简单占位由调用方精确替换；这里处理其余表达式，如
+     * 爱下电子书 POST body 里的 `{{baseUrl.match(/\/(\d+)/)[1]}}`（从详情地址取 bid）。
+     * 以 baseUrl 为作用域求值；失败或为空的占位保留原样，保证不比修复前更差。
+     */
+    fun evalTemplateJs(template: String, contextUrl: String): String {
+        val placeholder = Regex("\\{\\{([\\s\\S]*?)\\}\\}")
+        return placeholder.replace(template) { m ->
+            val expr = m.groupValues[1].trim()
+            if (expr.isEmpty()) return@replace m.value
+            runCatching { evalJsWithContent(expr, "", contextUrl) }
+                .getOrNull()?.takeIf { it.isNotBlank() } ?: m.value
+        }
+    }
+
     /** 以 JSON 节点为数据源求值 JS（JSON 字段规则里的 `@js:` / `<js>`） */
     fun evalJsonJs(code: String, node: com.google.gson.JsonElement?, baseUrl: String): String? {
         val json = node?.toString()
@@ -480,6 +738,308 @@ object LegadoRuleEngine {
     fun selectElements(content: String, rule: String): List<Element> {
         val doc = Jsoup.parse(content)
         return selectListElements(doc, rule).toList()
+    }
+
+    /** 在指定元素内按规则选取元素列表（`java.setContent(el)` 后的 `java.getElements(rule)`） */
+    fun selectElementsIn(element: Element, rule: String): List<Element> =
+        selectListElementsSingle(element, rule).toList()
+
+    /**
+     * 按 legado 的 `JS_PATTERN`（`<js>([\w\W]*?)</js>|@js:([\w\W]*)`）语义拆出**尾部 JS 段。
+     *
+     * 与 [extractJsSuffix]（lastIndexOf）的差别：`@js:` 取**第一次出现**且贪婪到结尾 ——
+     * 这是 legado 的真实语义（`splitSourceRule` 用 `matcher.find()` 取首个匹配）。
+     * 返回 (前置规则, JS 代码)；没有 JS 段时返回 null。
+     */
+    fun splitJsSuffixLegado(expr: String): Pair<String, String>? {
+        val block = Regex("<js>([\\s\\S]*?)</js>", RegexOption.IGNORE_CASE).find(expr)
+        if (block != null) {
+            val pre = expr.removeRange(block.range).trim()
+            return pre to block.groupValues[1]
+        }
+        val idx = expr.indexOf("@js:", ignoreCase = true)
+        if (idx >= 0) {
+            return expr.substring(0, idx).trim() to expr.substring(idx + 4)
+        }
+        return null
+    }
+
+    /** 供 JS 桥接使用：对单个元素按规则提取字段值（含 ## 正则、@css:、@ 链、尾部 JS） */
+    fun extractFieldFromElement(element: Element, rule: String, baseUrl: String = ""): String? =
+        runCatching { extractFromElement(element, rule, baseUrl) }.getOrNull()
+
+    /**
+     * 供 JS 桥接使用：按 legado `getStringList` 语义取字符串列表。
+     *
+     * 支持 `##正则[##替换]`（对每项生效）、`&&` 拼接、`||` 备选、`@css:` / `@` 链 /
+     * XPath（Jsoup 不支持 `/text()` 后缀，自动剥落后取元素文本）。
+     */
+    fun extractStringList(content: String, rule: String, baseUrl: String = ""): List<String> {
+        val doc = Jsoup.parse(content)
+        return extractStringListFromElement(doc.body() ?: doc, rule, baseUrl)
+    }
+
+    /** 在指定元素内按规则取字符串列表（[extractStringList] 的元素版） */
+    fun extractStringListFromElement(root: Element, rule: String, baseUrl: String = ""): List<String> {
+        if (rule.isBlank()) return emptyList()
+        // `##正则[##替换]` 只作用于取值，先剥离
+        val hashIndex = rule.indexOf("##")
+        val expr = (if (hashIndex >= 0) rule.substring(0, hashIndex) else rule).trim()
+        val replaceRule = if (hashIndex >= 0) rule.substring(hashIndex + 2) else null
+        if (expr.isBlank()) return emptyList()
+
+        val out = mutableListOf<String>()
+        // `||` 备选：取第一个非空（legado 语义）
+        for (alt in expr.split("||").map { it.trim() }.filter { it.isNotEmpty() }) {
+            out.clear()
+            collectStringList(root, alt, baseUrl, out)
+            if (out.isNotEmpty()) break
+        }
+        // `&&` 拼接：各段结果依次拼接（legado 语义）
+        if (out.isEmpty() && expr.contains("&&")) {
+            val parts = expr.split("&&").map { it.trim() }.filter { it.isNotEmpty() }
+            if (parts.size > 1) {
+                val sb = StringBuilder()
+                for (p in parts) {
+                    val tmp = mutableListOf<String>()
+                    collectStringList(root, p, baseUrl, tmp)
+                    if (tmp.isNotEmpty()) sb.append(tmp.first())
+                }
+                if (sb.isNotEmpty()) out.add(sb.toString())
+            }
+        }
+        // 无替换规则时原样返回（replaceRule 为空表示规则里没有 `##` 段）
+        return if (replaceRule == null) out else out.map { applyReplace(it, replaceRule) ?: it }
+    }
+
+    /** 按单段规则收集字符串列表（属性去重、空值跳过，与 legado `getResultLast` 一致） */
+    private fun collectStringList(root: Element, rule: String, baseUrl: String, out: MutableList<String>) {
+        // XPath：Jsoup 的 selectXpath 不支持 `/text()` 结尾，剥落后按文本取
+        var r = rule
+        if (r.startsWith("//") || r.startsWith("(/")) {
+            if (r.endsWith("/text()")) r = r.removeSuffix("/text()")
+            val els = runCatching { root.selectXpath(r) }.getOrNull() ?: return
+            els.forEach { el ->
+                val t = el.text().trim()
+                if (t.isNotEmpty() && t !in out) out.add(t)
+            }
+            return
+        }
+        val segs = r.split('@').map { it.trim() }.filter { it.isNotEmpty() }
+        if (segs.isEmpty()) {
+            val t = root.text().trim()
+            if (t.isNotEmpty()) out.add(t)
+            return
+        }
+        var cur: List<Element> = listOf(root)
+        for (i in 0 until segs.size - 1) {
+            cur = walkSteps(cur, segs[i])
+            if (cur.isEmpty()) return
+        }
+        val last = segs.last()
+        if (isAttrKey(last)) {
+            cur.forEach { el ->
+                val v = extractTextOrAttr(el, last, baseUrl).trim()
+                if (v.isNotBlank() && v !in out) out.add(v)
+            }
+        } else {
+            val els = walkSteps(cur, last)
+            els.forEach { el ->
+                val t = el.text().trim()
+                if (t.isNotEmpty() && t !in out) out.add(t)
+            }
+        }
+    }
+
+    /**
+     * 统一的「原始列表项」提取（legado `AnalyzeRule.getElements` 语义）。
+     *
+     * 按顺序处理规则中的各段（legado `splitSourceRule` 把规则按 JS_PATTERN 切段）：
+     * - **选择器段**（HTML）：选出元素列表，成为下一段的 `result`；
+     * - **JSON 段**（`@json:` / `$...`，内容为 JSON 时）：按路径取节点列表（`[*]` 中段投影会拍平）；
+     * - **JS 段**（`<js>...</js>` / `@js:...`）：以当前列表为 `result` 求值，结果再归一为列表项；
+     * - **正则段**（`:` 前缀，legado allInOne 模式）：按正则取匹配，每项为分组列表。
+     *
+     * 返回的列表项可能是 [Element]（按 HTML 字段规则提取）、
+     * [com.google.gson.JsonElement]（按 JSON 字段规则提取）、`List<String>`（正则分组，
+     * 字段规则里的 `$1` `$2` 引用分组）或普通字符串。
+     *
+     * @param listRule 列表规则（调用方负责剥离 `+` / `-` 前后缀）
+     */
+    fun extractListRaw(content: String, listRule: String, baseUrl: String = ""): List<Any>? {
+        var rule = listRule.trim()
+        if (rule.isBlank()) return null
+        // `@put:{k:v}` 写入 / `@get:{k}` 回填
+        if (rule.contains("@get:") || rule.contains("@put:")) {
+            rule = resolveVariableRules(rule) { v -> extractString(content, v, baseUrl) }
+            if (rule.isBlank()) return null
+        }
+        // 防御性剥离 `+`（倒置 `-` 由调用方处理）
+        if (rule.startsWith("+")) rule = rule.substring(1).trim()
+
+        val contentIsJson = content.trimStart().let { it.startsWith("{") || it.startsWith("[") }
+
+        // 前置 `<js>` 块：先跑 JS 得到新内容，再对结果套用剩余规则
+        splitLeadingJs(rule)?.let { (js, rest) ->
+            val decoded = evalJsWithContent(js, content, baseUrl)
+            if (!decoded.isNullOrBlank()) {
+                return if (rest.isBlank()) jsValueStringToItems(decoded) else extractListRaw(decoded, rest, baseUrl)
+            }
+        }
+
+        // legado allInOne 正则模式：`:(?s)(\d+)...`
+        if (rule.startsWith(":")) {
+            return extractRegexList(content, rule.substring(1))
+        }
+
+        // 按 JS_PATTERN 切段，逐段接力（legado splitSourceRule + getElements）
+        val segments = splitRuleSegments(rule)
+        if (segments.isEmpty()) return null
+        var current: List<Any>? = null
+        for (seg in segments) {
+            current = when (seg.mode) {
+                SegMode.JS -> {
+                    val jsResult = evalJsListResult(seg.text, current ?: content, content, baseUrl)
+                    jsResult ?: return null
+                }
+
+                SegMode.JSON -> {
+                    val root = runCatching { com.google.gson.JsonParser.parseString(content) }.getOrNull()
+                        ?: return null
+                    selectJsonList(root, seg.text)
+                }
+
+                else -> {
+                    // HTML 选择器（内容其实是 JSON 时也按 legado 语义走 JSON 分支）
+                    if (contentIsJson && (seg.text.startsWith("$") || seg.text.startsWith("@json:"))) {
+                        val root = runCatching { com.google.gson.JsonParser.parseString(content) }.getOrNull()
+                            ?: return null
+                        selectJsonList(root, seg.text)
+                    } else {
+                        selectListElements(Jsoup.parse(content), seg.text).toList()
+                    }
+                }
+            }
+            if (current.isNullOrEmpty()) return null
+        }
+        return current
+    }
+
+    /** JS 段返回的字符串 → 列表项（JSON 数组解析成节点，普通字符串原样） */
+    private fun jsValueStringToItems(text: String): List<Any> {
+        val t = text.trim()
+        if (t.startsWith("[") || t.startsWith("{")) {
+            return runCatching {
+                val el = com.google.gson.JsonParser.parseString(t)
+                if (el.isJsonArray) el.asJsonArray.toList() else listOf(el)
+            }.getOrElse { listOf(text) }
+        }
+        return listOf(text)
+    }
+
+    private enum class SegMode { SELECTOR, JSON, JS }
+
+    private class RuleSegment(val mode: SegMode, val text: String)
+
+    /**
+     * 按 legado `splitSourceRule` 语义把规则切段：JS_PATTERN（`<js>...</js>` 非贪婪 /
+     * `@js:` 贪婪到结尾）切出 JS 段，其余为选择器 / JSON 段。
+     */
+    private fun splitRuleSegments(rule: String): List<RuleSegment> {
+        val out = mutableListOf<RuleSegment>()
+        var start = 0
+        val matcher = Regex("<js>([\\s\\S]*?)</js>|@js:([\\w\\W]*)", RegexOption.IGNORE_CASE)
+        for (m in matcher.findAll(rule)) {
+            if (m.range.first > start) {
+                val pre = rule.substring(start, m.range.first).trim()
+                if (pre.isNotEmpty()) out.add(RuleSegment(classifySegment(pre), pre))
+            }
+            val js = m.groupValues[1].ifEmpty { m.groupValues[2] }
+            out.add(RuleSegment(SegMode.JS, js))
+            start = m.range.last + 1
+        }
+        if (rule.length > start) {
+            val rest = rule.substring(start).trim()
+            if (rest.isNotEmpty()) out.add(RuleSegment(classifySegment(rest), rest))
+        }
+        return out
+    }
+
+    private fun classifySegment(text: String): SegMode = when {
+        text.startsWith("@json:", ignoreCase = true) -> SegMode.JSON
+        text.startsWith("$") -> SegMode.JSON
+        else -> SegMode.SELECTOR
+    }
+
+    /**
+     * legado allInOne 正则列表（`AnalyzeByRegex.getElements`）：
+     * 每段正则的所有匹配整体拼接后交给下一段；最后一段的每个匹配成为一项，
+     * 项内容为「整匹配 + 各分组」的字符串列表（字段规则用 `$1` `$2` 引用分组）。
+     */
+    private fun extractRegexList(content: String, rule: String): List<Any>? {
+        val parts = rule.split("&&").map { it.trim() }.filter { it.isNotEmpty() }
+        if (parts.isEmpty()) return null
+        fun recurse(text: String, index: Int): List<Any>? {
+            val matcher = runCatching { Regex(parts[index]).findAll(text) }.getOrNull() ?: return null
+            val matches = matcher.toList()
+            if (matches.isEmpty()) return null
+            if (index + 1 == parts.size) {
+                return matches.map { m ->
+                    val groups = mutableListOf<String>()
+                    for (g in 0..m.groupValues.size - 1) groups.add(m.groupValues.getOrNull(g).orEmpty())
+                    groups
+                }
+            }
+            val joined = matches.joinToString("") { it.value }
+            return recurse(joined, index + 1)
+        }
+        return recurse(content, 0)
+    }
+
+    /**
+     * 按 JSONPath 取「列表节点」（jayway 语义：中段 / 尾段 `[*]` 投影都会**拍平**）。
+     *
+     * 安轻小说的目录规则 `$.data.volumeList[*].chapterList[*]` 就依赖拍平 ——
+     * 两层卷各自带 chapterList，最终要的是所有章节的平铺列表。
+     */
+    fun selectJsonList(root: com.google.gson.JsonElement, path: String): List<com.google.gson.JsonElement> {
+        var cleaned = path.trim()
+        cleaned = Regex("^@json:", RegexOption.IGNORE_CASE).replace(cleaned, "").trim()
+        cleaned = cleaned.removePrefix("$").removePrefix(".").trim()
+        if (cleaned.isEmpty()) return listOf(root)
+        val tokens = cleaned.split(Regex("[.\\[\\]]")).filter { it.isNotBlank() }
+        return walkJsonPath(root, tokens, 0)
+    }
+
+    private fun walkJsonPath(
+        node: com.google.gson.JsonElement,
+        tokens: List<String>,
+        i: Int,
+    ): List<com.google.gson.JsonElement> {
+        if (i >= tokens.size) return listOf(node)
+        val t = tokens[i]
+        if (t == "*") {
+            val out = mutableListOf<com.google.gson.JsonElement>()
+            when (node) {
+                is com.google.gson.JsonArray -> node.forEach { out.addAll(walkJsonPath(it, tokens, i + 1)) }
+                is com.google.gson.JsonObject -> node.entrySet()
+                    .forEach { out.addAll(walkJsonPath(it.value, tokens, i + 1)) }
+
+                else -> Unit
+            }
+            return out
+        }
+        val next = when (node) {
+            is com.google.gson.JsonObject -> node.get(t) ?: return emptyList()
+            is com.google.gson.JsonArray -> {
+                val idx = t.toIntOrNull() ?: return emptyList()
+                if (idx < 0 || idx >= node.size()) return emptyList()
+                node.get(idx)
+            }
+
+            else -> return emptyList()
+        }
+        return walkJsonPath(next, tokens, i + 1)
     }
 
     private fun isAttrKey(s: String): Boolean {
@@ -701,9 +1261,18 @@ object LegadoRuleEngine {
             } else listRule
         if (resolvedListRule.isBlank()) return emptyList()
 
-        // legado 语义：列表规则最前面的 `-` 表示「结果倒置」（很多站点目录是倒序的）。
+        // legado 语义（BookChapterList）：先判 `-` 前缀 = 结果倒置，再剥 `+` 前缀（仅剥离）。
         // 注意与负索引（-1 取最后一个）区分：`-` 后紧跟数字时不视为倒置标记。
-        val (rule, reverse) = stripListReverse(resolvedListRule)
+        var listRuleResolved = resolvedListRule
+        var reverse = false
+        if (listRuleResolved.length > 1 && listRuleResolved.startsWith("-") && !listRuleResolved[1].isDigit()) {
+            reverse = true
+            listRuleResolved = listRuleResolved.substring(1).trim()
+        }
+        if (listRuleResolved.startsWith("+")) {
+            listRuleResolved = listRuleResolved.substring(1).trim()
+        }
+        val rule = listRuleResolved
 
         // 处理 @json: 列表（大小写不敏感：@json: / @JSon: 都有源在用）
         if (rule.startsWith("@json:", ignoreCase = true)) {
@@ -740,22 +1309,6 @@ object LegadoRuleEngine {
         val ordered = if (reverse) pairs.reversed() else pairs
         varsSink?.addAll(ordered.map { it.second })
         return ordered.map { it.first }
-    }
-
-    /**
-     * 解析列表规则的前置 `-` 倒置标记。
-     *
-     * legado 规则说明：「获取列表的最前面加上负号 `-` 可以使列表倒置」。
-     * 仅当 `-` 之后不是数字时才视为倒置（否则是 `-1` 这类负索引）。
-     *
-     * @return (去掉标记后的规则, 是否需要倒置)
-     */
-    private fun stripListReverse(rule: String): Pair<String, Boolean> {
-        val t = rule.trim()
-        if (t.length > 1 && t.startsWith("-") && !t[1].isDigit()) {
-            return t.substring(1).trim() to true
-        }
-        return t to false
     }
 
     /** 在一段规则上选取列表元素（支持 || 备选） */
@@ -801,11 +1354,18 @@ object LegadoRuleEngine {
     }
 
     /** 选取单个列表规则的元素：`容器1@容器2@...@子选择器`（多段 @ 逐级向下） */
-    private fun selectListElementsSingle(doc: Document, rule: String): Elements {
+    private fun selectListElementsSingle(doc: Document, rule: String): Elements =
+        selectListElementsSingle(doc.body() ?: doc, rule)
+
+    /**
+     * 选取单个列表规则的元素（[root] 为起点，可以是文档体也可以是某个元素 ——
+     * `java.getElements(rule)` 在 `java.setContent(element)` 之后就要在元素内选取）。
+     */
+    private fun selectListElementsSingle(root: Element, rule: String): Elements {
         val excluded = parseExcludedIndices(rule)
 
         if (rule.startsWith("@css:")) {
-            val els = runCatching { doc.select(rule.substringAfter("@css:").trim()) }.getOrDefault(Elements())
+            val els = runCatching { root.select(rule.substringAfter("@css:").trim()) }.getOrDefault(Elements())
             return filterExcluded(els, excluded)
         }
 
@@ -817,7 +1377,7 @@ object LegadoRuleEngine {
         val itemPart = if (segs.size > 1) segs.last() else ""
         val containerSegs = if (segs.size > 1) segs.dropLast(1) else segs
 
-        var containers = walkSteps(listOf(doc.body() ?: doc), containerSegs.first())
+        var containers = walkSteps(listOf(root), containerSegs.first())
         for (i in 1 until containerSegs.size) {
             containers = walkSteps(containers, containerSegs[i])
             if (containers.isEmpty()) break
@@ -905,6 +1465,18 @@ object LegadoRuleEngine {
             normalized = resolveVariableRules(normalized) { v -> extractFromJsonNode(node, v) }
             if (normalized.isBlank()) return null
         }
+        // 尾部 JS（`$.x@js:...` / `$.x<js>...</js>`）：前段按路径取值后交给 JS（legado splitSourceRule 语义）。
+        // 桥的当前内容 = 整个节点（`java.getString('$.x')` 读的是节点），result = 前段取值。
+        splitJsSuffixLegado(normalized.trim())?.let { (pre, js) ->
+            val path = pre.substringBefore("##").trim().removePrefix("@json:")
+            val preValue = if (path.isBlank()) {
+                node.toString()
+            } else {
+                val v = runCatching { extractJsonPath(node, path) }.getOrNull()
+                if (v != null && pre.contains("##")) applyReplace(v, pre.substringAfter("##")) else v
+            }
+            return evalJsonJsCarry(js, node, "", preValue)
+        }
         val path = if (normalized.startsWith("@json:")) normalized.substringAfter("@json:") else normalized
         return extractJsonPath(node, path)
     }
@@ -922,29 +1494,13 @@ object LegadoRuleEngine {
 
     /** 按 JSONPath 子集选择节点 */
     private fun selectJsonPath(node: com.google.gson.JsonElement, path: String): com.google.gson.JsonElement? {
-        var current: com.google.gson.JsonElement = node
-        val cleaned = path.removePrefix("$").removePrefix(".").trim()
-        if (cleaned.isEmpty()) return current
-
-        val tokens = cleaned.split(Regex("[.\\[\\]]")).filter { it.isNotBlank() }
-        for (token in tokens) {
-            // `[*]` / `.*`：数组全部元素，原样返回数组，由调用方决定拼接方式
-            if (token == "*") {
-                if (current.isJsonArray) return current
-                continue
-            }
-            current = when {
-                current.isJsonObject -> current.asJsonObject.get(token) ?: return null
-                current.isJsonArray -> {
-                    val idx = token.toIntOrNull() ?: return null
-                    val arr = current.asJsonArray
-                    if (idx < 0 || idx >= arr.size()) return null
-                    arr.get(idx)
-                }
-                else -> return null
-            }
+        val values = runCatching { selectJsonList(node, path) }.getOrNull() ?: return null
+        return when (values.size) {
+            0 -> null
+            1 -> values[0]
+            // 多值（`[*]` 投影）→ 收成数组，由调用方决定拼接方式
+            else -> com.google.gson.JsonArray().also { arr -> values.forEach { arr.add(it) } }
         }
-        return current
     }
 
     private fun selectJsonArray(root: com.google.gson.JsonElement, path: String): List<com.google.gson.JsonElement> {
@@ -960,12 +1516,29 @@ object LegadoRuleEngine {
 
     /** 相对 URL 转绝对 URL */
     private fun absUrl(baseUrl: String, url: String): String {
-        if (url.startsWith("http://") || url.startsWith("https://")) return sanitizeUrl(url)
-        if (baseUrl.isBlank()) return sanitizeUrl(url)
+        // 先拆多匹配拼接串（见 sanitizeUrl 注释）：相对地址也要按首行解析，
+        // 否则 `new URL(base, "/a\n/b")` 会把整串当路径解析出垃圾地址。
+        val first = firstUrlLine(url) ?: return ""
+        if (first.startsWith("http://") || first.startsWith("https://")) return sanitizeUrl(first)
+        if (baseUrl.isBlank()) return sanitizeUrl(first)
         val resolved = runCatching {
-            java.net.URL(java.net.URL(baseUrl), url).toString()
-        }.getOrElse { url }
+            java.net.URL(java.net.URL(baseUrl), first).toString()
+        }.getOrElse { first }
         return sanitizeUrl(resolved)
+    }
+
+    /**
+     * 取 URL 串的首个非空行。
+     *
+     * `tag.a@href` 这类不带位置的规则命中多个元素时，legado 语义是「全部获取、
+     * 换行拼接」（漫画正文取多图强依赖此行为）。但 URL 字段（bookUrl / tocUrl /
+     * chapterUrl / 图片地址）拿到拼接串就会把后续地址一起编码进请求
+     * （实测 `...html%0Ahttp://...` → 服务端返回 1 字节错误页，链路静默失败）。
+     * URL 不可能合法包含换行 —— 取首个非空行，与源里写 `.0` 位置的取法等效。
+     */
+    private fun firstUrlLine(url: String): String? {
+        if (!url.contains('\n') && !url.contains('\r')) return url.trim().ifEmpty { null }
+        return url.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }
     }
 
     /**
@@ -973,7 +1546,7 @@ object LegadoRuleEngine {
      * 避免 `Illegal character in URL` 之类的异常导致整条链路失败。
      */
     private fun sanitizeUrl(url: String): String {
-        val u = url.trim()
+        val u = firstUrlLine(url) ?: ""
         if (u.isEmpty()) return u
         // 已经合法则原样返回
         runCatching { java.net.URI(u) }.onSuccess { return u }
@@ -997,39 +1570,104 @@ object LegadoRuleEngine {
         if (url.isNullOrBlank()) return null
         return absUrl(baseUrl, url)
     }
+
+    /** 取 URL 的 origin（scheme://host[:port]）；解析失败时原样返回 */
+    internal fun originOf(url: String): String = runCatching {
+        val u = java.net.URI(url)
+        if (u.scheme.isNullOrBlank()) url else "${u.scheme}://${u.authority}"
+    }.getOrElse { url }
 }
 
 /**
  * legado 书源 `@js:` 规则中的 `java.*` 兼容桥。
  *
- * 开源阅读把一批 Java 能力暴露给 JS 规则，漫画源尤其依赖它（`java.getString`、
- * `java.ajax`、`java.t2s` 等）。这里实现最常用的一批；未实现的成员调用时抛错，
- * 由上层 `runCatching` 兜住（与「不支持」等效，不会中断整条书源解析）。
+ * 开源阅读把一批 Java 能力暴露给 JS 规则，漫画 / 小说源尤其依赖它（`java.getString`、
+ * `java.getStringList`、`java.getElements`、`java.setContent`、`java.get/put` 等）。
+ * 这里实现最常用的一批；未实现的成员调用时抛错，由上层 `runCatching` 兜住
+ * （与「不支持」等效，不会中断整条书源解析）。
  *
- * 说明：本类实例通过 `Context.javaToJS` 注入，方法经反射调用。
+ * 与 legado `AnalyzeRule`（JS 里 `java` 就是它本身）的关键对齐点：
+ * - `java.getString(rule)` / `java.getElements(rule)` 读的是**当前内容**，
+ *   `java.setContent(x)` 可把当前内容切成某个元素 / 文本（轻菠萝包的目录 JS 全靠它）；
+ * - `java.put(k, v)` 写入**书源变量表**（跨 搜索→详情→目录→正文 存活），
+ *   并返回 v（legado 的 put 返回 value，JS 里常写 `java.put('bid',result);'...'+result`）；
+ * - `java.get(k)` 读变量表。
+ *
+ * 说明：本类实例通过 `Context.javaToJS` 注入，方法经反射调用 —— 桥类与 public 方法必须 public。
  */
 class LegadoJavaBridge(
-    private val currentHtml: String?,
+    private var currentHtml: String?,
     private val src: String?,
     private val baseUrl: String,
 ) {
-    /** 会话变量（java.get / java.put 共用；同一 JS 调用内有效） */
-    private val vars = mutableMapOf<String, Any?>()
+    /** `java.setContent(element)` 时保留元素引用，`getString`/`getElements` 直接在元素上求值 */
+    private var currentElement: Element? = null
+
+    /** 字段 JS 专用：桥的当前内容就是规则所在的元素（legado `setContent(item)` 语义） */
+    constructor(element: Element, src: String?, baseUrl: String) : this(
+        element.outerHtml(),
+        src,
+        baseUrl,
+    ) {
+        currentElement = element
+    }
 
     fun log(msg: Any?) {
         // 源自己打出的日志内容不可控（常直接带站点名 / 接口地址），只记录长度
         android.util.Log.d("LegadoJs", "(log ${msg?.toString()?.length ?: 0} chars)")
     }
 
-    fun get(key: String): Any? = vars[key]
+    /**
+     * 切换当前内容（legado `AnalyzeRule.setContent`）。
+     *
+     * 传元素时同时保留元素引用与 outerHtml：`java.getString('text')` 读元素文本、
+     * `java.getElements('class.x')` 在元素内选取；传文本 / null 时退回纯文本内容。
+     */
+    fun setContent(content: Any?) {
+        val raw = unwrapJsValue(content)
+        when (raw) {
+            is Element -> {
+                currentElement = raw
+                currentHtml = raw.outerHtml()
+            }
 
-    fun put(key: String, value: Any?) {
-        vars[key] = value
+            null -> {
+                currentElement = null
+                currentHtml = null
+            }
+
+            else -> {
+                currentElement = null
+                currentHtml = raw.toString()
+            }
+        }
+    }
+
+    /** 读变量表（线程隔离，搜索→详情→目录 同链路可见） */
+    fun get(key: String): Any? {
+        val v = LegadoRuleEngine.variables[key]
+        if (v != null) return v
+        return when (key) {
+            "bookName", "title" -> ""
+            else -> null
+        }
+    }
+
+    /** 写变量表并返回 value（legado 语义：`put` 返回 value） */
+    fun put(key: String, value: Any?): Any? {
+        LegadoRuleEngine.variables[key] = unwrapJsValue(value)?.toString() ?: ""
+        return value
     }
 
     /** 同步 HTTP GET；legado 中 java.ajax 亦支持带 headers 的重载 */
     fun ajax(url: String): String =
         runCatching { com.novelreader.core.network.HttpClient.get(url) }.getOrDefault("")
+
+    /**
+     * 取验证码（legado `java.getVerificationCode`）：对验证码接口发一次同步 GET。
+     * 海棠书屋的目录地址 JS 用它拿 verify 值再 POST 取全量目录。
+     */
+    fun getVerificationCode(url: String): String = ajax(url)
 
     fun ajax(url: String, headers: Map<*, *>?): String {
         val h = headers?.entries
@@ -1039,22 +1677,48 @@ class LegadoJavaBridge(
         return runCatching { com.novelreader.core.network.HttpClient.get(url, h) }.getOrDefault("")
     }
 
-    /** 无参：当前规则结果原文；带规则：对结果再套一层 legado 规则 */
-    fun getString(): String = currentHtml.orEmpty()
+    /** 无参：当前内容原文；带规则：对当前内容再套一层 legado 规则 */
+    fun getString(): String = currentElement?.text() ?: currentHtml.orEmpty()
 
     fun getString(rule: String): String {
+        val el = currentElement
+        if (el != null) return LegadoRuleEngine.extractFieldFromElement(el, rule, baseUrl).orEmpty()
         val html = currentHtml ?: return ""
         return LegadoRuleEngine.extractString(html, rule, baseUrl).orEmpty()
     }
 
+    /** 按规则取字符串列表（legado `java.getStringList`，轻菠萝包目录 JS 取卷名用它） */
+    fun getStringList(rule: String): List<String> {
+        val el = currentElement
+        if (el != null) return LegadoRuleEngine.extractStringListFromElement(el, rule, baseUrl)
+        val html = currentHtml ?: return emptyList()
+        return LegadoRuleEngine.extractStringList(html, rule, baseUrl)
+    }
+
     /** 按规则取元素列表（返回 jsoup Element，供 JS 侧继续 .text()/.attr()） */
     fun getElements(rule: String): List<Element> {
+        val el = currentElement
+        if (el != null) return LegadoRuleEngine.selectElementsIn(el, rule)
         val html = currentHtml ?: return emptyList()
         return LegadoRuleEngine.selectElements(html, rule)
     }
 
+    /**
+     * 按规则取**单个**元素（legado 部分源写 `java.getElement("a")`，
+     * 如海棠书屋的「请输入验证码」分支把反序拼接的 HTML 重新拆出链接）。
+     * 取不到返回 null（JS 侧 `result = java.getElement(...)` 后由上层兜底）。
+     */
+    fun getElement(rule: String): Element? = getElements(rule).firstOrNull()
+
     /** 原始页面文本（等价 legado 的 src 变量） */
     fun getSource(): String = src.orEmpty()
+
+    /** 剥离 Rhino 的 Java 对象包装 */
+    private fun unwrapJsValue(v: Any?): Any? {
+        var cur = v
+        while (cur is org.mozilla.javascript.Wrapper) cur = cur.unwrap()
+        return cur
+    }
 
     fun t2s(text: String): String = com.novelreader.core.text.ChineseConverter.toSimplified(text)
 
@@ -1162,7 +1826,7 @@ class LegadoJavaBridge(
 
     fun longToast(msg: Any?) = toast(msg)
 
-    fun getStringOrNull(key: String): String? = vars[key]?.toString()
+    fun getStringOrNull(key: String): String? = LegadoRuleEngine.variables[key]
 
     /**
      * AES 加解密的公共实现。

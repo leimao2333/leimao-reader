@@ -39,8 +39,8 @@ android {
         // 版本规范：四段式 顶端版本.大版本.小版本.修订
         // 小版本每版 +1；小版本满 10 进大版本；大版本满 10 进顶端版本
         // versionCode = 顶端版本 * 1000000 + 大版本 * 10000 + 小版本 * 100 + 修订
-        versionCode = 1070900
-        versionName = "1.7.9.0"
+        versionCode = 1070901
+        versionName = "1.7.9.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -163,7 +163,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
-// 真实源测试（LegadoRealSourceTest / SourceHealthProbeTest）靠环境变量门控。
+// 真实源测试（LegadoRealSourceTest / SourceHealthProbeTest / SourceTocDiagTest）靠环境变量门控。
 // 环境变量在部分场景下传不进测试 worker，因此同时支持 `-PKEY=VALUE` 项目属性。
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
     listOf(
@@ -173,6 +173,12 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
         "LEIMAO_HEALTH_CONCURRENCY",
         "LEIMAO_HEALTH_KEYWORD",
         "LEIMAO_HEALTH_OUT",
+        "LEIMAO_DIAG",
+        "LEIMAO_DIAG_FILE",
+        "LEIMAO_DIAG_ONLY",
+        "LEIMAO_DIAG_KEYWORD",
+        "LEIMAO_DIAG_DIR",
+        "LEIMAO_DIAG_BOOKS",
         "LEIMAO_SOURCE_FILE",
         "LEIMAO_SRC_NOVEL_A",
         "LEIMAO_SRC_NOVEL_B",

@@ -99,10 +99,12 @@ class TagStoreTest {
         val entries = plan.searchEntriesFor("无码", "無修正")
 
         assertEquals("search::無修正", entries.first { it.first == "search_source" }.second)
-        assertTrue(entries.contains("search_source" to TagEntryUrl.search("无码")))
-        assertTrue(entries.contains("search_source" to TagEntryUrl.search("无修正")))
-        assertTrue(entries.contains("search_source" to TagEntryUrl.search("無修正")))
-        assertTrue(entries.contains("search_source" to TagEntryUrl.search("uncensored")))
+        // v1.8.1.2：单源最多展开 MAX_SEARCH_TERMS_PER_SOURCE 个写法（此前整组二三十个全发，
+        // 一次复合搜索能打出上千请求）。用户输入永远排第一，其余按组内顺序取。
+        val searchUrls = entries.filter { it.first == "search_source" }
+        assertEquals(TagAlias.MAX_SEARCH_TERMS_PER_SOURCE, searchUrls.size)
+        assertTrue(searchUrls.contains("search_source" to TagEntryUrl.search("無修正")))
+        assertTrue(searchUrls.contains("search_source" to TagEntryUrl.search("无码")))
         assertTrue(entries.contains("category_source" to "https://example.com/category/uncensored"))
         assertTrue(entries.contains(
             "fallback_source" to TagEntryUrl.category(

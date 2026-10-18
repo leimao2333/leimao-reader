@@ -168,6 +168,7 @@ interface ContentRepository {
      *
      * @param concurrency 并行搜索线程数（同时搜索的源数量）
      * @param fuzzyEnabled 是否启用模糊匹配排序/过滤；false 时保持源返回原序
+     * @param sourceIds **只搜这些源**（null = 全部已启用源）。「按源搜索」用（v1.8.1.1）
      */
     fun searchWithProgress(
         type: com.novelreader.domain.model.SourceType,
@@ -175,6 +176,7 @@ interface ContentRepository {
         page: Int = 1,
         concurrency: Int = 6,
         fuzzyEnabled: Boolean = true,
+        sourceIds: Set<String>? = null,
     ): Flow<SearchState>
 
     /** 获取详情 */

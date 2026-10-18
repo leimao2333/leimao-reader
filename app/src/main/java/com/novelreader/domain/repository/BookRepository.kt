@@ -75,6 +75,13 @@ interface ProgressRepository {
     suspend fun clearAllProgress()
 
     /**
+     * 按内容类型清空进度（v1.8.1.2）。
+     *
+     * 视频首页「继续观看」的一键清空只用它：只清该类型，小说 / 漫画的阅读进度不受影响。
+     */
+    suspend fun clearProgressByType(type: String)
+
+    /**
      * 最近阅读列表（按更新时间倒序）。
      *
      * @param type 类型过滤；null = 全部类型

@@ -89,6 +89,7 @@ class ContentRepositoryImpl(
         page: Int,
         concurrency: Int,
         fuzzyEnabled: Boolean,
+        sourceIds: Set<String>?,
     ): Flow<SearchState> = flow {
         // 冷启动竞态防护：深链自动搜索可能在源恢复完成前触发（total=0 空搜）。
         // 恢复已完成时该等待立即通过，无额外开销。
@@ -97,6 +98,8 @@ class ContentRepositoryImpl(
         }
         val adapters: List<Pair<SourceInfo, com.novelreader.domain.model.SourceAdapter>> =
             sourceManager.getEnabledSourcesByType(type)
+                // 按源搜索（v1.8.1.1）：只保留指定的源，其余源一个请求都不发
+                .filter { info -> sourceIds == null || info.id in sourceIds }
                 .mapNotNull { info ->
                     sourceManager.getAdapter(info.id)?.let { info to it }
                 }

@@ -159,6 +159,8 @@ fun HomeScreen(
     var coverEditForItem by remember { mutableStateOf<MediaItem?>(null) }
     // 长按「继续观看」海报待删除的记录（v1.5.10.0 历史编辑）
     var removeContinueTarget by remember { mutableStateOf<MediaItem?>(null) }
+    // 「继续观看」一键清空的确认弹窗（v1.8.1.2）
+    var clearContinueConfirm by remember { mutableStateOf(false) }
 
     // 展现形式：0=封面墙网格，1=列表
     var gridMode by rememberSaveable { mutableIntStateOf(0) }
@@ -347,6 +349,7 @@ fun HomeScreen(
                         onLoadMore = viewModel::loadMoreVideo,
                         onOpenSearch = onOpenVideoSearch,
                         onRemoveContinue = { removeContinueTarget = it },
+                        onClearContinue = { clearContinueConfirm = true },
                     )
                 }
 
@@ -528,6 +531,23 @@ fun HomeScreen(
                 }
 
                 // 长按「继续观看」删除确认（v1.5.10.0 历史编辑）
+                if (clearContinueConfirm) {
+                    AlertDialog(
+                        onDismissRequest = { clearContinueConfirm = false },
+                        title = { Text("清空观看记录") },
+                        text = { Text("确定清空全部视频观看记录吗？\n（只清视频，小说 / 漫画的阅读进度不受影响）") },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                viewModel.clearWatchHistory()
+                                clearContinueConfirm = false
+                            }) { Text("清空", color = MaterialTheme.colorScheme.error) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { clearContinueConfirm = false }) { Text("取消") }
+                        },
+                    )
+                }
+
                 removeContinueTarget?.let { target ->
                     AlertDialog(
                         onDismissRequest = { removeContinueTarget = null },

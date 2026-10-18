@@ -33,6 +33,15 @@ interface ProgressDao {
     suspend fun clearAll()
 
     /**
+     * 按内容类型清空进度（v1.8.1.2）。
+     *
+     * 视频首页「继续观看」的一键清空用它：只删 `itemType = 'VIDEO'` 的记录，
+     * 小说 / 漫画的阅读进度原样保留。
+     */
+    @Query("DELETE FROM progress WHERE itemType = :type")
+    suspend fun clearByType(type: String)
+
+    /**
      * 最近阅读列表：progress 表按更新时间倒序，左连接 books 表补充封面等字段。
      * 返回 [RecentReadingRow]（POJO 投影，非实体表）。
      *

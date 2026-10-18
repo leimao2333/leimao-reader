@@ -107,6 +107,8 @@ fun VideoHomeContent(
     onOpenSearch: () -> Unit,
     /** 长按「继续观看」海报删除该条观看记录（v1.5.10.0 历史编辑） */
     onRemoveContinue: ((MediaItem) -> Unit)? = null,
+    /** 「继续观看」标题右侧的「清空」：一键清除全部视频观看记录（v1.8.1.2） */
+    onClearContinue: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize()) {
@@ -132,6 +134,7 @@ fun VideoHomeContent(
                 onRefresh = onRefresh,
                 onOpenSearch = onOpenSearch,
                 onRemoveContinue = onRemoveContinue,
+                onClearContinue = onClearContinue,
             )
         }
     }
@@ -147,6 +150,7 @@ private fun VideoSectionsContent(
     onRefresh: () -> Unit,
     onOpenSearch: () -> Unit,
     onRemoveContinue: ((MediaItem) -> Unit)? = null,
+    onClearContinue: (() -> Unit)? = null,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -191,7 +195,11 @@ private fun VideoSectionsContent(
             else -> {
                 if (state.continueWatching.isNotEmpty()) {
                     item(key = "continue") {
-                        SectionHeader(title = "继续观看")
+                        SectionHeader(
+                            title = "继续观看",
+                            actionLabel = "清空",
+                            onAction = onClearContinue,
+                        )
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 12.dp),
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -247,7 +255,12 @@ private fun VideoSectionsContent(
 
 /** 分区标题行：标题 + 右侧「查看更多 ›」 */
 @Composable
-private fun SectionHeader(title: String, onMore: (() -> Unit)? = null) {
+private fun SectionHeader(
+    title: String,
+    onMore: (() -> Unit)? = null,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -261,6 +274,16 @@ private fun SectionHeader(title: String, onMore: (() -> Unit)? = null) {
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
+        if (actionLabel != null && onAction != null) {
+            Text(
+                text = actionLabel,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .clickable(onClick = onAction)
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+        }
         if (onMore != null) {
             Row(
                 modifier = Modifier

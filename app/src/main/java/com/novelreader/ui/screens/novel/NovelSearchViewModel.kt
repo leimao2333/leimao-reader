@@ -28,7 +28,25 @@ class NovelSearchViewModel(
     private val contentRepository: ContentRepository,
     private val preferencesManager: PreferencesManager,
     private val bookRepository: com.novelreader.domain.repository.BookRepository,
+    private val sourceRepository: com.novelreader.domain.repository.SourceRepository? = null,
 ) : ViewModel() {
+
+    /**
+     * 「按源搜索」（v1.8.1.1）：可选择只搜某一个源。
+     *
+     * 全部源一起搜虽然全，但几十个源的慢请求会互相拖累；想找某部作品时直接挑源更快。
+     */
+    private val _sources = MutableStateFlow<List<com.novelreader.domain.model.SourceInfo>>(emptyList())
+    val sources: StateFlow<List<com.novelreader.domain.model.SourceInfo>> = _sources.asStateFlow()
+
+    private val _selectedSourceId = MutableStateFlow<String?>(null)
+    val selectedSourceId: StateFlow<String?> = _selectedSourceId.asStateFlow()
+
+    /** 选择源（null = 全部源）。已有搜索词时立即按新范围重搜。 */
+    fun selectSource(id: String?) {
+        _selectedSourceId.value = id
+        if (_query.value.isNotBlank()) search()
+    }
 
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
@@ -66,6 +84,14 @@ class NovelSearchViewModel(
             bookRepository.observeBookshelf().collect { books ->
                 _shelfKeys.value = books.map { "${it.sourceId}|${it.id}" }.toSet()
             }
+        }
+        // 按源搜索：载入已启用的源列表
+        viewModelScope.launch {
+            _sources.value = runCatching {
+                sourceRepository?.getSourcesByType(SourceType.NOVEL)
+                    ?.filter { it.enabled }
+                    .orEmpty()
+            }.getOrDefault(emptyList())
         }
     }
 
@@ -117,7 +143,10 @@ class NovelSearchViewModel(
             val fuzzy = preferencesManager.fuzzySearchFlow.first()
 
             _state.value = SearchState(isSearching = true, hasSearched = true, fuzzyEnabled = fuzzy)
-            contentRepository.searchWithProgress(SourceType.NOVEL, keyword, 1, concurrency, fuzzy)
+            contentRepository.searchWithProgress(
+                SourceType.NOVEL, keyword, 1, concurrency, fuzzy,
+                sourceIds = _selectedSourceId.value?.let { setOf(it) },
+            )
                 .catch { e ->
                     _state.value = _state.value.copy(
                         isSearching = false,

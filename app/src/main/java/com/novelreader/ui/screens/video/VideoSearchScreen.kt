@@ -1,5 +1,6 @@
 package com.novelreader.ui.screens.video
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,6 +10,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -45,6 +49,8 @@ fun VideoSearchScreen(
     val state by viewModel.state.collectAsState()
     val fuzzyEnabled by viewModel.fuzzyEnabled.collectAsState()
     val history by viewModel.history.collectAsState()
+    val sources by viewModel.sources.collectAsState()
+    val selectedSourceId by viewModel.selectedSourceId.collectAsState()
 
     // 深链关键词：进入即搜索
     androidx.compose.runtime.LaunchedEffect(initialKeyword) {
@@ -90,6 +96,31 @@ fun VideoSearchScreen(
             onClearHistory = viewModel::clearHistory,
             onRemoveHistory = viewModel::removeHistory,
         )
+
+        // 「按源搜索」（v1.8.1.1）：挑一个源就只搜它，其余源一个请求都不发。
+        if (sources.isNotEmpty()) {
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                item {
+                    FilterChip(
+                        selected = selectedSourceId == null,
+                        onClick = { viewModel.selectSource(null) },
+                        label = { Text("全部源") },
+                    )
+                }
+                items(sources, key = { it.id }) { source ->
+                    FilterChip(
+                        selected = selectedSourceId == source.id,
+                        onClick = { viewModel.selectSource(source.id) },
+                        label = { Text(source.name) },
+                    )
+                }
+            }
+        }
 
         when {
             !state.hasSearched -> {

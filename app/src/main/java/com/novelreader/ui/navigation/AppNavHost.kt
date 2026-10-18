@@ -434,7 +434,7 @@ fun AppNavHost(
         ) { backStackEntry ->
             val viewModel: NovelSearchViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
-                    NovelSearchViewModel(it.contentRepository, it.preferencesManager, it.bookRepository)
+                    NovelSearchViewModel(it.contentRepository, it.preferencesManager, it.bookRepository, it.sourceRepository)
                 }
             )
             val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -588,7 +588,7 @@ fun AppNavHost(
             val initialKeyword = backStackEntry.arguments?.getString("keyword").orEmpty()
             val viewModel: ComicSearchViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
-                    ComicSearchViewModel(it.contentRepository, it.preferencesManager)
+                    ComicSearchViewModel(it.contentRepository, it.preferencesManager, it.sourceRepository)
                 }
             )
             ComicSearchScreen(
@@ -687,7 +687,7 @@ fun AppNavHost(
             val initialKeyword = backStackEntry.arguments?.getString("keyword").orEmpty()
             val viewModel: VideoSearchViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
-                    VideoSearchViewModel(it.contentRepository, it.preferencesManager)
+                    VideoSearchViewModel(it.contentRepository, it.preferencesManager, it.sourceRepository)
                 }
             )
             VideoSearchScreen(

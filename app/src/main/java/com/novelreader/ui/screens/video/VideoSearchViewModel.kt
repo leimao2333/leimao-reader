@@ -20,7 +20,23 @@ import kotlinx.coroutines.launch
 class VideoSearchViewModel(
     private val contentRepository: ContentRepository,
     private val preferencesManager: PreferencesManager,
+    private val sourceRepository: com.novelreader.domain.repository.SourceRepository? = null,
 ) : ViewModel() {
+
+    /**
+     * 「按源搜索」（v1.8.1.1）：可选择只搜某一个源，其余源一个请求都不发，结果又快又准。
+     */
+    private val _sources = MutableStateFlow<List<com.novelreader.domain.model.SourceInfo>>(emptyList())
+    val sources: StateFlow<List<com.novelreader.domain.model.SourceInfo>> = _sources.asStateFlow()
+
+    private val _selectedSourceId = MutableStateFlow<String?>(null)
+    val selectedSourceId: StateFlow<String?> = _selectedSourceId.asStateFlow()
+
+    /** 选择源（null = 全部源）。已有搜索词时立即按新范围重搜。 */
+    fun selectSource(id: String?) {
+        _selectedSourceId.value = id
+        if (_query.value.isNotBlank()) search()
+    }
 
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
@@ -42,6 +58,14 @@ class VideoSearchViewModel(
         }
         viewModelScope.launch {
             preferencesManager.searchHistoryFlow(SourceType.VIDEO).collect { _history.value = it }
+        }
+        // 按源搜索：载入已启用的源列表
+        viewModelScope.launch {
+            _sources.value = runCatching {
+                sourceRepository?.getSourcesByType(SourceType.VIDEO)
+                    ?.filter { it.enabled }
+                    .orEmpty()
+            }.getOrDefault(emptyList())
         }
     }
 
@@ -74,7 +98,10 @@ class VideoSearchViewModel(
             val concurrency = preferencesManager.searchConcurrencyFlow.first()
             val fuzzy = preferencesManager.fuzzySearchFlow.first()
             _state.value = SearchState(isSearching = true, hasSearched = true, fuzzyEnabled = fuzzy)
-            contentRepository.searchWithProgress(SourceType.VIDEO, keyword, 1, concurrency, fuzzy)
+            contentRepository.searchWithProgress(
+                SourceType.VIDEO, keyword, 1, concurrency, fuzzy,
+                sourceIds = _selectedSourceId.value?.let { setOf(it) },
+            )
                 .catch { e ->
                     _state.value = _state.value.copy(
                         isSearching = false,

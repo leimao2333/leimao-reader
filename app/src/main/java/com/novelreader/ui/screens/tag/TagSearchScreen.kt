@@ -24,19 +24,24 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -45,12 +50,16 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.SuggestionChipDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -103,6 +112,10 @@ fun TagSearchScreen(
     val searching by viewModel.searching.collectAsState()
     val progress by viewModel.progress.collectAsState()
     val notice by viewModel.notice.collectAsState()
+    val sources by viewModel.sources.collectAsState()
+    val selectedSourceId by viewModel.selectedSourceId.collectAsState()
+    val hasMore by viewModel.hasMore.collectAsState()
+    val loadingMore by viewModel.loadingMore.collectAsState()
     val activeTags by viewModel.activeTags.collectAsState()
 
     // v1.6.2.0：「更多热门」展开面板开关
@@ -249,6 +262,31 @@ fun TagSearchScreen(
             keyboardActions = KeyboardActions(onSearch = { viewModel.search() }),
         )
 
+        // 「按源搜索」（v1.8.1.2）：标签池是跨源收集的，只搜某一个源能省掉几十个源一起等的长尾
+        if (sources.isNotEmpty()) {
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                item {
+                    FilterChip(
+                        selected = selectedSourceId == null,
+                        onClick = { viewModel.selectSource(null) },
+                        label = { Text("全部源") },
+                    )
+                }
+                items(sources, key = { it.id }) { source ->
+                    FilterChip(
+                        selected = selectedSourceId == source.id,
+                        onClick = { viewModel.selectSource(source.id) },
+                        label = { Text(source.name) },
+                    )
+                }
+            }
+        }
+
         // ===== 已选标签 chips（v1.6.1.0）：点选移除 =====
         if (activeTags.isNotEmpty()) {
             Row(
@@ -301,21 +339,48 @@ fun TagSearchScreen(
             }
         }
         notice?.let { message ->
-            // v1.8.1.1：复合搜索会把每个「大集」的整组写法全部列出（「无码」27 个、
-            // 「全彩」42 个），文字会很长。这里不截断，改成限高 + 可滚动 —— 内容一字不少，
-            // 又不会把下面的结果区挤没。
-            Box(
+            // v1.8.1.2：这块内容可能极长（「无码」27 个写法 + 「全彩」42 个），
+            // 改成**可折叠面板**：默认只露两行摘要 + 下拉箭头，点一下才铺开全部；
+            // 展开后仍限高可滚动，不会把下面的结果区挤没。
+            var noticeExpanded by remember(message) { mutableStateOf(false) }
+            Column(
                 Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 132.dp)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 2.dp),
+                    .clickable { noticeExpanded = !noticeExpanded }
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
             ) {
-                Text(
-                    text = message,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = if (noticeExpanded) "标签详情（点此收起）" else message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = if (noticeExpanded) 1 else 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Icon(
+                        imageVector = if (noticeExpanded) Icons.Filled.KeyboardArrowUp
+                        else Icons.Filled.KeyboardArrowDown,
+                        contentDescription = if (noticeExpanded) "收起" else "展开",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                if (noticeExpanded) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 200.dp)
+                            .verticalScroll(rememberScrollState())
+                            .padding(top = 4.dp),
+                    ) {
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
             }
         }
 
@@ -340,9 +405,20 @@ fun TagSearchScreen(
             }
 
             viewModel.type == SourceType.VIDEO -> {
+                val gridState = rememberLazyGridState()
+                // 触底即加载下一页（v1.8.1.2）：首次搜索已后台预取 3 页，这里只兜住更深的滚动
+                LaunchedEffect(gridState, hasMore) {
+                    snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+                        .distinctUntilChanged()
+                        .collect { last ->
+                            val total = gridState.layoutInfo.totalItemsCount
+                            if (hasMore && total > 0 && last >= total - 3) viewModel.loadMore()
+                        }
+                }
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(3),
                     modifier = Modifier.fillMaxSize(),
+                    state = gridState,
                     contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -350,12 +426,27 @@ fun TagSearchScreen(
                     items(results, key = { "${it.sourceId}:${it.id}" }) { item ->
                         TagPosterCard(item = item, onClick = { onItemClick(item) })
                     }
+                    if (loadingMore) {
+                        item(key = "loading-more") { LoadMoreFooter(loading = true, hasMore = true) {} }
+                    } else if (hasMore) {
+                        item(key = "load-more") { LoadMoreFooter(loading = false, hasMore = true) { viewModel.loadMore() } }
+                    }
                 }
             }
 
             else -> {
+                val listState = rememberLazyListState()
+                LaunchedEffect(listState, hasMore) {
+                    snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+                        .distinctUntilChanged()
+                        .collect { last ->
+                            val total = listState.layoutInfo.totalItemsCount
+                            if (hasMore && total > 0 && last >= total - 3) viewModel.loadMore()
+                        }
+                }
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
+                    state = listState,
                     contentPadding = PaddingValues(vertical = 8.dp),
                 ) {
                     items(results, key = { "${it.sourceId}:${it.id}" }) { item ->
@@ -364,6 +455,11 @@ fun TagSearchScreen(
                             onClick = { onItemClick(item) },
                             onRead = { onItemClick(item) },
                         )
+                    }
+                    if (loadingMore) {
+                        item(key = "loading-more") { LoadMoreFooter(loading = true, hasMore = true) {} }
+                    } else if (hasMore) {
+                        item(key = "load-more") { LoadMoreFooter(loading = false, hasMore = true) { viewModel.loadMore() } }
                     }
                 }
             }
@@ -616,6 +712,31 @@ private fun TagPosterCard(item: MediaItem, onClick: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/**
+ * 列表底部的「加载更多」条（v1.8.1.2）。
+ *
+ * 正常情况下预取已经把下一页准备好了，这里只在用户滚得比预取更快时兜底。
+ */
+@Composable
+private fun LoadMoreFooter(loading: Boolean, hasMore: Boolean, onLoadMore: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            loading -> CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+            hasMore -> TextButton(onClick = onLoadMore) { Text("加载更多") }
+            else -> Text(
+                text = "没有更多了",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }

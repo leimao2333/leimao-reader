@@ -614,6 +614,23 @@ class HomeViewModel(
         }
     }
 
+    /**
+     * 一键清空**视频**观看记录（v1.8.1.2）。
+     *
+     * 只删 `itemType = VIDEO` 的进度 —— 小说 / 漫画的阅读进度不受影响。
+     * 清完立刻重算「继续观看」，列表即时消失。
+     */
+    fun clearWatchHistory() {
+        viewModelScope.launch {
+            runCatching {
+                progressRepository.clearProgressByType(com.novelreader.domain.model.SourceType.VIDEO.name)
+            }
+            _videoHome.value = _videoHome.value.copy(
+                continueWatching = buildContinueWatching(_videoHome.value.sources),
+            )
+        }
+    }
+
     /** 下拉刷新（分区视图连「继续观看」一起刷新） */
     fun refreshVideoHome() {
         if (!_videoHome.value.expanded) {

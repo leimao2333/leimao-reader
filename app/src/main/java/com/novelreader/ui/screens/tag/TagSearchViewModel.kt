@@ -13,6 +13,7 @@ import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.SourceRepository
 import com.novelreader.source.category.isAdult
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -23,6 +24,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeout
 
 /**
  * 标签搜索 ViewModel（v1.5.10.0 起；v1.6.1.0 重做 UI 后保留全量 + 新增热门标签；
@@ -44,6 +46,23 @@ class TagSearchViewModel(
     initialTag: String,
     private val preferencesManager: com.novelreader.core.preferences.PreferencesManager? = null,
 ) : ViewModel() {
+
+    /**
+     * 「按源搜索」：已启用的源列表 + 当前选中的源（null = 全部源）（v1.8.1.2）。
+     *
+     * 标签池是跨源收集的；只搜某一个源能避免几十个源一起等的长尾，也便于核对某个源的内容。
+     */
+    private val _sources = MutableStateFlow<List<com.novelreader.domain.model.SourceInfo>>(emptyList())
+    val sources: StateFlow<List<com.novelreader.domain.model.SourceInfo>> = _sources.asStateFlow()
+
+    private val _selectedSourceId = MutableStateFlow<String?>(null)
+    val selectedSourceId: StateFlow<String?> = _selectedSourceId.asStateFlow()
+
+    /** 选择源（null = 全部源）。已有查询时立即按新范围重搜。 */
+    fun selectSource(id: String?) {
+        _selectedSourceId.value = id
+        if (_query.value.isNotBlank()) search()
+    }
 
     /** 全部可用标签（自动收集） */
     private val _allTags = MutableStateFlow<List<String>>(emptyList())
@@ -101,6 +120,44 @@ class TagSearchViewModel(
     private var searchJob: kotlinx.coroutines.Job? = null
     private var searchGeneration = 0L
 
+    // ===== 分页（v1.8.1.2）=====
+    /** 本次搜索的上下文：滚到底时按同一批入口继续抓下一页 */
+    private data class PagingContext(
+        val tags: List<String>,
+        val entriesPerTag: List<List<Pair<String, String>>>,
+        val sources: List<String>,
+        val allSearchOnly: Boolean,
+        val single: Boolean,
+        val keyword: String,
+        val union: List<LinkedHashMap<String, MediaItem>>,
+    )
+
+    private var paging: PagingContext? = null
+    private var nextPage = 2
+    private var preloadJob: kotlinx.coroutines.Job? = null
+    private val _hasMore = MutableStateFlow(false)
+
+    /** 还有没有下一页（触底加载用） */
+    val hasMore: StateFlow<Boolean> = _hasMore.asStateFlow()
+
+    private val _loadingMore = MutableStateFlow(false)
+
+    /** 是否正在加载下一页 */
+    val loadingMore: StateFlow<Boolean> = _loadingMore.asStateFlow()
+
+    /**
+     * 组合关键词搜索结果缓存（v1.8.1.1，LRU 8 条 / 10 分钟）。
+     *
+     * 「无码 全彩」这类查询每次都要打几十个源、耗时几十秒；用户来回切页或重复搜索时
+     * 没必要再打一遍。命中缓存直接秒开，并在提示里标明是缓存结果。
+     */
+    private val combinedCache =
+        object : LinkedHashMap<String, Pair<Long, List<MediaItem>>>(8, 0.75f, true) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<String, Pair<Long, List<MediaItem>>>?,
+            ): Boolean = size > 8
+        }
+
     private data class TagSearchRequest(val tagIndex: Int, val sourceId: String, val url: String)
     private data class TagSearchResponse(val tagIndex: Int, val sourceId: String, val items: List<MediaItem>)
 
@@ -113,6 +170,8 @@ class TagSearchViewModel(
     private data class CompoundOutcome(
         val items: List<MediaItem>,
         val note: String? = null,
+        /** 严格求交时每个大集的并集，分页继续累积用（v1.8.1.2） */
+        val union: List<LinkedHashMap<String, MediaItem>>? = null,
     ) {
         companion object {
             val EMPTY = CompoundOutcome(emptyList())
@@ -121,6 +180,11 @@ class TagSearchViewModel(
 
     init {
         collectTags(initialTag.isNotBlank())
+        viewModelScope.launch {
+            _sources.value = runCatching {
+                sourceRepository?.getSourcesByType(type)?.filter { it.enabled }.orEmpty()
+            }.getOrDefault(emptyList())
+        }
     }
 
     /** 收集标签池：先读缓存（毫秒级），空则现场收集 */
@@ -198,6 +262,91 @@ class TagSearchViewModel(
     }
 
     /**
+     * 触底加载下一页（v1.8.1.2）。
+     *
+     * 只抓一页、增量追加，不重跑整次搜索 —— 用户往下滚多少就抓多少。
+     */
+    fun loadMore() {
+        if (_loadingMore.value || !_hasMore.value) return
+        val ctx = paging ?: return
+        val generation = searchGeneration
+        _loadingMore.value = true
+        viewModelScope.launch {
+            try {
+                val page = nextPage
+                val items = fetchPage(ctx, page)
+                if (generation != searchGeneration) return@launch
+                if (items.isEmpty()) {
+                    _hasMore.value = false
+                } else {
+                    appendResults(items)
+                    nextPage = page + 1
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                android.util.Log.w("TagSearch", "加载下一页失败，page=$nextPage", error)
+                _hasMore.value = false
+            } finally {
+                _loadingMore.value = false
+            }
+        }
+    }
+
+    /**
+     * 首次搜索完成后**后台预取 3 页**（v1.8.1.2）。
+     *
+     * 用户滚到底时数据往往已经在那儿了，滚动不会卡在「等下一页请求」上。
+     */
+    private fun preloadNextPages(generation: Long) {
+        val ctx = paging ?: return
+        preloadJob?.cancel()
+        preloadJob = viewModelScope.launch {
+            var loaded = 0
+            while (loaded < PRELOAD_PAGES) {
+                if (generation != searchGeneration) return@launch
+                val page = nextPage
+                val items = try {
+                    fetchPage(ctx, page)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    android.util.Log.w("TagSearch", "预加载失败，page=$page", error)
+                    emptyList()
+                }
+                if (generation != searchGeneration) return@launch
+                if (items.isEmpty()) {
+                    _hasMore.value = false
+                    return@launch
+                }
+                appendResults(items)
+                nextPage = page + 1
+                loaded++
+            }
+        }
+    }
+
+    /** 抓某一页（单标签 / 复合严格求交 / 组合直搜三种形态） */
+    private suspend fun fetchPage(ctx: PagingContext, page: Int): List<MediaItem> = when {
+        ctx.single -> searchOneTag(ctx.entriesPerTag[0], page)
+        ctx.allSearchOnly -> searchCombinedKeyword(
+            ctx.sources, ctx.keyword, Semaphore(WIDE_COMBINED_CONCURRENCY), page,
+        )
+        else -> {
+            val bySrc = ctx.entriesPerTag.map { list -> list.groupBy({ it.first }, { it.second }) }
+            strictIntersection(
+                bySrc, ctx.sources, page, Semaphore(TAG_SEARCH_CONCURRENCY), {}, ctx.union,
+            ).matched
+        }
+    }
+
+    /** 增量追加结果（按作品身份键去重，顺序保持） */
+    private fun appendResults(items: List<MediaItem>) {
+        if (items.isEmpty()) return
+        _results.value = (_results.value + items).distinctBy { TagQuery.identityKey(it.title) }
+    }
+
+    /**
      * 执行标签搜索（单标签 / 复合标签通用）。
      *
      * v1.7.0.0 三处口径修正：
@@ -265,11 +414,13 @@ class TagSearchViewModel(
                 val variantsPerTag = tags.map { tag ->
                     TagAlias.matchesInPool(tag, tagPlan.tags).ifEmpty { listOf(tag) }
                 }
+                // 按源搜索：选了某个源就只保留它的入口（优先级高于「已启用源」集合）
+                val allowedIds = _selectedSourceId.value?.let { setOf(it) } ?: enabledIds
                 val entriesPerTag = tags.mapIndexed { index, query ->
                     variantsPerTag[index]
                         .flatMap { variant -> tagPlan.searchEntriesFor(variant, query) }
                         .distinct()
-                        .let { if (enabledIds == null) it else it.filter { e -> e.first in enabledIds } }
+                        .let { if (allowedIds == null) it else it.filter { e -> e.first in allowedIds } }
                         // v1.8.1.0：同一个源最多留 [MAX_URLS_PER_SOURCE] 条入口。
                         // 池里有多个等价写法时，上面的 flatMap 会让同一个源出现好几条
                         // 相同的搜索入口，请求数被平白翻倍。
@@ -278,11 +429,11 @@ class TagSearchViewModel(
                 val known = tags.filterIndexed { i, _ -> entriesPerTag[i].isNotEmpty() }
                 val missing = tags.filterNot { it in known }
                 val knownEntries = entriesPerTag.filter { it.isNotEmpty() }
+                // v1.8.1.1：**流式上屏**。以前只有「明确成人标签」才允许增量刷新，
+                // 用户点完搜索只能对着转圈等全部源返回。现在只要有结果就先显示，
+                // 后面的源陆续补充进来（结果一致单调增加）。
                 val updatePartialResults: (List<MediaItem>) -> Unit = { partial ->
-                    if (
-                        generation == searchGeneration &&
-                        tags.any(TagAlias::isExplicitAdultIntent)
-                    ) {
+                    if (generation == searchGeneration && partial.isNotEmpty()) {
                         _results.value = partial
                     }
                 }
@@ -340,6 +491,24 @@ class TagSearchViewModel(
                 if (generation != searchGeneration) return@launch
                 _activeTags.value = known.map(TagAlias::canonicalOf).distinct()
                 _results.value = final
+                // 分页上下文：后续「加载更多」按同一批入口抓下一页（v1.8.1.2）
+                if (final.isNotEmpty()) {
+                    paging = PagingContext(
+                        tags = known,
+                        entriesPerTag = knownEntries,
+                        sources = knownEntries.flatMap { list -> list.map { it.first } }.distinct(),
+                        allSearchOnly = knownEntries.all { list -> list.all(::isSearchEntry) },
+                        single = knownEntries.size == 1,
+                        keyword = known.joinToString(" "),
+                        union = outcome.union.orEmpty(),
+                    )
+                    nextPage = 2
+                    _hasMore.value = true
+                    preloadNextPages(generation)
+                } else {
+                    paging = null
+                    _hasMore.value = false
+                }
                 val tail = when {
                     final.isNotEmpty() -> outcome.note
                     known.size > 1 -> "没有作品同时属于「${known.joinToString("」「")}」（每个大集里各要命中至少一个标签）"
@@ -393,9 +562,15 @@ class TagSearchViewModel(
         throw error
     }
 
-    /** 单标签：聚合所有拥有该分类的源的第 1 页，跨源去重 */
+    /**
+     * 单标签：聚合所有拥有该分类的源，抓**指定一页**（v1.8.1.2 改为分页）。
+     *
+     * 以前每源固定抓 1~2 页就结束，结果自然少；现在每页由 UI 触底触发，
+     * 用户想看多少就往下翻多少，且每返回一个源就回调，边出边显示。
+     */
     private suspend fun searchOneTag(
         entries: List<Pair<String, String>>,
+        page: Int = 1,
         semaphore: Semaphore = Semaphore(TAG_SEARCH_CONCURRENCY),
         onPartial: (List<MediaItem>) -> Unit = {},
     ): List<MediaItem> =
@@ -407,19 +582,22 @@ class TagSearchViewModel(
                 async {
                     val items = semaphore.withPermit {
                         try {
-                            exploreTagEntry(srcId, url, 1)
+                            exploreTagEntry(srcId, url, page)
                         } finally {
                             stepProgress()
                         }
                     }
-                    val snapshot = synchronized(lock) {
-                        accumulated.addAll(items)
-                        accumulated.distinctBy { "${it.sourceId}:${it.id}" }
+                    if (items.isNotEmpty()) {
+                        val snapshot = synchronized(lock) {
+                            accumulated.addAll(items)
+                            accumulated.distinctBy { "${it.sourceId}:${it.id}" }
+                        }
+                        onPartial(snapshot)
                     }
-                    onPartial(snapshot)
                     items
                 }
-            }.awaitAll().flatten().distinctBy { "${it.sourceId}:${it.id}" }
+            }.awaitAll()
+            synchronized(lock) { accumulated.distinctBy { "${it.sourceId}:${it.id}" } }
         }
 
     /**
@@ -446,7 +624,6 @@ class TagSearchViewModel(
         // 并集口径：每个标签查它自己的全部入口；源集合取并集（各标签的源可以完全不同）。
         val sources = entriesPerTag.flatMap { entries -> entries.map { it.first } }.distinct()
         if (sources.isEmpty()) return CompoundOutcome.EMPTY
-        val bySrcPerTag = entriesPerTag.map { list -> list.groupBy({ it.first }, { it.second }) }
 
         // 无码 / 全彩这类「宽标签」入口极多，提高并发，免得一次复合搜索要等好几分钟。
         val wideComic = type == SourceType.COMIC &&
@@ -455,48 +632,90 @@ class TagSearchViewModel(
             if (wideComic) WIDE_COMPOUND_CONCURRENCY else TAG_SEARCH_CONCURRENCY,
         )
 
-        val unionPerTag = MutableList(entriesPerTag.size) { mutableListOf<MediaItem>() }
-        var page = 1
-        var matched: List<MediaItem> = emptyList()
-        while (page <= MAX_COMPOUND_PAGES) {
-            val sizesBefore = unionPerTag.map { it.size }
-            val fetched = fetchGrid(bySrcPerTag, sources, page, semaphore)
-            fetched.forEachIndexed { tagIndex, perSource ->
-                unionPerTag[tagIndex].addAll(perSource.values.flatten())
-            }
-            matched = TagQuery.intersect(unionPerTag.map(::unionOf))
-            onPartial(matched)
-            // 所有源这一页都空 → 已经翻到底
-            if (fetched.all { perSource -> perSource.values.all { it.isEmpty() } }) break
-            // 够看了就停（多数搜索 1 页即可，不必白翻）
-            if (matched.size >= COMPOUND_ENOUGH_RESULTS) break
-            // 每个大集都没有新条目 → 再翻也是同一批，停
-            val grew = unionPerTag.indices.any { unionPerTag[it].size > sizesBefore[it] }
-            if (!grew) break
-            page += 1
-        }
-        if (matched.isNotEmpty()) return CompoundOutcome(matched)
+        val combinedKeyword = tags.joinToString(" ")
+        val cacheKey = "$type::$combinedKeyword"
 
-        // ===== 兜底一：组合关键词直搜（v1.8.1.1）=====
-        // 「无码」「全彩」这类标签在漫画源里通常没有真实分类页，只能退化为**标题搜索**
-        // （见 TagEntryUrl 的说明）。分成两个词各搜一遍再按标题求交，几乎必然为空 ——
-        // 因为一部作品的标题很少同时写着「无码」和「全彩」。
-        // 这里改由源站自己去判断：把两个词拼成一次查询（「无码 全彩」）发过去，
-        // 源站若支持多词匹配就能直接给出同时命中的作品，只需源数那么多次请求。
-        val keyword = tags.joinToString(" ")
-        val combined = searchCombinedKeyword(sources, keyword, semaphore)
+        // 「无码」「全彩」这类标签在漫画源里没有真实分类页，入口全是 `search::`：
+        // 每源只发 1 个写法（用户输入），把请求量压到 源数 × 组数。
+        val allSearchOnly = entriesPerTag.all { list -> list.all(::isSearchEntry) }
+        val effectiveEntries = if (allSearchOnly) {
+            entriesPerTag.map { list -> list.groupBy { it.first }.map { it.value.first() } }
+        } else {
+            entriesPerTag
+        }
+        val bySrcPerTag = effectiveEntries.map { list -> list.groupBy({ it.first }, { it.second }) }
+        val maxPages = if (allSearchOnly) 1 else MAX_COMPOUND_PAGES
+
+        if (allSearchOnly) {
+            // 纯搜索型：**两条路并行**。
+            // - 组合关键词直搜先出内容（流式，几秒就能看到第一批）；
+            // - 严格求交同时进行，真能交出来就替换掉宽松结果（语义优先）。
+            // 这样既不用对着空屏等二十秒，也不会拿宽松结果冒充交集。
+            combinedCache[cacheKey]?.let { (at, items) ->
+                if (items.isNotEmpty() && System.currentTimeMillis() - at < COMBINED_CACHE_TTL_MS) {
+                    onPartial(items)
+                    return CompoundOutcome(
+                        items,
+                        "「$combinedKeyword」的搜索结果 ${items.size} 条（10 分钟内缓存，可能只满足其中一组）",
+                    )
+                }
+            }
+            return coroutineScope {
+                val combinedJob = async {
+                    searchCombinedKeyword(
+                        sources, combinedKeyword,
+                        Semaphore(WIDE_COMBINED_CONCURRENCY),
+                        page = 1,
+                        onPartial = onPartial,
+                    )
+                }
+                val strict = strictIntersection(
+                    bySrcPerTag, sources, 1, semaphore, onPartial,
+                )
+                if (strict.matched.isNotEmpty()) {
+                    combinedJob.cancel()
+                    return@coroutineScope CompoundOutcome(strict.matched)
+                }
+                val combined = combinedJob.await()
+                if (combined.isNotEmpty()) {
+                    combinedCache[cacheKey] = System.currentTimeMillis() to combined
+                    onPartial(combined)
+                    return@coroutineScope CompoundOutcome(
+                        combined,
+                        "没有作品同时属于「${tags.joinToString("」「")}」。这两组在漫画源里没有真实分类页，" +
+                            "下面是用组合关键词「$combinedKeyword」直搜的结果 —— 源站对多个关键词通常按" +
+                            "「任一命中」返回，所以其中可能有只满足一组的内容",
+                    )
+                }
+                val firstGroup = strict.unionPerTag.firstOrNull()?.values?.toList().orEmpty()
+                if (firstGroup.isNotEmpty()) {
+                    CompoundOutcome(
+                        firstGroup,
+                        "没有作品同时属于「${tags.joinToString("」「")}」，下面只显示「${tags.first()}」组的单独结果",
+                    )
+                } else {
+                    CompoundOutcome.EMPTY
+                }
+            }
+        }
+
+        // ===== 有真实分类页：严格求交 → 宽松兜底 → 单组兜底 =====
+        val strict = strictIntersection(bySrcPerTag, sources, 1, semaphore, onPartial)
+        if (strict.matched.isNotEmpty()) return CompoundOutcome(strict.matched, union = strict.unionPerTag)
+
+        val combined = searchCombinedKeyword(
+            sources, combinedKeyword, semaphore, onPartial = onPartial,
+        )
         if (combined.isNotEmpty()) {
             onPartial(combined)
             return CompoundOutcome(
                 combined,
-                "这两组在漫画源里大多没有真实分类页、只能按标题搜，已改用组合关键词「$keyword」直搜（由源站判定同时匹配）",
+                "这两组在漫画源里大多没有真实分类页、只能按标题搜，已改用组合关键词「$combinedKeyword」直搜" +
+                    "（源站对多个关键词通常按「任一命中」返回，结果可能只满足其中一组）",
             )
         }
 
-        // ===== 兜底二：只给第一个大集（v1.8.1.1）=====
-        // 连组合搜索都没结果时，与其让用户对着空屏，不如给出第一个大集的内容，
-        // 并明确说明「这不是交集结果」。
-        val firstGroup = unionOf(unionPerTag.first())
+        val firstGroup = strict.unionPerTag.firstOrNull()?.values?.toList().orEmpty()
         return if (firstGroup.isNotEmpty()) {
             CompoundOutcome(
                 firstGroup,
@@ -507,30 +726,84 @@ class TagSearchViewModel(
         }
     }
 
+    /** 严格求交的结果：命中的作品 + 每个大集各自的并集（单组兜底要用）。 */
+    private data class StrictResult(
+        val matched: List<MediaItem>,
+        val unionPerTag: List<LinkedHashMap<String, MediaItem>>,
+    )
+
     /**
-     * 组合关键词直搜：把多个标签拼成一次查询，交给源站自己判定是否同时匹配。
+     * 严格求交（单页）：每个大集先取组内并集（组内 OR），再把各大集按作品身份键求交（组间 AND）。
      *
-     * 只在逐集合交集为空时才调用，正常路径不受影响（不会把源站的宽松匹配混进结果）。
+     * v1.8.1.2 改为**单页**：翻页交给 UI 触底触发（[loadMore]），[carry] 用于跨页累积，
+     * 否则第 2 页只能和本页自己求交，跨源同名作品会对不上。
+     */
+    private suspend fun strictIntersection(
+        bySrcPerTag: List<Map<String, List<String>>>,
+        sources: List<String>,
+        page: Int,
+        semaphore: Semaphore,
+        onPartial: (List<MediaItem>) -> Unit,
+        carry: List<LinkedHashMap<String, MediaItem>>? = null,
+    ): StrictResult {
+        val unionPerTag = carry ?: MutableList(bySrcPerTag.size) {
+            LinkedHashMap<String, MediaItem>()
+        }
+        val fetched = fetchGrid(bySrcPerTag, sources, page, semaphore)
+        fetched.forEachIndexed { tagIndex, perSource ->
+            perSource.values.flatten().forEach { item ->
+                val key = TagQuery.identityKey(item.title)
+                    .ifEmpty { "${item.sourceId}:${item.id}" }
+                unionPerTag[tagIndex].putIfAbsent(key, item)
+            }
+        }
+        val matched = TagQuery.intersect(unionPerTag.map { it.values.toList() })
+        onPartial(matched)
+        return StrictResult(matched, unionPerTag)
+    }
+
+    /**
+     * 组合关键词直搜：把多个标签拼成一次查询，抓**指定一页**（v1.8.1.2 分页化）。
+     *
+     * 哪个源先返回就先追加（流式），用户点完几秒就能看到第一批。
      */
     private suspend fun searchCombinedKeyword(
         sources: List<String>,
         keyword: String,
         semaphore: Semaphore,
+        page: Int = 1,
+        onPartial: (List<MediaItem>) -> Unit = {},
     ): List<MediaItem> = coroutineScope {
         val url = TagEntryUrl.search(keyword)
+        val accumulated = mutableListOf<MediaItem>()
+        val lock = Any()
         addProgressTotal(sources.size)
         sources.map { sourceId ->
             async {
-                semaphore.withPermit {
+                val items = semaphore.withPermit {
                     try {
-                        exploreTagEntry(sourceId, url, 1)
+                        exploreTagEntry(sourceId, url, page)
                     } finally {
                         stepProgress()
                     }
                 }
+                if (items.isNotEmpty()) {
+                    val snapshot = synchronized(lock) {
+                        accumulated.addAll(items)
+                        accumulated.distinctBy { "${it.sourceId}:${it.id}" }
+                    }
+                    onPartial(snapshot)
+                }
+                items
             }
-        }.awaitAll().flatten().distinctBy { "${it.sourceId}:${it.id}" }
+        }.awaitAll()
+        synchronized(lock) { accumulated.distinctBy { "${it.sourceId}:${it.id}" } }
     }
+
+    /** 该入口是否**只能按关键词搜**（源站没给这个标签真实分类页）。 */
+    private fun isSearchEntry(entry: Pair<String, String>): Boolean =
+        TagEntryUrl.searchKeywordOf(entry.second) != null ||
+            TagEntryUrl.categoryOf(entry.second)?.kind == "search"
 
     /**
      * 每个源只保留 [MAX_URLS_PER_SOURCE] 条入口。
@@ -548,25 +821,11 @@ class TagSearchViewModel(
             if (list.size <= MAX_URLS_PER_SOURCE) {
                 list
             } else {
-                list.sortedBy { entry ->
-                    val isSearch = TagEntryUrl.searchKeywordOf(entry.second) != null ||
-                        TagEntryUrl.categoryOf(entry.second)?.kind == "search"
-                    if (isSearch) 1 else 0
-                }.take(MAX_URLS_PER_SOURCE)
+                list.sortedBy { entry -> if (isSearchEntry(entry)) 1 else 0 }
+                    .take(MAX_URLS_PER_SOURCE)
             }
         }
     }
-
-    /**
-     * 单个标签的并集：按归一化标题去重，保留首次出现的条目。
-     *
-     * 同一部作品在多个源 / 多个同义入口下会重复出现，先按标题收敛，交集判定才不会被
-     * 重复项干扰；保留顺序 = 源顺序 + 页内顺序，结果稳定可复现。
-     */
-    private fun unionOf(items: List<MediaItem>): List<MediaItem> =
-        items.distinctBy { item ->
-            TagQuery.normalizeTitle(item.title).ifEmpty { "${item.sourceId}:${item.id}" }
-        }
 
     /** 并发抓取 `[标签][源]` 请求，所有参与源共享同一个并发限制。 */
     private suspend fun fetchGrid(
@@ -611,9 +870,21 @@ class TagSearchViewModel(
         }
     }
 
+    /**
+     * 单个标签请求，带**硬超时**（v1.8.1.1）。
+     *
+     * 标签搜索会同时打几十个源，只要有几个源卡住，整次搜索就被拖到它们超时为止 ——
+     * 这是「进度条走到 40/41 停住不动」的常见原因。这里给每个请求设上限，
+     * 超时就当这个源没有结果，先让用户看到其余源的内容。
+     */
     private suspend fun exploreTagEntry(sourceId: String, url: String, page: Int): List<MediaItem> =
         try {
-            contentRepository.explore(sourceId, url, page)
+            withTimeout(SEARCH_REQUEST_TIMEOUT_MS) {
+                contentRepository.explore(sourceId, url, page)
+            }
+        } catch (timeout: TimeoutCancellationException) {
+            android.util.Log.w("TagSearch", "标签请求超时（${SEARCH_REQUEST_TIMEOUT_MS}ms），sourceId=$sourceId")
+            emptyList()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
@@ -638,8 +909,39 @@ class TagSearchViewModel(
 
     companion object {
         private val WIDE_COMIC_SEARCH_TAGS = setOf("无码", "全彩")
-        private const val TAG_SEARCH_CONCURRENCY = 8
-        private const val WIDE_COMPOUND_CONCURRENCY = 16
+
+        /**
+         * 并发上限（v1.8.1.1 上调）。
+         *
+         * 标签搜索是「几十个源各发一次、彼此独立」的典型场景，串行等最慢的源毫无意义。
+         * 普通组合 8 → 12，宽标签（无码 / 全彩走组合直搜）16 → 32：
+         * 41 个源两批就能打完，配合单请求 8 秒硬超时，整体从分钟级压到十秒级。
+         */
+        private const val TAG_SEARCH_CONCURRENCY = 24
+        private const val WIDE_COMPOUND_CONCURRENCY = 32
+
+        /** 组合关键词直搜的并发（与严格求交并行时各占一半，避免互相抢占） */
+        private const val WIDE_COMBINED_CONCURRENCY = 16
+
+        /** 单标签搜索每个源抓几页（v1.8.1.1：原来只抓 1 页，结果太少） */
+        private const val SINGLE_TAG_PAGES = 2
+
+        /** 组合关键词直搜每个源抓几页 */
+        private const val COMBINED_SEARCH_PAGES = 2
+
+        /** 首次搜索完成后后台预取几页（v1.8.1.2） */
+        private const val PRELOAD_PAGES = 3
+
+        /**
+         * 单个标签请求的硬超时（v1.8.1.1）。
+         *
+         * 源站卡住时默认要等 20 秒，一个源就能把整次搜索拖到 20 秒以上；
+         * 8 秒拿不到就当作该源没有结果，先让用户看到其余源的内容。
+         */
+        private const val SEARCH_REQUEST_TIMEOUT_MS = 8_000L
+
+        /** 组合关键词结果的缓存有效期（10 分钟） */
+        private const val COMBINED_CACHE_TTL_MS = 10 * 60 * 1000L
 
         /**
          * 同一个标签下**每个源**最多保留几条入口（v1.8.1.0）。

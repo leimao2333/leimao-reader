@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.7.9.7"
+    const val CURRENT_VERSION = "1.7.9.8"
 
     /**
      * 更新日志。
@@ -25,6 +25,14 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.7.9.8",
+            date = "2026-10-18",
+            changes = listOf(
+                "**复合标签搜索改为严格交集**：只展示同一书源内同时命中所有标签的作品；缺失标签、无共同书源或无交集时返回空结果，不再回退到单标签并集。",
+                "**修复视频画面与状态栏重叠**：窗口播放时播放器整体从状态栏 Insets 下方开始布局，全屏时按系统栏显隐避让。",
+            ),
+        ),
         VersionEntry(
             version = "1.7.9.7",
             date = "2026-10-18",

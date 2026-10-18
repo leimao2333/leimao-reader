@@ -15,16 +15,11 @@ import com.novelreader.domain.model.MediaItem
  * 现在的口径是**同源交集**：先只保留「每个选中标签都有入口」的源（跨源同名作品
  * 本来就不是同一部帖子，算进来只是噪声），再在每个源内部求交集 ——
  * 源自己的分类体系下，一部作品可以同时属于多个标签，这才是「复合筛选」的本意。
- * 同一页找不到时由调用方翻到第 2 页继续找（见 `TagSearchViewModel`）。
+ * 调用方跨页累计各标签结果后再求交；交集为空就返回空结果，不退化成并集。
  *
  * 纯函数无 Android 依赖，方便单测。
  */
 object TagCompound {
-
-    data class RelaxedResult(
-        val items: List<MediaItem>,
-        val usedUnionFallback: Boolean,
-    )
 
     /**
      * 参与的源：**同时拥有全部标签入口**的源。
@@ -44,7 +39,7 @@ object TagCompound {
     }
 
     /**
-     * 同源交集：`byTag[i]` 是第 i 个标签的「源 → 该源这一页的结果」。
+     * 同源交集：`byTag[i]` 是第 i 个标签的「源 → 该源当前累计的结果」。
      *
      * 返回**同一源内**同时出现在所有标签结果里的作品（按标题归一化匹配），
      * 源之间按 [byTag] 第一个标签里的源顺序拼接、源内保持原顺序。
@@ -72,33 +67,6 @@ object TagCompound {
             }
             if (!ok) continue
             firstList.filterTo(out) { TagQuery.normalizeTitle(it.title) in keys }
-        }
-        return out
-    }
-
-    /**
-     * Keep strict matches when available; if every strict intersection is empty,
-     * return the deduplicated union so a compound query does not become a blank page.
-     */
-    fun withUnionFallback(
-        strictMatches: List<MediaItem>,
-        resultsPerTag: List<List<MediaItem>>,
-    ): RelaxedResult {
-        if (strictMatches.isNotEmpty()) return RelaxedResult(strictMatches, usedUnionFallback = false)
-        val sameTitle = TagQuery.intersect(resultsPerTag)
-        if (sameTitle.isNotEmpty()) return RelaxedResult(sameTitle, usedUnionFallback = false)
-        val union = merge(resultsPerTag)
-        return RelaxedResult(union, usedUnionFallback = union.isNotEmpty())
-    }
-
-    /** 合并多页结果，按 `sourceId + 条目 id` 去重、保序 */
-    fun merge(lists: List<List<MediaItem>>): List<MediaItem> {
-        val seen = HashSet<String>()
-        val out = mutableListOf<MediaItem>()
-        lists.forEach { list ->
-            list.forEach { item ->
-                if (seen.add(item.sourceId + "\u0000" + item.id)) out += item
-            }
         }
         return out
     }

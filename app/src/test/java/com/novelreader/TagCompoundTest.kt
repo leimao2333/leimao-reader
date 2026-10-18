@@ -4,7 +4,6 @@ import com.novelreader.core.util.TagCompound
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -94,38 +93,30 @@ class TagCompoundTest {
         assertTrue(TagCompound.intersectBySource(emptyList()).isEmpty())
     }
 
-    // ===== merge =====
+    @Test
+    fun `复合标签无交集时保持空结果而不回退并集`() {
+        val tagA = mapOf("s1" to listOf(item("无码作品", "s1", "1")))
+        val tagB = mapOf("s1" to listOf(item("全彩作品", "s1", "2")))
+        val result = TagCompound.intersectBySource(listOf(tagA, tagB))
+        assertTrue(result.isEmpty())
+    }
 
     @Test
-    fun `merge 按源与条目 id 去重保序`() {
-        val a = listOf(item("甲", "s1", "1"), item("乙", "s1", "2"))
-        val b = listOf(item("乙", "s1", "2"), item("丙", "s2", "3"))
+    fun `跨页累计后同源作品仍能匹配交集`() {
+        val tagAPages = listOf(
+            listOf(item("其他作品", "s1", "a1")),
+            listOf(item("同一作品", "s1", "a2")),
+        )
+        val tagBPages = listOf(
+            listOf(item("同一作品", "s1", "b1")),
+            listOf(item("另一个作品", "s1", "b2")),
+        )
+        val accumulatedTagA = mapOf("s1" to tagAPages.flatten())
+        val accumulatedTagB = mapOf("s1" to tagBPages.flatten())
         assertEquals(
-            listOf("甲", "乙", "丙"),
-            TagCompound.merge(listOf(a, b)).map { it.title },
+            listOf("同一作品"),
+            TagCompound.intersectBySource(listOf(accumulatedTagA, accumulatedTagB))
+                .map { it.title },
         )
-    }
-
-    @Test
-    fun `复合标签无交集时回退到去重并集避免空结果`() {
-        val tagA = listOf(item("无码作品", "s1", "1"))
-        val tagB = listOf(item("全彩作品", "s2", "2"))
-        val result = TagCompound.withUnionFallback(
-            strictMatches = emptyList(),
-            resultsPerTag = listOf(tagA, tagB),
-        )
-        assertTrue(result.usedUnionFallback)
-        assertEquals(listOf("无码作品", "全彩作品"), result.items.map { it.title })
-    }
-
-    @Test
-    fun `复合标签优先保留严格交集结果`() {
-        val strict = listOf(item("同一作品", "s1", "1"))
-        val result = TagCompound.withUnionFallback(
-            strictMatches = strict,
-            resultsPerTag = listOf(strict, listOf(item("其他作品", "s2", "2"))),
-        )
-        assertFalse(result.usedUnionFallback)
-        assertEquals(strict, result.items)
     }
 }

@@ -32,8 +32,8 @@ import kotlinx.coroutines.sync.withPermit
  * - 标签来自 [TagRepository] 自动收集的各源发现分类（落盘缓存，冷启动即有）；
  * - **热门标签**：按标签覆盖源数倒序，取 top [HOT_TAG_LIMIT] 展示在搜索页顶部；
  * - **单标签搜索**：聚合所有拥有该分类的源的第 1 页内容，跨源去重；
- * - **复合搜索**：先对所有共同源的前两页求交；交集为空时依次退回跨源同名匹配与
- *   标签结果并集，避免组合条件把页面变成空白；
+ * - **复合搜索**：对所有共同源的各标签结果跨页累计后严格求交；任一标签缺失或交集为空
+ *   时返回空结果，不将「任一标签命中」误当成复合命中；
  * - 视频结果把 18+ 成人源内容沉底（与首页/搜索一致）。
  */
 class TagSearchViewModel(
@@ -285,32 +285,28 @@ class TagSearchViewModel(
                     }
                 }.joinToString("；")
 
-                if (known.isEmpty()) {
+                if (missing.isNotEmpty()) {
                     _activeTags.value = emptyList()
                     _results.value = emptyList()
-                    _notice.value = "没有找到标签：${tags.joinToString("、")}（点右上角刷新标签试试）"
+                    _notice.value = listOfNotNull(
+                        translatedNotice.takeIf { it.isNotBlank() },
+                        "未找到标签：${missing.joinToString("、")}，复合搜索要求全部标签都存在（点右上角刷新标签试试）",
+                    ).joinToString("；")
                     return@launch
                 }
 
                 _notice.value = translatedNotice.takeIf { it.isNotBlank() }
                 val searchResult = if (knownEntries.size == 1) {
-                    TagCompound.RelaxedResult(
-                        searchOneTag(knownEntries[0], onPartial = updatePartialResults),
-                        usedUnionFallback = false,
-                    )
+                    searchOneTag(knownEntries[0], onPartial = updatePartialResults)
                 } else {
                     searchCompound(knownEntries, known, updatePartialResults)
                 }
                 if (generation != searchGeneration) return@launch
-                val final = filterAdults(searchResult.items, tags)
+                val final = filterAdults(searchResult, tags)
                 if (generation != searchGeneration) return@launch
                 _activeTags.value = known.map(TagAlias::canonicalOf).distinct()
                 _results.value = final
                 val tail = when {
-                    missing.isNotEmpty() ->
-                        "未找到标签：${missing.joinToString("、")}，已按其余标签搜索"
-                    searchResult.usedUnionFallback ->
-                        "没有作品同时匹配全部标签，已显示任一标签匹配的结果"
                     final.isNotEmpty() -> null
                     known.size > 1 -> "没有作品同时属于「${known.joinToString("」「")}」"
                     else -> "「${known.first()}」下暂无内容"
@@ -393,21 +389,15 @@ class TagSearchViewModel(
         }
 
     /**
-     * 复合标签：先取所有同时含标签入口的源做交集；若仍为空，退回跨源同名匹配，
-     * 最后显示任一标签命中的去重并集，避免复合搜索无结果时整页空白。
+     * 复合标签：仅搜索同时含全部标签入口的源，并对跨页累计的每标签结果严格求交。
      */
     private suspend fun searchCompound(
         entriesPerTag: List<List<Pair<String, String>>>,
         tags: List<String>,
         onPartial: (List<MediaItem>) -> Unit,
-    ): TagCompound.RelaxedResult {
+    ): List<MediaItem> {
         val participants = TagCompound.participants(entriesPerTag)
-        if (participants.isEmpty()) {
-            return TagCompound.withUnionFallback(
-                strictMatches = emptyList(),
-                resultsPerTag = entriesPerTag.map { searchOneTag(it) },
-            )
-        }
+        if (participants.isEmpty()) return emptyList()
 
         if (
             type == SourceType.COMIC &&
@@ -420,43 +410,35 @@ class TagSearchViewModel(
                     async {
                         searchOneTag(entries, semaphore) { items ->
                             partialPerTag[tagIndex] = items
-                            onPartial(TagCompound.merge(partialPerTag))
+                            onPartial(
+                                TagCompound.intersectBySource(
+                                    partialPerTag.map { tagItems -> tagItems.groupBy { it.sourceId } },
+                                ),
+                            )
                         }
                     }
                 }.awaitAll()
             }
             val byTagAndSource = results.map { items -> items.groupBy { it.sourceId } }
-            val strictMatches = TagCompound.intersectBySource(byTagAndSource)
-            return TagCompound.withUnionFallback(strictMatches, results)
+            return TagCompound.intersectBySource(byTagAndSource)
         }
 
         val bySrcPerTag = entriesPerTag.map { list ->
             list.groupBy({ it.first }, { it.second })
         }
         val candidatesPerTag = MutableList(entriesPerTag.size) { mutableListOf<MediaItem>() }
-        var collected: List<MediaItem> = emptyList()
-
         var page = 1
         while (page <= MAX_COMPOUND_PAGES) {
             val fetched = fetchGrid(bySrcPerTag, participants, page)
             fetched.forEachIndexed { tagIndex, perSource ->
                 candidatesPerTag[tagIndex].addAll(perSource.values.flatten())
             }
-            val hits = TagCompound.intersectBySource(fetched)
-            if (hits.isNotEmpty()) {
-                collected = TagCompound.merge(listOf(collected, hits))
-            }
             if (fetched.all { perSource -> perSource.values.all { it.isEmpty() } }) break
             page += 1
         }
-        if (collected.isNotEmpty()) {
-            return TagCompound.RelaxedResult(collected, usedUnionFallback = false)
-        }
-
-        return TagCompound.withUnionFallback(
-            strictMatches = emptyList(),
-            resultsPerTag = candidatesPerTag.map { items ->
-                items.distinctBy { "${it.sourceId}:${it.id}" }
+        return TagCompound.intersectBySource(
+            candidatesPerTag.map { items ->
+                items.distinctBy { "${it.sourceId}:${it.id}" }.groupBy { it.sourceId }
             },
         )
     }

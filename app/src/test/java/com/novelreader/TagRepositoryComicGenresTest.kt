@@ -1,6 +1,7 @@
 package com.novelreader
 
 import com.novelreader.core.util.ComicGenres
+import com.novelreader.core.util.NovelGenres
 import com.novelreader.core.util.TagEntryUrl
 import com.novelreader.data.cache.TagStore
 import com.novelreader.data.repository.TagRepository
@@ -74,10 +75,14 @@ class TagRepositoryComicGenresTest {
             emptyList()
     }
 
-    private fun info(id: String, name: String) = SourceInfo(
+    private fun info(
+        id: String,
+        name: String,
+        type: SourceType = SourceType.COMIC,
+    ) = SourceInfo(
         id = id,
         name = name,
-        type = SourceType.COMIC,
+        type = type,
         version = "1",
         author = "",
         desc = "",
@@ -168,6 +173,31 @@ class TagRepositoryComicGenresTest {
     }
 
     @Test
+    fun `小说标签池补充细分题材和同人原著检索`() = runBlocking {
+        val r = TagRepository(
+            contentRepository = FakeContent(
+                withCategories = listOf(
+                    info("novel_1", "测试小说源", SourceType.NOVEL) to emptyList(),
+                ),
+                searchable = listOf("novel_1", "novel_2"),
+            ),
+            store = TagStore(tmp.newFolder()),
+        )
+        val plan = r.refresh(SourceType.NOVEL)
+
+        NovelGenres.ALL.forEach { genre ->
+            assertTrue("小说题材 $genre 应进入标签池", plan.entriesFor(genre).isNotEmpty())
+        }
+        assertEquals(
+            listOf("novel_1", "novel_2"),
+            plan.entriesFor("同人").map { it.first },
+        )
+        val canon = plan.entriesFor("原著·原神")
+        assertEquals(listOf("novel_1", "novel_2"), canon.map { it.first })
+        assertTrue(canon.all { TagEntryUrl.searchKeywordOf(it.second) == "原神" })
+    }
+
+    @Test
     fun `全源轮转让每个漫画源都分到题材词`() = runBlocking {
         val many = (1..12).map { "venera_$it" }
         val r = repo(withCategories = emptyList(), searchable = many)
@@ -177,14 +207,15 @@ class TagRepositoryComicGenresTest {
     }
 
     @Test
-    fun `非漫画类型不加题材词`() = runBlocking {
+    fun `小说类型使用小说题材而非漫画题材词`() = runBlocking {
         val novelInfo = info("novel_1", "中文书城").copy(type = SourceType.NOVEL)
         val r = repo(
             withCategories = listOf(novelInfo to listOf(ExploreCategory("都市", "/dushi"))),
             searchable = listOf("novel_1"),
         )
         val plan = r.refresh(SourceType.NOVEL)
-        assertEquals(listOf("都市"), plan.tags)
+        assertTrue(plan.tags.contains("都市"))
+        assertTrue(NovelGenres.ALL.all { plan.tags.contains(it) })
         assertFalse(plan.tags.contains("热血"))
     }
 

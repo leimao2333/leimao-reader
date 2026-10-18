@@ -1,6 +1,8 @@
 package com.novelreader.data.cache
 
 import java.io.File
+import java.io.IOException
+import java.util.UUID
 
 /**
  * 标签快照：标签名 → 各源该标签分类的入口 (sourceId, url)。
@@ -165,11 +167,17 @@ class TagStore(private val dir: File) {
     fun save(typeName: String, plan: TagPlan) {
         runCatching {
             dir.mkdirs()
-            val tmp = File(dir, "$typeName.$LOGIC_VERSION.tmp")
-            tmp.writeText(plan.toJson())
-            if (!tmp.renameTo(fileOf(typeName))) {
-                // 个别文件系统 / Windows 下覆盖已存在文件会改名失败，退化为直接写
-                fileOf(typeName).writeText(plan.toJson())
+            val target = fileOf(typeName)
+            val tmp = File(dir, "$typeName.$LOGIC_VERSION.${UUID.randomUUID()}.tmp")
+            try {
+                tmp.writeText(plan.toJson())
+                if (!tmp.renameTo(target)) {
+                    val targetRemoved = !target.exists() || target.delete()
+                    if (!targetRemoved || !tmp.renameTo(target)) {
+                        throw IOException("Unable to replace tag cache: ${target.path}")
+                    }
+                }
+            } finally {
                 tmp.delete()
             }
             // 逻辑升级后顺手清掉旧版本的缓存文件（文件名带版本号，见 [fileOf]）
@@ -194,7 +202,8 @@ class TagStore(private val dir: File) {
          *
          * v4：v1.7.6.3 漫画题材词 182 → 394，且改为「全源轮转」绑定
          * （每个漫画源都能分到题材词，不再只限没有分类能力的前 8 个源）。
+         * v6：增加漫画/小说细分标签及同人原著检索入口。
          */
-        const val LOGIC_VERSION = 5
+        const val LOGIC_VERSION = 6
     }
 }

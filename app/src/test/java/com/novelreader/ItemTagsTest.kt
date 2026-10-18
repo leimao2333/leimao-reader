@@ -17,12 +17,15 @@ class ItemTagsTest {
 
     private fun item(
         type: SourceType,
+        title: String = "测试",
+        desc: String? = null,
         tags: List<String> = emptyList(),
         extras: Map<String, String> = emptyMap(),
     ) = MediaItem(
         id = "1",
-        title = "测试",
+        title = title,
         type = type,
+        desc = desc,
         tags = tags,
         extras = extras,
     )
@@ -154,7 +157,7 @@ class ItemTagsTest {
 
     @Test
     fun `超过上限按来源顺序截断`() {
-        val many = (1..20).map { "标签$it" }
+        val many = (1..40).map { "标签$it" }
         val out = ItemTags.of(item(SourceType.VIDEO, tags = many))
         assertEquals(ItemTags.MAX_TAGS, out.size)
         assertEquals("标签1", out.first())
@@ -218,5 +221,64 @@ class ItemTagsTest {
             desc = "一个吸血鬼与恋爱故事",
         )
         assertTrue("视频不应从简介补标签：${ItemTags.of(item)}", ItemTags.of(item).isEmpty())
+    }
+
+    @Test
+    fun `小说题材从标题和简介补充`() {
+        val out = ItemTags.of(
+            item(
+                SourceType.NOVEL,
+                title = "末世囤货：我的安全屋",
+                desc = "天灾降临后的末日生存与基建经营",
+            ),
+        )
+        assertTrue("应识别小说细分题材：$out", out.any { it in setOf("末世囤货", "囤货", "天灾", "末日生存", "基建") })
+    }
+
+    @Test
+    fun `同人作品自动附加通用原著和可识别原著名`() {
+        val out = ItemTags.of(
+            item(SourceType.COMIC, title = "原神同人：旅行者的日常"),
+        )
+        assertTrue("应自动添加同人标签：$out", out.contains("同人"))
+        assertTrue("应自动添加原著标签：$out", out.contains("原著"))
+        assertTrue("应识别原著作品：$out", out.contains("原著·原神"))
+    }
+
+    @Test
+    fun `普通作品仅提到原著名时不误标为同人`() {
+        val out = ItemTags.of(
+            item(SourceType.NOVEL, title = "原神世界观设定解析"),
+        )
+        assertTrue("普通介绍不应误标为同人：$out", out.none { it == "同人" || it == "原著" || it.startsWith("原著·") })
+    }
+
+    @Test
+    fun `源标签标记同人时可补识别的原著`() {
+        val out = ItemTags.of(
+            item(
+                SourceType.NOVEL,
+                title = "旅行者的故事",
+                extras = mapOf(ItemTags.EXTRAS_TAGS to "二次创作"),
+            ),
+        )
+        assertTrue(out.contains("同人"))
+        assertTrue(out.contains("原著"))
+    }
+
+    @Test
+    fun `标签数量达到上限时仍保留同人和原著`() {
+        val many = (1..30).map { "标签$it" }
+        val out = ItemTags.of(
+            item(
+                SourceType.COMIC,
+                title = "原神同人：旅行者",
+                tags = many,
+            ),
+        )
+        assertEquals(ItemTags.MAX_TAGS, out.size)
+        assertTrue(out.contains("同人"))
+        assertTrue(out.contains("原著"))
+        assertTrue(out.contains("原著·原神"))
     }
 }

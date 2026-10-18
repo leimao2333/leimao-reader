@@ -319,6 +319,8 @@ object LegadoRuleEngine {
             return evalFieldJs(js, preValue, baseUrl, root)
         }
 
+        xpathValues(root, expr, baseUrl)?.firstOrNull()?.let { return it }
+
         // @css: 直接选择器，支持 `@css:选择器@属性`（如 @css:img@src）
         if (expr.startsWith("@css:")) {
             val rest = expr.substringAfter("@css:")
@@ -814,18 +816,11 @@ object LegadoRuleEngine {
 
     /** 按单段规则收集字符串列表（属性去重、空值跳过，与 legado `getResultLast` 一致） */
     private fun collectStringList(root: Element, rule: String, baseUrl: String, out: MutableList<String>) {
-        // XPath：Jsoup 的 selectXpath 不支持 `/text()` 结尾，剥落后按文本取
-        var r = rule
-        if (r.startsWith("//") || r.startsWith("(/")) {
-            if (r.endsWith("/text()")) r = r.removeSuffix("/text()")
-            val els = runCatching { root.selectXpath(r) }.getOrNull() ?: return
-            els.forEach { el ->
-                val t = el.text().trim()
-                if (t.isNotEmpty() && t !in out) out.add(t)
-            }
+        xpathValues(root, rule, baseUrl)?.let { values ->
+            values.forEach { value -> if (value.isNotBlank() && value !in out) out.add(value) }
             return
         }
-        val segs = r.split('@').map { it.trim() }.filter { it.isNotEmpty() }
+        val segs = rule.split('@').map { it.trim() }.filter { it.isNotEmpty() }
         if (segs.isEmpty()) {
             val t = root.text().trim()
             if (t.isNotEmpty()) out.add(t)
@@ -848,6 +843,27 @@ object LegadoRuleEngine {
                 val t = el.text().trim()
                 if (t.isNotEmpty() && t !in out) out.add(t)
             }
+        }
+    }
+
+    private fun xpathValues(root: Element, rule: String, baseUrl: String): List<String>? {
+        val expression = rule.trim()
+        if (!expression.startsWith("//") && !expression.startsWith("(/")) return null
+
+        val attribute = Regex("/@([\\w:-]+)$").find(expression)?.groupValues?.get(1)
+        val selector = when {
+            attribute != null -> expression.removeSuffix("/@$attribute")
+            expression.endsWith("/text()") -> expression.removeSuffix("/text()")
+            else -> expression
+        }
+        val elements = runCatching { root.selectXpath(selector) }.getOrNull() ?: return emptyList()
+        return elements.mapNotNull { element ->
+            val value = if (attribute != null) {
+                extractTextOrAttr(element, attribute, baseUrl)
+            } else {
+                element.text()
+            }
+            value.trim().takeIf { it.isNotEmpty() }
         }
     }
 
@@ -1003,12 +1019,85 @@ object LegadoRuleEngine {
      * 两层卷各自带 chapterList，最终要的是所有章节的平铺列表。
      */
     fun selectJsonList(root: com.google.gson.JsonElement, path: String): List<com.google.gson.JsonElement> {
-        var cleaned = path.trim()
-        cleaned = Regex("^@json:", RegexOption.IGNORE_CASE).replace(cleaned, "").trim()
-        cleaned = cleaned.removePrefix("$").removePrefix(".").trim()
-        if (cleaned.isEmpty()) return listOf(root)
-        val tokens = cleaned.split(Regex("[.\\[\\]]")).filter { it.isNotBlank() }
+        val cleaned = Regex("^@json:", RegexOption.IGNORE_CASE).replace(path.trim(), "").trim()
+        val tokens = tokenizeJsonPath(cleaned) ?: return emptyList()
+        if (tokens.isEmpty()) return listOf(root)
         return walkJsonPath(root, tokens, 0)
+    }
+
+    private fun tokenizeJsonPath(path: String): List<String>? {
+        val tokens = mutableListOf<String>()
+        var i = if (path.startsWith("$")) 1 else 0
+        while (i < path.length) {
+            when (path[i]) {
+                '.' -> i++
+                '[' -> {
+                    i++
+                    while (i < path.length && path[i].isWhitespace()) i++
+                    if (i >= path.length) return null
+                    val quote = path[i].takeIf { it == '\'' || it == '"' }
+                    if (quote != null) {
+                        i++
+                        val key = StringBuilder()
+                        var closed = false
+                        while (i < path.length) {
+                            val char = path[i++]
+                            when {
+                                char == '\\' -> {
+                                    if (i >= path.length) return null
+                                    val escaped = path[i++]
+                                    if (escaped == 'u') {
+                                        if (i + 4 > path.length) return null
+                                        val code = path.substring(i, i + 4).toIntOrNull(16) ?: return null
+                                        key.append(code.toChar())
+                                        i += 4
+                                    } else {
+                                        key.append(
+                                            when (escaped) {
+                                                'b' -> '\b'
+                                                'f' -> '\u000C'
+                                                'n' -> '\n'
+                                                'r' -> '\r'
+                                                't' -> '\t'
+                                                else -> escaped
+                                            },
+                                        )
+                                    }
+                                }
+                                char == quote -> {
+                                    closed = true
+                                    break
+                                }
+                                else -> key.append(char)
+                            }
+                        }
+                        if (!closed) return null
+                        while (i < path.length && path[i].isWhitespace()) i++
+                        if (i >= path.length || path[i] != ']') return null
+                        i++
+                        tokens += key.toString()
+                    } else {
+                        val end = path.indexOf(']', i)
+                        if (end < 0) return null
+                        val token = path.substring(i, end).trim()
+                        if (token != "*" && token.toIntOrNull() == null) return null
+                        tokens += token
+                        i = end + 1
+                    }
+                }
+                '$' -> return null
+                else -> {
+                    val start = i
+                    while (i < path.length && path[i] != '.' && path[i] != '[') {
+                        if (path[i] == ']') return null
+                        i++
+                    }
+                    if (start == i) return null
+                    tokens += path.substring(start, i)
+                }
+            }
+        }
+        return tokens
     }
 
     private fun walkJsonPath(

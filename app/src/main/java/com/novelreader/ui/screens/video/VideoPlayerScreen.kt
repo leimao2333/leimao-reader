@@ -200,6 +200,7 @@ fun VideoPlayerScreen(
     DisposableEffect(Unit) {
         onDispose {
             viewModel.saveCurrentProgress()
+            viewModel.detachPlayer(player)
             player.release()
         }
     }

@@ -141,6 +141,7 @@ class NovelReaderViewModel(
     // ===== 章节信息 =====
     private var currentItem: MediaItem? = null
     private var currentChapter: ChapterItem? = null
+    private var chapterLoadJob: Job? = null
 
     private val _chapters = MutableStateFlow<List<ChapterItem>>(emptyList())
     val chapters: StateFlow<List<ChapterItem>> = _chapters.asStateFlow()
@@ -694,6 +695,8 @@ class NovelReaderViewModel(
      * 命中缓存时不显示 loading 遮罩，做到「切章秒开」。
      */
     private fun loadChapter(chapter: ChapterItem, forceRefresh: Boolean = false) {
+        chapterLoadJob?.cancel()
+        chapterLoadJob = null
         currentChapter = chapter
         _chapterTitle.value = cleanChapterTitle(chapter.title)
         _currentChapterIndex.value = chapter.index
@@ -712,7 +715,7 @@ class NovelReaderViewModel(
             }
         }
 
-        viewModelScope.launch {
+        chapterLoadJob = viewModelScope.launch {
             _loading.value = true
             _error.value = null
 
@@ -720,6 +723,7 @@ class NovelReaderViewModel(
                 val cached = runCatching {
                     chapterCacheRepository.getCached(item.sourceId, item.id, chapter.index)
                 }.getOrNull()
+                if (!isCurrentChapter(chapter)) return@launch
                 if (!cached.isNullOrBlank()) {
                     putMemory(chapter.index, cached)
                     applyContent(cached, fromCache = true)
@@ -732,6 +736,7 @@ class NovelReaderViewModel(
 
             runCatching { contentRepository.content(chapter) }
                 .onSuccess { result ->
+                    if (!isCurrentChapter(chapter)) return@onSuccess
                     val raw = result.novelText?.trim().orEmpty()
                     if (raw.isEmpty()) {
                         _content.value = ""
@@ -752,14 +757,21 @@ class NovelReaderViewModel(
                                 )
                             }.onSuccess { refreshCachedIndices() }
                         }
-                        saveProgress()
+                        if (isCurrentChapter(chapter)) saveProgress()
                     }
                 }
-                .onFailure { e -> _error.value = e.message ?: "加载失败" }
-            _loading.value = false
-            preloadAround(chapter.index)
+                .onFailure { e ->
+                    if (isCurrentChapter(chapter)) _error.value = e.message ?: "加载失败"
+                }
+            if (isCurrentChapter(chapter)) {
+                _loading.value = false
+                preloadAround(chapter.index)
+            }
         }
     }
+
+    private fun isCurrentChapter(chapter: ChapterItem): Boolean =
+        currentChapter?.let { it.index == chapter.index && it.url == chapter.url } == true
 
     /** 净化并落地正文 */
     private fun applyContent(raw: String, fromCache: Boolean) {

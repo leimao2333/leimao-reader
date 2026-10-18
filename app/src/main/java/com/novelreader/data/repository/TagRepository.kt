@@ -1,6 +1,8 @@
 package com.novelreader.data.repository
 
 import com.novelreader.core.util.ComicGenres
+import com.novelreader.core.util.FanworkTags
+import com.novelreader.core.util.NovelGenres
 import com.novelreader.core.util.TagEntryUrl
 import com.novelreader.data.cache.TagPlan
 import com.novelreader.data.cache.TagStore
@@ -86,8 +88,8 @@ class TagRepository(
                 plan.getOrPut(canonical) { mutableListOf() }.add(info.id to cat.url)
             }
         }
-        // v1.6.6.0：漫画补充通用题材词，绑到「按题材搜索」入口
-        attachComicGenres(type, plan)
+        // 通用题材词和同人原著词绑定到搜索入口，避免依赖源恰好配置分类页
+        attachSearchTags(type, plan)
         val snapshot = TagPlan(
             collectedAtMs = if (plan.isEmpty()) 0L else System.currentTimeMillis(),
             plan = plan,
@@ -115,19 +117,23 @@ class TagRepository(
      * 源已经有同名真实分类时**跳过**该源的搜索入口：既避免同一标签下同一个源
      * 出现两条（真分类 + 标题搜索），也避免把搜标题撞出来的无关作品混进分类结果。
      */
-    private suspend fun attachComicGenres(
+    private suspend fun attachSearchTags(
         type: SourceType,
         plan: LinkedHashMap<String, MutableList<Pair<String, String>>>,
     ) {
-        if (type != SourceType.COMIC) return
+        val searchTags = when (type) {
+            SourceType.COMIC -> ComicGenres.ALL.map { it to it } + FanworkTags.searchTags
+            SourceType.NOVEL -> NovelGenres.ALL.map { it to it } + FanworkTags.searchTags
+            SourceType.VIDEO -> return
+        }
         val pool = runCatching {
             contentRepository.searchableSourceIds(type, 0)
         }.getOrDefault(emptyList()).distinct()
         if (pool.isEmpty()) return
 
         var cursor = 0
-        for (genre in ComicGenres.ALL) {
-            val entries = plan.getOrPut(genre) { mutableListOf() }
+        for ((label, query) in searchTags) {
+            val entries = plan.getOrPut(label) { mutableListOf() }
             // 该题材已有足够入口（通常是多个源的真分类）→ 不再补搜索入口
             if (entries.size >= ComicGenres.MAX_SOURCES_PER_GENRE) continue
             val already = entries.mapTo(HashSet()) { it.first }
@@ -137,7 +143,7 @@ class TagRepository(
                 val sid = pool[(cursor + scanned) % pool.size]
                 scanned++
                 if (sid in already) continue
-                entries.add(sid to TagEntryUrl.search(genre))
+                entries.add(sid to TagEntryUrl.search(query))
                 need--
             }
             cursor = (cursor + scanned) % pool.size

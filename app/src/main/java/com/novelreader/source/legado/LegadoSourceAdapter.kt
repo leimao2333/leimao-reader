@@ -25,6 +25,8 @@ import org.jsoup.Jsoup
 class LegadoSourceAdapter(
     override val info: SourceInfo,
     private val source: LegadoBookSource,
+    private val requestTimeoutMs: Long? = null,
+    private val retryRequests: Boolean = false,
 ) : SourceAdapter {
 
     private val headers: Map<String, String> = source.parseHeaders()
@@ -103,9 +105,25 @@ class LegadoSourceAdapter(
                 } else {
                     "application/x-www-form-urlencoded"
                 }
-                HttpClient.post(url, body, reqHeaders, charset, contentType)
+                HttpClient.post(
+                    url,
+                    body,
+                    reqHeaders,
+                    charset,
+                    contentType,
+                    timeoutMs = requestTimeoutMs,
+                    retry = retryRequests,
+                    callTimeoutMs = requestTimeoutMs,
+                )
             } else {
-                HttpClient.get(url, reqHeaders, charset)
+                HttpClient.get(
+                    url,
+                    reqHeaders,
+                    charset,
+                    timeoutMs = requestTimeoutMs,
+                    retry = retryRequests,
+                    callTimeoutMs = requestTimeoutMs,
+                )
             }
         }.getOrNull()
         if (content.isNullOrBlank()) return emptyList()
@@ -1864,9 +1882,25 @@ class LegadoSourceAdapter(
                 } else {
                     "application/x-www-form-urlencoded"
                 }
-                HttpClient.post(url, opts.body, h, opts.charset, contentType)
+                HttpClient.post(
+                    url,
+                    opts.body,
+                    h,
+                    opts.charset,
+                    contentType,
+                    timeoutMs = requestTimeoutMs,
+                    retry = retryRequests,
+                    callTimeoutMs = requestTimeoutMs,
+                )
             } else {
-                HttpClient.get(url, h, opts.charset)
+                HttpClient.get(
+                    url,
+                    h,
+                    opts.charset,
+                    timeoutMs = requestTimeoutMs,
+                    retry = retryRequests,
+                    callTimeoutMs = requestTimeoutMs,
+                )
             }
         }.getOrNull()
     }

@@ -227,7 +227,7 @@ object TagAlias {
     fun aliasesOf(tag: String): Set<String> {
         val key = norm(tag)
         val group = groupOf[key]
-        if (group == null) return setOf()
+        if (group == null) return setOf(key)
         val out = LinkedHashSet<String>()
         out.add(key)
         group.forEach { out.add(norm(it)) }

@@ -107,6 +107,7 @@ class VideoPlayerViewModel(
     /** ExoPlayer 实例（由 UI 层绑定到 PlayerView） */
     var player: ExoPlayer? = null
         private set
+    private var playerListener: Player.Listener? = null
 
     private val _state = MutableStateFlow(VideoPlaybackState())
     val state: StateFlow<VideoPlaybackState> = _state.asStateFlow()
@@ -323,8 +324,10 @@ class VideoPlayerViewModel(
      * 绑定 UI 层创建的 ExoPlayer（其生命周期由 Composable 管理）。
      */
     fun attachPlayer(player: ExoPlayer) {
+        if (this.player === player && playerListener != null) return
+        detachPlayer(this.player)
         this.player = player
-        player.addListener(object : Player.Listener {
+        val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _state.update { it.copy(isPlaying = isPlaying) }
             }
@@ -350,9 +353,21 @@ class VideoPlayerViewModel(
             override fun onTracksChanged(tracks: Tracks) {
                 collectQualityTracks()
             }
-        })
+        }
+        playerListener = listener
+        player.addListener(listener)
         player.setPlaybackSpeed(normalSpeed)
         startTicker()
+    }
+
+    /** 移除播放器监听并解除引用；播放器实例由 UI 层创建和释放。 */
+    fun detachPlayer(player: ExoPlayer?) {
+        if (player == null || this.player !== player) return
+        playerListener?.let(player::removeListener)
+        playerListener = null
+        this.player = null
+        tickerJob?.cancel()
+        tickerJob = null
     }
 
     /**
@@ -1248,8 +1263,7 @@ class VideoPlayerViewModel(
         boostJob?.cancel()
         prefetchJob?.cancel()
         lineProbeJob?.cancel()
-        player?.release()
-        player = null
+        detachPlayer(player)
     }
 
     companion object {

@@ -24,7 +24,7 @@ import com.novelreader.domain.model.SourceType
 object ItemTags {
 
     /** 单个条目最多展示几个标签（小栏展开后也沿用，防止异常源刷屏） */
-    const val MAX_TAGS = 12
+    const val MAX_TAGS = 24
 
     /**
      * 从标题 / 简介里**补充**的标签上限（v1.7.9.0）。
@@ -32,7 +32,7 @@ object ItemTags {
      * 源自带标签优先（语义最准），这里只补不足的部分，避免简介里随口提到的词
      * 把真实题材挤掉。
      */
-    private const val MAX_ENRICH_TAGS = 6
+    private const val MAX_ENRICH_TAGS = 12
 
     /**
      * [MediaItem.extras] 里「源自带标签」的键（逗号分隔，v1.7.0.0）。
@@ -83,6 +83,7 @@ object ItemTags {
         // 不少源只给 0~1 个标签，只靠 extras 时详情页标签栏几乎空白；
         // 标题（「转生成为史莱姆」「魔王与勇者的日常」）与简介本身就写着题材。
         // 只对小说 / 漫画做 —— 影视简介多是剧情复述，抽出来噪声更大。
+        var requiredFanworkTags = emptyList<String>()
         if (item.type == SourceType.NOVEL || item.type == SourceType.COMIC) {
             val text = buildString {
                 append(item.title)
@@ -91,10 +92,17 @@ object ItemTags {
                     append(it)
                 }
             }
+            requiredFanworkTags = FanworkTags.derive(text, out)
+            requiredFanworkTags.forEach { out.add(it) }
             ComicTagLexicon.match(text, limit = MAX_ENRICH_TAGS, exclude = out)
                 .forEach { out.add(it) }
         }
-        if (out.size > MAX_TAGS) return out.take(MAX_TAGS)
+        if (out.size > MAX_TAGS) {
+            if (requiredFanworkTags.isEmpty()) return out.take(MAX_TAGS)
+            val required = requiredFanworkTags.filter { it in out }
+            return (out.filterNot { it in required }.take(MAX_TAGS - required.size) + required)
+                .take(MAX_TAGS)
+        }
         return out.toList()
     }
 

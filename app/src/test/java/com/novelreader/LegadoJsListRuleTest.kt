@@ -1,6 +1,7 @@
 package com.novelreader
 
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import com.novelreader.domain.model.SourceFormat
 import com.novelreader.domain.model.SourceInfo
 import com.novelreader.domain.model.SourceType
@@ -31,6 +32,63 @@ import org.junit.Test
  *   终态数组无 `[*]` 按元素换行拼接。
  */
 class LegadoJsListRuleTest {
+
+    @Test
+    fun `JSONPath 支持带点号和方括号的引号键`() {
+        val root = JsonParser.parseString(
+            """{"data":{"book.info":{"chapter[list]":[{"title":"第一章"}]}}}""",
+        )
+        val values = LegadoRuleEngine.selectJsonList(
+            root,
+            "$.data['book.info']['chapter[list]'][*]",
+        )
+        assertEquals(1, values.size)
+        assertEquals("第一章", values.single().asJsonObject.get("title").asString)
+    }
+
+    @Test
+    fun `JSONPath 支持双引号键及空格`() {
+        val root = JsonParser.parseString("""{"data":{"book title":{"name":"样本"}}}""")
+        val values = LegadoRuleEngine.selectJsonList(root, """$["data"]["book title"]["name"]""")
+        assertEquals("样本", values.single().asString)
+    }
+
+    @Test
+    fun `JSONPath 支持 Unicode 转义的属性名`() {
+        val root = JsonParser.parseString("""{"key name":"转义值"}""")
+        val values = LegadoRuleEngine.selectJsonList(root, """$['key\u0020name']""")
+        assertEquals("转义值", values.single().asString)
+    }
+
+    @Test
+    fun `JSONPath 对不支持的过滤表达式返回空列表`() {
+        val root = JsonParser.parseString("""{"items":[{"id":1},{"id":2}]}""")
+        assertTrue(LegadoRuleEngine.selectJsonList(root, "$.items[?(@.id==2)]").isEmpty())
+    }
+
+    @Test
+    fun `XPath 目录地址选择器提取 href 属性`() {
+        val html = """<html><body>
+            <a class="read start" href="/chapter/155711">免费试读</a>
+            <a class="read" href="/book/155711/14051836">继续阅读</a>
+        </body></html>"""
+        val rule = """//*[@class="read start"]/@href"""
+
+        assertEquals(
+            "/chapter/155711",
+            LegadoRuleEngine.extractString(html, rule, "https://www.heiyan.com/book/155711"),
+        )
+        assertEquals(
+            listOf("/chapter/155711"),
+            LegadoRuleEngine.extractStringList(html, rule, "https://www.heiyan.com/book/155711"),
+        )
+    }
+
+    @Test
+    fun `XPath 文本选择器提取 text 节点`() {
+        val html = """<html><body><a class="read" href="/chapter/1">第一章</a></body></html>"""
+        assertEquals("第一章", LegadoRuleEngine.extractString(html, """//a[@class="read"]/text()"""))
+    }
 
     private fun adapter(): LegadoSourceAdapter {
         val src = LegadoBookSource.parseOne(

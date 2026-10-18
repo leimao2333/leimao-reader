@@ -25,7 +25,7 @@ import java.io.File
  *
  * 环境变量 / 项目属性：
  * - `LEIMAO_DIAG=1`               必须，否则跳过
- * - `LEIMAO_DIAG_FILE`            源包路径（默认 ../leimao-sources/legado-all.json）
+ * - `LEIMAO_DIAG_FILE`            源包路径或聚合清单 URL（默认 all.json）
  * - `LEIMAO_DIAG_ONLY`            源名过滤，逗号分隔包含匹配；缺省 = 全部
  * - `LEIMAO_DIAG_KEYWORD`         搜索词，默认「斗破苍穹」
  * - `LEIMAO_DIAG_DIR`             转储目录（默认 build/toc-diag）
@@ -37,19 +37,23 @@ class SourceTocDiagTest {
     fun `诊断目录为空`() {
         println("TOC_DIAG_ENV=" + System.getenv().filterKeys { it.startsWith("LEIMAO") })
         assumeTrue("需要 LEIMAO_DIAG=1", System.getenv("LEIMAO_DIAG") == "1")
-        val path = System.getenv("LEIMAO_DIAG_FILE") ?: "../leimao-sources/legado-all.json"
-        val file = File(path).absoluteFile
-        assumeTrue("找不到源文件：${file.path}", file.exists())
+        val path = System.getenv("LEIMAO_DIAG_FILE")
+        val loaded = runCatching { SourceBundleTestSupport.loadLegado(path) }
+            .getOrElse { throw AssertionError("无法加载书源清单：${it.message}", it) }
         val only = System.getenv("LEIMAO_DIAG_ONLY")?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
         val keyword = System.getenv("LEIMAO_DIAG_KEYWORD") ?: "斗破苍穹"
         val dir = File(System.getenv("LEIMAO_DIAG_DIR") ?: "build/toc-diag").absoluteFile
         val books = System.getenv("LEIMAO_DIAG_BOOKS")?.toIntOrNull() ?: 2
         dir.mkdirs()
 
-        val all = LegadoBookSource.parseList(file.readText())
+        val all = loaded.sources
         val targets = if (only.isNullOrEmpty()) all else all.filter { s -> only.any { s.name.contains(it) } }
         assumeTrue("没有匹配的源", targets.isNotEmpty())
-        println("TOC_DIAG targets=${targets.size} keyword=$keyword dir=${dir.path}")
+        println(
+            "TOC_DIAG manifest=${loaded.manifestUrl} manifestMs=${loaded.manifestMs} " +
+                "legadoBundleMs=${loaded.legadoBundleMs} targets=${targets.size} " +
+                "keyword=$keyword dir=${dir.path}",
+        )
 
         val summary = StringBuilder()
         runBlocking {
@@ -75,13 +79,13 @@ class SourceTocDiagTest {
             2 -> SourceType.COMIC; 3 -> SourceType.VIDEO; else -> SourceType.NOVEL
         }
         val info = SourceInfo(
-            id = "diag_${src.name.hashCode()}",
+            id = SourceBundleTestSupport.sourceId(src, "diag"),
             name = src.name,
             type = st,
             baseUrl = src.url,
             format = SourceFormat.LEGADO,
         )
-        val ad = LegadoSourceAdapter(info, src)
+        val ad = LegadoSourceAdapter(info, src, requestTimeoutMs = 20_000)
         val tag = src.name.replace(Regex("[^\\w一-龥]+"), "_")
         val items: List<MediaItem> = runCatching {
             withTimeoutOrNull(20_000) { ad.search(keyword, 1) }
@@ -169,9 +173,17 @@ class SourceTocDiagTest {
                         url, body ?: "", headers, charset,
                         if ((body ?: "").trimStart().startsWith("{")) "application/json; charset=utf-8"
                         else "application/x-www-form-urlencoded",
+                        timeoutMs = 20_000,
+                        callTimeoutMs = 20_000,
                     )
                 } else {
-                    com.novelreader.core.network.HttpClient.get(url, headers, charset)
+                    com.novelreader.core.network.HttpClient.get(
+                        url,
+                        headers,
+                        charset,
+                        timeoutMs = 20_000,
+                        callTimeoutMs = 20_000,
+                    )
                 }
             }
         }.getOrNull()

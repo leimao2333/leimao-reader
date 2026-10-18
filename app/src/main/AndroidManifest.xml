@@ -41,7 +41,7 @@
         <!-- 更新 APK 安装的 FileProvider（v1.5.4.0） -->
         <provider
             android:name="androidx.core.content.FileProvider"
-            android:authorities="com.novelreader.fileprovider"
+            android:authorities="${applicationId}.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">
             <meta-data

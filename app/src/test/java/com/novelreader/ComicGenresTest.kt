@@ -54,7 +54,8 @@ class ComicGenresTest {
         //   武侠古风 / 悬疑猎奇 拆出细分标签，让标签页能按细粒度找书）
         // v1.7.6.3：182 → 394（补精灵 / 兽人 / 魔王 / 勇者 / 魔法少女 等奇幻、
         //   异世界、角色属性、娱乐圈、无限流、刑侦、生活经营等词）
-        assertEquals(394, ComicGenres.ALL.size)
+        // v1.7.10.0：394 → 479 个去重词（补充关系、场景和细分类型）
+        assertEquals(479, ComicGenres.ALL.size)
         assertEquals(ComicGenres.ALL.size, ComicGenres.ALL.distinct().size)
         assertTrue(ComicGenres.ALL.all { it.isNotBlank() })
     }

@@ -8,6 +8,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * 标签磁盘缓存测试（v1.5.10.0）。
@@ -155,6 +157,31 @@ class TagStoreTest {
         store.save("NOVEL", TagPlan(collectedAtMs = 1L, plan = linkedMapOf("都市" to listOf("s" to "u"))))
         val loaded = store.load("NOVEL")
         assertEquals(listOf("都市"), loaded?.tags)
+    }
+
+    @Test
+    fun `并发 save 使用独立临时文件并保留有效缓存`() {
+        val dir = tmp.newFolder()
+        val store = TagStore(dir)
+        val pool = Executors.newFixedThreadPool(8)
+        try {
+            val saves = (1..32).map { index ->
+                pool.submit {
+                    store.save(
+                        "NOVEL",
+                        TagPlan(
+                            collectedAtMs = index.toLong(),
+                            plan = linkedMapOf("标签$index" to listOf("s$index" to "u$index")),
+                        ),
+                    )
+                }
+            }
+            saves.forEach { it.get(10, TimeUnit.SECONDS) }
+            assertTrue(store.load("NOVEL")?.plan?.keys?.singleOrNull()?.startsWith("标签") == true)
+            assertTrue(dir.listFiles().orEmpty().none { it.name.endsWith(".tmp") })
+        } finally {
+            pool.shutdownNow()
+        }
     }
 
     // ===== v1.6.2.0 标签名清洗 =====

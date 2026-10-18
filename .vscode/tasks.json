@@ -1,0 +1,33 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Android：构建 Debug APK",
+      "detail": "编译 Android 调试版 APK，产物位于 app/build/outputs/apk/debug/app-debug.apk。",
+      "type": "shell",
+      "command": "${workspaceFolder}\\gradlew.bat",
+      "args": [
+        "assembleDebug"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [],
+      "inAgents": true,
+      "runOptions": {
+        "runOn": "worktreeCreated"
+      }
+    },
+    {
+      "label": "Android：安装到已连接设备",
+      "detail": "将调试版 APK 安装到已连接并开启 USB 调试的 Android 设备或模拟器。",
+      "type": "shell",
+      "command": "${workspaceFolder}\\gradlew.bat",
+      "args": [
+        "installDebug"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}

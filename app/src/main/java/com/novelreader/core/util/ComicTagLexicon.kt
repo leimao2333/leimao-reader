@@ -9,7 +9,7 @@ package com.novelreader.core.util
  * （「转生成为史莱姆」「魔王与勇者的日常」「被吸血鬼养大的我」…）。
  *
  * 词表不另起一套：直接复用两处已有配置 ——
- * - [ComicGenres.ALL]：394 个中文本地题材词；
+ * - [ComicGenres.ALL] 与 [NovelGenres.ALL]：漫画和小说题材词；
  * - [TagAlias.GROUPS]：96 组同义译名（含英文 / 日文 / 韩文）。
  * 所以「精灵」的抽取能命中 `elf` / `エルフ` / `요정` / `妖精` 四种写法。
  *
@@ -79,6 +79,7 @@ object ComicTagLexicon {
         }
         // 再补 ComicGenres 里的长尾中文题材词（同名词已存在则跳过）
         for (genre in ComicGenres.ALL) register(genre, genre)
+        for (genre in NovelGenres.ALL) register(genre, genre)
     }
         // 长词优先：先命中「魔法少女」再命中「魔法」，避免被短词抢占
         .sortedByDescending { it.key.length }

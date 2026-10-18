@@ -86,6 +86,7 @@ object HttpClient {
         charset: String? = null,
         timeoutMs: Long? = null,
         retry: Boolean = false,
+        callTimeoutMs: Long? = null,
     ): String {
         val builder = Request.Builder()
             .url(url)
@@ -94,7 +95,7 @@ object HttpClient {
         // 注意：不要手动设置 Accept-Encoding，让 OkHttp 透明处理 gzip 解压
         headers.forEach { (k, v) -> builder.header(k, v) }
 
-        return execute(builder.build(), charset, timeoutMs, retry)
+        return execute(builder.build(), charset, timeoutMs, retry, callTimeoutMs)
     }
 
     /**
@@ -112,6 +113,9 @@ object HttpClient {
         headers: Map<String, String> = emptyMap(),
         charset: String? = null,
         contentType: String = "application/x-www-form-urlencoded",
+        timeoutMs: Long? = null,
+        retry: Boolean = false,
+        callTimeoutMs: Long? = null,
     ): String {
         val reqCharset = charset?.let { runCatching { java.nio.charset.Charset.forName(it) }.getOrNull() }
             ?: Charsets.UTF_8
@@ -124,7 +128,7 @@ object HttpClient {
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
         headers.forEach { (k, v) -> builder.header(k, v) }
 
-        return execute(builder.build(), charset)
+        return execute(builder.build(), charset, timeoutMs, retry, callTimeoutMs)
     }
 
     /**
@@ -150,9 +154,10 @@ object HttpClient {
         charset: String?,
         timeoutMs: Long? = null,
         retry: Boolean = false,
+        callTimeoutMs: Long? = null,
     ): String {
         val call = when {
-            timeoutMs != null -> clientWithTimeout(timeoutMs, retry).newCall(request)
+            timeoutMs != null -> clientWithTimeout(timeoutMs, retry, callTimeoutMs).newCall(request)
             // v1.7.1.0：timeoutMs == null 时也尊重 retry=false，避免死源被 3 次重试放大
             retry -> client.newCall(request)
             else -> clientNoRetry.newCall(request)
@@ -182,11 +187,18 @@ object HttpClient {
      */
     private val timeoutClients = ConcurrentHashMap<String, OkHttpClient>()
 
-    private fun clientWithTimeout(timeoutMs: Long, retry: Boolean = true): OkHttpClient =
-        timeoutClients.getOrPut("$timeoutMs|$retry") {
+    private fun clientWithTimeout(
+        timeoutMs: Long,
+        retry: Boolean = true,
+        callTimeoutMs: Long? = null,
+    ): OkHttpClient =
+        timeoutClients.getOrPut("$timeoutMs|$retry|$callTimeoutMs") {
             client.newBuilder()
                 .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
                 .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                .apply {
+                    callTimeoutMs?.takeIf { it > 0L }?.let { callTimeout(it, TimeUnit.MILLISECONDS) }
+                }
                 .apply {
                     if (!retry) interceptors().removeAll { it is RetryInterceptor }
                 }
@@ -392,37 +404,44 @@ object HttpClient {
      * 网络错误（IOException，含 SSL 握手失败）自动重试，最多 [maxRetry] 次。
      * 每次重试前短暂等待，避免对 CDN 节点造成连续冲击。
      */
-    private class RetryInterceptor(private val maxRetry: Int) : Interceptor {
+    internal class RetryInterceptor(
+        private val maxRetry: Int,
+        private val backoffMillis: (retryNumber: Int, serverError: Boolean) -> Long = { retryNumber, serverError ->
+            (if (serverError) 500L else 800L) * retryNumber
+        },
+    ) : Interceptor {
         override fun intercept(chain: Interceptor.Chain): Response {
             val request = chain.request()
-            var response: Response? = null
-            var exception: Exception? = null
-            var retryCount = 0
+            var retryNumber = 0
+            while (true) {
+                if (chain.call().isCanceled()) throw IOException("请求已取消")
 
-            while (retryCount <= maxRetry) {
-                try {
-                    response = chain.proceed(request)
-                    if (response.isSuccessful) {
-                        return response
-                    }
-                    // 5xx 服务端错误也可重试
-                    if (response.code < 500) {
-                        return response
-                    }
-                    response.close()
-                    response = null
-                    retryCount++
-                    Thread.sleep(500L * retryCount)
-                } catch (e: Exception) {
-                    exception = e
-                    // SSL 握手失败/连接重置/超时均可重试
-                    retryCount++
-                    Thread.sleep(800L * retryCount)
+                val response = try {
+                    chain.proceed(request)
+                } catch (e: IOException) {
+                    if (chain.call().isCanceled() || retryNumber >= maxRetry) throw e
+                    retryNumber++
+                    waitBeforeRetry(retryNumber, serverError = false, e)
+                    continue
                 }
+
+                // 5xx 服务端错误也可重试，但最后一次响应必须交还调用方处理。
+                if (response.isSuccessful || response.code < 500 || retryNumber >= maxRetry) {
+                    return response
+                }
+                response.close()
+                retryNumber++
+                waitBeforeRetry(retryNumber, serverError = true)
             }
-            if (response != null) return response
-            val reason = exception?.let { "${it.javaClass.simpleName}: ${it.message}" } ?: "未知错误"
-            throw NetworkException("网络请求失败：$reason")
+        }
+
+        private fun waitBeforeRetry(retryNumber: Int, serverError: Boolean, cause: IOException? = null) {
+            try {
+                Thread.sleep(backoffMillis(retryNumber, serverError).coerceAtLeast(0L))
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw IOException("网络重试等待被中断", cause ?: e)
+            }
         }
     }
 }

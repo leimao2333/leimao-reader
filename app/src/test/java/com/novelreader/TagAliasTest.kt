@@ -74,6 +74,11 @@ class TagAliasTest {
     }
 
     @Test
+    fun `未登记标签返回规范化后的自身`() {
+        assertEquals(setOf("newgenre"), TagAlias.aliasesOf(" New   Genre "))
+    }
+
+    @Test
     fun `每个别名只属于一个等价组`() {
         // groupOf 构建时「后写覆盖前写」，同一个词出现在两组会让 aliasesOf 变成非对称
         // （例如「日语」含 raw、而「生肉」不含日语），复合搜索还可能把不同概念误合并。

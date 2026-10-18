@@ -1,6 +1,7 @@
 package com.novelreader.data.cache
 
 import com.novelreader.core.util.TagAlias
+import com.novelreader.core.util.TagEntryUrl
 import java.io.File
 import java.io.IOException
 import java.util.UUID
@@ -60,6 +61,29 @@ data class TagPlan(
             .minByOrNull { it.key.length }
         return fuzzy?.value.orEmpty()
     }
+
+    /** 搜索入口扩展为该标签组的所有写法；源站真实分类入口保持不变。 */
+    fun searchEntriesFor(tag: String, query: String = tag): List<Pair<String, String>> =
+        entriesFor(tag).flatMap { (sourceId, url) ->
+            val terms = TagAlias.searchTermsFor(query)
+            val category = TagEntryUrl.categoryOf(url)
+            when {
+                TagEntryUrl.searchKeywordOf(url) != null ->
+                    terms.map { term -> sourceId to TagEntryUrl.search(term) }
+                category?.kind == "search" -> {
+                    terms.map { term ->
+                        sourceId to TagEntryUrl.category(
+                            name = category.name,
+                            param = category.param,
+                            options = category.options,
+                            keyword = term,
+                            kind = "search",
+                        )
+                    }
+                }
+                else -> listOf(sourceId to url)
+            }
+        }.distinct()
 
     /** Gson 载体：Pair 不走反射构造，用两层字符串数组 */
     private data class Dto(val collectedAtMs: Long, val plan: Map<String, List<List<String>>>)

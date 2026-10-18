@@ -158,6 +158,18 @@ class TagAliasTest {
     }
 
     @Test
+    fun `搜索同义标签时保留输入并返回整组原始写法`() {
+        val terms = TagAlias.searchTermsFor("無修正")
+
+        assertEquals("無修正", terms.first())
+        assertTrue("无码" in terms)
+        assertTrue("无修正" in terms)
+        assertTrue("無修正" in terms)
+        assertTrue("uncensored" in terms)
+        assertEquals(terms.size, terms.distinctBy { it.filterNot { char -> char.isWhitespace() }.lowercase() }.size)
+    }
+
+    @Test
     fun `全彩跨中英日韩写法归一到中文`() {
         listOf(
             "彩色版", "Full Colored", "Official Colored", "Fan Colored", "colour",

@@ -1,6 +1,7 @@
 package com.novelreader
 
 import com.novelreader.core.util.TagAlias
+import com.novelreader.core.util.TagEntryUrl
 import com.novelreader.core.util.TagQuery
 import com.novelreader.data.cache.TagPlan
 import com.novelreader.data.cache.TagStore
@@ -76,6 +77,44 @@ class TagStoreTest {
         val plan = samplePlan()
         assertEquals(2, plan.entriesFor("玄幻").size)
         assertEquals(0, plan.entriesFor("科幻").size)
+    }
+
+    @Test
+    fun `searchEntriesFor 扩展同义搜索词但不改动真实分类入口`() {
+        val plan = TagPlan(
+            plan = linkedMapOf(
+                "无码" to listOf("search_source" to TagEntryUrl.search("无码")),
+                "無修正" to listOf(
+                    "category_source" to "https://example.com/category/uncensored",
+                    "fallback_source" to TagEntryUrl.category(
+                        name = "无修正",
+                        param = "all",
+                        keyword = "无码",
+                        kind = "search",
+                    ),
+                ),
+            ),
+        )
+
+        val entries = plan.searchEntriesFor("无码", "無修正")
+
+        assertEquals("search::無修正", entries.first { it.first == "search_source" }.second)
+        assertTrue(entries.contains("search_source" to TagEntryUrl.search("无码")))
+        assertTrue(entries.contains("search_source" to TagEntryUrl.search("无修正")))
+        assertTrue(entries.contains("search_source" to TagEntryUrl.search("無修正")))
+        assertTrue(entries.contains("search_source" to TagEntryUrl.search("uncensored")))
+        assertTrue(entries.contains("category_source" to "https://example.com/category/uncensored"))
+        assertTrue(entries.contains(
+            "fallback_source" to TagEntryUrl.category(
+                name = "无修正",
+                param = "all",
+                keyword = "無修正",
+                kind = "search",
+            ),
+        ))
+        assertEquals(1, entries.count {
+            it == ("category_source" to "https://example.com/category/uncensored")
+        })
     }
 
     @Test

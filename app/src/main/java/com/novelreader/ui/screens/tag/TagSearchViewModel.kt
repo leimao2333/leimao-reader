@@ -149,33 +149,26 @@ class TagSearchViewModel(
      */
     fun addTag(tag: String) {
         if (tag.isBlank()) return
-        val current = TagAlias.dedupeAliases(
-            logicalTagsInQuery(_query.value).map(TagAlias::canonicalOf),
-        )
-        val next = TagAlias.dedupeAliases(current + TagAlias.canonicalOf(tag))
+        val current = TagAlias.dedupeAliases(logicalTagsInQuery(_query.value))
+        val next = TagAlias.dedupeAliases(current + tag)
         if (next.size == current.size) {
-            _query.value = current.joinToString(" ")
-            _activeTags.value = current
+            _activeTags.value = current.map(TagAlias::canonicalOf).distinct()
             return
         }
         _query.value = next.joinToString(" ")
-        _activeTags.value = next
+        _activeTags.value = next.map(TagAlias::canonicalOf).distinct()
         search()
     }
 
     /** 从查询查询返回某标签（点已选 chip）。最后一个标签移除时同步清空结果 / 进度 */
     fun removeTag(tag: String) {
-        // 以已选列表为准（chips 就是它渲染的）；手输场景才回退到解析查询串
-        val parsed = TagAlias.dedupeAliases(
-            (if (tag in _activeTags.value) _activeTags.value
-            else logicalTagsInQuery(_query.value)).map(TagAlias::canonicalOf),
-        )
+        val parsed = logicalTagsInQuery(_query.value)
         val aliases = TagAlias.aliasesOf(tag)
         val current = parsed.filterNot { candidate ->
             TagAlias.aliasesOf(candidate).any { it in aliases }
         }
         _query.value = current.joinToString(" ")
-        _activeTags.value = current
+        _activeTags.value = TagAlias.dedupeAliases(current.map(TagAlias::canonicalOf))
         if (current.isEmpty()) {
             searchGeneration += 1
             searchJob?.cancel()
@@ -243,10 +236,8 @@ class TagSearchViewModel(
                 ensurePlan()
                 val tags = logicalTagsInQuery(_query.value)
                     .ifEmpty { firstParse }
-                    .map(TagAlias::canonicalOf)
                     .distinct()
                     .let { TagAlias.dedupeAliases(it) }
-                _query.value = tags.joinToString(" ")
 
                 val enabledIds = enabledSourceIds()
                 if (enabledIds != null && enabledIds.isEmpty()) {
@@ -258,9 +249,9 @@ class TagSearchViewModel(
                 val variantsPerTag = tags.map { tag ->
                     TagAlias.matchesInPool(tag, tagPlan.tags).ifEmpty { listOf(tag) }
                 }
-                val entriesPerTag = variantsPerTag.map { variants ->
-                    variants
-                        .flatMap { tagPlan.entriesFor(it) }
+                val entriesPerTag = tags.mapIndexed { index, query ->
+                    variantsPerTag[index]
+                        .flatMap { variant -> tagPlan.searchEntriesFor(variant, query) }
                         .distinct()
                         .let { if (enabledIds == null) it else it.filter { e -> e.first in enabledIds } }
                 }
@@ -278,8 +269,15 @@ class TagSearchViewModel(
                 val translatedNotice = tags.mapIndexedNotNull { i, tag ->
                     val variants = variantsPerTag[i]
                     val self = TagQuery.normalizeTitle(tag)
-                    if (variants.none { TagQuery.normalizeTitle(it) != self }) return@mapIndexedNotNull null
-                    "「${tag}」已按 ${variants.joinToString("、")} 搜索"
+                    val canonical = TagAlias.canonicalOf(tag)
+                    val terms = TagAlias.searchTermsFor(tag)
+                    when {
+                        terms.size > 1 ->
+                            "「${tag}」归并为「${canonical}」，已扩展搜索 ${terms.size} 种同义写法"
+                        variants.any { TagQuery.normalizeTitle(it) != self } ->
+                            "「${tag}」已按 ${variants.joinToString("、")} 搜索"
+                        else -> null
+                    }
                 }.joinToString("；")
 
                 if (known.isEmpty()) {
@@ -300,7 +298,7 @@ class TagSearchViewModel(
                 if (generation != searchGeneration) return@launch
                 val final = filterAdults(searchResult.items, tags)
                 if (generation != searchGeneration) return@launch
-                _activeTags.value = known
+                _activeTags.value = known.map(TagAlias::canonicalOf).distinct()
                 _results.value = final
                 val tail = when {
                     missing.isNotEmpty() ->
@@ -426,7 +424,9 @@ class TagSearchViewModel(
             return TagCompound.withUnionFallback(strictMatches, results)
         }
 
-        val bySrcPerTag = entriesPerTag.map { list -> list.associate { it.first to it.second } }
+        val bySrcPerTag = entriesPerTag.map { list ->
+            list.groupBy({ it.first }, { it.second })
+        }
         val candidatesPerTag = MutableList(entriesPerTag.size) { mutableListOf<MediaItem>() }
         var collected: List<MediaItem> = emptyList()
 
@@ -457,14 +457,16 @@ class TagSearchViewModel(
 
     /** 并发抓取 `[标签][源]` 请求，所有参与源共享八路网络并发限制。 */
     private suspend fun fetchGrid(
-        bySrcPerTag: List<Map<String, String>>,
+        bySrcPerTag: List<Map<String, List<String>>>,
         sources: List<String>,
         page: Int,
     ): List<Map<String, List<MediaItem>>> = coroutineScope {
         val semaphore = Semaphore(TAG_SEARCH_CONCURRENCY)
         val requests = bySrcPerTag.flatMapIndexed { tagIndex, bySource ->
-            sources.mapNotNull { sourceId ->
-                bySource[sourceId]?.let { url -> TagSearchRequest(tagIndex, sourceId, url) }
+            sources.flatMap { sourceId ->
+                bySource[sourceId].orEmpty().map { url ->
+                    TagSearchRequest(tagIndex, sourceId, url)
+                }
             }
         }
         addProgressTotal(requests.size)
@@ -484,7 +486,14 @@ class TagSearchViewModel(
             LinkedHashMap<String, List<MediaItem>>().apply {
                 responses.asSequence()
                     .filter { it.tagIndex == tagIndex }
-                    .forEach { put(it.sourceId, it.items) }
+                    .groupBy { it.sourceId }
+                    .forEach { (sourceId, sourceResponses) ->
+                        put(
+                            sourceId,
+                            sourceResponses.flatMap { it.items }
+                                .distinctBy { "${it.sourceId}:${it.id}" },
+                        )
+                    }
             }
         }
     }

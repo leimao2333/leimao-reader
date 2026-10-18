@@ -262,6 +262,16 @@ object TagAlias {
         return out
     }
 
+    /** 返回该标签组所有可用于源站关键词搜索的原始写法，优先保留用户输入。 */
+    fun searchTermsFor(tag: String): List<String> {
+        val raw = tag.trim()
+        if (raw.isEmpty()) return emptyList()
+        val group = GROUPS.firstOrNull { aliases -> aliases.any { norm(it) == norm(raw) } }
+            ?: return listOf(raw)
+        return (listOf(raw) + group)
+            .distinctBy(::norm)
+    }
+
     /**
      * 把互为译名的一类标签**合并成一个**（v1.7.6.0）。
      *

@@ -146,4 +146,25 @@ class TagAliasTest {
         assertEquals("公主", TagAlias.canonicalOf("princess"))
         assertEquals("恋爱", TagAlias.canonicalOf("연애"))
     }
+
+    @Test
+    fun `无码无修正繁简日韩写法归一并只算一个搜索条件`() {
+        assertEquals("无码", TagAlias.canonicalOf("無碼"))
+        assertEquals("无码", TagAlias.canonicalOf("无修正"))
+        assertEquals("无码", TagAlias.canonicalOf("無修正"))
+        assertEquals("无码", TagAlias.canonicalOf("무수정"))
+        assertEquals(listOf("无码"), TagAlias.dedupeAliases(listOf("无码", "无修正", "無修正")))
+        assertTrue(TagAlias.isExplicitAdultIntent("无修正"))
+    }
+
+    @Test
+    fun `全彩跨中英日韩写法归一到中文`() {
+        listOf(
+            "彩色版", "Full Colored", "Official Colored", "Fan Colored", "colour",
+            "フルカラー", "컬러",
+        ).forEach {
+            assertEquals("全彩", TagAlias.canonicalOf(it))
+        }
+        assertFalse(TagAlias.isExplicitAdultIntent("全彩"))
+    }
 }

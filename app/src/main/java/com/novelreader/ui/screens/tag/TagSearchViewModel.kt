@@ -12,6 +12,7 @@ import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.SourceRepository
 import com.novelreader.source.category.isAdult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -30,9 +31,8 @@ import kotlinx.coroutines.sync.withPermit
  * - 标签来自 [TagRepository] 自动收集的各源发现分类（落盘缓存，冷启动即有）；
  * - **热门标签**：按标签覆盖源数倒序，取 top [HOT_TAG_LIMIT] 展示在搜索页顶部；
  * - **单标签搜索**：聚合所有拥有该分类的源的第 1 页内容，跨源去重；
- * - **复合搜索**：查询串里多个标签（空格分隔）→ **同源交集**（同一部作品在同一个
- *   源里同时属于这几个分类），空则翻第 2 页，仍空退回跨源同名交集；
- *   决策逻辑在 [TagCompound]，此前「各标签第一页全局求交」的口径几乎必然为空；
+ * - **复合搜索**：先对所有共同源的前两页求交；交集为空时依次退回跨源同名匹配与
+ *   标签结果并集，避免组合条件把页面变成空白；
  * - 视频结果把 18+ 成人源内容沉底（与首页/搜索一致）。
  */
 class TagSearchViewModel(
@@ -96,6 +96,10 @@ class TagSearchViewModel(
 
     private var tagPlan: TagPlan = TagPlan.EMPTY
     private var searchJob: kotlinx.coroutines.Job? = null
+    private var searchGeneration = 0L
+
+    private data class TagSearchRequest(val tagIndex: Int, val sourceId: String, val url: String)
+    private data class TagSearchResponse(val tagIndex: Int, val sourceId: String, val items: List<MediaItem>)
 
     init {
         collectTags(initialTag.isNotBlank())
@@ -138,9 +142,15 @@ class TagSearchViewModel(
      */
     fun addTag(tag: String) {
         if (tag.isBlank()) return
-        val current = TagQuery.parseWithPool(_query.value, tagPlan.tags)
-        if (tag in current) return
-        val next = current + tag
+        val current = TagAlias.dedupeAliases(
+            TagQuery.parseWithPool(_query.value, tagPlan.tags).map(TagAlias::canonicalOf),
+        )
+        val next = TagAlias.dedupeAliases(current + TagAlias.canonicalOf(tag))
+        if (next.size == current.size) {
+            _query.value = current.joinToString(" ")
+            _activeTags.value = current
+            return
+        }
         _query.value = next.joinToString(" ")
         _activeTags.value = next
         search()
@@ -149,12 +159,18 @@ class TagSearchViewModel(
     /** 从查询查询返回某标签（点已选 chip）。最后一个标签移除时同步清空结果 / 进度 */
     fun removeTag(tag: String) {
         // 以已选列表为准（chips 就是它渲染的）；手输场景才回退到解析查询串
-        val parsed = if (tag in _activeTags.value) _activeTags.value
-        else TagQuery.parseWithPool(_query.value, tagPlan.tags)
-        val current = parsed - tag
+        val parsed = TagAlias.dedupeAliases(
+            (if (tag in _activeTags.value) _activeTags.value
+            else TagQuery.parseWithPool(_query.value, tagPlan.tags)).map(TagAlias::canonicalOf),
+        )
+        val aliases = TagAlias.aliasesOf(tag)
+        val current = parsed.filterNot { candidate ->
+            TagAlias.aliasesOf(candidate).any { it in aliases }
+        }
         _query.value = current.joinToString(" ")
         _activeTags.value = current
         if (current.isEmpty()) {
+            searchGeneration += 1
             searchJob?.cancel()
             _results.value = emptyList()
             _searching.value = false
@@ -172,8 +188,8 @@ class TagSearchViewModel(
      * 1. **池里没有的标签不再拖垮整次搜索**：以前它照样参与交集，任何空集合都会让
      *    交集清空，而提示却写着「已按其余标签搜索」—— 说好了搜索却返回空，
      *    这正是「复合搜索没作用」最直接的一条。现在这些标签直接剔除，只在提示里点名。
-     * 2. **复合改走同源交集 + 翻页探测**（见 [Compound] 的说明），并在空结果时
-     *    说清是「没有作品同时属于这几个标签」，而不是笼统的「没有匹配的内容」。
+     * 2. **复合先查同源交集，再回退跨源同名或去重并集**（见 [TagCompound]），
+     *    避免来源分类体系不同导致复合搜索整页空白。
      * 3. **只打已启用的源**（见 [enabledSourceIds]）：标签池是含禁用源收集的，
      *    以前搜索也照着池子全打一遍，用户停用的源照样被请求、每个都要干等到超时。
      */
@@ -208,6 +224,7 @@ class TagSearchViewModel(
     fun search() {
         val firstParse = TagQuery.parseWithPool(_query.value, tagPlan.tags)
         if (firstParse.isEmpty()) return
+        val generation = ++searchGeneration
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             _searching.value = true
@@ -215,86 +232,103 @@ class TagSearchViewModel(
             resetProgress()
             _progress.value = null
 
-            // 标签计划还没收集好就等一下（首次冷启动直进标签搜索的场景）
-            ensurePlan()
-            // 计划就绪后重解析：含空格的标签要靠池才能正确合并
-            val tags = TagQuery.parseWithPool(_query.value, tagPlan.tags)
-                .ifEmpty { firstParse }
-                // v1.7.6.0：互为译名的标签合并成一个条件 —— 否则「无码」与「無修正」
-                // 会被当成两个不同标签去求交，而它们分散在不同源上，交集必然为空。
-                .let { TagAlias.dedupeAliases(it) }
-
-            val enabledIds = enabledSourceIds()
-            if (enabledIds != null && enabledIds.isEmpty()) {
-                _activeTags.value = emptyList()
-                _results.value = emptyList()
-                _searching.value = false
-                _notice.value = "没有已启用的源，先去源管理里打开一个"
-                return@launch
-            }
-            // 中英互译（v1.7.2.0）：一个标签词展开成标签池里**所有等价标签** ——
-            // 输「百合」会同时搜池里的「百合」与「Yuri」，输「英语」也能命中「英語 ENG」
-            // 这种复合标签。此前只按字面匹配，池里的英文标签对中文用户等于不存在。
-            val variantsPerTag = tags.map { tag ->
-                TagAlias.matchesInPool(tag, tagPlan.tags).ifEmpty { listOf(tag) }
-            }
-            val entriesPerTag = variantsPerTag.map { variants ->
-                variants
-                    .flatMap { tagPlan.entriesFor(it) }
+            try {
+                ensurePlan()
+                val tags = TagQuery.parseWithPool(_query.value, tagPlan.tags)
+                    .ifEmpty { firstParse }
+                    .map(TagAlias::canonicalOf)
                     .distinct()
-                    .let { if (enabledIds == null) it else it.filter { e -> e.first in enabledIds } }
-            }
-            val known = tags.filterIndexed { i, _ -> entriesPerTag[i].isNotEmpty() }
-            val missing = tags.filterNot { it in known }
-            val knownEntries = entriesPerTag.filter { it.isNotEmpty() }
-            // 译名命中时告诉用户「实际按哪些标签搜的」，否则结果突然变多会显得莫名其妙。
-            // 只有**展开出了别的名字**才提示；单纯大小写 / 空格差异（输 yuri 命中 Yuri）
-            // 属于同一个词，提示它只会制造噪音。
-            val translatedNotice = tags.mapIndexedNotNull { i, tag ->
-                val variants = variantsPerTag[i]
-                val self = TagQuery.normalizeTitle(tag)
-                if (variants.none { TagQuery.normalizeTitle(it) != self }) return@mapIndexedNotNull null
-                "「${tag}」已按 ${variants.joinToString("、")} 搜索"
-            }.joinToString("；")
+                    .let { TagAlias.dedupeAliases(it) }
+                _query.value = tags.joinToString(" ")
 
-            if (known.isEmpty()) {
-                _activeTags.value = emptyList()
-                _results.value = emptyList()
-                _searching.value = false
-                _notice.value = "没有找到标签：${tags.joinToString("、")}（点右上角刷新标签试试）"
-                return@launch
-            }
+                val enabledIds = enabledSourceIds()
+                if (enabledIds != null && enabledIds.isEmpty()) {
+                    _activeTags.value = emptyList()
+                    _results.value = emptyList()
+                    _notice.value = "没有已启用的源，先去源管理里打开一个"
+                    return@launch
+                }
+                val variantsPerTag = tags.map { tag ->
+                    TagAlias.matchesInPool(tag, tagPlan.tags).ifEmpty { listOf(tag) }
+                }
+                val entriesPerTag = variantsPerTag.map { variants ->
+                    variants
+                        .flatMap { tagPlan.entriesFor(it) }
+                        .distinct()
+                        .let { if (enabledIds == null) it else it.filter { e -> e.first in enabledIds } }
+                }
+                val known = tags.filterIndexed { i, _ -> entriesPerTag[i].isNotEmpty() }
+                val missing = tags.filterNot { it in known }
+                val knownEntries = entriesPerTag.filter { it.isNotEmpty() }
+                val updatePartialResults: (List<MediaItem>) -> Unit = { partial ->
+                    if (
+                        generation == searchGeneration &&
+                        tags.any(TagAlias::isExplicitAdultIntent)
+                    ) {
+                        _results.value = partial
+                    }
+                }
+                val translatedNotice = tags.mapIndexedNotNull { i, tag ->
+                    val variants = variantsPerTag[i]
+                    val self = TagQuery.normalizeTitle(tag)
+                    if (variants.none { TagQuery.normalizeTitle(it) != self }) return@mapIndexedNotNull null
+                    "「${tag}」已按 ${variants.joinToString("、")} 搜索"
+                }.joinToString("；")
 
-            val found = if (knownEntries.size == 1) {
-                searchOneTag(knownEntries[0])
-            } else {
-                searchCompound(knownEntries)
+                if (known.isEmpty()) {
+                    _activeTags.value = emptyList()
+                    _results.value = emptyList()
+                    _notice.value = "没有找到标签：${tags.joinToString("、")}（点右上角刷新标签试试）"
+                    return@launch
+                }
+
+                val searchResult = if (knownEntries.size == 1) {
+                    TagCompound.RelaxedResult(
+                        searchOneTag(knownEntries[0], onPartial = updatePartialResults),
+                        usedUnionFallback = false,
+                    )
+                } else {
+                    searchCompound(knownEntries, known, updatePartialResults)
+                }
+                if (generation != searchGeneration) return@launch
+                val final = filterAdults(searchResult.items, tags)
+                if (generation != searchGeneration) return@launch
+                _activeTags.value = known
+                _results.value = final
+                val tail = when {
+                    missing.isNotEmpty() ->
+                        "未找到标签：${missing.joinToString("、")}，已按其余标签搜索"
+                    searchResult.usedUnionFallback ->
+                        "没有作品同时匹配全部标签，已显示任一标签匹配的结果"
+                    final.isNotEmpty() -> null
+                    known.size > 1 -> "没有作品同时属于「${known.joinToString("」「")}」"
+                    else -> "「${known.first()}」下暂无内容"
+                }
+                _notice.value = listOfNotNull(
+                    translatedNotice.takeIf { it.isNotBlank() },
+                    tail,
+                ).joinToString("；").takeIf { it.isNotBlank() }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                android.util.Log.e("TagSearch", "标签搜索失败，type=$type", error)
+                if (generation == searchGeneration) {
+                    _results.value = emptyList()
+                    _notice.value = "标签搜索失败，请重试或检查书源配置"
+                }
+            } finally {
+                if (generation == searchGeneration) {
+                    _progress.value = null
+                    _searching.value = false
+                }
             }
-            // v1.7.5.0：成人源内容按「隐藏成人内容」开关过滤（默认隐藏，直接剔除；
-            // 关闭时沉底）。此前只对视频生效，漫画标签搜索里 nhentai 等照样排前面。
-            val final = filterAdults(found)
-            _activeTags.value = known
-            _results.value = final
-            _progress.value = null
-            _searching.value = false
-            val tail = when {
-                missing.isNotEmpty() ->
-                    "未找到标签：${missing.joinToString("、")}，已按其余标签搜索"
-                final.isNotEmpty() -> null
-                known.size > 1 -> "没有作品同时属于「${known.joinToString("」「")}」"
-                else -> "「${known.first()}」下暂无内容"
-            }
-            _notice.value = listOfNotNull(
-                translatedNotice.takeIf { it.isNotBlank() },
-                tail,
-            ).joinToString("；").takeIf { it.isNotBlank() }
         }
     }
 
     /** 计划为空时补一次（冷启动直进标签搜索） */
     private suspend fun ensurePlan() {
         if (tagPlan.plan.isNotEmpty()) return
-        tagPlan = runCatching { tagRepository.tags(type) }.getOrDefault(TagPlan.EMPTY)
+        tagPlan = tagRepository.tags(type)
         _allTags.value = tagPlan.tags
         _hotTags.value = tagPlan.hotTags(HOT_TAG_LIMIT)
         _tagsByCoverage.value = tagPlan.hotTags(0)
@@ -307,137 +341,179 @@ class TagSearchViewModel(
      * 让它的标签从池子里消失），但真正发请求必须只打已启用的源 —— 否则用户停用了一个源，
      * 标签搜索依旧去请求它，每个都要干等到超时才罢休（默认 20s）。实测在一次复合搜索里，
      * 12 个参与源中有 10 个是已停用的，点一下标签要等好几分钟才出结果。
+     * 没有源仓库时返回 null；读取失败则向上报错，不用「不过滤」掩盖故障。
      */
-    private suspend fun enabledSourceIds(): Set<String>? = runCatching {
+    private suspend fun enabledSourceIds(): Set<String>? = try {
         sourceRepository?.getSourcesByType(type)?.filter { it.enabled }?.map { it.id }?.toSet()
-    }.getOrNull()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        android.util.Log.e("TagSearch", "读取已启用书源失败，type=$type", error)
+        throw error
+    }
 
     /** 单标签：聚合所有拥有该分类的源的第 1 页，跨源去重 */
-    private suspend fun searchOneTag(entries: List<Pair<String, String>>): List<MediaItem> =
+    private suspend fun searchOneTag(
+        entries: List<Pair<String, String>>,
+        semaphore: Semaphore = Semaphore(TAG_SEARCH_CONCURRENCY),
+        onPartial: (List<MediaItem>) -> Unit = {},
+    ): List<MediaItem> =
         coroutineScope {
-            val semaphore = Semaphore(8)
+            val accumulated = mutableListOf<MediaItem>()
+            val lock = Any()
             addProgressTotal(entries.size)
             entries.map { (srcId, url) ->
                 async {
-                    semaphore.withPermit {
+                    val items = semaphore.withPermit {
                         try {
-                            runCatching { contentRepository.explore(srcId, url, 1) }
-                                .getOrDefault(emptyList())
+                            exploreTagEntry(srcId, url, 1)
                         } finally {
                             stepProgress()
                         }
                     }
+                    val snapshot = synchronized(lock) {
+                        accumulated.addAll(items)
+                        accumulated.distinctBy { "${it.sourceId}:${it.id}" }
+                    }
+                    onPartial(snapshot)
+                    items
                 }
             }.awaitAll().flatten().distinctBy { "${it.sourceId}:${it.id}" }
         }
 
     /**
-     * 复合标签：**同源交集**（见 [TagCompound]）。
-     *
-     * 只在「同时拥有全部标签入口」的源上查（[TagCompound.participants]），
-     * 每个源取各标签的第 1 页求交集；全空再翻到第 [MAX_COMPOUND_PAGES] 页，
-     * 仍为空就退回跨源同名交集（老行为）作兜底，并且**不额外发请求**。
-     *
-     * 请求量 = 参与源数（≤ [MAX_COMPOUND_SOURCES]）× 标签数 × 页数，
-     * 8 路并发；一旦某页出现交集立刻停止翻页。
+     * 复合标签：先取所有同时含标签入口的源做交集；若仍为空，退回跨源同名匹配，
+     * 最后显示任一标签命中的去重并集，避免复合搜索无结果时整页空白。
      */
     private suspend fun searchCompound(
         entriesPerTag: List<List<Pair<String, String>>>,
-    ): List<MediaItem> {
+        tags: List<String>,
+        onPartial: (List<MediaItem>) -> Unit,
+    ): TagCompound.RelaxedResult {
         val participants = TagCompound.participants(entriesPerTag)
         if (participants.isEmpty()) {
-            // 没有任何源同时提供全部标签 → 只能跨源同名匹配（仍是旧口径）
-            return TagQuery.intersect(entriesPerTag.map { searchOneTag(it) })
+            return TagCompound.withUnionFallback(
+                strictMatches = emptyList(),
+                resultsPerTag = entriesPerTag.map { searchOneTag(it) },
+            )
         }
 
-        val sources = participants.take(MAX_COMPOUND_SOURCES)
+        if (
+            type == SourceType.COMIC &&
+            tags.all { TagAlias.canonicalOf(it) in WIDE_COMIC_SEARCH_TAGS }
+        ) {
+            val semaphore = Semaphore(WIDE_COMPOUND_CONCURRENCY)
+            val partialPerTag = MutableList(entriesPerTag.size) { emptyList<MediaItem>() }
+            val results = coroutineScope {
+                entriesPerTag.mapIndexed { tagIndex, entries ->
+                    async {
+                        searchOneTag(entries, semaphore) { items ->
+                            partialPerTag[tagIndex] = items
+                            onPartial(TagCompound.merge(partialPerTag))
+                        }
+                    }
+                }.awaitAll()
+            }
+            val byTagAndSource = results.map { items -> items.groupBy { it.sourceId } }
+            val strictMatches = TagCompound.intersectBySource(byTagAndSource)
+            return TagCompound.withUnionFallback(strictMatches, results)
+        }
+
         val bySrcPerTag = entriesPerTag.map { list -> list.associate { it.first to it.second } }
+        val candidatesPerTag = MutableList(entriesPerTag.size) { mutableListOf<MediaItem>() }
         var collected: List<MediaItem> = emptyList()
-        var firstPage: List<Map<String, List<MediaItem>>>? = null
 
         var page = 1
         while (page <= MAX_COMPOUND_PAGES) {
-            val fetched = fetchGrid(bySrcPerTag, sources, page)
-            if (page == 1) firstPage = fetched
+            val fetched = fetchGrid(bySrcPerTag, participants, page)
+            fetched.forEachIndexed { tagIndex, perSource ->
+                candidatesPerTag[tagIndex].addAll(perSource.values.flatten())
+            }
             val hits = TagCompound.intersectBySource(fetched)
             if (hits.isNotEmpty()) {
                 collected = TagCompound.merge(listOf(collected, hits))
-                break
             }
-            // 第 1 页一个结果都没抓到（源不可达 / 分类为空）就别再翻页了
-            if (fetched.all { m -> m.values.all { it.isEmpty() } }) break
+            if (fetched.all { perSource -> perSource.values.all { it.isEmpty() } }) break
             page += 1
         }
-        if (collected.isNotEmpty()) return collected
+        if (collected.isNotEmpty()) {
+            return TagCompound.RelaxedResult(collected, usedUnionFallback = false)
+        }
 
-        // 同源交集为空：退回跨源同名交集，复用已经抓到的第 1 页，不额外发请求
-        return firstPage?.let { grid ->
-            TagQuery.intersect(
-                grid.map { perSource ->
-                    perSource.values.flatten().distinctBy { "${it.sourceId}:${it.id}" }
-                },
-            )
-        }.orEmpty()
+        return TagCompound.withUnionFallback(
+            strictMatches = emptyList(),
+            resultsPerTag = candidatesPerTag.map { items ->
+                items.distinctBy { "${it.sourceId}:${it.id}" }
+            },
+        )
     }
 
-    /** 并发抓一格（标签 × 源 → 结果），返回 `[标签][源] = 结果`，源顺序即 [sources] */
+    /** 并发抓取 `[标签][源]` 请求，所有参与源共享八路网络并发限制。 */
     private suspend fun fetchGrid(
         bySrcPerTag: List<Map<String, String>>,
         sources: List<String>,
         page: Int,
     ): List<Map<String, List<MediaItem>>> = coroutineScope {
-        val semaphore = Semaphore(8)
-        // 本页将实际发出的请求数 = 各标签 × 该标签下有入口的源
-        addProgressTotal(bySrcPerTag.sumOf { bySrc -> sources.count { bySrc.containsKey(it) } })
-        bySrcPerTag.map { bySrc ->
+        val semaphore = Semaphore(TAG_SEARCH_CONCURRENCY)
+        val requests = bySrcPerTag.flatMapIndexed { tagIndex, bySource ->
+            sources.mapNotNull { sourceId ->
+                bySource[sourceId]?.let { url -> TagSearchRequest(tagIndex, sourceId, url) }
+            }
+        }
+        addProgressTotal(requests.size)
+        val responses = requests.map { request ->
             async {
-                val perSource = LinkedHashMap<String, List<MediaItem>>()
-                for (src in sources) {
-                    val url = bySrc[src] ?: continue
-                    perSource[src] = async {
-                        semaphore.withPermit {
-                            try {
-                                runCatching { contentRepository.explore(src, url, page) }
-                                    .getOrDefault(emptyList())
-                            } finally {
-                                stepProgress()
-                            }
-                        }
-                    }.await()
+                val items = semaphore.withPermit {
+                    try {
+                        exploreTagEntry(request.sourceId, request.url, page)
+                    } finally {
+                        stepProgress()
+                    }
                 }
-                perSource
+                TagSearchResponse(request.tagIndex, request.sourceId, items)
             }
         }.awaitAll()
+        List(bySrcPerTag.size) { tagIndex ->
+            LinkedHashMap<String, List<MediaItem>>().apply {
+                responses.asSequence()
+                    .filter { it.tagIndex == tagIndex }
+                    .forEach { put(it.sourceId, it.items) }
+            }
+        }
     }
 
-    /** 成人源内容过滤：默认隐藏直接剔除，关闭时沉底（v1.7.5.0 扩到全部类型） */
-    private suspend fun filterAdults(items: List<MediaItem>): List<MediaItem> {
+    private suspend fun exploreTagEntry(sourceId: String, url: String, page: Int): List<MediaItem> =
+        try {
+            contentRepository.explore(sourceId, url, page)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            android.util.Log.w("TagSearch", "标签请求失败，sourceId=$sourceId", error)
+            emptyList()
+        }
+
+    /** 成人源内容默认隐藏；用户明确选择成人/修饰标签时视为本次主动请求。 */
+    private suspend fun filterAdults(items: List<MediaItem>, tags: List<String>): List<MediaItem> {
         if (items.isEmpty()) return items
-        val adultIds = runCatching {
-            sourceRepository?.getSourcesByType(type)
-                .orEmpty()
-                .filter { it.isAdult }
-                .map { it.id }
-                .toSet()
-        }.getOrDefault(emptySet())
+        val adultIds = sourceRepository?.getSourcesByType(type)
+            ?.filter { it.isAdult }
+            ?.map { it.id }
+            ?.toSet()
+            .orEmpty()
         if (adultIds.isEmpty()) return items
         val hide = preferencesManager?.hideAdultFlow?.first() ?: true
-        return if (hide) items.filterNot { it.sourceId in adultIds }
+        val explicitlyRequested = tags.any(TagAlias::isExplicitAdultIntent)
+        return if (hide && !explicitlyRequested) items.filterNot { it.sourceId in adultIds }
         else items.sortedBy { it.sourceId in adultIds }
     }
 
     companion object {
+        private val WIDE_COMIC_SEARCH_TAGS = setOf("无码", "全彩")
+        private const val TAG_SEARCH_CONCURRENCY = 8
+        private const val WIDE_COMPOUND_CONCURRENCY = 16
+
         /** 热门推荐标签上限（v1.6.1.0） */
         const val HOT_TAG_LIMIT = 12
-
-        /**
-         * 复合搜索最多查多少个源（v1.7.0.0）。
-         *
-         * 请求量 = 源数 × 标签数 × 页数。源动辄几十个，不限的话 3 个标签就要几百个
-         * 请求、手机白等一分钟。取 12 个（标签池按覆盖度/手工排序排过，前面的更靠谱）
-         * 已经是 12×2×2 = 48 个请求的上限，实际多半第 1 页就出结果。
-         */
-        const val MAX_COMPOUND_SOURCES = 12
 
         /**
          * 复合搜索每源翻到第几页（v1.7.0.0）。

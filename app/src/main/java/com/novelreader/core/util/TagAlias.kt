@@ -89,7 +89,13 @@ object TagAlias {
         setOf("无cp", "无cp文", "no romance", "no cp"),
         setOf("轻小说", "light novel", "ln", "ライトノベル", "라이트노벨"),
         // ===== 形态 / 状态 =====
-        setOf("全彩", "彩色", "full color", "color", "colored", "フルカラー", "풀컬러"),
+        setOf(
+            "全彩", "全彩色", "全彩版", "全彩漫画", "彩漫", "彩色", "彩色版", "彩图", "上色",
+            "full color", "full-color", "fullcolor", "color", "colour", "colored", "coloured",
+            "full colored", "official colored", "official color", "official full color",
+            "fan colored", "fan color", "フルカラー", "フルカラー版", "カラー", "カラー版",
+            "풀컬러", "컬러",
+        ),
         setOf("黑白", "单色", "monochrome", "b/w", "black and white", "モノクロ", "흑백"),
         setOf("四格", "4-koma", "four panel", "4コマ", "4컷"),
         setOf("短篇", "单话", "oneshot", "one shot", "short", "短編", "단편"),
@@ -120,8 +126,13 @@ object TagAlias {
         // 各站对同一件事的叫法不统一，而它们**分布在不同源上**：只按字面匹配时，
         // 选其中一个标签只会打到收录它的那几个源，其余源明明有同类内容却整个不参与。
         // 这一组把它们打通，让「无码」也能命中只标了「無修正」的源。
-        setOf("无码", "無碼", "无修正", "無修正", "uncensored", "no mosaic", "nomosaic"),
-        setOf("有码", "有碼", "修正", "censored", "mosaic"),
+        setOf(
+            "无码", "無碼", "无码版", "無碼版", "无修正", "無修正", "无修饰", "無修飾",
+            "无马赛克", "無馬賽克", "無修正版本", "修正なし", "uncensored", "uncensor",
+            "uncensored version",
+            "no mosaic", "no-mosaic", "nomosaic", "no censor", "no-censor", "무수정", "노모자이크",
+        ),
+        setOf("有码", "有碼", "有修正", "有马赛克", "有馬賽克", "修正", "censored", "mosaic", "모자이크"),
         // ===== 画质 / 字幕（各站写法差异）=====
         setOf("高清", "高画质", "hd", "high definition", "high quality", "hq", "高画質"),
         setOf("超清", "超高清", "uhd", "4k", "ultra hd", "超高画質"),
@@ -212,6 +223,12 @@ object TagAlias {
         if (raw.isEmpty()) return raw
         return canonicalKey[norm(raw)] ?: raw
     }
+
+    /** 用户主动选择成人分级 / 修饰状态标签时，视为本次搜索明确请求成人源。 */
+    fun isExplicitAdultIntent(tag: String): Boolean =
+        canonicalOf(tag) in EXPLICIT_ADULT_CANONICALS
+
+    private val EXPLICIT_ADULT_CANONICALS = setOf("成人", "无码", "有码")
 
     /**
      * 该标签是否是**已登记的译名**（会在展示时被改名）。

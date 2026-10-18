@@ -2,6 +2,7 @@ package com.novelreader
 
 import com.novelreader.core.util.ComicGenres
 import com.novelreader.core.util.NovelGenres
+import com.novelreader.core.util.TagAlias
 import com.novelreader.core.util.TagEntryUrl
 import com.novelreader.data.cache.TagStore
 import com.novelreader.data.repository.TagRepository
@@ -125,7 +126,7 @@ class TagRepositoryComicGenresTest {
             assertTrue("题材 $genre 应进标签池", entries.isNotEmpty())
             assertTrue(
                 "题材 $genre 应绑搜索入口",
-                entries.all { TagEntryUrl.searchKeywordOf(it.second) == genre },
+                entries.all { TagEntryUrl.searchKeywordOf(it.second) == TagAlias.canonicalOf(genre) },
             )
         }
         // 没有分类能力的源（Venera 风格）也能参与题材词
@@ -207,6 +208,37 @@ class TagRepositoryComicGenresTest {
     }
 
     @Test
+    fun `无码和全彩标签覆盖全部可搜索漫画源`() = runBlocking {
+        val many = (1..40).map { "comic_$it" }
+        val r = repo(withCategories = emptyList(), searchable = many)
+        val plan = r.refresh(SourceType.COMIC)
+
+        listOf("无码", "全彩").forEach { tag ->
+            val entries = plan.entriesFor(tag)
+            assertEquals("$tag 应覆盖全部源", many.toSet(), entries.map { it.first }.toSet())
+            assertTrue(entries.all { TagEntryUrl.searchKeywordOf(it.second) == tag })
+        }
+    }
+
+    @Test
+    fun `全彩标签合并不同语言的分类入口`() = runBlocking {
+        val r = repo(
+            withCategories = listOf(
+                info("comic_cn", "中文源") to listOf(ExploreCategory("全彩", "/full-color")),
+                info("comic_en", "英文源") to listOf(ExploreCategory("Official Colored", "/colored")),
+            ),
+            searchable = emptyList(),
+        )
+        val plan = r.refresh(SourceType.COMIC)
+
+        assertEquals(1, plan.tags.count { it == "全彩" })
+        assertEquals(
+            setOf("comic_cn", "comic_en"),
+            plan.entriesFor("全彩").map { it.first }.toSet(),
+        )
+    }
+
+    @Test
     fun `小说类型使用小说题材而非漫画题材词`() = runBlocking {
         val novelInfo = info("novel_1", "中文书城").copy(type = SourceType.NOVEL)
         val r = repo(
@@ -215,7 +247,7 @@ class TagRepositoryComicGenresTest {
         )
         val plan = r.refresh(SourceType.NOVEL)
         assertTrue(plan.tags.contains("都市"))
-        assertTrue(NovelGenres.ALL.all { plan.tags.contains(it) })
+        assertTrue(NovelGenres.ALL.all { plan.tags.contains(TagAlias.canonicalOf(it)) })
         assertFalse(plan.tags.contains("热血"))
     }
 

@@ -376,13 +376,13 @@ class ContentRepositoryImpl(
      *    （Venera 解析源码里的 `category.parts`，legado 解析 `ruleExplore`，
      *    都是毫秒级的纯本地活）。**这一段就决定哪些源参与聚合，一个源都不丢**；
      *    连静态表都没有的源挂一组虚拟题材搜索入口（见 [virtualCategories]）。
-     * 2. **第二段：Venera 源升级真分类页入口** —— 仅 [SourceFormat.VENERA] 的源，
+     * 2. **第二段：Venera 源升级真分类页入口** —— 仅非 [fast] 模式对
+     *    [SourceFormat.VENERA] 源执行，
      *    **串行**跑运行时评估（`exploreCategories`），把第一段的「按分类名搜索」
      *    入口换成 `vcat::` 真分类页（走源自己的 `categoryComics.load`）。
      *    串行是因为引擎一次只放一个调用，并发只会让排后面的源把预算烧在排队上
      *    （旧代码 8 路并发实测只有排头一两个源够得着运行时评估）。
-     *    每源独立预算 [perSourceTimeoutMs]，整段截止 [ENUM_UPGRADE_DEADLINE_MS]
-     *    （[fast] 模式）或 [deadlineMs]（发现页 / 标签池）；没升级的源保留第一段
+     *    每源独立预算 [perSourceTimeoutMs]，整段截止 [deadlineMs]；没升级的源保留第一段
      *    的静态入口，只是首页排退化为搜索，绝不丢弃。
      *
      * @param limit 最多枚举几个源（<= 0 = 全部）。首页推荐已不再用它做「防 ANR 截断」，
@@ -400,7 +400,7 @@ class ContentRepositoryImpl(
             // 0) 冷启动竞态防护：源还没恢复完就枚举，只会拿到「当时已注册的那几个源」。
             //    这是「聚合 1 个源」的根因 —— 结果还会被 HomeViewModel 落盘，固化下来。
             if (!sourceManager.restoredFlow.value) {
-                runCatching { sourceManager.restoredFlow.filter { it }.first() }
+                sourceManager.restoredFlow.filter { it }.first()
             }
             // v1.6.5.0：includeDisabled=true 时涵盖每一个源（含禁用源），标签池收集用；
             // 默认只取已启用源（发现页等场景，禁用的源不该出现）。
@@ -449,10 +449,11 @@ class ContentRepositoryImpl(
             }
 
             // ---- 第二段：Venera 源「静态搜索入口 → 真分类页入口」升级 ----
+            // 首页 fast 模式优先返回静态入口，避免冷启动逐个等待动态分类评估；
+            // 完整枚举仍执行运行时升级。
             val veneraCount = entries.count { it.info.format == SourceFormat.VENERA }
-            if (veneraCount > 0) {
-                val upgradeDeadline =
-                    started + if (fast) ENUM_UPGRADE_DEADLINE_MS else deadlineMs
+            if (veneraCount > 0 && !fast) {
+                val upgradeDeadline = started + deadlineMs
                 var upgraded = 0
                 for (e in entries) {
                     if (e.info.format != SourceFormat.VENERA) continue
@@ -478,6 +479,11 @@ class ContentRepositoryImpl(
                 android.util.Log.i(
                     "SourceEnum",
                     "枚举完成：${entries.size} 源（Venera $veneraCount 个升级 $upgraded 个），总耗时 ${System.currentTimeMillis() - started}ms",
+                )
+            } else if (veneraCount > 0) {
+                android.util.Log.i(
+                    "SourceEnum",
+                    "快速枚举完成：${entries.size} 源（Venera $veneraCount 个使用静态分类），总耗时 ${System.currentTimeMillis() - started}ms",
                 )
             }
 
@@ -527,9 +533,9 @@ class ContentRepositoryImpl(
             // 点击标签时改走源自己的搜索，而不是去请求不存在的分类页。
             val keyword = com.novelreader.core.util.TagEntryUrl.searchKeywordOf(url)
             val raw = if (keyword != null) {
-                runCatching { adapter.search(keyword, page) }.getOrDefault(emptyList())
+                runCatchingCc { adapter.search(keyword, page) }.getOrDefault(emptyList())
             } else {
-                runCatching { adapter.exploreFilter(url, page, filters) }.getOrDefault(emptyList())
+                runCatchingCc { adapter.exploreFilter(url, page, filters) }.getOrDefault(emptyList())
             }
             raw.map { it.copy(sourceName = it.sourceName.ifBlank { adapter.info.name }) }
                 .let { com.novelreader.core.util.CoverMemory.fill(it) }
@@ -611,17 +617,6 @@ class ContentRepositoryImpl(
          * `type:"dynamic"` 的 loader 正在联网」或 JS 卡死这两种异常。
          */
         const val ENUM_PER_SOURCE_MS = 8_000L
-
-        /**
-         * `fast` 模式下第二段（Venera 源运行时升级）的整段截止。
-         *
-         * 第一段静态分类毫秒级出结果、覆盖率 100%，所以第二段可以放心给足时间：
-         * 预热过的引擎上 25 个 Venera 源串行评估约 20s（快的源几十毫秒，
-         * `type:"dynamic"` loader 要联网的源 1~7s）。40s 留足余量；
-         * 没升完的源保留静态入口参与聚合，绝不丢弃。调用方
-         * （HomeViewModel 的 [FEED_PROBE_TIMEOUT_MS]）按这个数放宽到 70s。
-         */
-        const val ENUM_UPGRADE_DEADLINE_MS = 40_000L
 
         /** 静态表兜底的超时（纯字符串解析，实际上毫秒级） */
         const val ENUM_FALLBACK_MS = 1_500L

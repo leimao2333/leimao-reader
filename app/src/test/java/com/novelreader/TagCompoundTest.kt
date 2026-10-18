@@ -4,6 +4,7 @@ import com.novelreader.core.util.TagCompound
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -103,5 +104,28 @@ class TagCompoundTest {
             listOf("甲", "乙", "丙"),
             TagCompound.merge(listOf(a, b)).map { it.title },
         )
+    }
+
+    @Test
+    fun `复合标签无交集时回退到去重并集避免空结果`() {
+        val tagA = listOf(item("无码作品", "s1", "1"))
+        val tagB = listOf(item("全彩作品", "s2", "2"))
+        val result = TagCompound.withUnionFallback(
+            strictMatches = emptyList(),
+            resultsPerTag = listOf(tagA, tagB),
+        )
+        assertTrue(result.usedUnionFallback)
+        assertEquals(listOf("无码作品", "全彩作品"), result.items.map { it.title })
+    }
+
+    @Test
+    fun `复合标签优先保留严格交集结果`() {
+        val strict = listOf(item("同一作品", "s1", "1"))
+        val result = TagCompound.withUnionFallback(
+            strictMatches = strict,
+            resultsPerTag = listOf(strict, listOf(item("其他作品", "s2", "2"))),
+        )
+        assertFalse(result.usedUnionFallback)
+        assertEquals(strict, result.items)
     }
 }

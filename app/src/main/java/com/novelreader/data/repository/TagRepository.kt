@@ -3,6 +3,7 @@ package com.novelreader.data.repository
 import com.novelreader.core.util.ComicGenres
 import com.novelreader.core.util.FanworkTags
 import com.novelreader.core.util.NovelGenres
+import com.novelreader.core.util.TagAlias
 import com.novelreader.core.util.TagEntryUrl
 import com.novelreader.data.cache.TagPlan
 import com.novelreader.data.cache.TagStore
@@ -31,7 +32,8 @@ import kotlinx.coroutines.withContext
  * - **过滤伪标签**：[TagPlan.isNoiseTag] 丢掉「全部 / 最近更新 / 排行榜 /
  *   连载中」这类入口词与状态词。
  *
- * 收集涉及逐源请求（视频源要 `?ac=list`），因此：
+ * 收集涉及逐源分类枚举（视频源要 `?ac=list`），漫画源优先使用静态分类入口，
+ * 不等待 Venera 隐藏 WebView 逐源动态评估，避免标签页长时间停在收集状态。因此：
  * - 结果落盘（[TagStore]），冷启动直接读缓存、毫秒级可用；
  * - 后台刷新用 [Mutex] 收敛，避免多处同时触发重复收集；
  * - 会话内内存缓存，同类型只收集一次（强制刷新除外）。
@@ -67,8 +69,14 @@ class TagRepository(
 
     private suspend fun collect(type: SourceType): TagPlan {
         // includeDisabled = true：涵盖每一个源（v1.6.5.0），禁用源的分类也进标签池
-        val sources = runCatching { contentRepository.exploreSources(type, includeDisabled = true) }
-            .getOrDefault(emptyList())
+        val sources = try {
+            contentRepository.exploreSourcesFast(type, includeDisabled = true).items
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            android.util.Log.w("TagRepository", "收集源分类失败，type=$type", error)
+            emptyList()
+        }
         val plan = LinkedHashMap<String, MutableList<Pair<String, String>>>()
         for ((info, cats) in sources) {
             for (cat in cats) {
@@ -114,6 +122,9 @@ class TagRepository(
      * [ComicGenres.MAX_SOURCES_PER_GENRE] 个源 —— 每个源都能分到大量题材词，
      * 而单个标签的搜索源数仍有上界（不会把标签搜索拖到几十秒）。
      *
+     * 「无码」和「全彩」是用户明确要求的跨源入口，不受普通标签源数上限限制，
+     * 覆盖全部可搜索源；标签页执行时仍只请求已启用的源，并受并发限制。
+     *
      * 源已经有同名真实分类时**跳过**该源的搜索入口：既避免同一标签下同一个源
      * 出现两条（真分类 + 标题搜索），也避免把搜标题撞出来的无关作品混进分类结果。
      */
@@ -122,28 +133,41 @@ class TagRepository(
         plan: LinkedHashMap<String, MutableList<Pair<String, String>>>,
     ) {
         val searchTags = when (type) {
-            SourceType.COMIC -> ComicGenres.ALL.map { it to it } + FanworkTags.searchTags
+            SourceType.COMIC ->
+                ComicGenres.ALL.map { it to it } + FanworkTags.searchTags + WIDE_COMIC_SEARCH_TAGS
             SourceType.NOVEL -> NovelGenres.ALL.map { it to it } + FanworkTags.searchTags
             SourceType.VIDEO -> return
         }
-        val pool = runCatching {
+        val pool = try {
             contentRepository.searchableSourceIds(type, 0)
-        }.getOrDefault(emptyList()).distinct()
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            android.util.Log.w("TagRepository", "获取可搜索源失败，type=$type", error)
+            emptyList()
+        }.distinct()
         if (pool.isEmpty()) return
 
         var cursor = 0
-        for ((label, query) in searchTags) {
+        for ((rawLabel, query) in searchTags) {
+            val label = TagAlias.canonicalOf(rawLabel)
+            val canonicalQuery = TagAlias.canonicalOf(query)
             val entries = plan.getOrPut(label) { mutableListOf() }
-            // 该题材已有足够入口（通常是多个源的真分类）→ 不再补搜索入口
-            if (entries.size >= ComicGenres.MAX_SOURCES_PER_GENRE) continue
             val already = entries.mapTo(HashSet()) { it.first }
-            var need = ComicGenres.MAX_SOURCES_PER_GENRE - entries.size
+            val sourceLimit = if (type == SourceType.COMIC && label in WIDE_COMIC_TAG_NAMES) {
+                pool.size
+            } else {
+                ComicGenres.MAX_SOURCES_PER_GENRE
+            }
+            // 该题材已有足够入口（通常是多个源的真分类）→ 不再补搜索入口
+            if (already.size >= sourceLimit) continue
+            var need = sourceLimit - already.size
             var scanned = 0
             while (need > 0 && scanned < pool.size) {
                 val sid = pool[(cursor + scanned) % pool.size]
                 scanned++
                 if (sid in already) continue
-                entries.add(sid to TagEntryUrl.search(query))
+                entries.add(sid to TagEntryUrl.search(canonicalQuery))
                 need--
             }
             cursor = (cursor + scanned) % pool.size
@@ -151,6 +175,10 @@ class TagRepository(
     }
 
     companion object {
+        private val WIDE_COMIC_SEARCH_TAGS = listOf("无码" to "无码", "全彩" to "全彩")
+        private val WIDE_COMIC_TAG_NAMES = WIDE_COMIC_SEARCH_TAGS.mapTo(HashSet()) {
+            TagAlias.canonicalOf(it.first)
+        }
         private const val DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000L
     }
 }

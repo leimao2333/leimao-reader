@@ -1,5 +1,6 @@
 package com.novelreader.data.cache
 
+import com.novelreader.core.util.TagAlias
 import java.io.File
 import java.io.IOException
 import java.util.UUID
@@ -19,8 +20,8 @@ data class TagPlan(
     /** 标签 → 各 (sourceId, 分类url)；LinkedHashMap 保持收集顺序 */
     val plan: Map<String, List<Pair<String, String>>> = emptyMap(),
 ) {
-    /** 标签名列表（按收集顺序） */
-    val tags: List<String> get() = plan.keys.toList()
+    /** 标签名列表：同义词统一展示为中文规范名，保留首次出现顺序。 */
+    val tags: List<String> get() = plan.keys.map(TagAlias::canonicalOf).distinct()
 
     /**
      * 热门标签：按「覆盖源数」（每个标签下有多少 (sourceId, url) 对）倒序，
@@ -32,18 +33,27 @@ data class TagPlan(
      */
     fun hotTags(limit: Int): List<String> {
         if (plan.isEmpty()) return emptyList()
-        val capped = if (limit <= 0) plan.size else limit
-        return plan.entries
-            .sortedWith(
-                compareByDescending<Map.Entry<String, List<Pair<String, String>>>> { it.value.size }
-                    .thenBy { it.key },
-            )
+        val merged = LinkedHashMap<String, LinkedHashSet<Pair<String, String>>>()
+        plan.forEach { (tag, entries) ->
+            merged.getOrPut(TagAlias.canonicalOf(tag)) { linkedSetOf() }.addAll(entries)
+        }
+        val capped = if (limit <= 0) merged.size else limit
+        return merged.entries
+            .sortedWith(compareByDescending<Map.Entry<String, LinkedHashSet<Pair<String, String>>>> {
+                it.value.size
+            }.thenBy { it.key })
             .map { it.key }
             .take(capped)
     }
 
-    /** 精确匹配某标签的入口；未命中再做「互相包含」的宽松匹配（如「热血」命中「热血漫画」） */
+    /** 取标签及其规范名对应的全部入口；未命中再做包含匹配（如「热血」命中「热血漫画」）。 */
     fun entriesFor(tag: String): List<Pair<String, String>> {
+        val canonical = TagAlias.canonicalOf(tag)
+        val equivalent = plan.entries
+            .filter { (candidate, _) -> TagAlias.canonicalOf(candidate) == canonical }
+            .flatMap { it.value }
+            .distinct()
+        if (equivalent.isNotEmpty()) return equivalent
         plan[tag]?.let { return it }
         // 宽松匹配：查询标签与缓存标签互相包含（取最短命中，语义最贴近）
         val fuzzy = plan.entries.filter { it.key.contains(tag) || tag.contains(it.key) }
@@ -203,7 +213,9 @@ class TagStore(private val dir: File) {
          * v4：v1.7.6.3 漫画题材词 182 → 394，且改为「全源轮转」绑定
          * （每个漫画源都能分到题材词，不再只限没有分类能力的前 8 个源）。
          * v6：增加漫画/小说细分标签及同人原著检索入口。
+         * v7：扩展多语言规范名与成人标签同义词，旧缓存需重新归一化收集。
+         * v8：标签视图按同义词合并展示，搜索入口合并同义项，并扩展无码/全彩的源覆盖。
          */
-        const val LOGIC_VERSION = 6
+        const val LOGIC_VERSION = 8
     }
 }

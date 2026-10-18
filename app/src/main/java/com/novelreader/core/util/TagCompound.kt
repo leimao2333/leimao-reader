@@ -21,6 +21,11 @@ import com.novelreader.domain.model.MediaItem
  */
 object TagCompound {
 
+    data class RelaxedResult(
+        val items: List<MediaItem>,
+        val usedUnionFallback: Boolean,
+    )
+
     /**
      * 参与的源：**同时拥有全部标签入口**的源。
      *
@@ -69,6 +74,21 @@ object TagCompound {
             firstList.filterTo(out) { TagQuery.normalizeTitle(it.title) in keys }
         }
         return out
+    }
+
+    /**
+     * Keep strict matches when available; if every strict intersection is empty,
+     * return the deduplicated union so a compound query does not become a blank page.
+     */
+    fun withUnionFallback(
+        strictMatches: List<MediaItem>,
+        resultsPerTag: List<List<MediaItem>>,
+    ): RelaxedResult {
+        if (strictMatches.isNotEmpty()) return RelaxedResult(strictMatches, usedUnionFallback = false)
+        val sameTitle = TagQuery.intersect(resultsPerTag)
+        if (sameTitle.isNotEmpty()) return RelaxedResult(sameTitle, usedUnionFallback = false)
+        val union = merge(resultsPerTag)
+        return RelaxedResult(union, usedUnionFallback = union.isNotEmpty())
     }
 
     /** 合并多页结果，按 `sourceId + 条目 id` 去重、保序 */

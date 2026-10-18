@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -299,13 +300,23 @@ fun TagSearchScreen(
                 )
             }
         }
-        notice?.let {
-            Text(
-                text = it,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
-            )
+        notice?.let { message ->
+            // v1.8.1.1：复合搜索会把每个「大集」的整组写法全部列出（「无码」27 个、
+            // 「全彩」42 个），文字会很长。这里不截断，改成限高 + 可滚动 —— 内容一字不少，
+            // 又不会把下面的结果区挤没。
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 132.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 2.dp),
+            ) {
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
 
         // ===== 结果区 =====

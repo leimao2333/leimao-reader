@@ -62,10 +62,16 @@ data class TagPlan(
         return fuzzy?.value.orEmpty()
     }
 
-    /** 搜索入口扩展为该标签组的所有写法；源站真实分类入口保持不变。 */
+    /**
+     * 搜索入口扩展为该标签组的写法；源站真实分类入口保持不变。
+     *
+     * v1.8.1.0：写法**只取前 [TagAlias.MAX_SEARCH_TERMS_PER_SOURCE] 个**（用户输入优先）。
+     * 以前整组二三十个写法 × 每个源各发一次，搜「无码 全彩」要打上千个请求，
+     * 用户看到的是「转半天圈还搜不出东西」。
+     */
     fun searchEntriesFor(tag: String, query: String = tag): List<Pair<String, String>> =
         entriesFor(tag).flatMap { (sourceId, url) ->
-            val terms = TagAlias.searchTermsFor(query)
+            val terms = TagAlias.searchTermsForQuery(query)
             val category = TagEntryUrl.categoryOf(url)
             when {
                 TagEntryUrl.searchKeywordOf(url) != null ->

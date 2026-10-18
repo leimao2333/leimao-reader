@@ -104,6 +104,21 @@ class TagSearchViewModel(
     private data class TagSearchRequest(val tagIndex: Int, val sourceId: String, val url: String)
     private data class TagSearchResponse(val tagIndex: Int, val sourceId: String, val items: List<MediaItem>)
 
+    /**
+     * 复合搜索产出：结果 + 展示说明（[note]）。
+     *
+     * [note] 用来解释「为什么这批结果长这样」—— 走了组合关键词直搜、还是只拿到了单组内容，
+     * 都必须写清楚，不能让用户以为这就是严格交集。
+     */
+    private data class CompoundOutcome(
+        val items: List<MediaItem>,
+        val note: String? = null,
+    ) {
+        companion object {
+            val EMPTY = CompoundOutcome(emptyList())
+        }
+    }
+
     init {
         collectTags(initialTag.isNotBlank())
     }
@@ -255,6 +270,10 @@ class TagSearchViewModel(
                         .flatMap { variant -> tagPlan.searchEntriesFor(variant, query) }
                         .distinct()
                         .let { if (enabledIds == null) it else it.filter { e -> e.first in enabledIds } }
+                        // v1.8.1.0：同一个源最多留 [MAX_URLS_PER_SOURCE] 条入口。
+                        // 池里有多个等价写法时，上面的 flatMap 会让同一个源出现好几条
+                        // 相同的搜索入口，请求数被平白翻倍。
+                        .let(::limitEntriesPerSource)
                 }
                 val known = tags.filterIndexed { i, _ -> entriesPerTag[i].isNotEmpty() }
                 val missing = tags.filterNot { it in known }
@@ -284,21 +303,14 @@ class TagSearchViewModel(
                     }
                 }.joinToString("；")
 
-                // 复合搜索把「大集」摊开显示：用户能一眼确认每一组包含哪些转译写法，
-                // 也就明白结果是「每组各命中一个」而不是「随便命中一个」。
+                // 复合搜索把「大集」**完整**摊开显示（v1.8.1.0 起不再只给前 5 个）：
+                // 用户能一眼确认每一组到底包含哪些转译写法，也就明白结果是
+                // 「每组各命中一个」而不是「随便命中一个」。
                 val compoundNote = if (tags.size > 1) {
-                    tags.mapIndexed { i, tag ->
-                        val group = variantsPerTag[i]
-                            .map { it.trim() }
-                            .filter { it.isNotEmpty() }
-                            .distinct()
-                        val shown = if (group.size > 5) {
-                            group.take(5).joinToString("/") + "…"
-                        } else {
-                            group.joinToString("/")
-                        }
-                        "「${tag}」组：${shown.ifEmpty { tag }}"
-                    }.joinToString("  ∩  ")
+                    tags.joinToString("  ∩  ") { tag ->
+                        val group = TagAlias.searchTermsFor(tag).ifEmpty { listOf(tag) }
+                        "「$tag」组 ${group.size} 个写法：${group.joinToString("、")}"
+                    }
                 } else {
                     null
                 }
@@ -314,11 +326,12 @@ class TagSearchViewModel(
                 }
 
                 _notice.value = compoundNote ?: translatedNotice.takeIf { it.isNotBlank() }
-                val searchResult = if (knownEntries.size == 1) {
-                    searchOneTag(knownEntries[0], onPartial = updatePartialResults)
+                val outcome = if (knownEntries.size == 1) {
+                    CompoundOutcome(searchOneTag(knownEntries[0], onPartial = updatePartialResults))
                 } else {
                     searchCompound(knownEntries, known, updatePartialResults)
                 }
+                val searchResult = outcome.items
                 if (generation != searchGeneration) return@launch
                 // 同一部作品在不同源上标题写法可能不同（繁简 / 带作者后缀），
                 // 按作品身份键再去重一次，避免结果里出现两条「同一部」。
@@ -328,7 +341,7 @@ class TagSearchViewModel(
                 _activeTags.value = known.map(TagAlias::canonicalOf).distinct()
                 _results.value = final
                 val tail = when {
-                    final.isNotEmpty() -> null
+                    final.isNotEmpty() -> outcome.note
                     known.size > 1 -> "没有作品同时属于「${known.joinToString("」「")}」（每个大集里各要命中至少一个标签）"
                     else -> "「${known.first()}」下暂无内容"
                 }
@@ -427,12 +440,12 @@ class TagSearchViewModel(
         entriesPerTag: List<List<Pair<String, String>>>,
         tags: List<String>,
         onPartial: (List<MediaItem>) -> Unit,
-    ): List<MediaItem> {
-        if (entriesPerTag.isEmpty() || entriesPerTag.any { it.isEmpty() }) return emptyList()
+    ): CompoundOutcome {
+        if (entriesPerTag.isEmpty() || entriesPerTag.any { it.isEmpty() }) return CompoundOutcome.EMPTY
 
         // 并集口径：每个标签查它自己的全部入口；源集合取并集（各标签的源可以完全不同）。
         val sources = entriesPerTag.flatMap { entries -> entries.map { it.first } }.distinct()
-        if (sources.isEmpty()) return emptyList()
+        if (sources.isEmpty()) return CompoundOutcome.EMPTY
         val bySrcPerTag = entriesPerTag.map { list -> list.groupBy({ it.first }, { it.second }) }
 
         // 无码 / 全彩这类「宽标签」入口极多，提高并发，免得一次复合搜索要等好几分钟。
@@ -462,7 +475,86 @@ class TagSearchViewModel(
             if (!grew) break
             page += 1
         }
-        return matched
+        if (matched.isNotEmpty()) return CompoundOutcome(matched)
+
+        // ===== 兜底一：组合关键词直搜（v1.8.1.1）=====
+        // 「无码」「全彩」这类标签在漫画源里通常没有真实分类页，只能退化为**标题搜索**
+        // （见 TagEntryUrl 的说明）。分成两个词各搜一遍再按标题求交，几乎必然为空 ——
+        // 因为一部作品的标题很少同时写着「无码」和「全彩」。
+        // 这里改由源站自己去判断：把两个词拼成一次查询（「无码 全彩」）发过去，
+        // 源站若支持多词匹配就能直接给出同时命中的作品，只需源数那么多次请求。
+        val keyword = tags.joinToString(" ")
+        val combined = searchCombinedKeyword(sources, keyword, semaphore)
+        if (combined.isNotEmpty()) {
+            onPartial(combined)
+            return CompoundOutcome(
+                combined,
+                "这两组在漫画源里大多没有真实分类页、只能按标题搜，已改用组合关键词「$keyword」直搜（由源站判定同时匹配）",
+            )
+        }
+
+        // ===== 兜底二：只给第一个大集（v1.8.1.1）=====
+        // 连组合搜索都没结果时，与其让用户对着空屏，不如给出第一个大集的内容，
+        // 并明确说明「这不是交集结果」。
+        val firstGroup = unionOf(unionPerTag.first())
+        return if (firstGroup.isNotEmpty()) {
+            CompoundOutcome(
+                firstGroup,
+                "没有作品同时属于「${tags.joinToString("」「")}」，下面只显示「${tags.first()}」组的单独结果",
+            )
+        } else {
+            CompoundOutcome.EMPTY
+        }
+    }
+
+    /**
+     * 组合关键词直搜：把多个标签拼成一次查询，交给源站自己判定是否同时匹配。
+     *
+     * 只在逐集合交集为空时才调用，正常路径不受影响（不会把源站的宽松匹配混进结果）。
+     */
+    private suspend fun searchCombinedKeyword(
+        sources: List<String>,
+        keyword: String,
+        semaphore: Semaphore,
+    ): List<MediaItem> = coroutineScope {
+        val url = TagEntryUrl.search(keyword)
+        addProgressTotal(sources.size)
+        sources.map { sourceId ->
+            async {
+                semaphore.withPermit {
+                    try {
+                        exploreTagEntry(sourceId, url, 1)
+                    } finally {
+                        stepProgress()
+                    }
+                }
+            }
+        }.awaitAll().flatten().distinctBy { "${it.sourceId}:${it.id}" }
+    }
+
+    /**
+     * 每个源只保留 [MAX_URLS_PER_SOURCE] 条入口。
+     *
+     * 标签池里同一个标签常挂着多个等价写法的入口（真分类 + 搜索），全发出去会让请求数
+     * 成倍膨胀；保留时优先真分类页（结果就是该分类的作品，比标题搜索准得多）。
+     */
+    private fun limitEntriesPerSource(
+        entries: List<Pair<String, String>>,
+    ): List<Pair<String, String>> {
+        if (entries.size <= MAX_URLS_PER_SOURCE) return entries
+        val bySource = LinkedHashMap<String, MutableList<Pair<String, String>>>()
+        entries.forEach { entry -> bySource.getOrPut(entry.first) { mutableListOf() }.add(entry) }
+        return bySource.values.flatMap { list ->
+            if (list.size <= MAX_URLS_PER_SOURCE) {
+                list
+            } else {
+                list.sortedBy { entry ->
+                    val isSearch = TagEntryUrl.searchKeywordOf(entry.second) != null ||
+                        TagEntryUrl.categoryOf(entry.second)?.kind == "search"
+                    if (isSearch) 1 else 0
+                }.take(MAX_URLS_PER_SOURCE)
+            }
+        }
     }
 
     /**
@@ -548,6 +640,15 @@ class TagSearchViewModel(
         private val WIDE_COMIC_SEARCH_TAGS = setOf("无码", "全彩")
         private const val TAG_SEARCH_CONCURRENCY = 8
         private const val WIDE_COMPOUND_CONCURRENCY = 16
+
+        /**
+         * 同一个标签下**每个源**最多保留几条入口（v1.8.1.0）。
+         *
+         * 标签池里一个标签常挂着多条入口（真分类 + 若干搜索写法），全发出去请求数成倍增长：
+         * 搜「无码 全彩」实测会打出上千个请求。按源截到 2 条后请求量降一个数量级，
+         * 真分类入口优先保留（它给出的就是该分类的作品，比标题搜索准）。
+         */
+        private const val MAX_URLS_PER_SOURCE = 2
 
         /** 热门推荐标签上限（v1.6.1.0） */
         const val HOT_TAG_LIMIT = 12

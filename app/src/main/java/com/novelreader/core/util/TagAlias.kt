@@ -378,6 +378,29 @@ object TagAlias {
     }
 
     /**
+     * **单个源站一次搜索最多展开几种写法**（v1.8.1.0）。
+     *
+     * 同义组动辄二三十个写法（「无码」27 个、「全彩」42 个），而 [com.novelreader.data.cache.TagPlan.searchEntriesFor]
+     * 是「每个源 × 每个写法」各发一次请求。搜「无码 全彩」时 = 源数 × 27 + 源数 × 42，
+     * 二十个源就是一千多个请求，再乘上复合搜索的翻页 —— 这是「搜个标签要等好几分钟、
+     * 最后还空手而归」的真正原因。
+     *
+     * 只取前 [limit] 个（用户输入永远排第一，其后按组内声明顺序，也就是各站最常见的叫法），
+     * 召回损失很小，请求量却降一个数量级。
+     */
+    const val MAX_SEARCH_TERMS_PER_SOURCE = 2
+
+    /** 供**发请求**用的写法列表：只取前 [limit] 个，避免请求量爆炸。 */
+    fun searchTermsForQuery(
+        tag: String,
+        limit: Int = MAX_SEARCH_TERMS_PER_SOURCE,
+    ): List<String> {
+        val all = searchTermsFor(tag)
+        if (limit <= 0 || all.size <= limit) return all
+        return all.take(limit)
+    }
+
+    /**
      * 把互为同义的一组标签**合并成一个**（v1.7.6.0）。
      *
      * 复合搜索是按「同时满足所有标签」求交的，所以「无码」与「無修正」若同时出现在

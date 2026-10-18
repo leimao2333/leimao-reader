@@ -1,0 +1,13 @@
+# 二进制文件必须按原样存储，禁止换行符转换（否则签名密钥会被改坏）
+*.jks binary
+*.keystore binary
+*.bks binary
+*.p12 binary
+*.apk binary
+*.jar binary
+*.png binary
+*.webp binary
+*.db binary
+
+# 签名配置保持 LF，避免跨平台读取出差异
+keystore.properties text eol=lf

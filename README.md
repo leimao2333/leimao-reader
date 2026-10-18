@@ -124,13 +124,18 @@ NovelReader/
 
 > **所有 release 必须使用同一把密钥签名**。更换密钥会导致已安装用户无法覆盖升级（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`）。
 
-- **密钥文件**：`keystore/leimao-release.jks`（PKCS12，RSA 2048，有效期 10000 天，别名 `leimao`）
+- **密钥文件**：`keystore/leimao-release.jks`（PKCS12，RSA 2048，有效期 10000 天，别名 `leimao`，密码 `leimao2026`）
 - **密码配置**：`keystore.properties`（`storeFile` / `storePassword` / `keyAlias` / `keyPassword`）
 - **证书指纹（SHA-256）**：`0dece99b5a1ecb661b6e482da57d8c2a682a7a2458490d532955bd5cdc2cced0`
-  （2026-10-18 重建：原密钥文件丢失且仓库内无备份，旧指纹 `8ea0d34e…` 已作废。**升级到 1.8.1.0 及以后必须先卸载旧版**，因为签名已变，无法覆盖安装。）
-- 两个文件均已写入 `.gitignore`，**绝不提交到仓库**；换机 / 重装系统前必须单独备份，丢失后无法再发布可覆盖安装的更新。
+- **密钥入库**（2026-10-18 起）：`keystore/leimao-release.jks` 与 `keystore.properties` **已纳入仓库版本管理**，
+  换机 / 重装系统后 `git clone` 即可直接 `assembleRelease`，不会再出现密钥丢失导致无法覆盖升级。
+  代价是仓库若为公开，私钥等同于公开——**如需收紧，把仓库转为私有即可，无需改任何代码**。
+- **换签历史**：2026-10-18 原密钥（旧指纹 `8ea0d34e5ddeeb2aa4ae2801572ccdf46c6eba002274a93208660774d3d147f2`）
+  在本机/GitHub 均已无备份，确认无法恢复，故启用上述新密钥。**从 1.8.1.0 起签名已变，
+  已装旧版的设备必须先卸载再安装**（数据会清空，升级前先导出备份）；装过 1.8.1.0 之后的版本可正常覆盖升级。
 - 构建：`gradle assembleRelease` → 产物 `app/build/outputs/apk/release/app-release.apk`（已签名，v2 方案）。
-- 发版前必检：`apksigner verify -v app-release.apk`，必须看到 `Verified using v2 scheme (APK Signature Scheme v2): true`。
+- 发版前必检：`apksigner verify -v app-release.apk`，必须看到 `Verified using v2 scheme (APK Signature Scheme v2): true`，
+  且 `certificate SHA-256 digest` 等于上面的指纹。
 - **发版前必须在模拟器实际安装验证**（用户明确要求）：启动 `legado_test` AVD → `adb install app-release.apk` → 拉起 MainActivity 确认首页正常渲染。若模拟器上残留旧包且签名不同会报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`，先 `adb uninstall com.novelreader` 再装。
 - **只上传 release 构建的包，禁止上传 debug 包**：debug 包含 `application-debuggable`、Compose live edit 支持代码与 ui-tooling，体积大 ~8MB（~25MB vs ~17.6MB），且签名证书是 `CN=Android Debug`（不是正式密钥），无法覆盖升级。v1.7.6.0 及更早的大部分 Release 都误传过 debug 包，v1.7.6.1 起才固定用 release 构建。
 - 若 `keystore.properties` 缺失，构建会退化为**未签名**（`app-release-unsigned.apk`）——这种包**装不上**，禁止发布。

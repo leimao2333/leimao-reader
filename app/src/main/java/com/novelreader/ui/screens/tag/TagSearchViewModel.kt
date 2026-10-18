@@ -91,7 +91,9 @@ class TagSearchViewModel(
     val notice: StateFlow<String?> = _notice.asStateFlow()
 
     /** 最近一次成功搜索的标签（用于结果区标题） */
-    private val _activeTags = MutableStateFlow<List<String>>(emptyList())
+    private val _activeTags = MutableStateFlow(
+        initialTag.trim().takeIf { it.isNotEmpty() }?.let(::listOf).orEmpty(),
+    )
     val activeTags: StateFlow<List<String>> = _activeTags.asStateFlow()
 
     private var tagPlan: TagPlan = TagPlan.EMPTY
@@ -132,7 +134,12 @@ class TagSearchViewModel(
 
     fun setQuery(value: String) {
         _query.value = value
+        _activeTags.value = emptyList()
     }
+
+    private fun logicalTagsInQuery(query: String): List<String> =
+        _activeTags.value.takeIf { it.isNotEmpty() && it.joinToString(" ") == query }
+            ?: TagQuery.parse(query)
 
     /**
      * 把标签追加到查询串（空格分隔）并立即搜索 —— 复合搜索入口（v1.5.10.0）。
@@ -143,7 +150,7 @@ class TagSearchViewModel(
     fun addTag(tag: String) {
         if (tag.isBlank()) return
         val current = TagAlias.dedupeAliases(
-            TagQuery.parseWithPool(_query.value, tagPlan.tags).map(TagAlias::canonicalOf),
+            logicalTagsInQuery(_query.value).map(TagAlias::canonicalOf),
         )
         val next = TagAlias.dedupeAliases(current + TagAlias.canonicalOf(tag))
         if (next.size == current.size) {
@@ -161,7 +168,7 @@ class TagSearchViewModel(
         // 以已选列表为准（chips 就是它渲染的）；手输场景才回退到解析查询串
         val parsed = TagAlias.dedupeAliases(
             (if (tag in _activeTags.value) _activeTags.value
-            else TagQuery.parseWithPool(_query.value, tagPlan.tags)).map(TagAlias::canonicalOf),
+            else logicalTagsInQuery(_query.value)).map(TagAlias::canonicalOf),
         )
         val aliases = TagAlias.aliasesOf(tag)
         val current = parsed.filterNot { candidate ->
@@ -222,7 +229,7 @@ class TagSearchViewModel(
     }
 
     fun search() {
-        val firstParse = TagQuery.parseWithPool(_query.value, tagPlan.tags)
+        val firstParse = logicalTagsInQuery(_query.value)
         if (firstParse.isEmpty()) return
         val generation = ++searchGeneration
         searchJob?.cancel()
@@ -234,7 +241,7 @@ class TagSearchViewModel(
 
             try {
                 ensurePlan()
-                val tags = TagQuery.parseWithPool(_query.value, tagPlan.tags)
+                val tags = logicalTagsInQuery(_query.value)
                     .ifEmpty { firstParse }
                     .map(TagAlias::canonicalOf)
                     .distinct()

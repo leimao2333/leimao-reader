@@ -9,6 +9,8 @@ package com.novelreader.ui.navigation
  * 复杂对象（MediaItem / ChapterItem）通过 JSON 编码后作为单个参数传递，
  * 见 [NavArgs]。
  */
+import com.novelreader.core.util.TagSearchArg
+
 object Routes {
     // ===== 主框架 =====
     const val HOME = "home"                    // 首页（书架/发现/源管理入口）
@@ -107,7 +109,7 @@ object Routes {
         type: com.novelreader.domain.model.SourceType,
         tag: String = "",
     ): String {
-        val t = java.net.URLEncoder.encode(tag, "UTF-8")
+        val t = TagSearchArg.encode(tag)
         return "tag_search?type=${type.name}&tag=$t"
     }
 }

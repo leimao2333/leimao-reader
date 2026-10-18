@@ -181,8 +181,19 @@ object TagAlias {
         setOf("网球", "테니스", "テニス", "tennis"),
     )
 
-    /** 归一化：去空白 + 小写（与 [TagQuery.normalizeTitle] 同口径） */
-    private fun norm(raw: String): String = raw.filterNot { it.isWhitespace() }.lowercase()
+    /**
+     * 标签匹配归一化：百分号编码按一次 UTF-8 解码，再去空白并转小写。
+     * 编码形式与原标签因此属于同一个匹配值，但入口仍保留各自原始名称。
+     */
+    private fun norm(raw: String): String =
+        decodePercentEncoded(raw).filterNot { it.isWhitespace() }.lowercase()
+
+    private fun decodePercentEncoded(value: String): String {
+        if (!Regex("%[0-9a-fA-F]{2}").containsMatchIn(value)) return value
+        return runCatching {
+            java.net.URLDecoder.decode(value.replace("+", "%2B"), Charsets.UTF_8.name())
+        }.getOrDefault(value)
+    }
 
     /** 归一化 key → 所在等价组 */
     private val groupOf: Map<String, Set<String>> = buildMap {

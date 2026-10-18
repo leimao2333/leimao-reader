@@ -167,4 +167,16 @@ class TagAliasTest {
         }
         assertFalse(TagAlias.isExplicitAdultIntent("全彩"))
     }
+
+    @Test
+    fun `原始标签和百分号转义标签同时匹配且保留各自入口`() {
+        val escapedFullColor = "%E5%85%A8%E5%BD%A9"
+        val escapedUncensored = "%E6%97%A0%E7%A0%81"
+        val pool = listOf("全彩", escapedFullColor, "无码", escapedUncensored)
+
+        assertEquals("全彩", TagAlias.canonicalOf(escapedFullColor))
+        assertEquals("无码", TagAlias.canonicalOf(escapedUncensored))
+        assertEquals(listOf("全彩", escapedFullColor), TagAlias.matchesInPool("全彩", pool))
+        assertEquals(listOf("无码", escapedUncensored), TagAlias.matchesInPool("无码", pool))
+    }
 }

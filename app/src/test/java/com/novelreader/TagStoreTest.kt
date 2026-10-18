@@ -1,5 +1,7 @@
 package com.novelreader
 
+import com.novelreader.core.util.TagAlias
+import com.novelreader.core.util.TagQuery
 import com.novelreader.data.cache.TagPlan
 import com.novelreader.data.cache.TagStore
 import org.junit.Assert.assertEquals
@@ -74,6 +76,41 @@ class TagStoreTest {
         val plan = samplePlan()
         assertEquals(2, plan.entriesFor("玄幻").size)
         assertEquals(0, plan.entriesFor("科幻").size)
+    }
+
+    @Test
+    fun `复合查询保留两个标签并合并原文与百分号转义入口`() {
+        val escapedFullColor = "%E5%85%A8%E5%BD%A9"
+        val escapedUncensored = "%E6%97%A0%E7%A0%81"
+        val plan = TagPlan(
+            plan = linkedMapOf(
+                "全彩 无码" to listOf("comic_combined" to "search::全彩 无码"),
+                "全彩" to listOf("comic_raw_color" to "search::全彩"),
+                escapedFullColor to listOf("comic_encoded_color" to "search::%E5%85%A8%E5%BD%A9"),
+                "无码" to listOf("comic_raw_adult" to "search::无码"),
+                escapedUncensored to listOf("comic_encoded_adult" to "search::%E6%97%A0%E7%A0%81"),
+            ),
+        )
+        assertTrue("全彩 无码" in plan.tags)
+        val logicalTags = TagQuery.parse("全彩 无码")
+        val canonicalTags = TagAlias.dedupeAliases(logicalTags.map(TagAlias::canonicalOf))
+
+        assertEquals(listOf("全彩", "无码"), canonicalTags)
+        assertEquals(
+            listOf(
+                "comic_raw_color" to "search::全彩",
+                "comic_encoded_color" to "search::%E5%85%A8%E5%BD%A9",
+            ),
+            plan.entriesFor(canonicalTags[0]),
+        )
+        assertEquals(
+            listOf(
+                "comic_raw_adult" to "search::无码",
+                "comic_encoded_adult" to "search::%E6%97%A0%E7%A0%81",
+            ),
+            plan.entriesFor(canonicalTags[1]),
+        )
+        assertEquals(listOf("全彩", "无码"), logicalTags)
     }
 
     @Test

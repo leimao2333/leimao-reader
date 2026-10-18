@@ -99,50 +99,37 @@ class TagQueryTest {
         assertTrue(TagQuery.intersect(emptyList()).isEmpty())
     }
 
-    // ===== parseWithPool（v1.7.0.0：含空格的标签不再被拆碎）=====
+    // ===== 逻辑标签边界 =====
 
     @Test
-    fun `parseWithPool 池里没有就退化为按空白拆`() {
+    fun `parse 复合查询始终按空白拆分`() {
+        assertEquals(listOf("玄幻", "都市"), TagQuery.parse("玄幻 都市"))
+    }
+
+    @Test
+    fun `parse 不会把相邻标签合并成复合名称`() {
         assertEquals(
-            listOf("玄幻", "都市"),
-            TagQuery.parseWithPool("玄幻 都市", emptyList()),
+            listOf("全彩", "无码"),
+            TagQuery.parse("全彩 无码"),
         )
     }
 
     @Test
-    fun `parseWithPool 整串命中池里的标签时当成一个标签`() {
-        val pool = listOf("恋爱 校园", "热血")
-        assertEquals(listOf("恋爱 校园"), TagQuery.parseWithPool("恋爱 校园", pool))
-    }
-
-    @Test
-    fun `parseWithPool 相邻两段合并成带空格的标签`() {
-        val pool = listOf("热血", "英语 ENG", "校园")
+    fun `parse 对编码空格及表单加号也保留标签边界`() {
+        assertEquals(listOf("全彩", "无码"), TagQuery.parse("全彩%20无码"))
         assertEquals(
-            listOf("热血", "英语 ENG"),
-            TagQuery.parseWithPool("热血 英语 ENG", pool),
+            listOf("%E5%85%A8%E5%BD%A9", "%E6%97%A0%E7%A0%81"),
+            TagQuery.parse("%E5%85%A8%E5%BD%A9+%E6%97%A0%E7%A0%81"),
+        )
+        assertEquals(
+            listOf("%E5%85%A8%E5%BD%A9", "%E6%97%A0%E7%A0%81"),
+            TagQuery.parse("%E5%85%A8%E5%BD%A9%20%E6%97%A0%E7%A0%81"),
         )
     }
 
     @Test
-    fun `parseWithPool 最多合并三段且优先最长`() {
-        val pool = listOf("SAO 刀劍神域", "SAO", "刀劍神域")
-        assertEquals(listOf("SAO 刀劍神域"), TagQuery.parseWithPool("SAO 刀劍神域", pool))
-        // 池里只有单段词时按单段处理，不会硬拼
-        assertEquals(
-            listOf("SAO", "刀劍神域"),
-            TagQuery.parseWithPool("SAO 刀劍神域", listOf("SAO", "刀劍神域")),
-        )
+    fun `parse 全角空格同样按分隔符处理`() {
+        assertEquals(listOf("恋爱", "校园"), TagQuery.parse("恋爱　校园"))
     }
 
-    @Test
-    fun `parseWithPool 全角空格同样按分隔符处理`() {
-        val pool = listOf("恋爱", "校园")
-        assertEquals(listOf("恋爱", "校园"), TagQuery.parseWithPool("恋爱　校园", pool))
-    }
-
-    @Test
-    fun `parseWithPool 空串返回空列表`() {
-        assertTrue(TagQuery.parseWithPool("   ", listOf("恋爱")).isEmpty())
-    }
 }

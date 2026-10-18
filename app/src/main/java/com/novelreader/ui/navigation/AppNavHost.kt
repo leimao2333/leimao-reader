@@ -7,6 +7,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.novelreader.core.util.TagSearchArg
 import com.novelreader.di.AppContainer
 import com.novelreader.ui.NovelViewModelFactory
 import com.novelreader.ui.screens.bookshelf.BookShelfScreen
@@ -224,10 +225,7 @@ fun AppNavHost(
             val type = runCatching {
                 com.novelreader.domain.model.SourceType.valueOf(typeName)
             }.getOrDefault(com.novelreader.domain.model.SourceType.NOVEL)
-            val initialTag = java.net.URLDecoder.decode(
-                backStackEntry.arguments?.getString("tag").orEmpty(),
-                "UTF-8",
-            )
+            val initialTag = TagSearchArg.decode(backStackEntry.arguments?.getString("tag").orEmpty())
             val viewModel: com.novelreader.ui.screens.tag.TagSearchViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
                     com.novelreader.ui.screens.tag.TagSearchViewModel(

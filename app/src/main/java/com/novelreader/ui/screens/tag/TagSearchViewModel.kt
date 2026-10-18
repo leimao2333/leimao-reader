@@ -3,7 +3,6 @@ package com.novelreader.ui.screens.tag
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novelreader.core.util.TagAlias
-import com.novelreader.core.util.TagCompound
 import com.novelreader.core.util.TagEntryUrl
 import com.novelreader.core.util.TagQuery
 import com.novelreader.data.cache.TagPlan
@@ -27,13 +26,14 @@ import kotlinx.coroutines.sync.withPermit
 
 /**
  * 标签搜索 ViewModel（v1.5.10.0 起；v1.6.1.0 重做 UI 后保留全量 + 新增热门标签；
- * v1.7.0.0 重修复合搜索）。
+ * v1.7.0.0 重修复合搜索；v1.7.9.9 改为并集相交）。
  *
  * - 标签来自 [TagRepository] 自动收集的各源发现分类（落盘缓存，冷启动即有）；
  * - **热门标签**：按标签覆盖源数倒序，取 top [HOT_TAG_LIMIT] 展示在搜索页顶部；
  * - **单标签搜索**：聚合所有拥有该分类的源的第 1 页内容，跨源去重；
- * - **复合搜索**：对所有共同源的各标签结果跨页累计后严格求交；任一标签缺失或交集为空
- *   时返回空结果，不将「任一标签命中」误当成复合命中；
+ * - **复合搜索**：每个标签先取「它自己全部译名 / 转义写法 / 全部源」的并集，
+ *   再把各标签的并集按归一化标题求交（「无码 全彩」= 全量无码 ∪ ∩ 全量全彩 ∪）。
+ *   跨源同名作品视为同一部，不再要求两个标签落在同一个源上；
  * - 视频结果把 18+ 成人源内容沉底（与首页/搜索一致）。
  */
 class TagSearchViewModel(
@@ -189,8 +189,8 @@ class TagSearchViewModel(
      * 1. **池里没有的标签不再拖垮整次搜索**：以前它照样参与交集，任何空集合都会让
      *    交集清空，而提示却写着「已按其余标签搜索」—— 说好了搜索却返回空，
      *    这正是「复合搜索没作用」最直接的一条。现在这些标签直接剔除，只在提示里点名。
-     * 2. **复合先查同源交集，再回退跨源同名或去重并集**（见 [TagCompound]），
-     *    避免来源分类体系不同导致复合搜索整页空白。
+     * 2. **复合搜索按「每标签全量并集求交」**（v1.7.9.9 起，见 [searchCompound]），
+     *    不再限定「同源同时拥有全部入口」，避免源边界把同名作品切掉。
      * 3. **只打已启用的源**（见 [enabledSourceIds]）：标签池是含禁用源收集的，
      *    以前搜索也照着池子全打一遍，用户停用的源照样被请求、每个都要干等到超时。
      */
@@ -389,67 +389,70 @@ class TagSearchViewModel(
         }
 
     /**
-     * 复合标签：仅搜索同时含全部标签入口的源，并对跨页累计的每标签结果严格求交。
+     * 复合标签：**每个标签先取全量并集，再把各并集按标题求交**（v1.7.9.9 重构）。
+     *
+     * 口径示例：「无码 全彩」= （无码 + 無修正 + uncensored… 全部译名 / 转义写法 /
+     * 全部源的结果并集）∩（全彩 + full color + カラー… 的全部并集）。
+     *
+     * 与 v1.7.0.0 ~ v1.7.9.8 的「同源严格相交」的区别：
+     * - 不再要求「同一个源同时拥有两个标签入口」才参与。以前无码只在 A 站、全彩只在
+     *   B 站时，两个标签的源集合没有交集，直接返回空；现在 A 的并集与 B 的并集照样
+     *   按标题相交，同名作品能被找出来。
+     * - 判定同一部作品仍用**归一化标题**（[TagQuery.normalizeTitle]）：跨源同名即视为
+     *   同一部 —— 这是用户口径，代价是同名不同作会合并成一条。
+     * - 交集为空时保持空结果，不回退成并集。
      */
     private suspend fun searchCompound(
         entriesPerTag: List<List<Pair<String, String>>>,
         tags: List<String>,
         onPartial: (List<MediaItem>) -> Unit,
     ): List<MediaItem> {
-        val participants = TagCompound.participants(entriesPerTag)
-        if (participants.isEmpty()) return emptyList()
+        if (entriesPerTag.isEmpty() || entriesPerTag.any { it.isEmpty() }) return emptyList()
 
-        if (
-            type == SourceType.COMIC &&
+        // 并集口径：每个标签查它自己的全部入口；源集合取并集（各标签的源可以完全不同）。
+        val sources = entriesPerTag.flatMap { entries -> entries.map { it.first } }.distinct()
+        if (sources.isEmpty()) return emptyList()
+        val bySrcPerTag = entriesPerTag.map { list -> list.groupBy({ it.first }, { it.second }) }
+
+        // 无码 / 全彩这类「宽标签」入口极多，提高并发，免得一次复合搜索要等好几分钟。
+        val wideComic = type == SourceType.COMIC &&
             tags.all { TagAlias.canonicalOf(it) in WIDE_COMIC_SEARCH_TAGS }
-        ) {
-            val semaphore = Semaphore(WIDE_COMPOUND_CONCURRENCY)
-            val partialPerTag = MutableList(entriesPerTag.size) { emptyList<MediaItem>() }
-            val results = coroutineScope {
-                entriesPerTag.mapIndexed { tagIndex, entries ->
-                    async {
-                        searchOneTag(entries, semaphore) { items ->
-                            partialPerTag[tagIndex] = items
-                            onPartial(
-                                TagCompound.intersectBySource(
-                                    partialPerTag.map { tagItems -> tagItems.groupBy { it.sourceId } },
-                                ),
-                            )
-                        }
-                    }
-                }.awaitAll()
-            }
-            val byTagAndSource = results.map { items -> items.groupBy { it.sourceId } }
-            return TagCompound.intersectBySource(byTagAndSource)
-        }
+        val semaphore = Semaphore(
+            if (wideComic) WIDE_COMPOUND_CONCURRENCY else TAG_SEARCH_CONCURRENCY,
+        )
 
-        val bySrcPerTag = entriesPerTag.map { list ->
-            list.groupBy({ it.first }, { it.second })
-        }
-        val candidatesPerTag = MutableList(entriesPerTag.size) { mutableListOf<MediaItem>() }
+        val unionPerTag = MutableList(entriesPerTag.size) { mutableListOf<MediaItem>() }
         var page = 1
         while (page <= MAX_COMPOUND_PAGES) {
-            val fetched = fetchGrid(bySrcPerTag, participants, page)
+            val fetched = fetchGrid(bySrcPerTag, sources, page, semaphore)
             fetched.forEachIndexed { tagIndex, perSource ->
-                candidatesPerTag[tagIndex].addAll(perSource.values.flatten())
+                unionPerTag[tagIndex].addAll(perSource.values.flatten())
             }
+            onPartial(TagQuery.intersect(unionPerTag.map(::unionOf)))
             if (fetched.all { perSource -> perSource.values.all { it.isEmpty() } }) break
             page += 1
         }
-        return TagCompound.intersectBySource(
-            candidatesPerTag.map { items ->
-                items.distinctBy { "${it.sourceId}:${it.id}" }.groupBy { it.sourceId }
-            },
-        )
+        return TagQuery.intersect(unionPerTag.map(::unionOf))
     }
 
-    /** 并发抓取 `[标签][源]` 请求，所有参与源共享八路网络并发限制。 */
+    /**
+     * 单个标签的并集：按归一化标题去重，保留首次出现的条目。
+     *
+     * 同一部作品在多个源 / 多个同义入口下会重复出现，先按标题收敛，交集判定才不会被
+     * 重复项干扰；保留顺序 = 源顺序 + 页内顺序，结果稳定可复现。
+     */
+    private fun unionOf(items: List<MediaItem>): List<MediaItem> =
+        items.distinctBy { item ->
+            TagQuery.normalizeTitle(item.title).ifEmpty { "${item.sourceId}:${item.id}" }
+        }
+
+    /** 并发抓取 `[标签][源]` 请求，所有参与源共享同一个并发限制。 */
     private suspend fun fetchGrid(
         bySrcPerTag: List<Map<String, List<String>>>,
         sources: List<String>,
         page: Int,
+        semaphore: Semaphore,
     ): List<Map<String, List<MediaItem>>> = coroutineScope {
-        val semaphore = Semaphore(TAG_SEARCH_CONCURRENCY)
         val requests = bySrcPerTag.flatMapIndexed { tagIndex, bySource ->
             sources.flatMap { sourceId ->
                 bySource[sourceId].orEmpty().map { url ->
@@ -520,10 +523,10 @@ class TagSearchViewModel(
         const val HOT_TAG_LIMIT = 12
 
         /**
-         * 复合搜索每源翻到第几页（v1.7.0.0）。
+         * 复合搜索每源翻到第几页（v1.7.0.0；v1.7.9.9 起口径为并集相交）。
          *
-         * 一个源的一级分类页通常 20~30 条，交集要求作品**在两边都靠前**；
-         * 翻到第 2 页能覆盖多数「两个标签都沾」的作品，再多收益递减且明显变慢。
+         * 一个源的一级分类页通常 20~30 条，交集要求同一部作品在**每个标签的并集**里
+         * 都出现；翻到第 2 页能覆盖多数「多个标签都沾」的作品，再多收益递减且明显变慢。
          */
         const val MAX_COMPOUND_PAGES = 2
     }

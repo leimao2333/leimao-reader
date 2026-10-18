@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.7.9.8"
+    const val CURRENT_VERSION = "1.7.9.9"
 
     /**
      * 更新日志。
@@ -25,6 +25,14 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.7.9.9",
+            date = "2026-10-18",
+            changes = listOf(
+                "**复合标签搜索改为并集相交**：每个标签先取自己的全部译名 / 转义写法 / 全部源的结果并集，再把各标签的并集按标题求交 —— 「无码 全彩」= 全量无码并集 ∩ 全量全彩并集。",
+                "**不再要求同一书源同时拥有全部标签**：无码只在 A 站、全彩只在 B 站时，同名作品仍能被找出（旧口径下这种情况直接返回空）；跨源同名视为同一部，交集为空仍保持空结果。",
+            ),
+        ),
         VersionEntry(
             version = "1.7.9.8",
             date = "2026-10-18",

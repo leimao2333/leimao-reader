@@ -8,7 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 标签查询纯逻辑测试（v1.5.10.0）。
+ * 标签查询纯逻辑测试（v1.5.10.0；v1.7.9.9 口径改为「每标签全量并集求交」）。
  *
  * 覆盖：查询串解析（多空格 / 全角空格 / 去重）、标题归一化、
  * 复合标签交集（含空集合短路、单标签透传、跨源同名合并）。
@@ -97,6 +97,44 @@ class TagQueryTest {
     @Test
     fun `intersect 空输入返回空`() {
         assertTrue(TagQuery.intersect(emptyList()).isEmpty())
+    }
+
+    @Test
+    fun `intersect 跨源并集按标题求交`() {
+        // 「无码」的全部结果来自 s1，「全彩」的全部结果来自 s9 —— 两个标签没有公共源，
+        // 但同名作品仍应被视为同一部（旧口径会因「无公共源」直接返回空）。
+        val uncensoredUnion = listOf(
+            item("被炉与彼女", sourceId = "s1", id = "a1"),
+            item("夏日祭", sourceId = "s1", id = "a2"),
+        )
+        val fullColorUnion = listOf(
+            item("被炉与彼女", sourceId = "s9", id = "b1"),
+            item("别的作品", sourceId = "s9", id = "b2"),
+        )
+        val result = TagQuery.intersect(listOf(uncensoredUnion, fullColorUnion))
+        assertEquals(listOf("被炉与彼女"), result.map { it.title })
+        assertEquals("s1", result[0].sourceId)
+    }
+
+    @Test
+    fun `intersect 三个标签的并集同时命中才保留`() {
+        val uncensored = listOf(item("甲", "s1", "1"), item("乙", "s1", "2"))
+        val fullColor = listOf(item("甲", "s2", "3"), item("乙", "s2", "4"))
+        val completed = listOf(item("乙", "s3", "5"))
+        assertEquals(
+            listOf("乙"),
+            TagQuery.intersect(listOf(uncensored, fullColor, completed)).map { it.title },
+        )
+    }
+
+    @Test
+    fun `intersect 跨源同名不同作会合并成一条`() {
+        // 已知取舍：判据只有标题，同名不同作会合并（保留第一个标签里的那条）。
+        val tagA = listOf(item("同名", "s1", "1"))
+        val tagB = listOf(item("同名", "s2", "2"))
+        val result = TagQuery.intersect(listOf(tagA, tagB))
+        assertEquals(1, result.size)
+        assertEquals("s1", result[0].sourceId)
     }
 
     // ===== 逻辑标签边界 =====

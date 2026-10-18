@@ -70,6 +70,8 @@ class AppContainer(context: Context) {
                 AppDatabase.MIGRATION_10_11,
                 AppDatabase.MIGRATION_11_12,
                 AppDatabase.MIGRATION_12_13,
+                AppDatabase.MIGRATION_13_14,
+                AppDatabase.MIGRATION_14_15,
             )
             .build()
     }
@@ -106,6 +108,16 @@ class AppContainer(context: Context) {
     val tagStore: com.novelreader.data.cache.TagStore by lazy {
         com.novelreader.data.cache.TagStore(
             java.io.File(appContext.filesDir, "tags"),
+        )
+    }
+
+    /** 本地标签索引（v1.8.1.2：遍历源 + 详情页题材，落到 local_tags 表） */
+    val tagIndexRepository: com.novelreader.data.repository.TagIndexRepository by lazy {
+        com.novelreader.data.repository.TagIndexRepository(
+            contentRepository,
+            sourceRepository,
+            database.localTagDao(),
+            database.tagInstanceDao(),
         )
     }
 

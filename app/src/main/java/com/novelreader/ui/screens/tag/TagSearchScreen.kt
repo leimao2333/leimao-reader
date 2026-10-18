@@ -115,6 +115,7 @@ fun TagSearchScreen(
     val notice by viewModel.notice.collectAsState()
     val sources by viewModel.sources.collectAsState()
     val selectedSourceIds by viewModel.selectedSourceIds.collectAsState()
+    val indexCount by viewModel.indexCount.collectAsState()
     val hasMore by viewModel.hasMore.collectAsState()
     val loadingMore by viewModel.loadingMore.collectAsState()
     val activeTags by viewModel.activeTags.collectAsState()
@@ -264,14 +265,27 @@ fun TagSearchScreen(
         )
 
         // 「按源搜索」（v1.8.1.2）：标签池是跨源收集的，只搜某一个源能省掉几十个源一起等的长尾
-        // 「按源搜索」多选下拉（v1.8.1.2）：一个都不选 = 全部源
+        // 「按源搜索」多选下拉 + 本地标签索引入口（v1.8.1.2）
         if (sources.isNotEmpty()) {
-            SourceFilterDropdown(
-                sources = sources,
-                selectedIds = selectedSourceIds,
-                onSelectionChange = viewModel::setSelectedSources,
-                modifier = Modifier.padding(start = 8.dp),
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SourceFilterDropdown(
+                    sources = sources,
+                    selectedIds = selectedSourceIds,
+                    onSelectionChange = viewModel::setSelectedSources,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+                Spacer(Modifier.weight(1f))
+                // 索引不再是「要先跑一遍的独立任务」，而是搜索时自动累积（v1.8.1.2）
+                Text(
+                    text = if (indexCount > 0) "已收录 $indexCount 部" else "搜索时自动收录标签",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(end = 12.dp),
+                )
+            }
         }
 
         // ===== 已选标签 chips（v1.6.1.0）：点选移除 =====

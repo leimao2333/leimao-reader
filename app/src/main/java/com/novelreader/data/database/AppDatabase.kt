@@ -5,6 +5,8 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.novelreader.data.model.BookEntity
+import com.novelreader.data.model.LocalTagEntity
+import com.novelreader.data.model.TagInstanceEntity
 import com.novelreader.data.model.BookmarkEntity
 import com.novelreader.data.model.ChapterCacheEntity
 import com.novelreader.data.model.ProgressEntity
@@ -27,8 +29,10 @@ import com.novelreader.data.model.SourceEntity
         BookmarkEntity::class,
         RssFeedEntity::class,
         RssArticleEntity::class,
+        LocalTagEntity::class,
+        TagInstanceEntity::class,
     ],
-    version = 13,
+    version = 15,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -38,6 +42,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun chapterCacheDao(): ChapterCacheDao
     abstract fun bookmarkDao(): BookmarkDao
     abstract fun rssDao(): RssDao
+    abstract fun localTagDao(): LocalTagDao
+    abstract fun tagInstanceDao(): TagInstanceDao
 
     companion object {
         /** v1 -> v2：sources 表新增 category 列 */
@@ -284,6 +290,67 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_12_13 = object : Migration(12, 13) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE sources ADD COLUMN sortOrder INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * v13 -> v14：新增本地标签索引表（v1.8.1.2）。
+         *
+         * 漫画源大多没有分类页，「按标签复合筛选」只能靠本地索引：遍历各源列表 + 逐部拉详情，
+         * 把源站自己声明的题材（legado `kind` / Venera `tags`）落地到这张表。
+         */
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `local_tags` (
+                      `sourceId` TEXT NOT NULL,
+                      `itemId` TEXT NOT NULL,
+                      `itemType` TEXT NOT NULL,
+                      `title` TEXT NOT NULL,
+                      `cover` TEXT,
+                      `detailUrl` TEXT NOT NULL,
+                      `sourceName` TEXT NOT NULL,
+                      `author` TEXT,
+                      `tags` TEXT NOT NULL,
+                      `tagsLower` TEXT NOT NULL,
+                      `updatedAt` INTEGER NOT NULL,
+                      PRIMARY KEY(`sourceId`, `itemId`)
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+
+        /**
+         * v14 -> v15：标签实例表（v1.8.1.2「中间标签层」）。
+         *
+         * 一部作品的标签从「拼成一个字符串」改成**每个标签一行**，
+         * 这样嵌套式 AND 查询（同一部作品内必须同时存在这些标签）才表达得精确。
+         */
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `tag_instances` (
+                      `sourceId` TEXT NOT NULL,
+                      `itemId` TEXT NOT NULL,
+                      `itemType` TEXT NOT NULL,
+                      `tagName` TEXT NOT NULL,
+                      `category` TEXT NOT NULL,
+                      `confidence` INTEGER NOT NULL,
+                      `origin` TEXT NOT NULL,
+                      `updatedAt` INTEGER NOT NULL,
+                      PRIMARY KEY(`sourceId`, `itemId`, `tagName`)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_tag_instances_itemType ON tag_instances (itemType)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_tag_instances_tagName ON tag_instances (tagName)")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_tag_instances_itemType_tagName " +
+                        "ON tag_instances (itemType, tagName)",
+                )
             }
         }
 

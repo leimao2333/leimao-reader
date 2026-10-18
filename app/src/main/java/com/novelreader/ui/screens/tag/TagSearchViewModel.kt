@@ -45,7 +45,60 @@ class TagSearchViewModel(
     val type: SourceType,
     initialTag: String,
     private val preferencesManager: com.novelreader.core.preferences.PreferencesManager? = null,
+    /** 本地标签索引（v1.8.1.2）：建好后标签搜索直接查它，不再受源站有无分类页限制 */
+    private val tagIndexRepository: com.novelreader.data.repository.TagIndexRepository? = null,
 ) : ViewModel() {
+
+    /** 索引构建状态（v1.8.1.2） */
+    private val _indexing = MutableStateFlow(false)
+    val indexing: StateFlow<Boolean> = _indexing.asStateFlow()
+
+    private val _indexMessage = MutableStateFlow<String?>(null)
+    val indexMessage: StateFlow<String?> = _indexMessage.asStateFlow()
+
+    private val _indexCount = MutableStateFlow(0)
+    val indexCount: StateFlow<Int> = _indexCount.asStateFlow()
+
+    /**
+     * 构建本地标签索引（v1.8.1.2）。
+     *
+     * 遍历已启用的源：抓列表 → 逐部拉详情 → 读出源站声明的题材 → 入库。
+     * 建好后 [search] 会优先查这份索引，复合筛选因此是真的按标签求交。
+     */
+    fun buildIndex() {
+        val repo = tagIndexRepository ?: run {
+            _indexMessage.value = "当前环境不支持本地索引"
+            return
+        }
+        if (_indexing.value) return
+        viewModelScope.launch {
+            _indexing.value = true
+            _indexMessage.value = "准备中…"
+            try {
+                val picked = _selectedSourceIds.value
+                val total = repo.build(
+                    type = type,
+                    // 选了源就只索引选中的源：全量遍历很慢，先按源建能快速看到效果
+                    sourceIds = picked,
+                    onProgress = { p ->
+                        _indexMessage.value =
+                            "扫描 ${p.scannedCount} 部 · 打标签 ${p.indexedCount} 部 · " +
+                                "${p.doneSources}/${p.totalSources} 源" +
+                                if (p.currentSource.isNotBlank()) "（${p.currentSource}）" else ""
+                    },
+                )
+                _indexCount.value = repo.count(type)
+                _indexMessage.value = "完成：$total 部作品已打标签"
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                android.util.Log.w("TagSearch", "构建标签索引失败", error)
+                _indexMessage.value = "建索引失败：${error.message ?: "未知错误"}"
+            } finally {
+                _indexing.value = false
+            }
+        }
+    }
 
     /**
      * 「按源搜索」：已启用的源列表 + 当前选中的源（null = 全部源）（v1.8.1.2）。
@@ -404,6 +457,20 @@ class TagSearchViewModel(
                     .distinct()
                     .let { TagAlias.dedupeAliases(it) }
 
+                // v1.8.1.2：**索引与搜索不冲突**。
+                // 先看本地索引里已经收录的（按源站真实题材打的标签），有就立刻显示 ——
+                // 但**不 return**，网络搜索照跑，新结果合并进来、再回写索引，越搜越全。
+                val indexedTotal = tagIndexRepository?.count(type) ?: 0
+                _indexCount.value = indexedTotal
+                var localItems: List<MediaItem> = emptyList()
+                if (indexedTotal > 0) {
+                    val groups = tags.map { tag -> TagAlias.aliasesOf(tag) }
+                    localItems = tagIndexRepository?.search(type, groups).orEmpty()
+                    if (localItems.isNotEmpty()) {
+                        _results.value = localItems
+                    }
+                }
+
                 val enabledIds = enabledSourceIds()
                 if (enabledIds != null && enabledIds.isEmpty()) {
                     _activeTags.value = emptyList()
@@ -494,12 +561,21 @@ class TagSearchViewModel(
                 if (generation != searchGeneration) return@launch
                 // 同一部作品在不同源上标题写法可能不同（繁简 / 带作者后缀），
                 // 按作品身份键再去重一次，避免结果里出现两条「同一部」。
-                val final = filterAdults(searchResult, tags)
+                val network = filterAdults(searchResult, tags)
                     .let { if (searchOnlyResult) filterByGroupKeywords(it, tags) else it }
+                // 索引里的是「按真实题材命中」的，不再过标题过滤；与网络结果合并去重
+                val final = (localItems + network)
                     .distinctBy { TagQuery.identityKey(it.title) }
                 if (generation != searchGeneration) return@launch
                 _activeTags.value = known.map(TagAlias::canonicalOf).distinct()
                 _results.value = final
+                // 边搜边标记：把这批结果写进本地索引（后台执行，不打断搜索）
+                if (final.isNotEmpty()) {
+                    viewModelScope.launch {
+                        runCatching { tagIndexRepository?.indexItems(type, final) }
+                        _indexCount.value = tagIndexRepository?.count(type) ?: 0
+                    }
+                }
                 // 分页上下文：后续「加载更多」按同一批入口抓下一页（v1.8.1.2）
                 if (final.isNotEmpty()) {
                     paging = PagingContext(

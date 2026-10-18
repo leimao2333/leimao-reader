@@ -126,7 +126,8 @@ NovelReader/
 
 - **密钥文件**：`keystore/leimao-release.jks`（PKCS12，RSA 2048，有效期 10000 天，别名 `leimao`）
 - **密码配置**：`keystore.properties`（`storeFile` / `storePassword` / `keyAlias` / `keyPassword`）
-- **证书指纹（SHA-256）**：`8ea0d34e5ddeeb2aa4ae2801572ccdf46c6eba002274a93208660774d3d147f2`
+- **证书指纹（SHA-256）**：`0dece99b5a1ecb661b6e482da57d8c2a682a7a2458490d532955bd5cdc2cced0`
+  （2026-10-18 重建：原密钥文件丢失且仓库内无备份，旧指纹 `8ea0d34e…` 已作废。**升级到 1.8.1.0 及以后必须先卸载旧版**，因为签名已变，无法覆盖安装。）
 - 两个文件均已写入 `.gitignore`，**绝不提交到仓库**；换机 / 重装系统前必须单独备份，丢失后无法再发布可覆盖安装的更新。
 - 构建：`gradle assembleRelease` → 产物 `app/build/outputs/apk/release/app-release.apk`（已签名，v2 方案）。
 - 发版前必检：`apksigner verify -v app-release.apk`，必须看到 `Verified using v2 scheme (APK Signature Scheme v2): true`。

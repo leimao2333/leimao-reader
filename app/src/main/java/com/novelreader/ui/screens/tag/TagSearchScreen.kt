@@ -77,6 +77,7 @@ import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
 import com.novelreader.ui.components.CoverPlaceholderLetter
 import com.novelreader.ui.components.MediaItemCard
+import com.novelreader.ui.components.SourceFilterDropdown
 
 /**
  * 标签搜索页（v1.6.1.0 重做）。
@@ -113,7 +114,7 @@ fun TagSearchScreen(
     val progress by viewModel.progress.collectAsState()
     val notice by viewModel.notice.collectAsState()
     val sources by viewModel.sources.collectAsState()
-    val selectedSourceId by viewModel.selectedSourceId.collectAsState()
+    val selectedSourceIds by viewModel.selectedSourceIds.collectAsState()
     val hasMore by viewModel.hasMore.collectAsState()
     val loadingMore by viewModel.loadingMore.collectAsState()
     val activeTags by viewModel.activeTags.collectAsState()
@@ -263,28 +264,14 @@ fun TagSearchScreen(
         )
 
         // 「按源搜索」（v1.8.1.2）：标签池是跨源收集的，只搜某一个源能省掉几十个源一起等的长尾
+        // 「按源搜索」多选下拉（v1.8.1.2）：一个都不选 = 全部源
         if (sources.isNotEmpty()) {
-            LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                item {
-                    FilterChip(
-                        selected = selectedSourceId == null,
-                        onClick = { viewModel.selectSource(null) },
-                        label = { Text("全部源") },
-                    )
-                }
-                items(sources, key = { it.id }) { source ->
-                    FilterChip(
-                        selected = selectedSourceId == source.id,
-                        onClick = { viewModel.selectSource(source.id) },
-                        label = { Text(source.name) },
-                    )
-                }
-            }
+            SourceFilterDropdown(
+                sources = sources,
+                selectedIds = selectedSourceIds,
+                onSelectionChange = viewModel::setSelectedSources,
+                modifier = Modifier.padding(start = 8.dp),
+            )
         }
 
         // ===== 已选标签 chips（v1.6.1.0）：点选移除 =====

@@ -39,12 +39,12 @@ class NovelSearchViewModel(
     private val _sources = MutableStateFlow<List<com.novelreader.domain.model.SourceInfo>>(emptyList())
     val sources: StateFlow<List<com.novelreader.domain.model.SourceInfo>> = _sources.asStateFlow()
 
-    private val _selectedSourceId = MutableStateFlow<String?>(null)
-    val selectedSourceId: StateFlow<String?> = _selectedSourceId.asStateFlow()
+    private val _selectedSourceIds = MutableStateFlow<Set<String>>(emptySet())
+    val selectedSourceIds: StateFlow<Set<String>> = _selectedSourceIds.asStateFlow()
 
-    /** 选择源（null = 全部源）。已有搜索词时立即按新范围重搜。 */
-    fun selectSource(id: String?) {
-        _selectedSourceId.value = id
+    /** 选择源（**多选**；空集合 = 全部源，v1.8.1.2）。已有搜索词时立即按新范围重搜。 */
+    fun setSelectedSources(ids: Set<String>) {
+        _selectedSourceIds.value = ids
         if (_query.value.isNotBlank()) search()
     }
 
@@ -145,7 +145,7 @@ class NovelSearchViewModel(
             _state.value = SearchState(isSearching = true, hasSearched = true, fuzzyEnabled = fuzzy)
             contentRepository.searchWithProgress(
                 SourceType.NOVEL, keyword, 1, concurrency, fuzzy,
-                sourceIds = _selectedSourceId.value?.let { setOf(it) },
+                sourceIds = _selectedSourceIds.value.takeIf { it.isNotEmpty() },
             )
                 .catch { e ->
                     _state.value = _state.value.copy(

@@ -55,12 +55,12 @@ class TagSearchViewModel(
     private val _sources = MutableStateFlow<List<com.novelreader.domain.model.SourceInfo>>(emptyList())
     val sources: StateFlow<List<com.novelreader.domain.model.SourceInfo>> = _sources.asStateFlow()
 
-    private val _selectedSourceId = MutableStateFlow<String?>(null)
-    val selectedSourceId: StateFlow<String?> = _selectedSourceId.asStateFlow()
+    private val _selectedSourceIds = MutableStateFlow<Set<String>>(emptySet())
+    val selectedSourceIds: StateFlow<Set<String>> = _selectedSourceIds.asStateFlow()
 
-    /** 选择源（null = 全部源）。已有查询时立即按新范围重搜。 */
-    fun selectSource(id: String?) {
-        _selectedSourceId.value = id
+    /** 选择源（**多选**；空集合 = 全部源，v1.8.1.2）。已有查询时立即按新范围重搜。 */
+    fun setSelectedSources(ids: Set<String>) {
+        _selectedSourceIds.value = ids
         if (_query.value.isNotBlank()) search()
     }
 
@@ -415,7 +415,7 @@ class TagSearchViewModel(
                     TagAlias.matchesInPool(tag, tagPlan.tags).ifEmpty { listOf(tag) }
                 }
                 // 按源搜索：选了某个源就只保留它的入口（优先级高于「已启用源」集合）
-                val allowedIds = _selectedSourceId.value?.let { setOf(it) } ?: enabledIds
+                val allowedIds = _selectedSourceIds.value.takeIf { it.isNotEmpty() } ?: enabledIds
                 val entriesPerTag = tags.mapIndexed { index, query ->
                     variantsPerTag[index]
                         .flatMap { variant -> tagPlan.searchEntriesFor(variant, query) }
@@ -429,12 +429,20 @@ class TagSearchViewModel(
                 val known = tags.filterIndexed { i, _ -> entriesPerTag[i].isNotEmpty() }
                 val missing = tags.filterNot { it in known }
                 val knownEntries = entriesPerTag.filter { it.isNotEmpty() }
+                // 纯关键词搜索（没有真实分类页）才做标题相关性过滤：
+                // 源站的包含匹配会把《全面接触》算进「全彩」、把英文源的一堆无关漫画算进「无码」，
+                // 不过滤的话流式上屏的那几秒全是噪声（v1.8.1.2）。
+                val searchOnlyResult = knownEntries.all { list -> list.all(::isSearchEntry) }
+
                 // v1.8.1.1：**流式上屏**。以前只有「明确成人标签」才允许增量刷新，
                 // 用户点完搜索只能对着转圈等全部源返回。现在只要有结果就先显示，
                 // 后面的源陆续补充进来（结果一致单调增加）。
+                // v1.8.1.2：中间结果也要过相关性过滤，否则用户先看到的全是不相关的东西。
                 val updatePartialResults: (List<MediaItem>) -> Unit = { partial ->
-                    if (generation == searchGeneration && partial.isNotEmpty()) {
-                        _results.value = partial
+                    if (generation == searchGeneration) {
+                        val visible =
+                            if (searchOnlyResult) filterByGroupKeywords(partial, tags) else partial
+                        if (visible.isNotEmpty()) _results.value = visible
                     }
                 }
                 val translatedNotice = tags.mapIndexedNotNull { i, tag ->
@@ -487,6 +495,7 @@ class TagSearchViewModel(
                 // 同一部作品在不同源上标题写法可能不同（繁简 / 带作者后缀），
                 // 按作品身份键再去重一次，避免结果里出现两条「同一部」。
                 val final = filterAdults(searchResult, tags)
+                    .let { if (searchOnlyResult) filterByGroupKeywords(it, tags) else it }
                     .distinctBy { TagQuery.identityKey(it.title) }
                 if (generation != searchGeneration) return@launch
                 _activeTags.value = known.map(TagAlias::canonicalOf).distinct()
@@ -625,108 +634,48 @@ class TagSearchViewModel(
         val sources = entriesPerTag.flatMap { entries -> entries.map { it.first } }.distinct()
         if (sources.isEmpty()) return CompoundOutcome.EMPTY
 
-        // 无码 / 全彩这类「宽标签」入口极多，提高并发，免得一次复合搜索要等好几分钟。
         val wideComic = type == SourceType.COMIC &&
             tags.all { TagAlias.canonicalOf(it) in WIDE_COMIC_SEARCH_TAGS }
         val semaphore = Semaphore(
             if (wideComic) WIDE_COMPOUND_CONCURRENCY else TAG_SEARCH_CONCURRENCY,
         )
 
-        val combinedKeyword = tags.joinToString(" ")
-        val cacheKey = "$type::$combinedKeyword"
+        // v1.8.1.2 **关键修正**：只有「真实分类入口」才代表「作品属于这个标签」。
+        // 纯关键词入口搜出来的是「标题里出现了这个词」，把它当作该标签的成员去求交，
+        // 只会得到一堆看起来毫无关系的内容（实测：搜「无码 全彩」回来《全面接触》
+        // 和一堆英文无关漫画）。所以这里把两类入口分开。
+        val categoryEntries = entriesPerTag.map { list -> list.filterNot(::isSearchEntry) }
+        val withoutCategory = categoryEntries.indices.filter { categoryEntries[it].isEmpty() }
 
-        // 「无码」「全彩」这类标签在漫画源里没有真实分类页，入口全是 `search::`：
-        // 每源只发 1 个写法（用户输入），把请求量压到 源数 × 组数。
-        val allSearchOnly = entriesPerTag.all { list -> list.all(::isSearchEntry) }
-        val effectiveEntries = if (allSearchOnly) {
-            entriesPerTag.map { list -> list.groupBy { it.first }.map { it.value.first() } }
-        } else {
-            entriesPerTag
-        }
-        val bySrcPerTag = effectiveEntries.map { list -> list.groupBy({ it.first }, { it.second }) }
-        val maxPages = if (allSearchOnly) 1 else MAX_COMPOUND_PAGES
-
-        if (allSearchOnly) {
-            // 纯搜索型：**两条路并行**。
-            // - 组合关键词直搜先出内容（流式，几秒就能看到第一批）；
-            // - 严格求交同时进行，真能交出来就替换掉宽松结果（语义优先）。
-            // 这样既不用对着空屏等二十秒，也不会拿宽松结果冒充交集。
-            combinedCache[cacheKey]?.let { (at, items) ->
-                if (items.isNotEmpty() && System.currentTimeMillis() - at < COMBINED_CACHE_TTL_MS) {
-                    onPartial(items)
-                    return CompoundOutcome(
-                        items,
-                        "「$combinedKeyword」的搜索结果 ${items.size} 条（10 分钟内缓存，可能只满足其中一组）",
-                    )
-                }
-            }
-            return coroutineScope {
-                val combinedJob = async {
-                    searchCombinedKeyword(
-                        sources, combinedKeyword,
-                        Semaphore(WIDE_COMBINED_CONCURRENCY),
-                        page = 1,
-                        onPartial = onPartial,
-                    )
-                }
-                val strict = strictIntersection(
-                    bySrcPerTag, sources, 1, semaphore, onPartial,
-                )
-                if (strict.matched.isNotEmpty()) {
-                    combinedJob.cancel()
-                    return@coroutineScope CompoundOutcome(strict.matched)
-                }
-                val combined = combinedJob.await()
-                if (combined.isNotEmpty()) {
-                    combinedCache[cacheKey] = System.currentTimeMillis() to combined
-                    onPartial(combined)
-                    return@coroutineScope CompoundOutcome(
-                        combined,
-                        "没有作品同时属于「${tags.joinToString("」「")}」。这两组在漫画源里没有真实分类页，" +
-                            "下面是用组合关键词「$combinedKeyword」直搜的结果 —— 源站对多个关键词通常按" +
-                            "「任一命中」返回，所以其中可能有只满足一组的内容",
-                    )
-                }
-                val firstGroup = strict.unionPerTag.firstOrNull()?.values?.toList().orEmpty()
-                if (firstGroup.isNotEmpty()) {
-                    CompoundOutcome(
-                        firstGroup,
-                        "没有作品同时属于「${tags.joinToString("」「")}」，下面只显示「${tags.first()}」组的单独结果",
-                    )
-                } else {
-                    CompoundOutcome.EMPTY
-                }
-            }
-        }
-
-        // ===== 有真实分类页：严格求交 → 宽松兜底 → 单组兜底 =====
-        val strict = strictIntersection(bySrcPerTag, sources, 1, semaphore, onPartial)
-        if (strict.matched.isNotEmpty()) return CompoundOutcome(strict.matched, union = strict.unionPerTag)
-
-        val combined = searchCombinedKeyword(
-            sources, combinedKeyword, semaphore, onPartial = onPartial,
-        )
-        if (combined.isNotEmpty()) {
-            onPartial(combined)
+        if (withoutCategory.isNotEmpty()) {
+            // 有标签在漫画源里根本没有分类页 → 「组合筛选」在数据层不成立。
+            // 这时**如实**展示各标签单独搜到的内容（标题必须真的包含对应写法），
+            // 而不是拿源站宽松匹配的结果冒充交集。
+            val union = coroutineScope {
+                entriesPerTag.map { entries ->
+                    async { searchOneTag(entries, 1, semaphore) }
+                }.awaitAll().flatten()
+            }.distinctBy { "${it.sourceId}:${it.id}" }
+            val visible = filterByGroupKeywords(union, tags)
+            if (visible.isEmpty()) return CompoundOutcome.EMPTY
+            onPartial(visible)
             return CompoundOutcome(
-                combined,
-                "这两组在漫画源里大多没有真实分类页、只能按标题搜，已改用组合关键词「$combinedKeyword」直搜" +
-                    "（源站对多个关键词通常按「任一命中」返回，结果可能只满足其中一组）",
+                visible,
+                "「${withoutCategory.joinToString("」「") { tags[it] }}」在漫画源里没有真实分类页、" +
+                    "只能按标题搜，无法与其它标签做组合筛选；下面是各标签单独搜到、" +
+                    "且标题确实包含对应写法的内容（无码 / 全彩这类属性常不写进标题，搜不到不代表没有）",
             )
         }
 
-        val firstGroup = strict.unionPerTag.firstOrNull()?.values?.toList().orEmpty()
-        return if (firstGroup.isNotEmpty()) {
-            CompoundOutcome(
-                firstGroup,
-                "没有作品同时属于「${tags.joinToString("」「")}」，下面只显示「${tags.first()}」组的单独结果",
-            )
+        // 全部标签都有真实分类页 → 严格求交（组内并、组间交）
+        val bySrcPerTag = categoryEntries.map { list -> list.groupBy({ it.first }, { it.second }) }
+        val strict = strictIntersection(bySrcPerTag, sources, 1, semaphore, onPartial)
+        return if (strict.matched.isNotEmpty()) {
+            CompoundOutcome(strict.matched, union = strict.unionPerTag)
         } else {
             CompoundOutcome.EMPTY
         }
     }
-
-    /** 严格求交的结果：命中的作品 + 每个大集各自的并集（单组兜底要用）。 */
     private data class StrictResult(
         val matched: List<MediaItem>,
         val unionPerTag: List<LinkedHashMap<String, MediaItem>>,
@@ -798,6 +747,29 @@ class TagSearchViewModel(
             }
         }.awaitAll()
         synchronized(lock) { accumulated.distinctBy { "${it.sourceId}:${it.id}" } }
+    }
+
+    /**
+     * 相关性过滤（v1.8.1.2）。
+     *
+     * 源站的关键词搜索是「包含匹配」：搜「无码 全彩」会把标题里只有一个「全」字的
+     * 《全面接触》也返回来（实测就是这样），列表看着跟标签毫无关系。
+     * 这里要求标题**至少命中一个大集里的某个写法**，把这种纯噪声滤掉。
+     *
+     * 注意：不要求两组都命中 —— 「无码」「全彩」这类属性大多不写进标题，
+     * 要求同时命中会直接归零；两组都命中的情况由严格求交那条路负责。
+     */
+    private fun filterByGroupKeywords(items: List<MediaItem>, tags: List<String>): List<MediaItem> {
+        if (items.isEmpty()) return items
+        val groups = tags.map { tag ->
+            TagAlias.searchTermsFor(tag)
+                .map { it.lowercase().replace(" ", "") }
+                .filter { it.isNotEmpty() }
+        }
+        return items.filter { item ->
+            val title = item.title.lowercase().replace(" ", "")
+            groups.any { terms -> terms.any { title.contains(it) } }
+        }
     }
 
     /** 该入口是否**只能按关键词搜**（源站没给这个标签真实分类页）。 */

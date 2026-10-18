@@ -111,6 +111,7 @@ private class FakeContentRepository(private val result: ContentResult) : Content
         page: Int,
         concurrency: Int,
         fuzzyEnabled: Boolean,
+        sourceIds: Set<String>?,
     ): Flow<SearchState> = emptyFlow()
 
     override suspend fun detail(item: MediaItem): MediaItem = item

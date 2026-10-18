@@ -27,6 +27,7 @@ import com.novelreader.domain.model.MediaItem
 import com.novelreader.ui.components.GroupedSearchResults
 import com.novelreader.ui.components.SearchBar
 import com.novelreader.ui.components.SearchProgressBar
+import com.novelreader.ui.components.SourceFilterDropdown
 
 /**
  * 小说搜索页。
@@ -46,7 +47,7 @@ fun NovelSearchScreen(
     val history by viewModel.history.collectAsState()
     val shelfKeys by viewModel.shelfKeys.collectAsState()
     val sources by viewModel.sources.collectAsState()
-    val selectedSourceId by viewModel.selectedSourceId.collectAsState()
+    val selectedSourceIds by viewModel.selectedSourceIds.collectAsState()
 
     // enableEdgeToEdge 下自绘顶栏必须自行避让系统栏
     Column(
@@ -88,28 +89,14 @@ fun NovelSearchScreen(
 
         // 「按源搜索」（v1.8.1.1）：挑一个源就只搜它，其余源一个请求都不发 ——
         // 十几二十个源一起搜的等待时间省掉了，同名作品也不会被别的源串进来。
+        // 「按源搜索」多选下拉（v1.8.1.2）：一个都不选 = 全部源
         if (sources.isNotEmpty()) {
-            LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                item {
-                    FilterChip(
-                        selected = selectedSourceId == null,
-                        onClick = { viewModel.selectSource(null) },
-                        label = { Text("全部源") },
-                    )
-                }
-                items(sources, key = { it.id }) { source ->
-                    FilterChip(
-                        selected = selectedSourceId == source.id,
-                        onClick = { viewModel.selectSource(source.id) },
-                        label = { Text(source.name) },
-                    )
-                }
-            }
+            SourceFilterDropdown(
+                sources = sources,
+                selectedIds = selectedSourceIds,
+                onSelectionChange = viewModel::setSelectedSources,
+                modifier = Modifier.padding(start = 8.dp),
+            )
         }
 
         when {

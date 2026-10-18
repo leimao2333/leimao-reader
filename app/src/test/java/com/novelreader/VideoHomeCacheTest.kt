@@ -280,6 +280,7 @@ private class CacheTestContentRepository : ContentRepository {
         page: Int,
         concurrency: Int,
         fuzzyEnabled: Boolean,
+        sourceIds: Set<String>?,
     ): Flow<SearchState> = flowOf(SearchState())
 
     override suspend fun detail(item: MediaItem): MediaItem = item

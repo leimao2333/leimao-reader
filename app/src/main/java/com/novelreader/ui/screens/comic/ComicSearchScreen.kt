@@ -28,6 +28,7 @@ import com.novelreader.domain.model.SourceType
 import com.novelreader.ui.components.GroupedSearchResults
 import com.novelreader.ui.components.SearchBar
 import com.novelreader.ui.components.SearchProgressBar
+import com.novelreader.ui.components.SourceFilterDropdown
 
 /**
  * 漫画搜索页。
@@ -50,7 +51,7 @@ fun ComicSearchScreen(
     val fuzzyEnabled by viewModel.fuzzyEnabled.collectAsState()
     val history by viewModel.history.collectAsState()
     val sources by viewModel.sources.collectAsState()
-    val selectedSourceId by viewModel.selectedSourceId.collectAsState()
+    val selectedSourceIds by viewModel.selectedSourceIds.collectAsState()
 
     // 深链关键词：进入即搜索（与小说 / 影视搜索页一致）
     androidx.compose.runtime.LaunchedEffect(initialKeyword) {
@@ -98,28 +99,14 @@ fun ComicSearchScreen(
         )
 
         // 「按源搜索」（v1.8.1.1）：挑一个源就只搜它，其余源一个请求都不发。
+        // 「按源搜索」多选下拉（v1.8.1.2）：一个都不选 = 全部源
         if (sources.isNotEmpty()) {
-            LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                item {
-                    FilterChip(
-                        selected = selectedSourceId == null,
-                        onClick = { viewModel.selectSource(null) },
-                        label = { Text("全部源") },
-                    )
-                }
-                items(sources, key = { it.id }) { source ->
-                    FilterChip(
-                        selected = selectedSourceId == source.id,
-                        onClick = { viewModel.selectSource(source.id) },
-                        label = { Text(source.name) },
-                    )
-                }
-            }
+            SourceFilterDropdown(
+                sources = sources,
+                selectedIds = selectedSourceIds,
+                onSelectionChange = viewModel::setSelectedSources,
+                modifier = Modifier.padding(start = 8.dp),
+            )
         }
 
         when {

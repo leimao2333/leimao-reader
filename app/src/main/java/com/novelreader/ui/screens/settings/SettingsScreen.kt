@@ -58,6 +58,8 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onOpenChangelog: () -> Unit = {},
     onOpenCacheManage: () -> Unit = {},
+    onOpenSourceImport: () -> Unit = {},
+    onOpenSourceManage: () -> Unit = {},
 ) {
     val darkTheme by viewModel.darkTheme.collectAsState()
     val backupMessage by viewModel.backupMessage.collectAsState()
@@ -338,6 +340,25 @@ fun SettingsScreen(
                     checked = videoPipEnabled,
                     onCheckedChange = { viewModel.setVideoPipEnabled(it) },
                 )
+            }
+
+            Spacer(Modifier.height(24.dp))
+
+            // ===== 书源（v1.8.0.0）=====
+            // 导入 / 管理原先只在源管理页里，设置页没有入口 —— 用户要加源得先找到
+            // 首页的来源管理入口。这里补上直达入口，导入与后续管理都能从设置走。
+            SectionTitle("书源")
+            SettingRow(
+                title = "导入书源",
+                subtitle = "从本地文件导入 JSON / TXT / JS 源，也可直接粘贴内容或填网址批量下载",
+            ) {
+                TextButton(onClick = onOpenSourceImport) { Text("导入") }
+            }
+            SettingRow(
+                title = "书源管理",
+                subtitle = "启用 / 停用 / 删除已导入的源，查看每个源的可用状态",
+            ) {
+                TextButton(onClick = onOpenSourceManage) { Text("管理") }
             }
 
             Spacer(Modifier.height(24.dp))

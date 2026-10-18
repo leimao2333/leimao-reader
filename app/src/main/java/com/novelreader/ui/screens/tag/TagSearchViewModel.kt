@@ -270,7 +270,6 @@ class TagSearchViewModel(
                 val translatedNotice = tags.mapIndexedNotNull { i, tag ->
                     val variants = variantsPerTag[i]
                     val self = TagQuery.normalizeTitle(tag)
-                    val canonical = TagAlias.canonicalOf(tag)
                     val terms = TagAlias.searchTermsFor(tag)
                     val hasKeywordEntries = entriesPerTag[i].any { (_, url) ->
                         TagEntryUrl.searchKeywordOf(url) != null ||
@@ -285,6 +284,25 @@ class TagSearchViewModel(
                     }
                 }.joinToString("；")
 
+                // 复合搜索把「大集」摊开显示：用户能一眼确认每一组包含哪些转译写法，
+                // 也就明白结果是「每组各命中一个」而不是「随便命中一个」。
+                val compoundNote = if (tags.size > 1) {
+                    tags.mapIndexed { i, tag ->
+                        val group = variantsPerTag[i]
+                            .map { it.trim() }
+                            .filter { it.isNotEmpty() }
+                            .distinct()
+                        val shown = if (group.size > 5) {
+                            group.take(5).joinToString("/") + "…"
+                        } else {
+                            group.joinToString("/")
+                        }
+                        "「${tag}」组：${shown.ifEmpty { tag }}"
+                    }.joinToString("  ∩  ")
+                } else {
+                    null
+                }
+
                 if (missing.isNotEmpty()) {
                     _activeTags.value = emptyList()
                     _results.value = emptyList()
@@ -295,24 +313,27 @@ class TagSearchViewModel(
                     return@launch
                 }
 
-                _notice.value = translatedNotice.takeIf { it.isNotBlank() }
+                _notice.value = compoundNote ?: translatedNotice.takeIf { it.isNotBlank() }
                 val searchResult = if (knownEntries.size == 1) {
                     searchOneTag(knownEntries[0], onPartial = updatePartialResults)
                 } else {
                     searchCompound(knownEntries, known, updatePartialResults)
                 }
                 if (generation != searchGeneration) return@launch
+                // 同一部作品在不同源上标题写法可能不同（繁简 / 带作者后缀），
+                // 按作品身份键再去重一次，避免结果里出现两条「同一部」。
                 val final = filterAdults(searchResult, tags)
+                    .distinctBy { TagQuery.identityKey(it.title) }
                 if (generation != searchGeneration) return@launch
                 _activeTags.value = known.map(TagAlias::canonicalOf).distinct()
                 _results.value = final
                 val tail = when {
                     final.isNotEmpty() -> null
-                    known.size > 1 -> "没有作品同时属于「${known.joinToString("」「")}」"
+                    known.size > 1 -> "没有作品同时属于「${known.joinToString("」「")}」（每个大集里各要命中至少一个标签）"
                     else -> "「${known.first()}」下暂无内容"
                 }
                 _notice.value = listOfNotNull(
-                    translatedNotice.takeIf { it.isNotBlank() },
+                    compoundNote ?: translatedNotice.takeIf { it.isNotBlank() },
                     tail,
                 ).joinToString("；").takeIf { it.isNotBlank() }
             } catch (cancelled: CancellationException) {
@@ -423,16 +444,25 @@ class TagSearchViewModel(
 
         val unionPerTag = MutableList(entriesPerTag.size) { mutableListOf<MediaItem>() }
         var page = 1
+        var matched: List<MediaItem> = emptyList()
         while (page <= MAX_COMPOUND_PAGES) {
+            val sizesBefore = unionPerTag.map { it.size }
             val fetched = fetchGrid(bySrcPerTag, sources, page, semaphore)
             fetched.forEachIndexed { tagIndex, perSource ->
                 unionPerTag[tagIndex].addAll(perSource.values.flatten())
             }
-            onPartial(TagQuery.intersect(unionPerTag.map(::unionOf)))
+            matched = TagQuery.intersect(unionPerTag.map(::unionOf))
+            onPartial(matched)
+            // 所有源这一页都空 → 已经翻到底
             if (fetched.all { perSource -> perSource.values.all { it.isEmpty() } }) break
+            // 够看了就停（多数搜索 1 页即可，不必白翻）
+            if (matched.size >= COMPOUND_ENOUGH_RESULTS) break
+            // 每个大集都没有新条目 → 再翻也是同一批，停
+            val grew = unionPerTag.indices.any { unionPerTag[it].size > sizesBefore[it] }
+            if (!grew) break
             page += 1
         }
-        return TagQuery.intersect(unionPerTag.map(::unionOf))
+        return matched
     }
 
     /**
@@ -523,11 +553,21 @@ class TagSearchViewModel(
         const val HOT_TAG_LIMIT = 12
 
         /**
-         * 复合搜索每源翻到第几页（v1.7.0.0；v1.7.9.9 起口径为并集相交）。
+         * 复合搜索每源翻页上限（v1.7.0.0；v1.8.0.0 起改为「按需翻页」）。
          *
-         * 一个源的一级分类页通常 20~30 条，交集要求同一部作品在**每个标签的并集**里
-         * 都出现；翻到第 2 页能覆盖多数「多个标签都沾」的作品，再多收益递减且明显变慢。
+         * 以前固定翻 2 页：够不够都只翻 2 页 —— 结果太少时用户毫无办法。
+         * 现在改成双重条件：**交集够 [COMPOUND_ENOUGH_RESULTS] 条就停**（常见情况
+         * 只请求 1 页，比过去更快），不够才继续往下翻，最多到本上限。
+         * 上限从 2 提到 6：结果空/极少时多翻几页才有机会捞出跨源同作。
          */
-        const val MAX_COMPOUND_PAGES = 2
+        const val MAX_COMPOUND_PAGES = 6
+
+        /**
+         * 复合搜索「够了」的阈值（v1.8.0.0）。
+         *
+         * 一屏网格约 20~30 条，两屏量级即可满足浏览；再多用户也翻不到，
+         * 换取的是少跑几轮网络请求。
+         */
+        const val COMPOUND_ENOUGH_RESULTS = 40
     }
 }

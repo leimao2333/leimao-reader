@@ -363,6 +363,8 @@ fun AppNavHost(
                 onBack = { navController.popBackStack() },
                 onOpenChangelog = { navController.navigate(Routes.CHANGELOG) },
                 onOpenCacheManage = { navController.navigate(Routes.CACHE_MANAGE) },
+                onOpenSourceImport = { navController.navigate(Routes.SOURCE_IMPORT) },
+                onOpenSourceManage = { navController.navigate(Routes.SOURCE_MANAGE) },
             )
         }
 

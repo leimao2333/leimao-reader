@@ -119,6 +119,31 @@ object TagAlias {
         setOf("动画", "动漫", "anime", "animation", "アニメ", "애니"),
         setOf("小说", "novel", "web novel", "小説", "소설"),
         setOf("剧集", "drama", "ドラマ", "드라마"),
+        // ===== 体型 / 角色属性 / 情境（v1.8.0.0）=====
+        // 这类标签是各站「叫法分歧」最严重的一批：「巨乳」/「爆乳」/`big breasts` /
+        // `おっぱい` / `거유` 说的是同一件事，却各自散在不同源上。不并成一组时，
+        // 用户选「巨乳」只能打到恰好也写「巨乳」的那几个源，其余源整个不参与 ——
+        // 复合搜索的交集自然被切得极窄。这里按同一含义归组（纯译名/同义，不做内容判断）。
+        setOf(
+            "巨乳", "大胸", "爆乳", "丰满", "豐滿", "巨乳好き",
+            "big breasts", "big boobs", "large breasts", "huge breasts", "big bust",
+            "oppai", "おっぱい", "巨乳もの", "거유",
+        ),
+        setOf(
+            "贫乳", "平胸", "小胸", "微乳",
+            "small breasts", "flat chest", "petite breasts", "ぺったん", "貧乳", "빈유",
+        ),
+        setOf("御姐", "熟女", "大姐姐", "成熟女性", "mature woman", "mature female", "older woman", "oneesan", "お姉さん", "성숙녀"),
+        // 萝莉 / 正太 两组已在「常见题材 / 角色」区登记，此处不重复定义
+        setOf("触手", "tentacle", "tentacles", "触手責め", "촉수"),
+        setOf("催眠", "hypnosis", "hypnotism", "催眠術", "최면"),
+        setOf("寝取", "寢取", "ntr", "netorare", "cuckold", "牛头人", "寝取られ", "네토라레"),
+        setOf("调教", "調教", "training", "bdsm", "sm", "bondage", "調教もの", "조교"),
+        setOf("兽耳", "獸耳", "猫耳", "貓耳", "animal ears", "kemonomimi", "cat ears", "獣耳", "네코미미", "켐노미미"),
+        setOf("眼镜", "眼鏡", "glasses", "megane", "メガネ", "안경"),
+        setOf("丝袜", "絲襪", "黑丝", "pantyhose", "thighhighs", "thigh highs", "stocking", "stockings", "タイツ", "스타킹"),
+        setOf("单行本", "單行本", "tankoubon", "volume", "collected volume", "単行本", "단행본"),
+        setOf("无删减", "無刪減", "uncut", "unrated", "无修版", "完全版", "無修正完全版"),
         // ===== 分级 =====
         setOf("成人", "限制级", "18禁", "r18", "hentai", "adult", "18+", "ero", "ecchi"),
         setOf("全年龄", "一般向", "all ages", "general", "safe", "全年齢"),

@@ -2,6 +2,7 @@ package com.novelreader
 
 import com.novelreader.source.legado.LegadoBookSource
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -23,8 +24,11 @@ class SourceBundleTestSupportTest {
         val loaded = SourceBundleTestSupport.loadLegado(folder.resolve("all.json").path)
 
         assertEquals(listOf("Fixture"), loaded.sources.map { it.name })
+        // 清单走本地文件分支，不参与计时，恒为 0
         assertEquals(0L, loaded.manifestMs)
-        assertEquals(0L, loaded.legadoBundleMs)
+        // 子包读取会真实计时（本地文件也可能是 1~2ms，视磁盘缓存而定），
+        // 断言「读到文件且不是超时量级」即可 —— 断言恒为 0 会随机器抖动而红。
+        assertTrue("本地读取耗时异常：${loaded.legadoBundleMs}ms", loaded.legadoBundleMs < 1_000)
     }
 
     @Test

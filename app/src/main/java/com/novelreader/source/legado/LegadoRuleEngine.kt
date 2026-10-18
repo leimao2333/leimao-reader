@@ -1154,8 +1154,11 @@ object LegadoRuleEngine {
         ) {
             return false
         }
+        // `#` 只出现在 CSS 的 id 选择器里（legado 语法的 id 写作 `id.xxx`），
+        // 因此带 `#` 一律按 CSS 解析。反例会把 `div#content` 拆成类名 `.div#content`
+        // 一类的非法选择器 → 匹配不到元素 → 正文/字段静默为空（何以生肖、笔趣阁系）。
         return sel.indexOf(' ') >= 0 || sel.indexOf('>') >= 0 || sel.indexOf('[') >= 0 ||
-            sel.indexOf(':') >= 0 || sel.indexOf(',') >= 0
+            sel.indexOf(':') >= 0 || sel.indexOf(',') >= 0 || sel.indexOf('#') >= 0
     }
 
     /**

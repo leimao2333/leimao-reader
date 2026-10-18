@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.7.9.1"
+    const val CURRENT_VERSION = "1.7.9.2"
 
     /**
      * 更新日志。
@@ -25,6 +25,18 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.7.9.2",
+            date = "2026-10-18",
+            changes = listOf(
+                "**引擎：CSS id 选择器不再被误判**。`div#content`、`div#content.showtxt` 这类「标签名 + `#id`（+ `.class`）」的正文规则，以前会掉进 legado 短式解析、被按 `.` 拆成 `div#content` + `showtxt` 两段，最终拼出非法选择器 → 匹配不到元素 → **正文静默为空**。现在含 `#` 的规则一律按 CSS 解析（legado 自身语法里 id 写作 `id.xxx`，不会与之冲突）；纯 `#id`、`.class`、`class.xxx`、复合类名 `class.a b` 的行为均保持不变。",
+                "实测恢复的源：何以生肖（`div#content.showtxt@text`）正文 1161 字、笔趣阁（`div#content@html`）2677 字 —— 这两个源此前一直显示空白，问题在引擎而不在源。",
+                "新增 `LegadoCssSelectorTest` 5 条离线回归（`tag#id.class` / `tag#id` / 纯 `#id` / 短式类名 / 复合类名）。",
+                "**全量源健康遍历（80 源）**：v1.7.9.0 基线 22 源可用 → v1.7.9.1 26 源 → 本版 **29 源**。",
+                "仍不可用的源经实测确认是站点侧问题，非引擎：大唐小说 / 天地中文的章节页会间歇性返回 502 或空页（同一地址重试即恢复）；猫九小说的章节页直接 302 到登录页（需要账号 Cookie）；余下多为搜索接口已下线或宿主不可达。",
+                "全量单测 **625 用例 / 0 失败 / 6 跳过**。",
+            ),
+        ),
         VersionEntry(
             version = "1.7.9.1",
             date = "2026-10-18",

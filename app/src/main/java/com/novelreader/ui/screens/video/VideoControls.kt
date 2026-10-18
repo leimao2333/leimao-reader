@@ -166,8 +166,10 @@ fun BoxScope.VideoControlsOverlay(
      * 「选集」——顶部图标与底部操作栏图标并存，普通视频顶部按钮冗余未改，避免变动太大）。
      */
     hideEpisodeIcon: Boolean = false,
-    /** 菜单式调亮度 / 音量（v1.6.0.0）。仅在 MoreVert 开启时生效 */
-    currentBrightness: () -> Float = { 1f },
+     /** 加载或缓冲时隐藏中央播放控件，避免与中央加载指示器重叠。 */
+     showCenterControls: Boolean = true,
+     /** 菜单式调亮度 / 音量（v1.6.0.0）。仅在 MoreVert 开启时生效 */
+     currentBrightness: () -> Float = { 1f },
     onBrightnessChange: (Float) -> Unit = {},
     currentVolumeFraction: () -> Float = { 1f },
     onVolumeChange: (Float) -> Unit = {},
@@ -229,7 +231,7 @@ fun BoxScope.VideoControlsOverlay(
 
     // ===== 中央播放 / 暂停 =====
     AnimatedVisibility(
-        visible = visible,
+        visible = visible && showCenterControls,
         enter = fadeIn(),
         exit = fadeOut(),
         modifier = Modifier.align(Alignment.Center),

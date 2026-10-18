@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novelreader.core.util.TagAlias
 import com.novelreader.core.util.TagCompound
+import com.novelreader.core.util.TagEntryUrl
 import com.novelreader.core.util.TagQuery
 import com.novelreader.data.cache.TagPlan
 import com.novelreader.data.repository.TagRepository
@@ -271,9 +272,13 @@ class TagSearchViewModel(
                     val self = TagQuery.normalizeTitle(tag)
                     val canonical = TagAlias.canonicalOf(tag)
                     val terms = TagAlias.searchTermsFor(tag)
+                    val hasKeywordEntries = entriesPerTag[i].any { (_, url) ->
+                        TagEntryUrl.searchKeywordOf(url) != null ||
+                            TagEntryUrl.categoryOf(url)?.kind == "search"
+                    }
                     when {
-                        terms.size > 1 ->
-                            "「${tag}」归并为「${canonical}」，已扩展搜索 ${terms.size} 种同义写法"
+                        terms.size > 1 && hasKeywordEntries ->
+                            "搜索「${tag}」时同时检索：${terms.joinToString("、")}"
                         variants.any { TagQuery.normalizeTitle(it) != self } ->
                             "「${tag}」已按 ${variants.joinToString("、")} 搜索"
                         else -> null
@@ -287,6 +292,7 @@ class TagSearchViewModel(
                     return@launch
                 }
 
+                _notice.value = translatedNotice.takeIf { it.isNotBlank() }
                 val searchResult = if (knownEntries.size == 1) {
                     TagCompound.RelaxedResult(
                         searchOneTag(knownEntries[0], onPartial = updatePartialResults),

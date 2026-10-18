@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -390,7 +391,11 @@ fun VideoPlayerScreen(
         window.attributes = attrs
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .then(if (isFullscreen) Modifier else Modifier.statusBarsPadding()),
+    ) {
         // ===== 播放区（窗口态 16:9，全屏态铺满） =====
         Box(
             modifier = Modifier
@@ -839,6 +844,7 @@ fun VideoPlayerScreen(
                 // 合并到底部「菜单栏目」，顶部不再保留该入口，避免用户搞不清。
                 hideEpisodeIcon = isShortDrama,
                 showCenterControls = !loading && !playback.isBuffering,
+                avoidStatusBarOverlap = isFullscreen,
                 currentBrightness = { currentBrightness() },
                 onBrightnessChange = { applyBrightness(it) },
                 currentVolumeFraction = {

@@ -166,10 +166,12 @@ fun BoxScope.VideoControlsOverlay(
      * 「选集」——顶部图标与底部操作栏图标并存，普通视频顶部按钮冗余未改，避免变动太大）。
      */
     hideEpisodeIcon: Boolean = false,
-     /** 加载或缓冲时隐藏中央播放控件，避免与中央加载指示器重叠。 */
-     showCenterControls: Boolean = true,
-     /** 菜单式调亮度 / 音量（v1.6.0.0）。仅在 MoreVert 开启时生效 */
-     currentBrightness: () -> Float = { 1f },
+    /** 加载或缓冲时隐藏中央播放控件，避免与中央加载指示器重叠。 */
+    showCenterControls: Boolean = true,
+    /** 播放区域未自行避让系统状态栏时，让顶栏按状态栏 Insets 下移。 */
+    avoidStatusBarOverlap: Boolean = true,
+    /** 菜单式调亮度 / 音量（v1.6.0.0）。仅在 MoreVert 开启时生效 */
+    currentBrightness: () -> Float = { 1f },
     onBrightnessChange: (Float) -> Unit = {},
     currentVolumeFraction: () -> Float = { 1f },
     onVolumeChange: (Float) -> Unit = {},
@@ -191,7 +193,7 @@ fun BoxScope.VideoControlsOverlay(
                         listOf(Color.Black.copy(alpha = 0.65f), Color.Transparent)
                     )
                 )
-                .statusBarsPadding()
+                .then(if (avoidStatusBarOverlap) Modifier.statusBarsPadding() else Modifier)
                 .padding(start = 4.dp, end = 12.dp, top = 8.dp, bottom = 24.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {

@@ -1,6 +1,0 @@
-requests>=2.31
-numpy>=1.26
-Pillow>=10.0
-onnxruntime>=1.19
-beautifulsoup4>=4.12
-# 打包 exe：pip install pyinstaller

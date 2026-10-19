@@ -41,3 +41,4 @@ tagger/dist/
 tagger/build_pyi/
 tagger/models/
 tagger/*.spec
+leimao-tagger/

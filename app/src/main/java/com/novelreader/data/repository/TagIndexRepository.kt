@@ -593,11 +593,11 @@ class TagIndexRepository(
          * 云端打标表默认地址（v1.8.1.5）。
          *
          * 走 jsDelivr CDN（国内可达、带缓存）；`raw.githubusercontent.com` 直连经常被墙。
-         * PC 端工具把表推到 `tagger/data/tag_table.json` 后，这里拉到的就是最新版
+         * PC 端工具（独立仓库 leimao-tagger）把表推到 `data/tag_table.json` 后，这里拉到的就是最新版
          * （jsDelivr 有分钟级缓存，改完稍等片刻）。
          */
         const val DEFAULT_CLOUD_TABLE_URL: String =
-            "https://cdn.jsdelivr.net/gh/leimao2333/leimao-reader@main/tagger/data/tag_table.json"
+            "https://cdn.jsdelivr.net/gh/leimao2333/leimao-tagger@main/data/tag_table.json"
 
         /** 同一作品同一信号的最短记录间隔：半小时 */
         private const val SIGNAL_TTL_MS = 30 * 60 * 1000L

@@ -178,7 +178,7 @@ class SettingsViewModel(
         }
     }
 
-    /** 从云端 URL 导入打标表（默认 GitHub 仓库 tagger/data/tag_table.json，经 jsDelivr 分发） */
+    /** 从云端 URL 导入打标表（默认独立打标仓库 leimao2333/leimao-tagger 的 data/tag_table.json，经 jsDelivr 分发） */
     fun importTagTableFromUrl(url: String) {
         val repo = tagIndexRepository ?: run {
             _backupMessage.value = "当前环境不支持标签导入"

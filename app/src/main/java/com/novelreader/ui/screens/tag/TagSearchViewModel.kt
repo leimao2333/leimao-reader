@@ -150,7 +150,7 @@ class TagSearchViewModel(
 
     /**
      * 从云端拉取打标表并合并（v1.8.1.5）：PC 端工具推到 GitHub 的
-     * `tagger/data/tag_table.json`，App 侧「同名标签取更高置信度」幂等合并。
+     * 独立打标仓库（leimao2333/leimao-tagger）的 `data/tag_table.json`，App 侧「同名标签取更高置信度」幂等合并。
      */
     fun importTagTableFromUrl(url: String) {
         val repo = tagIndexRepository ?: run {

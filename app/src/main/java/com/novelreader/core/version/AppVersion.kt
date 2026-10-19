@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.8.1.7"
+    const val CURRENT_VERSION = "1.8.1.8"
 
     /**
      * 更新日志。
@@ -25,6 +25,16 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.8.1.8",
+            date = "2026-10-19",
+            changes = listOf(
+                "**打标工具独立仓库**：PC 端打标工具从本仓库 `tagger/` 迁出至独立仓库 [leimao2333/leimao-tagger](https://github.com/leimao2333/leimao-tagger)，云端导入默认地址同步切换（jsDelivr 指向新仓库 `data/tag_table.json`）。",
+                "**PC 工具 · 原生窗口**：exe 改用原生窗口（WebView2）+ 文件 / 目录选择对话框，不再依赖浏览器；无 WebView2 环境自动回退。",
+                "**PC 工具 · App 备份直读**：收录清单处可直接选「备份与恢复」导出的 JSON —— 自动从阅读进度抢救条目，并把备份里的 legado / MoonTV 源取出来直接遍历（venera 跳过）。",
+                "**PC 工具 · 进度**：模型下载（约 356MB）实时百分比打点；遍历 / 打标进度照旧逐源展示。",
+            ),
+        ),
         VersionEntry(
             version = "1.8.1.7",
             date = "2026-10-19",

@@ -605,6 +605,17 @@ class TagIndexRepository(
         } ?: error("云端打标表下载或解析失败：$url")
 
     /**
+     * 拉取云端版本清单（v1.8.2.0）。
+     *
+     * 失败返回 null 而不是抛异常 —— 清单只是「要不要下载」的前置判断，
+     * 拉不到时上层可以退回直接下载整表，不该因此让导入直接失败。
+     */
+    suspend fun fetchCloudManifest(url: String = DEFAULT_CLOUD_MANIFEST_URL): TagTable.Manifest? =
+        withContext(Dispatchers.IO) {
+            runCatching { TagTable.parseManifest(HttpClient.get(url, timeoutMs = 20_000)) }.getOrNull()
+        }
+
+    /**
      * 导出**收录清单 + 当前标签**为打标表 —— PC 端工具（仓库 `tagger/`）的输入。
      *
      * 全量导出（不只是待打标队列）：PC 端合并后回传的是完整表，App 导入时按
@@ -660,11 +671,26 @@ class TagIndexRepository(
      */
     suspend fun importTagTable(payload: TagTable.Payload, type: SourceType): Int {
         val now = System.currentTimeMillis()
-        var imported = 0
-        payload.items.filter { it.itemType == type.name }.forEach { item ->
-            val existingRows = tagInstanceDao.tagsOf(type.name, item.sourceId, item.itemId)
+        val typeItems = payload.items.filter { it.itemType == type.name }
+        if (typeItems.isEmpty()) return 0
+
+        // v1.8.2.0 批量化：原实现是「每部作品 1 次 tagsOf + 1 次 local_tags 写 + 1 次标签写」，
+        // 两万条就是六万多次数据库往返（title 为空时还会全表扫一次），实测模拟器上四分钟跑不完。
+        // 现在：一次全量读标签 → 内存里按作品合并 → 分块批量写。
+        val existingByItem = HashMap<Pair<String, String>, MutableList<TagInstanceEntity>>()
+        tagInstanceDao.allOfType(type.name).forEach { row ->
+            existingByItem.getOrPut(row.sourceId to row.itemId) { mutableListOf() }.add(row)
+        }
+        // 只在 item.title 为空时才需要回填旧标题；一次性读回，避免原实现里「逐条扫全表」
+        val knownTitles: Map<Pair<String, String>, String> = localTagDao.all(type.name)
+            .associate { (it.sourceId to it.itemId) to it.title }
+
+        val localRows = ArrayList<LocalTagEntity>(typeItems.size)
+        val tagRows = ArrayList<TagInstanceEntity>(typeItems.size * 3)
+
+        typeItems.forEach { item ->
             val rows = LinkedHashMap<String, TagInstanceEntity>()
-            existingRows.forEach { row ->
+            existingByItem[item.sourceId to item.itemId]?.forEach { row ->
                 rows[row.tagName] = TagInstanceEntity(
                     sourceId = item.sourceId,
                     itemId = item.itemId,
@@ -698,31 +724,26 @@ class TagIndexRepository(
                 )
             }
             val mergedTags = rows.values.toList()
-            localTagDao.upsertAll(
-                listOf(
-                    LocalTagEntity(
-                        sourceId = item.sourceId,
-                        itemId = item.itemId,
-                        itemType = type.name,
-                        title = item.title.ifBlank {
-                            localTagDao.all(type.name).firstOrNull {
-                                it.sourceId == item.sourceId && it.itemId == item.itemId
-                            }?.title.orEmpty()
-                        },
-                        cover = item.cover,
-                        detailUrl = item.detailUrl,
-                        sourceName = item.sourceName,
-                        author = item.author,
-                        tags = mergedTags.joinToString("|") { it.tagName },
-                        tagsLower = "|" + mergedTags.joinToString("|") { it.tagName.lowercase() } + "|",
-                        updatedAt = now,
-                    ),
-                ),
+            localRows += LocalTagEntity(
+                sourceId = item.sourceId,
+                itemId = item.itemId,
+                itemType = type.name,
+                title = item.title.ifBlank { knownTitles[item.sourceId to item.itemId].orEmpty() },
+                cover = item.cover,
+                detailUrl = item.detailUrl,
+                sourceName = item.sourceName,
+                author = item.author,
+                tags = mergedTags.joinToString("|") { it.tagName },
+                tagsLower = "|" + mergedTags.joinToString("|") { it.tagName.lowercase() } + "|",
+                updatedAt = now,
             )
-            tagInstanceDao.upsertAll(mergedTags)
-            imported++
+            tagRows += mergedTags
         }
-        return imported
+
+        // 分块写：单批 2000 条，既避免一次撑爆内存，也把事务数从「每条一个」降到十几批
+        localRows.chunked(IMPORT_CHUNK).forEach { localTagDao.upsertAll(it) }
+        tagRows.chunked(IMPORT_CHUNK).forEach { tagInstanceDao.upsertAll(it) }
+        return typeItems.size
     }
 
     companion object {
@@ -736,8 +757,32 @@ class TagIndexRepository(
         const val DEFAULT_CLOUD_TABLE_URL: String =
             "https://cdn.jsdelivr.net/gh/leimao2333/leimao-tagger@main/data/tag_table.json"
 
+        /**
+         * 云端**版本清单**地址（v1.8.2.0）。
+         *
+         * 打标表现在有十几 MB，每次导入都整表拉一遍太浪费。清单只有几百字节，
+         * 先读它判断 `generatedAt` 有没有比本地新，再决定要不要下载 [DEFAULT_CLOUD_TABLE_URL]。
+         */
+        const val DEFAULT_CLOUD_MANIFEST_URL: String =
+            "https://cdn.jsdelivr.net/gh/leimao2333/leimao-tagger@main/data/manifest.json"
+
+        /**
+         * 由清单地址推导出整表地址。
+         *
+         * 追加 `?t=<分钟>` 绕过 jsDelivr 的缓存：同一个 URL 它可能缓存十几小时，
+         * 刚 push 完的数据不加参数会一直拿到旧的。参数一变就是新的缓存键。
+         */
+        fun tableUrlOf(manifestUrl: String, latest: String): String {
+            val base = manifestUrl.substringBeforeLast('/')
+            val name = latest.ifBlank { "tag_table.json" }
+            return "$base/$name?t=${System.currentTimeMillis() / 60_000}"
+        }
+
         /** 同一作品同一信号的最短记录间隔：半小时 */
         private const val SIGNAL_TTL_MS = 30 * 60 * 1000L
+
+        /** 批量导入时每批写入的条数（v1.8.2.0） */
+        private const val IMPORT_CHUNK = 2000
 
         /** 文本标签被行为确认到多少分后改标「行为」来源 */
         private const val BEHAVIOR_PROMOTE_THRESHOLD = 80

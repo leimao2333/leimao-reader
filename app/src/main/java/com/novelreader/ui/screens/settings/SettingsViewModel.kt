@@ -155,6 +155,90 @@ class SettingsViewModel(
     private val _tagExportProgress = MutableStateFlow(-1f)
     val tagExportProgress: StateFlow<Float> = _tagExportProgress.asStateFlow()
 
+    // ===== 云端标签（v1.8.2.0：先读清单再决定要不要下整表）=====
+
+    /** 云端版本清单；null = 还没查过或查不到 */
+    private val _cloudManifest = MutableStateFlow<com.novelreader.core.util.TagTable.Manifest?>(null)
+    val cloudManifest: StateFlow<com.novelreader.core.util.TagTable.Manifest?> = _cloudManifest.asStateFlow()
+
+    /** 是否正在读云端清单 */
+    private val _cloudChecking = MutableStateFlow(false)
+    val cloudChecking: StateFlow<Boolean> = _cloudChecking.asStateFlow()
+
+    /** 最近一次导入的云端版本：(generatedAt, 条目数)；从未导入为 (0, 0) */
+    private val _cloudImported = MutableStateFlow(0L to 0)
+    val cloudImported: StateFlow<Pair<Long, Int>> = _cloudImported.asStateFlow()
+
+    /**
+     * 读取云端版本清单（几百字节）。
+     *
+     * 只拉清单不拉整表 —— 用户打开弹窗就想知道「云端有多少条、比我这新不新」，
+     * 为此下载十几 MB 不值当。
+     */
+    fun checkCloudTags(manifestUrl: String = com.novelreader.data.repository.TagIndexRepository.DEFAULT_CLOUD_MANIFEST_URL) {
+        val repo = tagIndexRepository ?: run {
+            _backupMessage.value = "当前环境不支持标签导入"
+            return
+        }
+        if (_cloudChecking.value) return
+        viewModelScope.launch {
+            _cloudChecking.value = true
+            _cloudManifest.value = repo.fetchCloudManifest(manifestUrl)
+            _cloudImported.value = runCatching { preferencesManager.tagCloudImport() }
+                .getOrDefault(0L to 0)
+            _cloudChecking.value = false
+        }
+    }
+
+    /**
+     * 导入云端最新打标表（v1.8.2.0）。
+     *
+     * 有清单就用清单里的文件名（并加时间戳绕 CDN 缓存）；清单拿不到就退回默认整表地址，
+     * 保证「云端更新了但清单接口抽风」时导入仍然可用。
+     */
+    fun importCloudLatest(manifestUrl: String = com.novelreader.data.repository.TagIndexRepository.DEFAULT_CLOUD_MANIFEST_URL) {
+        val repo = tagIndexRepository ?: run {
+            _backupMessage.value = "当前环境不支持标签导入"
+            return
+        }
+        if (_tagImportBusy.value) return
+        viewModelScope.launch {
+            _tagImportBusy.value = true
+            _backupMessage.value = runCatching {
+                val manifest = _cloudManifest.value ?: repo.fetchCloudManifest(manifestUrl)
+                    .also { _cloudManifest.value = it }
+                val url = if (manifest != null) {
+                    com.novelreader.data.repository.TagIndexRepository.tableUrlOf(manifestUrl, manifest.latest)
+                } else {
+                    com.novelreader.data.repository.TagIndexRepository.DEFAULT_CLOUD_TABLE_URL
+                }
+                // 十几 MB，超时要给够（慢网下 30 秒会被掐断）
+                val json = withContext(Dispatchers.IO) {
+                    com.novelreader.core.network.HttpClient.get(url, timeoutMs = 180_000)
+                }
+                val payload = com.novelreader.core.util.TagTable.parse(json)
+                    ?: error("云端打标表解析失败（可能拿到的是错误页）")
+                // 条数校验（v1.8.2.0）：CDN 可能还挂着上一版的文件（实测 jsDelivr 按 URL
+                // 缓存最长 7 天），不校验的话会「导入成功 0 条」，用户以为导入过了其实没有。
+                val expected = manifest?.count ?: 0
+                if (expected > 0 && payload.items.size != expected) {
+                    error(
+                        "云端表条数与版本清单不符（清单 $expected 条，实际下载到 ${payload.items.size} 条），" +
+                            "大概率是 CDN 缓存还没刷新，请稍后重试",
+                    )
+                }
+                var imported = 0
+                for (type in com.novelreader.domain.model.SourceType.entries) {
+                    imported += repo.importTagTable(payload, type)
+                }
+                preferencesManager.setTagCloudImport(payload.generatedAt, payload.items.size)
+                _cloudImported.value = payload.generatedAt to payload.items.size
+                "标签导入完成：$imported 部作品已合并（云端 ${payload.items.size} 条）"
+            }.getOrElse { "标签导入失败：${it.message ?: "未知错误"}" }
+            _tagImportBusy.value = false
+        }
+    }
+
     /**
      * 从本地文件导入打标表（SAF Uri）。
      *
@@ -194,9 +278,9 @@ class SettingsViewModel(
             _tagImportBusy.value = true
             _backupMessage.value = runCatching {
                 val json = withContext(Dispatchers.IO) {
-                    com.novelreader.core.network.HttpClient.get(target, timeoutMs = 30_000)
+                    com.novelreader.core.network.HttpClient.get(target, timeoutMs = 180_000)
                 }
-                importPayload(repo, json)
+                importPayload(repo, json, rememberAsCloud = true)
             }.getOrElse { "标签导入失败：${it.message ?: "未知错误"}" }
             _tagImportBusy.value = false
         }
@@ -206,12 +290,23 @@ class SettingsViewModel(
     private suspend fun importPayload(
         repo: com.novelreader.data.repository.TagIndexRepository,
         json: String,
+        /**
+         * 是否把这次导入记为「云端已导入版本」（v1.8.2.0）。
+         *
+         * 只有从网络来的才算 —— 本地文件很可能是自己导出备份的旧表，
+         * 把它记成云端版本会让「有没有新版本」的判断失真。
+         */
+        rememberAsCloud: Boolean = false,
     ): String {
         val payload = com.novelreader.core.util.TagTable.parse(json)
             ?: error("打标表解析失败（不是有效的 tag_table.json）")
         var imported = 0
         for (type in com.novelreader.domain.model.SourceType.entries) {
             imported += repo.importTagTable(payload, type)
+        }
+        if (rememberAsCloud) {
+            preferencesManager.setTagCloudImport(payload.generatedAt, payload.items.size)
+            _cloudImported.value = payload.generatedAt to payload.items.size
         }
         return "标签导入完成：$imported 部作品已合并进本地标签层（云端 ${payload.items.size} 条）"
     }

@@ -394,44 +394,135 @@ fun SettingsScreen(
                 }
             }
             if (showTagUrlDialog) {
+                // v1.8.2.0：先把云端**清单**（几百字节）拉下来，告诉用户「有多少条、比我这新不新」，
+                // 确认要更新了才去下十几 MB 的整表 —— 不然每次点进来都白跑十几 MB
+                val cloudManifest by viewModel.cloudManifest.collectAsState()
+                val cloudChecking by viewModel.cloudChecking.collectAsState()
+                val cloudImported by viewModel.cloudImported.collectAsState()
                 var tagUrl by remember {
                     mutableStateOf(
-                        com.novelreader.data.repository.TagIndexRepository.DEFAULT_CLOUD_TABLE_URL,
+                        com.novelreader.data.repository.TagIndexRepository.DEFAULT_CLOUD_MANIFEST_URL,
                     )
                 }
+                var showAdvanced by remember { mutableStateOf(false) }
+                LaunchedEffect(Unit) { viewModel.checkCloudTags(tagUrl) }
+
                 androidx.compose.material3.AlertDialog(
                     onDismissRequest = { showTagUrlDialog = false },
                     title = { Text("云端标签导入") },
                     text = {
                         Column {
-                            Text(
-                                "拉取打标表并按「同名标签取更高置信度」合并进本地标签层；" +
-                                    "默认为 GitHub 仓库的云端地址（经 jsDelivr 分发）。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            if (cloudChecking) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    androidx.compose.material3.CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        "正在读取云端版本…",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            } else {
+                                val m = cloudManifest
+                                if (m == null) {
+                                    Text(
+                                        "读不到云端版本信息（网络或 CDN 缓存）。仍可直接点「导入」，按默认地址下载整表。",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                } else {
+                                    Text(
+                                        "云端 ${m.count} 条作品 · ${m.sources} 个源",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                    Text(
+                                        "其中有标签 ${m.taggedCount} 条 · " +
+                                            m.types.entries.joinToString(" · ") { (k, v) -> "${typeName(k)} $v" },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        "生成于 ${formatCloudTime(m.generatedAt)}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    if (cloudImported.second > 0) {
+                                        val newer = m.generatedAt > cloudImported.first
+                                        Text(
+                                            if (newer) {
+                                                "本地上次导入 ${cloudImported.second} 条（${formatCloudTime(cloudImported.first)}），发现新版本"
+                                            } else {
+                                                "本地上次导入 ${cloudImported.second} 条（${formatCloudTime(cloudImported.first)}），已是最新"
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = if (newer) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
+                                        )
+                                    } else {
+                                        Text(
+                                            "本地还没有导入过云端标签表",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                }
+                            }
+
                             Spacer(Modifier.height(8.dp))
-                            androidx.compose.material3.OutlinedTextField(
-                                value = tagUrl,
-                                onValueChange = { tagUrl = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                textStyle = MaterialTheme.typography.bodySmall,
-                                label = { Text("打标表地址") },
+                            Text(
+                                "导入按「同名标签取更高置信度」合并，站方证据不会被覆盖。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
                             )
+
+                            // 高级：换成别的清单地址（自建镜像 / 别的仓库）
+                            Text(
+                                if (showAdvanced) "收起地址设置" else "自定义地址…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier
+                                    .padding(top = 6.dp)
+                                    .clickable { showAdvanced = !showAdvanced },
+                            )
+                            if (showAdvanced) {
+                                androidx.compose.material3.OutlinedTextField(
+                                    value = tagUrl,
+                                    onValueChange = { tagUrl = it },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 4.dp),
+                                    singleLine = false,
+                                    maxLines = 3,
+                                    textStyle = MaterialTheme.typography.bodySmall,
+                                    label = { Text("版本清单地址（manifest.json）") },
+                                )
+                            }
                         }
                     },
                     confirmButton = {
                         TextButton(
                             onClick = {
                                 showTagUrlDialog = false
-                                viewModel.importTagTableFromUrl(tagUrl)
+                                viewModel.importCloudLatest(tagUrl)
                             },
                             enabled = tagUrl.isNotBlank() && !tagImportBusy,
-                        ) { Text("导入") }
+                        ) { Text(if (tagImportBusy) "导入中…" else "导入") }
                     },
                     dismissButton = {
-                        TextButton(onClick = { showTagUrlDialog = false }) { Text("取消") }
+                        Row {
+                            TextButton(
+                                onClick = { viewModel.checkCloudTags(tagUrl) },
+                                enabled = !cloudChecking && !tagImportBusy,
+                            ) { Text("刷新") }
+                            TextButton(onClick = { showTagUrlDialog = false }) { Text("取消") }
+                        }
                     },
                 )
             }
@@ -768,3 +859,20 @@ private fun PageModeChip(
         style = MaterialTheme.typography.bodyMedium,
     )
 }
+
+/** 云端清单里的类型键 → 中文（`NOVEL` → 小说；v1.8.2.0） */
+private fun typeName(key: String): String = when (key.uppercase()) {
+    "NOVEL" -> "小说"
+    "COMIC" -> "漫画"
+    "VIDEO" -> "视频"
+    else -> key
+}
+
+/** 毫秒时间戳 → `yyyy-MM-dd HH:mm`；0 或非法值显示「未知」 */
+private fun formatCloudTime(ms: Long): String =
+    if (ms <= 0L) {
+        "未知"
+    } else {
+        java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.CHINA)
+            .format(java.util.Date(ms))
+    }

@@ -63,6 +63,18 @@ interface TagInstanceDao {
         sourceId: String,
         itemId: String,
     ): List<TagRow>
+
+    /**
+     * 某类型**全部**标签行（v1.8.2.0 批量导入用）。
+     *
+     * 导入两万条时逐条 `tagsOf` 是 2 万次往返，实测模拟器上四分钟都跑不完；
+     * 一次全量读回（十万行级别）再在内存里按作品合并，快一个数量级。
+     */
+    @Query(
+        """SELECT sourceId, itemId, itemType, tagName, category, confidence, origin, updatedAt
+           FROM tag_instances WHERE itemType = :type""",
+    )
+    suspend fun allOfType(type: String): List<TagInstanceEntity>
 }
 
 /** (sourceId, itemId) + 置信度：标签查询的中间结果，求交与排序用 */

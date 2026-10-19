@@ -709,6 +709,28 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun getVideoHomeSource(): String = videoHomeSourceFlow.first()
 
+    // ===== 云端标签导入（v1.8.2.0）=====
+
+    /** 上次从云端导入打标表的时间（毫秒；0 = 从未导入过） */
+    val KEY_TAG_CLOUD_IMPORTED_AT = longPreferencesKey("tag_cloud_imported_at")
+
+    /** 上次导入时云端表的条目数（用来判断云端有没有出新版本） */
+    val KEY_TAG_CLOUD_IMPORTED_COUNT = intPreferencesKey("tag_cloud_imported_count")
+
+    /** 记录一次云端标签导入（生成时间 + 条目数），供「标签导入」弹窗比较新旧 */
+    suspend fun setTagCloudImport(generatedAt: Long, count: Int) {
+        context.dataStore.edit {
+            it[KEY_TAG_CLOUD_IMPORTED_AT] = generatedAt
+            it[KEY_TAG_CLOUD_IMPORTED_COUNT] = count
+        }
+    }
+
+    /** 上次云端导入的 (生成时间, 条目数)；从未导入返回 (0, 0) */
+    suspend fun tagCloudImport(): Pair<Long, Int> {
+        val p = context.dataStore.data.first()
+        return (p[KEY_TAG_CLOUD_IMPORTED_AT] ?: 0L) to (p[KEY_TAG_CLOUD_IMPORTED_COUNT] ?: 0)
+    }
+
     /**
      * 视频 Tab 频道栏目索引（v1.5.0.0）：0=首页 1=电影 2=动漫 3=短剧 4=收藏。
      * 持久化，重启 App 后仍停留在上次的频道。

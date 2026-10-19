@@ -61,6 +61,25 @@ object TagTable {
         val items: List<Item> = emptyList(),
     )
 
+    /**
+     * 云端版本清单（`data/manifest.json`，v1.8.2.0）。
+     *
+     * 存在的意义是**省流量**：打标表十几 MB，而这份清单只有几百字节。
+     * App 先拉清单比对 [generatedAt]，只有云端确实更新了才去下载整表。
+     */
+    data class Manifest(
+        val latest: String = "tag_table.json",
+        val generatedAt: Long = 0L,
+        val updatedAt: Long = 0L,
+        val count: Int = 0,
+        val taggedCount: Int = 0,
+        val bytes: Long = 0L,
+        val sha256: String = "",
+        val types: Map<String, Int> = emptyMap(),
+        val sources: Int = 0,
+        val archive: List<String> = emptyList(),
+    )
+
     private val gson = GsonBuilder().disableHtmlEscaping().create()
 
     fun parse(text: String): Payload? = runCatching {
@@ -68,6 +87,13 @@ object TagTable {
         // 必须真的带 items 字段 —— 全缺省的 JSON 会被 Kotlin 无参构造填成默认值，不算合法表
         if (!obj.has("items")) return null
         gson.fromJson(obj, Payload::class.java)
+    }.getOrNull()
+
+    /** 解析云端清单；连 count / latest 都没有的一律当无效（防止把 HTML 错误页当清单） */
+    fun parseManifest(text: String): Manifest? = runCatching {
+        val obj = com.google.gson.JsonParser.parseString(text).asJsonObject
+        if (!obj.has("count") && !obj.has("latest")) return null
+        gson.fromJson(obj, Manifest::class.java)
     }.getOrNull()
 
     fun toJson(payload: Payload): String = gson.toJson(payload)

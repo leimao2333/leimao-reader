@@ -101,10 +101,15 @@ fun GroupedSearchResults(
         mutableStateOf(emptySet<String>())
     }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(vertical = 8.dp),
-    ) {
+    // 侧边滚动条（v1.8.2.0）：搜索结果动辄上百条，没有位置指示很难知道自己翻到哪了
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 8.dp),
+        ) {
         groups.forEachIndexed { groupIndex, group ->
             val head = group.first()
             val groupKey = groupKeyOf(head)
@@ -166,6 +171,14 @@ fun GroupedSearchResults(
                 }
             }
         }
+        }
+
+        VerticalScrollbar(
+            listState = listState,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 2.dp),
+        )
     }
 }
 

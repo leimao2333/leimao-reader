@@ -378,9 +378,11 @@ fun AppNavHost(
             val viewModel: com.novelreader.ui.screens.cache.CacheManageViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
                     com.novelreader.ui.screens.cache.CacheManageViewModel(
-                        it.chapterCacheRepository,
-                        it.videoPrefetchCache,
-                        it.preferencesManager,
+                        chapterCacheRepository = it.chapterCacheRepository,
+                        videoPrefetchCache = it.videoPrefetchCache,
+                        preferences = it.preferencesManager,
+                        // 漫画离线图片缓存要单独统计/清理（v1.8.2.0）
+                        downloadManager = it.downloadManager,
                     )
                 }
             )

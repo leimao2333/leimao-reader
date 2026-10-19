@@ -32,6 +32,20 @@ data class DownloadState(
 )
 
 /**
+ * 单本漫画的缓存占用（v1.8.2.0，「缓存管理」页的漫画分区）。
+ *
+ * [dirName] 是磁盘上的目录名（`标题_源标识后6位`），删除时以它为准 ——
+ * 缓存目录名由写入时的标题生成，光靠标题反查可能对不上。
+ */
+data class ComicCacheSummary(
+    val dirName: String,
+    val title: String,
+    val chapterCount: Int,
+    val sizeBytes: Long,
+    val lastModified: Long,
+)
+
+/**
  * 下载管理器。
  *
  * 负责将内容（小说正文 / 漫画图片 / 视频）下载到应用私有目录，
@@ -188,6 +202,62 @@ class DownloadManager(private val context: Context) {
     /** 清除某本漫画的全部章节缓存 */
     fun clearComicCache(item: MediaItem) {
         runCatching { comicCacheDir(item).deleteRecursively() }
+    }
+
+    /** 漫画缓存根目录（所有漫画的章节图片都放在它下面，v1.8.2.0 缓存管理用） */
+    private val comicCacheRoot: File
+        get() = File(downloadRoot, "comic_cache")
+
+    /**
+     * 按漫画聚合的缓存清单（v1.8.2.0，「缓存管理」页的漫画分区）。
+     *
+     * 目录结构是 `comic_cache/{标题}_{源标识后6位}/{5位章节号}/图片`，
+     * 所以一层目录 = 一本漫画，它下面每个含文件的子目录 = 一章。
+     * 标题从目录名反推（去掉末尾 `_源标识`），取不回来时退回目录名。
+     */
+    fun comicCacheSummaries(): List<ComicCacheSummary> {
+        val root = comicCacheRoot
+        if (!root.isDirectory) return emptyList()
+        return runCatching {
+            root.listFiles()
+                ?.filter { it.isDirectory }
+                ?.map { dir ->
+                    val chapters = dir.listFiles()
+                        ?.filter { it.isDirectory && (it.listFiles()?.any(File::isFile) == true) }
+                        .orEmpty()
+                    ComicCacheSummary(
+                        dirName = dir.name,
+                        title = dir.name.substringBeforeLast('_', dir.name),
+                        chapterCount = chapters.size,
+                        sizeBytes = chapters.sumOf { chapter -> chapter.walkTopDown().filter { it.isFile }.sumOf { it.length() } },
+                        lastModified = chapters.maxOfOrNull { it.lastModified() } ?: dir.lastModified(),
+                    )
+                }
+                ?.filter { it.chapterCount > 0 }
+                ?.sortedByDescending { it.lastModified }
+        }.getOrNull() ?: emptyList()
+    }
+
+    /** 漫画缓存总占用（字节） */
+    fun comicCacheTotalSize(): Long =
+        runCatching { comicCacheRoot.walkTopDown().filter { it.isFile }.sumOf { it.length() } }
+            .getOrDefault(0L)
+
+    /** 清除某本漫画的缓存（按缓存目录名，缓存管理列表用） */
+    fun clearComicCacheByDir(dirName: String): Long {
+        val dir = File(comicCacheRoot, dirName)
+        val freed = runCatching { dir.walkTopDown().filter { it.isFile }.sumOf { it.length() } }
+            .getOrDefault(0L)
+        runCatching { dir.deleteRecursively() }
+        return freed
+    }
+
+    /** 清空全部漫画缓存，返回释放的字节数 */
+    fun clearAllComicCache(): Long {
+        val root = comicCacheRoot
+        val freed = comicCacheTotalSize()
+        runCatching { root.deleteRecursively() }
+        return freed
     }
 
     /** 下载视频（单文件） */

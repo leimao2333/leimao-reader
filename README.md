@@ -85,7 +85,7 @@ NovelReader/
 | 追加 | 漫画源全覆盖（题材词 394）+ 成人内容开关 + Venera 源扩至 33 + 视频边播边缓存（v1.7.0.0 ~ v1.7.8.0） | ✅ 完成 |
 | 追加 | legado 引擎兼容性修复（CSS id / 多段链式 / 6 个失效源复活）+ 标签与复合搜索收敛（v1.7.9.0 ~ v1.7.9.9） | ✅ 完成 |
 
-详细进度见 `docs/进度总结/`，应用版本更新日志见 `CHANGELOG.md`。当前版本以 `AppVersion.CURRENT_VERSION` 为准（现为 `1.8.0.0`）。
+详细进度见 `docs/进度总结/`，应用版本更新日志见 `CHANGELOG.md`。当前版本以 `AppVersion.CURRENT_VERSION` 为准（现为 `1.8.2.0`）。
 
 ## 版本规范
 

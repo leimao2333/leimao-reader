@@ -528,22 +528,31 @@ fun TagSearchScreen(
                             if (hasMore && total > 0 && last >= total - 3) viewModel.loadMore()
                         }
                 }
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
-                    modifier = Modifier.fillMaxSize(),
-                    state = gridState,
-                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    items(results, key = { "${it.sourceId}:${it.id}" }) { item ->
-                        TagPosterCard(item = item, onClick = { onItemClick(item) })
+                Box(Modifier.fillMaxSize()) {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        modifier = Modifier.fillMaxSize(),
+                        state = gridState,
+                        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        items(results, key = { "${it.sourceId}:${it.id}" }) { item ->
+                            TagPosterCard(item = item, onClick = { onItemClick(item) })
+                        }
+                        if (loadingMore) {
+                            item(key = "loading-more") { LoadMoreFooter(loading = true, hasMore = true) {} }
+                        } else if (hasMore) {
+                            item(key = "load-more") { LoadMoreFooter(loading = false, hasMore = true) { viewModel.loadMore() } }
+                        }
                     }
-                    if (loadingMore) {
-                        item(key = "loading-more") { LoadMoreFooter(loading = true, hasMore = true) {} }
-                    } else if (hasMore) {
-                        item(key = "load-more") { LoadMoreFooter(loading = false, hasMore = true) { viewModel.loadMore() } }
-                    }
+                    // 侧边滚动条（v1.8.2.0）：网格页翻到哪儿了看不出来
+                    com.novelreader.ui.components.VerticalScrollbar(
+                        gridState = gridState,
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 4.dp),
+                    )
                 }
             }
 
@@ -557,23 +566,31 @@ fun TagSearchScreen(
                             if (hasMore && total > 0 && last >= total - 3) viewModel.loadMore()
                         }
                 }
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    state = listState,
-                    contentPadding = PaddingValues(vertical = 8.dp),
-                ) {
-                    items(results, key = { "${it.sourceId}:${it.id}" }) { item ->
-                        MediaItemCard(
-                            item = item,
-                            onClick = { onItemClick(item) },
-                            onRead = { onItemClick(item) },
-                        )
+                Box(Modifier.fillMaxSize()) {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        state = listState,
+                        contentPadding = PaddingValues(vertical = 8.dp),
+                    ) {
+                        items(results, key = { "${it.sourceId}:${it.id}" }) { item ->
+                            MediaItemCard(
+                                item = item,
+                                onClick = { onItemClick(item) },
+                                onRead = { onItemClick(item) },
+                            )
+                        }
+                        if (loadingMore) {
+                            item(key = "loading-more") { LoadMoreFooter(loading = true, hasMore = true) {} }
+                        } else if (hasMore) {
+                            item(key = "load-more") { LoadMoreFooter(loading = false, hasMore = true) { viewModel.loadMore() } }
+                        }
                     }
-                    if (loadingMore) {
-                        item(key = "loading-more") { LoadMoreFooter(loading = true, hasMore = true) {} }
-                    } else if (hasMore) {
-                        item(key = "load-more") { LoadMoreFooter(loading = false, hasMore = true) { viewModel.loadMore() } }
-                    }
+                    com.novelreader.ui.components.VerticalScrollbar(
+                        listState = listState,
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 2.dp),
+                    )
                 }
             }
         }

@@ -35,6 +35,14 @@ class CacheManageViewModel(
      */
     private val ioDispatcher: kotlinx.coroutines.CoroutineDispatcher =
         kotlinx.coroutines.Dispatchers.IO,
+    /**
+     * 漫画章节图片缓存（v1.8.2.0 漫画管理）。
+     *
+     * 漫画的离线缓存落在 `downloads/comic_cache/`（每章一个目录、里面是图片文件），
+     * 和章节正文缓存是两套东西 —— 正文缓存表里没有图片字节，所以必须单独统计/清理。
+     * 传 null 表示当前环境不管理漫画缓存（单测默认如此）。
+     */
+    private val downloadManager: com.novelreader.core.download.DownloadManager? = null,
 ) : ViewModel() {
 
     private val _books = MutableStateFlow<List<BookCacheSummary>>(emptyList())
@@ -63,6 +71,16 @@ class CacheManageViewModel(
     private val _videoPlayCacheSize = MutableStateFlow(0L)
     val videoPlayCacheSize: StateFlow<Long> = _videoPlayCacheSize.asStateFlow()
 
+    // ===== 漫画缓存（v1.8.2.0）=====
+
+    /** 按漫画聚合的离线缓存清单（章节图片） */
+    private val _comicCaches = MutableStateFlow<List<com.novelreader.core.download.ComicCacheSummary>>(emptyList())
+    val comicCaches: StateFlow<List<com.novelreader.core.download.ComicCacheSummary>> = _comicCaches.asStateFlow()
+
+    /** 漫画缓存总占用（字节） */
+    private val _comicCacheSize = MutableStateFlow(0L)
+    val comicCacheSize: StateFlow<Long> = _comicCacheSize.asStateFlow()
+
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
@@ -86,6 +104,17 @@ class CacheManageViewModel(
             _videoPlayCacheSize.value = kotlinx.coroutines.withContext(ioDispatcher) {
                 runCatching { videoPlayCache.sizeBytes() }.getOrDefault(0L)
             }
+            // 漫画缓存要遍历目录树（可能几万个图片文件），必须离开主线程
+            val comic = kotlinx.coroutines.withContext(ioDispatcher) {
+                val mgr = downloadManager
+                if (mgr == null) {
+                    null
+                } else {
+                    runCatching { mgr.comicCacheSummaries() to mgr.comicCacheTotalSize() }.getOrNull()
+                }
+            }
+            _comicCaches.value = comic?.first ?: emptyList()
+            _comicCacheSize.value = comic?.second ?: 0L
             _loading.value = false
         }
     }
@@ -156,18 +185,46 @@ class CacheManageViewModel(
         viewModelScope.launch {
             val size = _videoPrefetchSize.value
             val playSize = _videoPlayCacheSize.value
+            val comicSize = _comicCacheSize.value
             runCatching {
                 chapterCacheRepository.clearAll()
                 videoPrefetchCache.clear()
             }.onSuccess {
                 kotlinx.coroutines.withContext(ioDispatcher) {
                     runCatching { videoPlayCache.clear() }
+                    runCatching { downloadManager?.clearAllComicCache() }
                 }
-                _message.value = "已清空全部缓存（含视频预加载 ${formatSize(size)}、播放缓存 ${formatSize(playSize)}）"
+                _message.value = "已清空全部缓存（含视频 ${formatSize(size + playSize)}、漫画 ${formatSize(comicSize)}）"
                 refresh()
             }.onFailure {
                 _message.value = "清空失败：${it.message}"
             }
+        }
+    }
+
+    /** 清理单本漫画的离线缓存（v1.8.2.0） */
+    fun removeComicCache(entry: com.novelreader.core.download.ComicCacheSummary) {
+        viewModelScope.launch {
+            val mgr = downloadManager ?: return@launch
+            val freed = kotlinx.coroutines.withContext(ioDispatcher) {
+                runCatching { mgr.clearComicCacheByDir(entry.dirName) }.getOrDefault(0L)
+            }
+            _message.value = "已清理《${entry.title}》漫画缓存（${formatSize(freed)}）"
+            refresh()
+        }
+    }
+
+    /** 清空全部漫画缓存（v1.8.2.0） */
+    fun clearComicCache() {
+        viewModelScope.launch {
+            val mgr = downloadManager ?: return@launch
+            val before = _comicCacheSize.value
+            val freed = kotlinx.coroutines.withContext(ioDispatcher) {
+                runCatching { mgr.clearAllComicCache() }.getOrDefault(0L)
+            }
+            val shown = if (freed > 0L) freed else before
+            _message.value = "已清空漫画缓存（${formatSize(shown)}）"
+            refresh()
         }
     }
 

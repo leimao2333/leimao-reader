@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.novelreader.core.util.TagAlias
 import com.novelreader.core.util.TagEntryUrl
 import com.novelreader.core.util.TagQuery
+import com.novelreader.core.util.TagQuerySpec
+import com.novelreader.core.util.TagTagger
 import com.novelreader.data.cache.TagPlan
 import com.novelreader.data.repository.TagRepository
 import com.novelreader.domain.model.MediaItem
@@ -275,6 +277,41 @@ class TagSearchViewModel(
             ?: TagQuery.parse(query)
 
     /**
+     * 把一个语法条件展开成「一组等价写法」（v1.8.1.3）。
+     *
+     * - 普通标签：受控词表里的全部译名（[TagAlias.aliasesOf]）；
+     * - 通配：先在受控词表 + 标签池里匹配出真实标签，再各自展开译名 ——
+     *   `魔法*` 会命中「魔法」「魔法少女」等，而不是拿星号去请求源站。
+     */
+    private fun expandClauseNames(spec: TagQuerySpec.Clause): Set<String> {
+        if (!spec.wildcard) return TagAlias.aliasesOf(spec.name)
+        val vocabulary = buildList {
+            TagAlias.GROUPS.forEach { addAll(it) }
+            addAll(tagPlan.tags)
+            addAll(tagPlan.plan.keys)
+        }
+        return TagQuerySpec.expandWildcard(spec.name, vocabulary)
+            .flatMap { matched -> TagAlias.aliasesOf(matched) }
+            .toSet()
+    }
+
+    /**
+     * 排除条件：网络结果不带标签，只能按标题包含关系过滤（索引侧已由 SQL 整条剔除）。
+     *
+     * 术语用 [TagAlias.searchTermsFor] 展开，`-无码` 也能排掉标题写着「無修正」的作品。
+     */
+    private fun withoutExcluded(
+        items: List<MediaItem>,
+        excludeTerms: List<String>,
+    ): List<MediaItem> {
+        if (excludeTerms.isEmpty()) return items
+        return items.filterNot { item ->
+            val key = TagQuery.normalizeTitle(item.title)
+            excludeTerms.any { term -> key.contains(term) }
+        }
+    }
+
+    /**
      * 把标签追加到查询串（空格分隔）并立即搜索 —— 复合搜索入口（v1.5.10.0）。
      *
      * v1.6.1.0 改进：同步把 [activeTags] 也更新，让热们推荐 chip 立刻呈现「已选」状态，
@@ -452,20 +489,58 @@ class TagSearchViewModel(
 
             try {
                 ensurePlan()
-                val tags = logicalTagsInQuery(_query.value)
-                    .ifEmpty { firstParse }
-                    .distinct()
-                    .let { TagAlias.dedupeAliases(it) }
+                // v1.8.1.3 查询语法：-排除 / 大类:标签 / 通配 *
+                val specs = TagQuerySpec.parse(_query.value)
+                val positiveSpecs = specs.filterNot { it.exclude }
+                if (positiveSpecs.isEmpty()) {
+                    _results.value = emptyList()
+                    _notice.value = "只写了排除条件（-标签），至少留一个要搜索的标签"
+                    return@launch
+                }
+                // 每个正条件展开成「一组等价写法」：普通标签取别名组，通配按受控词表 + 标签池展开
+                val expandedPerSpec = positiveSpecs.map(::expandClauseNames)
+                // 展开为空（通配没匹配到任何词）的条件直接视为未知标签
+                val uniqueSpecs = positiveSpecs.mapIndexed { i, spec -> spec to expandedPerSpec[i] }
+                    .filter { (spec, names) -> names.isNotEmpty() || !spec.wildcard }
+                    .distinctBy { (spec, names) -> spec.category to names }
+                if (uniqueSpecs.isEmpty()) {
+                    // 全是通配且一个词都没匹配到（如 `zzzz*`）
+                    _results.value = emptyList()
+                    _notice.value = "通配没有匹配到任何标签，换个写法试试"
+                    return@launch
+                }
+
+                val tags = uniqueSpecs.map { (spec, _) -> spec.name }
+                val namesPerTag = uniqueSpecs.map { it.second }
+                val clauses = uniqueSpecs.map { (spec, names) ->
+                    com.novelreader.data.repository.TagIndexRepository.TagClause(names, spec.category)
+                }
+                // 排除条件：索引侧整条剔除；网络侧按标题包含关系过滤（源站结果不带标签）
+                val excludeNames = specs.filter { it.exclude }
+                    .flatMap(::expandClauseNames)
+                    .toSet()
+                val excludeTerms = specs.filter { it.exclude }
+                    .flatMap { spec -> TagAlias.searchTermsFor(spec.name) + spec.name }
+                    .map(TagQuery::normalizeTitle)
+                    .filter { it.isNotEmpty() }
 
                 // v1.8.1.2：**索引与搜索不冲突**。
-                // 先看本地索引里已经收录的（按源站真实题材打的标签），有就立刻显示 ——
-                // 但**不 return**，网络搜索照跑，新结果合并进来、再回写索引，越搜越全。
+                // 先看本地索引里已经收录的，有就立刻显示 —— 但**不 return**，
+                // 网络搜索照跑，新结果合并进来、再回写索引，越搜越全。
+                // v1.8.1.3：索引查询带上大类 / 排除 / 成人整类过滤，并返回置信度排序。
                 val indexedTotal = tagIndexRepository?.count(type) ?: 0
                 _indexCount.value = indexedTotal
                 var localItems: List<MediaItem> = emptyList()
-                if (indexedTotal > 0) {
-                    val groups = tags.map { tag -> TagAlias.aliasesOf(tag) }
-                    localItems = tagIndexRepository?.search(type, groups).orEmpty()
+                if (indexedTotal > 0 && clauses.isNotEmpty()) {
+                    val hideAdult = preferencesManager?.hideAdultFlow?.first() ?: true
+                    val explicitAdult = tags.any(TagAlias::isExplicitAdultIntent) ||
+                        uniqueSpecs.any { (spec, _) -> spec.category == TagTagger.CATEGORY_ADULT }
+                    localItems = tagIndexRepository?.search(
+                        type = type,
+                        clauses = clauses,
+                        excludeTags = excludeNames,
+                        hideAdult = hideAdult && !explicitAdult,
+                    ).orEmpty()
                     if (localItems.isNotEmpty()) {
                         _results.value = localItems
                     }
@@ -478,14 +553,16 @@ class TagSearchViewModel(
                     _notice.value = "没有已启用的源，先去源管理里打开一个"
                     return@launch
                 }
-                val variantsPerTag = tags.map { tag ->
-                    TagAlias.matchesInPool(tag, tagPlan.tags).ifEmpty { listOf(tag) }
+                val variantsPerTag = uniqueSpecs.map { (spec, names) ->
+                    names.flatMap { name -> TagAlias.matchesInPool(name, tagPlan.tags) }
+                        .distinct()
+                        .ifEmpty { listOf(spec.name) }
                 }
                 // 按源搜索：选了某个源就只保留它的入口（优先级高于「已启用源」集合）
                 val allowedIds = _selectedSourceIds.value.takeIf { it.isNotEmpty() } ?: enabledIds
-                val entriesPerTag = tags.mapIndexed { index, query ->
+                val entriesPerTag = uniqueSpecs.mapIndexed { index, (spec, _) ->
                     variantsPerTag[index]
-                        .flatMap { variant -> tagPlan.searchEntriesFor(variant, query) }
+                        .flatMap { variant -> tagPlan.searchEntriesFor(variant, spec.name) }
                         .distinct()
                         .let { if (allowedIds == null) it else it.filter { e -> e.first in allowedIds } }
                         // v1.8.1.0：同一个源最多留 [MAX_URLS_PER_SOURCE] 条入口。
@@ -541,17 +618,46 @@ class TagSearchViewModel(
                     null
                 }
 
-                if (missing.isNotEmpty()) {
+                if (known.isEmpty()) {
+                    // 网络侧一个可搜入口都没有：只要索引命中就直接展示，
+                    // 不再像旧版那样把已经查到的结果一起清空。
+                    if (localItems.isNotEmpty()) {
+                        _activeTags.value = tags.map(TagAlias::canonicalOf).distinct()
+                        _results.value = localItems
+                        _notice.value = "本地索引命中 ${localItems.size} 部；网络源没有这些标签的入口"
+                        return@launch
+                    }
                     _activeTags.value = emptyList()
                     _results.value = emptyList()
                     _notice.value = listOfNotNull(
                         translatedNotice.takeIf { it.isNotBlank() },
-                        "未找到标签：${missing.joinToString("、")}，复合搜索要求全部标签都存在（点右上角刷新标签试试）",
+                        "未找到标签：${missing.joinToString("、")}，" +
+                            if (missing.size == tags.size) {
+                                "换个写法，或点「已收录」旁的入口建本地索引"
+                            } else {
+                                "复合搜索要求全部标签都存在"
+                            },
                     ).joinToString("；")
                     return@launch
                 }
 
-                _notice.value = compoundNote ?: translatedNotice.takeIf { it.isNotBlank() }
+                // v1.8.1.3：语法修饰（排除 / 大类 / 通配）也写进提示 ——
+                // 用户写了 `-有码` 却没看到任何说明时，会以为条件被吞了。
+                val syntaxNote = specs
+                    .filter { it.exclude || it.category != null || it.wildcard }
+                    .joinToString("；") { spec ->
+                        buildString {
+                            append(TagQuerySpec.describe(spec))
+                            if (spec.wildcard) append("（展开 ${expandClauseNames(spec).size} 个写法）")
+                        }
+                    }
+                    .takeIf { it.isNotBlank() }
+                val headNote = listOfNotNull(
+                    syntaxNote,
+                    compoundNote ?: translatedNotice.takeIf { it.isNotBlank() },
+                ).joinToString("；").takeIf { it.isNotBlank() }
+
+                _notice.value = headNote
                 val outcome = if (knownEntries.size == 1) {
                     CompoundOutcome(searchOneTag(knownEntries[0], onPartial = updatePartialResults))
                 } else {
@@ -561,10 +667,13 @@ class TagSearchViewModel(
                 if (generation != searchGeneration) return@launch
                 // 同一部作品在不同源上标题写法可能不同（繁简 / 带作者后缀），
                 // 按作品身份键再去重一次，避免结果里出现两条「同一部」。
-                val network = filterAdults(searchResult, tags)
-                    .let { if (searchOnlyResult) filterByGroupKeywords(it, tags) else it }
+                val network = withoutExcluded(
+                    filterAdults(searchResult, tags)
+                        .let { if (searchOnlyResult) filterByGroupKeywords(it, tags) else it },
+                    excludeTerms,
+                )
                 // 索引里的是「按真实题材命中」的，不再过标题过滤；与网络结果合并去重
-                val final = (localItems + network)
+                val final = withoutExcluded(localItems + network, excludeTerms)
                     .distinctBy { TagQuery.identityKey(it.title) }
                 if (generation != searchGeneration) return@launch
                 _activeTags.value = known.map(TagAlias::canonicalOf).distinct()
@@ -599,10 +708,9 @@ class TagSearchViewModel(
                     known.size > 1 -> "没有作品同时属于「${known.joinToString("」「")}」（每个大集里各要命中至少一个标签）"
                     else -> "「${known.first()}」下暂无内容"
                 }
-                _notice.value = listOfNotNull(
-                    compoundNote ?: translatedNotice.takeIf { it.isNotBlank() },
-                    tail,
-                ).joinToString("；").takeIf { it.isNotBlank() }
+                _notice.value = listOfNotNull(headNote, tail)
+                    .joinToString("；")
+                    .takeIf { it.isNotBlank() }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {

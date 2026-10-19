@@ -2,16 +2,23 @@ package com.novelreader.data.repository
 
 import com.novelreader.data.database.ProgressDao
 import com.novelreader.data.model.ProgressEntity
+import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.RecentReading
 import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.ProgressRepository
 import com.novelreader.domain.repository.ReadingProgress
+import com.novelreader.domain.repository.TagBehaviorRecorder
+import com.novelreader.domain.repository.TagSignal
 
 /**
  * 阅读/播放进度仓库实现（Room 持久化）。
+ *
+ * v1.8.1.3：进度落盘成功后把「真的在读」回流到标签层（[TagBehaviorRecorder]）。
+ * 阅读页会周期性保存进度，节流交给接收端做（同一部作品半小时只记一次）。
  */
 class ProgressRepositoryImpl(
     private val progressDao: ProgressDao,
+    private val behaviorRecorder: TagBehaviorRecorder? = null,
 ) : ProgressRepository {
 
     override suspend fun saveProgress(
@@ -51,6 +58,22 @@ class ProgressRepositoryImpl(
                 durationMs = durationMs,
             )
         )
+        // 中信号：真的读到了这一章，说明这部作品有吸引力
+        runCatching {
+            val parsedType = runCatching { SourceType.valueOf(itemType.uppercase()) }
+                .getOrDefault(SourceType.NOVEL)
+            behaviorRecorder?.onBehavior(
+                MediaItem(
+                    id = itemId,
+                    title = itemTitle,
+                    cover = itemCover,
+                    author = itemAuthor,
+                    type = parsedType,
+                    sourceId = sourceId,
+                ),
+                TagSignal.READ,
+            )
+        }
     }
 
     override suspend fun getProgress(sourceId: String, itemId: String): ReadingProgress? {

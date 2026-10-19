@@ -140,11 +140,11 @@ class AppContainer(context: Context) {
     }
 
     val bookRepository: BookRepository by lazy {
-        BookRepositoryImpl(database.bookDao())
+        BookRepositoryImpl(database.bookDao(), tagIndexRepository)
     }
 
     val progressRepository: ProgressRepository by lazy {
-        ProgressRepositoryImpl(database.progressDao())
+        ProgressRepositoryImpl(database.progressDao(), tagIndexRepository)
     }
 
     /** 章节缓存仓库（单章缓存 + 缓存管理） */

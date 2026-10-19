@@ -5,14 +5,20 @@ import com.novelreader.data.model.BookEntity
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.BookRepository
+import com.novelreader.domain.repository.TagBehaviorRecorder
+import com.novelreader.domain.repository.TagSignal
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
 /**
  * 书架仓库实现（Room 持久化）。
+ *
+ * v1.8.1.3：收藏成功后把行为回流到本地标签层（[TagBehaviorRecorder]），
+ * 行为写库失败**不影响收藏本身**，所以整段用 runCatching 兜住。
  */
 class BookRepositoryImpl(
     private val bookDao: BookDao,
+    private val behaviorRecorder: TagBehaviorRecorder? = null,
 ) : BookRepository {
 
     override fun observeBookshelf(): Flow<List<MediaItem>> =
@@ -42,6 +48,8 @@ class BookRepositoryImpl(
                 groupName = item.groupName.ifBlank { existing?.groupName.orEmpty() },
             )
         )
+        // 强信号：用户主动收藏，给这部作品已有标签的置信度加权
+        runCatching { behaviorRecorder?.onBehavior(item, TagSignal.COLLECT) }
     }
 
     override suspend fun removeFromBookshelf(item: MediaItem) {

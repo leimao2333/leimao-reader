@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -116,12 +117,45 @@ fun TagSearchScreen(
     val sources by viewModel.sources.collectAsState()
     val selectedSourceIds by viewModel.selectedSourceIds.collectAsState()
     val indexCount by viewModel.indexCount.collectAsState()
+    val indexing by viewModel.indexing.collectAsState()
+    val indexMessage by viewModel.indexMessage.collectAsState()
     val hasMore by viewModel.hasMore.collectAsState()
     val loadingMore by viewModel.loadingMore.collectAsState()
     val activeTags by viewModel.activeTags.collectAsState()
 
     // v1.6.2.0：「更多热门」展开面板开关
     var showAllHotTags by remember { mutableStateOf(false) }
+
+    // v1.8.1.3：全量索引预热入口（遍历源 + 详情打标，重活，按需触发）
+    var showIndexDialog by remember { mutableStateOf(false) }
+    if (showIndexDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!indexing) showIndexDialog = false },
+            title = { Text("本地标签索引") },
+            text = {
+                Column {
+                    Text("索引会遍历已启用的源，逐部读源站题材并打标签存到本地。建好后标签搜索先命中本地，再补网络，复合筛选不受源站有没有分类页限制。")
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "已收录 $indexCount 部" + if (indexing) " · 正在建立…" else "",
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                    if (!indexMessage.isNullOrBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(indexMessage!!, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = viewModel::buildIndex, enabled = !indexing) {
+                    Text(if (indexing) "建立中…" else "开始建立")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showIndexDialog = false }, enabled = !indexing) { Text("关闭") }
+            },
+        )
+    }
 
     // enableEdgeToEdge 下自绘顶栏必须自行避让系统栏
     Column(
@@ -243,7 +277,7 @@ fun TagSearchScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 8.dp),
-            placeholder = { Text("输入标签，多个标签用空格分开（= 复合搜索）") },
+            placeholder = { Text("标签（空格=同时满足 · -排除 · 题材:标签 · 魔法* 通配）") },
             singleLine = true,
             textStyle = MaterialTheme.typography.bodyMedium,
             trailingIcon = {
@@ -278,12 +312,16 @@ fun TagSearchScreen(
                     modifier = Modifier.padding(start = 8.dp),
                 )
                 Spacer(Modifier.weight(1f))
-                // 索引不再是「要先跑一遍的独立任务」，而是搜索时自动累积（v1.8.1.2）
+                // 索引不再是「要先跑一遍的独立任务」，而是搜索时自动累积（v1.8.1.2）；
+                // v1.8.1.3 起这个数字同时是**全量预热**入口（遍历源 + 详情打标）。
                 Text(
-                    text = if (indexCount > 0) "已收录 $indexCount 部" else "搜索时自动收录标签",
+                    text = if (indexCount > 0) "已收录 $indexCount 部 ▸" else "建立本地索引 ▸",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(end = 12.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .padding(end = 12.dp)
+                        .clickable { showIndexDialog = true }
+                        .padding(vertical = 6.dp),
                 )
             }
         }

@@ -33,17 +33,45 @@ interface TagInstanceDao {
      *
      * 组间 AND 不在 SQL 里做 —— 多组交集要在应用侧把结果集求交，
      * 否则 SQL 会把「题材命中 A、受众命中 B」也算命中（正是 nested 要避免的）。
+     *
+     * @param category 限定大类（null = 不限，v1.8.1.3 的 `题材:` 语法）
+     * @param excludeAdult 1 = 排除「成人」大类的标签（隐藏成人内容时整类过滤）
+     * @return 每个条目在该组里的**最高置信度**，供加权排序用
      */
     @Query(
-        """SELECT DISTINCT sourceId, itemId FROM tag_instances
-           WHERE itemType = :type AND tagName IN (:names) AND confidence >= :minConfidence""",
+        """SELECT sourceId, itemId, MAX(confidence) AS confidence FROM tag_instances
+           WHERE itemType = :type AND tagName IN (:names) AND confidence >= :minConfidence
+             AND (:category IS NULL OR category = :category)
+             AND (:excludeAdult = 0 OR category <> '成人')
+           GROUP BY sourceId, itemId""",
     )
-    suspend fun itemIdsWithAny(
+    suspend fun refsWithAny(
         type: String,
         names: List<String>,
         minConfidence: Int,
-    ): List<ItemRef>
+        category: String?,
+        excludeAdult: Int,
+    ): List<ScoredRef>
+
+    /** 某部作品当前的标签行（行为回流时逐条加权用） */
+    @Query(
+        """SELECT tagName, category, confidence, origin FROM tag_instances
+           WHERE itemType = :type AND sourceId = :sourceId AND itemId = :itemId""",
+    )
+    suspend fun tagsOf(
+        type: String,
+        sourceId: String,
+        itemId: String,
+    ): List<TagRow>
 }
 
-/** (sourceId, itemId) 二元组：标签查询的中间结果，求交用 */
-data class ItemRef(val sourceId: String, val itemId: String)
+/** (sourceId, itemId) + 置信度：标签查询的中间结果，求交与排序用 */
+data class ScoredRef(val sourceId: String, val itemId: String, val confidence: Int)
+
+/** 单条标签行（行为加权的读模型） */
+data class TagRow(
+    val tagName: String,
+    val category: String,
+    val confidence: Int,
+    val origin: String,
+)

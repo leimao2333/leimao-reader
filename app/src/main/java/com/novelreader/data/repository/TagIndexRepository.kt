@@ -2,9 +2,10 @@ package com.novelreader.data.repository
 
 import com.novelreader.core.util.TagAlias
 import com.novelreader.core.util.TagEntryUrl
+import com.novelreader.core.util.TagHit
 import com.novelreader.core.util.TagQuery
+import com.novelreader.core.util.TagRanking
 import com.novelreader.core.util.TagTagger
-import com.novelreader.data.database.ItemRef
 import com.novelreader.data.database.LocalTagDao
 import com.novelreader.data.database.TagInstanceDao
 import com.novelreader.data.model.LocalTagEntity
@@ -13,6 +14,8 @@ import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.SourceRepository
+import com.novelreader.domain.repository.TagBehaviorRecorder
+import com.novelreader.domain.repository.TagSignal
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -42,7 +45,13 @@ class TagIndexRepository(
     private val sourceRepository: SourceRepository,
     private val localTagDao: LocalTagDao,
     private val tagInstanceDao: TagInstanceDao,
-) {
+) : TagBehaviorRecorder {
+
+    /** 一个查询条件：一组等价写法（组内 OR）+ 可选的大类限定 */
+    data class TagClause(
+        val names: Set<String>,
+        val category: String? = null,
+    )
 
     /** 构建进度 */
     data class Progress(
@@ -58,38 +67,51 @@ class TagIndexRepository(
     suspend fun count(type: SourceType): Int = tagInstanceDao.itemCount(type.name)
 
     /**
-     * 复合标签查询（v1.8.1.2）。
+     * 复合标签查询（v1.8.1.2；v1.8.1.3 加入大类过滤与置信度排序）。
      *
-     * @param groups 每组是一组同义写法，**组内 OR、组间 AND**（对应 bool 的 should + must）
+     * @param clauses 每个条件是一组等价写法，**组内 OR、组间 AND**（对应 bool 的 should + must）
      * @param minConfidence 置信度下限（对应 filter）
      * @param excludeTags 排除标签（对应 must_not）
+     * @param hideAdult 开启时按 `category = 成人` **整类过滤**，而不是逐个标签名去排
+     * @return 按置信度降序（同分保持索引顺序）的作品，置信度取各组中的短板
      */
     suspend fun search(
         type: SourceType,
-        groups: List<Set<String>>,
+        clauses: List<TagClause>,
         minConfidence: Int = 0,
         excludeTags: Set<String> = emptySet(),
+        hideAdult: Boolean = false,
     ): List<MediaItem> {
-        if (groups.isEmpty()) return emptyList()
-        // 组内 OR：命中该组任一标签即可
-        val perGroup = groups.map { group ->
-            tagInstanceDao.itemIdsWithAny(type.name, group.toList(), minConfidence).toSet()
+        if (clauses.isEmpty() || clauses.any { it.names.isEmpty() }) return emptyList()
+
+        // 组内 OR：命中该组任一写法即可，得分 = 该作品在本组的最高置信度
+        val groups = clauses.map { clause ->
+            tagInstanceDao.refsWithAny(
+                type = type.name,
+                names = clause.names.toList(),
+                minConfidence = minConfidence,
+                category = clause.category,
+                excludeAdult = if (hideAdult) 1 else 0,
+            ).map { TagHit(it.sourceId, it.itemId, it.confidence) }
         }
-        if (perGroup.any { it.isEmpty() }) return emptyList()
-        // 组间 AND：在**条目级别**求交，等价于 nested must ——
-        // 拼串存储会把「题材命中 A、成人命中 B」也算命中，这里不会。
-        var ids = perGroup.first()
-        perGroup.drop(1).forEach { ids = ids.intersect(it) }
+        var ranked = TagRanking.intersect(groups)
+        if (ranked.isEmpty()) return emptyList()
+
+        // must_not：命中排除标签的作品整条剔除（排除不看大类，用户说排除就是排除）
         if (excludeTags.isNotEmpty()) {
-            val banned = tagInstanceDao
-                .itemIdsWithAny(type.name, excludeTags.toList(), minConfidence)
-                .toSet()
-            ids = ids - banned
+            val banned = tagInstanceDao.refsWithAny(
+                type = type.name,
+                names = excludeTags.toList(),
+                minConfidence = 0,
+                category = null,
+                excludeAdult = 0,
+            ).mapTo(HashSet()) { it.sourceId to it.itemId }
+            ranked = ranked.filterNot { (it.sourceId to it.itemId) in banned }
         }
-        if (ids.isEmpty()) return emptyList()
-        return localTagDao.all(type.name)
-            .filter { ItemRef(it.sourceId, it.itemId) in ids }
-            .map { it.toItem() }
+        if (ranked.isEmpty()) return emptyList()
+
+        val byKey = localTagDao.all(type.name).associateBy { it.sourceId to it.itemId }
+        return ranked.mapNotNull { hit -> byKey[hit.sourceId to hit.itemId]?.toItem() }
             .distinctBy { TagQuery.identityKey(it.title) }
     }
 
@@ -217,6 +239,65 @@ class TagIndexRepository(
         return indexed
     }
 
+    // ===== 行为信号打标（v1.8.1.3）=====
+
+    /** 同一作品同一信号的节流表（阅读进度会周期性落盘，每次都写库没有信息量） */
+    private val lastSignalAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /**
+     * 收藏 / 阅读 / 点击回流：把「用户真的在用这部作品」折算成标签置信度。
+     *
+     * 行为**不新增标签**，只给已有标签加权 —— 单次点击推不出「这部是全彩」，
+     * 但能说明「用户确实关注它」，而置信度正是查询排序的依据（见 [TagRanking]）。
+     * 文本猜测（[TagTagger.ORIGIN_TEXT]）被行为反复确认后升级为「行为」来源，
+     * 表示最强证据已不是字面命中；站方 / 视觉标签的来源保持不变。
+     */
+    override suspend fun onBehavior(item: MediaItem, signal: TagSignal) {
+        if (item.id.isBlank() || item.sourceId.isBlank()) return
+        val now = System.currentTimeMillis()
+        if (!shouldRecord("${item.sourceId}|${item.id}|${signal.name}", now)) return
+
+        val type = item.type
+        var rows = tagInstanceDao.tagsOf(type.name, item.sourceId, item.id)
+        if (rows.isEmpty()) {
+            // 还没进索引：先用标题 / 站方题材打一遍，再累加行为分
+            indexItems(type, listOf(item))
+            rows = tagInstanceDao.tagsOf(type.name, item.sourceId, item.id)
+        }
+        if (rows.isEmpty()) return
+        val boosted = rows.map { row ->
+            val confidence = (row.confidence + signal.weight).coerceAtMost(100)
+            TagInstanceEntity(
+                sourceId = item.sourceId,
+                itemId = item.id,
+                itemType = type.name,
+                tagName = row.tagName,
+                category = row.category,
+                confidence = confidence,
+                origin = if (
+                    row.origin == TagTagger.ORIGIN_TEXT &&
+                    confidence >= BEHAVIOR_PROMOTE_THRESHOLD
+                ) {
+                    TagTagger.ORIGIN_BEHAVIOR
+                } else {
+                    row.origin
+                },
+                updatedAt = now,
+            )
+        }
+        tagInstanceDao.upsertAll(boosted)
+    }
+
+    private fun shouldRecord(key: String, now: Long): Boolean {
+        val last = lastSignalAt[key]
+        if (last != null && now - last < SIGNAL_TTL_MS) return false
+        if (lastSignalAt.size > 512) {
+            lastSignalAt.entries.removeIf { now - it.value > SIGNAL_TTL_MS }
+        }
+        lastSignalAt[key] = now
+        return true
+    }
+
     private fun LocalTagEntity.toItem(): MediaItem = MediaItem(
         id = itemId,
         title = title,
@@ -230,6 +311,12 @@ class TagIndexRepository(
     )
 
     companion object {
+        /** 同一作品同一信号的最短记录间隔：半小时 */
+        private const val SIGNAL_TTL_MS = 30 * 60 * 1000L
+
+        /** 文本标签被行为确认到多少分后改标「行为」来源 */
+        private const val BEHAVIOR_PROMOTE_THRESHOLD = 80
+
         /**
          * 索引时用来取列表的关键词（v1.8.1.2）。
          *

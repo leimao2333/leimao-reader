@@ -26,11 +26,13 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -193,6 +195,7 @@ fun NovelReaderScreen(
     val cachedIndices by viewModel.cachedIndices.collectAsState()
     val toast by viewModel.toast.collectAsState()
     val collected by viewModel.collected.collectAsState()
+    val shelfStateReady by viewModel.shelfStateReady.collectAsState()
     val hasNextChapter by viewModel.hasNextChapter.collectAsState()
     val hasPrevChapter by viewModel.hasPrevChapter.collectAsState()
     val currentItemState by viewModel.currentItemState.collectAsState()
@@ -228,6 +231,35 @@ fun NovelReaderScreen(
 
     LaunchedEffect(item, chapter) {
         viewModel.init(item, chapters, chapter)
+    }
+
+    // v1.8.1.9：未加入书架的作品，打开阅读后询问一次是否加入。
+    // 必须等 shelfStateReady —— collected 初始为 false，直接判断会误弹。
+    var showShelfPrompt by remember { mutableStateOf(false) }
+    var shelfPrompted by remember { mutableStateOf(false) }
+    LaunchedEffect(shelfStateReady, collected, displayItem) {
+        if (shelfStateReady && !collected && !shelfPrompted) {
+            shelfPrompted = true
+            showShelfPrompt = true
+        }
+    }
+    if (showShelfPrompt) {
+        AlertDialog(
+            onDismissRequest = { showShelfPrompt = false },
+            title = { Text("加入书架") },
+            text = {
+                Text("《${displayItem.title}》还没加入书架，加入后可随时在书架继续阅读。")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showShelfPrompt = false
+                    viewModel.toggleCollect()
+                }) { Text("加入书架") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showShelfPrompt = false }) { Text("暂不") }
+            },
+        )
     }
 
     // 提示条自动消失

@@ -60,9 +60,10 @@ class Wd14TaggerTest {
     @Test
     fun `未登记的 danbooru 词被丢弃`() {
         assertNull(Wd14Mapper.toControlled("1girl"))
-        // long_hair 已登记（→ 长发）；greyscale / 角色名尚未进受控词表 —— 补进 GROUPS 即自动生效
+        // long_hair 已登记（→ 长发）；greyscale 在 v1.8.1.9 补进「黑白」组（→ 黑白）；
+        // 角色名（hakurei_reimu）仍不在受控词表
         assertEquals("长发", Wd14Mapper.toControlled("long_hair"))
-        assertNull(Wd14Mapper.toControlled("greyscale"))
+        assertEquals("黑白", Wd14Mapper.toControlled("greyscale"))
         assertNull(Wd14Mapper.toControlled("hakurei_reimu"))
         assertNull(Wd14Mapper.toControlled("  "))
     }

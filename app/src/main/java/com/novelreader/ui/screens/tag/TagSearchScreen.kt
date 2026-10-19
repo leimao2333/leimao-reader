@@ -124,6 +124,7 @@ fun TagSearchScreen(
     val selectedSourceIds by viewModel.selectedSourceIds.collectAsState()
     val indexCount by viewModel.indexCount.collectAsState()
     val indexing by viewModel.indexing.collectAsState()
+    val indexPaused by viewModel.indexPaused.collectAsState()
     val indexMessage by viewModel.indexMessage.collectAsState()
     val hasMore by viewModel.hasMore.collectAsState()
     val loadingMore by viewModel.loadingMore.collectAsState()
@@ -158,7 +159,7 @@ fun TagSearchScreen(
     }
     if (showIndexDialog) {
         AlertDialog(
-            onDismissRequest = { if (!indexing) showIndexDialog = false },
+            onDismissRequest = { showIndexDialog = false },
             title = { Text("本地标签索引") },
             text = {
                 Column {
@@ -173,6 +174,20 @@ fun TagSearchScreen(
                     if (!indexMessage.isNullOrBlank()) {
                         Spacer(Modifier.height(4.dp))
                         Text(indexMessage!!, style = MaterialTheme.typography.bodySmall)
+                    }
+                    // v1.8.1.9：遍历可暂停 / 继续 / 停止；关掉弹窗不中断（去阅读页也能继续）
+                    if (indexing) {
+                        Spacer(Modifier.height(4.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(
+                                onClick = if (indexPaused) viewModel::resumeIndexing else viewModel::pauseIndexing,
+                            ) { Text(if (indexPaused) "继续" else "暂停") }
+                            TextButton(onClick = viewModel::stopIndexing) { Text("停止") }
+                        }
+                        Text(
+                            "关闭弹窗不影响后台遍历，可以先去阅读",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                     Spacer(Modifier.height(8.dp))
                     HorizontalDivider()
@@ -211,7 +226,7 @@ fun TagSearchScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showIndexDialog = false }, enabled = !indexing) { Text("关闭") }
+                TextButton(onClick = { showIndexDialog = false }) { Text("关闭") }
             },
         )
     }

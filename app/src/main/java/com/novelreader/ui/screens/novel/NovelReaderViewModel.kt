@@ -116,6 +116,15 @@ class NovelReaderViewModel(
     private val _collected = MutableStateFlow(false)
     val collected: StateFlow<Boolean> = _collected.asStateFlow()
 
+    /**
+     * 书架状态是否已从数据库读回（v1.8.1.9）。
+     *
+     * [collected] 初始是 false，直接拿它判断会误弹「加入书架」——书其实早在书架里。
+     * 弹窗必须在 [shelfStateReady] 为 true 之后才触发。
+     */
+    private val _shelfStateReady = MutableStateFlow(false)
+    val shelfStateReady: StateFlow<Boolean> = _shelfStateReady.asStateFlow()
+
     private val _hasNextChapter = MutableStateFlow(false)
     val hasNextChapter: StateFlow<Boolean> = _hasNextChapter.asStateFlow()
 
@@ -588,7 +597,8 @@ class NovelReaderViewModel(
         refreshNavFlags()
         viewModelScope.launch {
             runCatching { bookRepository?.isCollected(item) == true }
-                .onSuccess { _collected.value = it }
+                .onSuccess { _collected.value = it; _shelfStateReady.value = true }
+                .onFailure { _shelfStateReady.value = true }
             val saved = runCatching {
                 progressRepository.getProgress(item.sourceId, item.id)
             }.getOrNull()

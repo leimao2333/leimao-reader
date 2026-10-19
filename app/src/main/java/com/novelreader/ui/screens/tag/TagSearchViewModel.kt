@@ -22,6 +22,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -55,6 +56,10 @@ class TagSearchViewModel(
     private val _indexing = MutableStateFlow(false)
     val indexing: StateFlow<Boolean> = _indexing.asStateFlow()
 
+    /** 是否已暂停（v1.8.1.9，遍历可暂停 / 继续） */
+    private val _indexPaused = MutableStateFlow(false)
+    val indexPaused: StateFlow<Boolean> = _indexPaused.asStateFlow()
+
     private val _indexMessage = MutableStateFlow<String?>(null)
     val indexMessage: StateFlow<String?> = _indexMessage.asStateFlow()
 
@@ -65,6 +70,21 @@ class TagSearchViewModel(
 
     private val _indexCount = MutableStateFlow(0)
     val indexCount: StateFlow<Int> = _indexCount.asStateFlow()
+
+    init {
+        // 索引任务跑在 repository 层（离开页面也继续，v1.8.1.9），
+        // 这里只负责把任务状态映射到 UI：重建 ViewModel 后回来还能看到进度。
+        tagIndexRepository?.let { repo ->
+            viewModelScope.launch {
+                repo.indexState.collect { state ->
+                    _indexing.value = state.running
+                    _indexPaused.value = state.paused
+                    _indexMessage.value = state.message.takeIf { it.isNotBlank() }
+                    if (!state.running) _indexCount.value = repo.count(type)
+                }
+            }
+        }
+    }
 
     /**
      * 构建本地标签索引（v1.8.1.2）。
@@ -77,34 +97,24 @@ class TagSearchViewModel(
             _indexMessage.value = "当前环境不支持本地索引"
             return
         }
-        if (_indexing.value) return
-        viewModelScope.launch {
-            _indexing.value = true
-            _indexMessage.value = "准备中…"
-            try {
-                val picked = _selectedSourceIds.value
-                val total = repo.build(
-                    type = type,
-                    // 选了源就只索引选中的源：全量遍历很慢，先按源建能快速看到效果
-                    sourceIds = picked,
-                    onProgress = { p ->
-                        _indexMessage.value =
-                            "扫描 ${p.scannedCount} 部 · 打标签 ${p.indexedCount} 部 · " +
-                                "${p.doneSources}/${p.totalSources} 源" +
-                                if (p.currentSource.isNotBlank()) "（${p.currentSource}）" else ""
-                    },
-                )
-                _indexCount.value = repo.count(type)
-                _indexMessage.value = "完成：$total 部作品已打标签"
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                android.util.Log.w("TagSearch", "构建标签索引失败", error)
-                _indexMessage.value = "建索引失败：${error.message ?: "未知错误"}"
-            } finally {
-                _indexing.value = false
-            }
-        }
+        // v1.8.1.9：任务交给仓库级协程 —— 关掉弹窗去阅读、标签页被销毁重建，
+        // 遍历都不会中断（「边写边看书」）；进度通过 repo.indexState 回流。
+        repo.startBuild(type, _selectedSourceIds.value)
+    }
+
+    /** 暂停全量索引（v1.8.1.9）：停在源边界，已落库的标签不丢 */
+    fun pauseIndexing() {
+        tagIndexRepository?.pauseIndexing()
+    }
+
+    /** 从暂停处继续 */
+    fun resumeIndexing() {
+        tagIndexRepository?.resumeIndexing()
+    }
+
+    /** 彻底停止遍历 */
+    fun stopIndexing() {
+        tagIndexRepository?.stopIndexing()
     }
 
     /**
@@ -756,9 +766,20 @@ class TagSearchViewModel(
                 _activeTags.value = known.map(TagAlias::canonicalOf).distinct()
                 _results.value = final
                 // 边搜边标记：把这批结果写进本地索引（后台执行，不打断搜索）
+                // 分类页上下文（v1.8.1.9）：**每个**标签都有真实分类页时，这批结果才是
+                // 「按分类归属」命中的（走严格求交），把它们作为证据补进标签层。
+                // 只要有一个标签只有关键词入口，这批就是「标题包含」的宽松结果，不补打 ——
+                // 否则《全面接触》这类噪声会真的被贴上「全彩」。
+                val allHaveCategoryPage = knownEntries.isNotEmpty() &&
+                    knownEntries.all { list -> list.any { !isSearchEntry(it) } }
+                val contextTags = if (allHaveCategoryPage) {
+                    known.map { TagAlias.canonicalOf(it) to CONTEXT_PAGE_CONFIDENCE }
+                } else {
+                    emptyList()
+                }
                 if (final.isNotEmpty()) {
                     viewModelScope.launch {
-                        runCatching { tagIndexRepository?.indexItems(type, final) }
+                        runCatching { tagIndexRepository?.indexItems(type, final, contextTags) }
                         _indexCount.value = tagIndexRepository?.count(type) ?: 0
                     }
                 }
@@ -1150,6 +1171,9 @@ class TagSearchViewModel(
          * 普通组合 8 → 12，宽标签（无码 / 全彩走组合直搜）16 → 32：
          * 41 个源两批就能打完，配合单请求 8 秒硬超时，整体从分钟级压到十秒级。
          */
+        /** 分类页上下文打标的置信度（v1.8.1.9）：低于站方自述 100，高于文本猜的 60 */
+        private const val CONTEXT_PAGE_CONFIDENCE = 90
+
         private const val TAG_SEARCH_CONCURRENCY = 24
         private const val WIDE_COMPOUND_CONCURRENCY = 32
 

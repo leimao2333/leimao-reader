@@ -151,6 +151,10 @@ class SettingsViewModel(
     private val _tagImportBusy = MutableStateFlow(false)
     val tagImportBusy: StateFlow<Boolean> = _tagImportBusy.asStateFlow()
 
+    /** 标签导出进度（0..1；-1 = 未在导出），v1.8.1.9 */
+    private val _tagExportProgress = MutableStateFlow(-1f)
+    val tagExportProgress: StateFlow<Float> = _tagExportProgress.asStateFlow()
+
     /**
      * 从本地文件导入打标表（SAF Uri）。
      *
@@ -227,11 +231,20 @@ class SettingsViewModel(
         if (_tagImportBusy.value) return
         viewModelScope.launch {
             _tagImportBusy.value = true
+            _tagExportProgress.value = 0f
             _backupMessage.value = runCatching {
                 val json = withContext(Dispatchers.IO) {
+                    val types = com.novelreader.domain.model.SourceType.entries
                     val allItems = buildList {
-                        for (type in com.novelreader.domain.model.SourceType.entries) {
-                            addAll(repo.buildTagTable(type).items)
+                        types.forEachIndexed { index, type ->
+                            val base = index.toFloat() / types.size
+                            // v1.8.1.9：逐条回报进度，三个类型各占总进度的 1/3
+                            addAll(
+                                repo.buildTagTable(type) { done, total ->
+                                    val frac = if (total > 0) done.toFloat() / total else 1f
+                                    _tagExportProgress.value = base + frac / types.size
+                                }.items,
+                            )
                         }
                     }
                     val payload = com.novelreader.core.util.TagTable.Payload(
@@ -250,6 +263,7 @@ class SettingsViewModel(
                 }
                 if (written) "标签导出完成：${json.length / 1024} KB（小说/漫画/视频全类型）" else "导出失败"
             }.getOrElse { "标签导出失败：${it.message ?: "未知错误"}" }
+            _tagExportProgress.value = -1f
             _tagImportBusy.value = false
         }
     }

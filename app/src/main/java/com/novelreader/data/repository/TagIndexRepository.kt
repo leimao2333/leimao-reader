@@ -23,10 +23,20 @@ import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.SourceRepository
 import com.novelreader.domain.repository.TagBehaviorRecorder
 import com.novelreader.domain.repository.TagSignal
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -74,6 +84,106 @@ class TagIndexRepository(
         /** 扫过的作品总数（用来判断是「抓不到列表」还是「打不上标签」） */
         val scannedCount: Int = 0,
     )
+
+    /** 全量索引任务的状态（v1.8.1.9）：放在 repository 层，离开页面 / 去阅读时任务继续。 */
+    data class IndexState(
+        val running: Boolean = false,
+        val paused: Boolean = false,
+        val message: String = "",
+        val indexedCount: Int = 0,
+        val scannedCount: Int = 0,
+        val doneSources: Int = 0,
+        val totalSources: Int = 0,
+    )
+
+    /**
+     * 索引任务跑在**仓库级**协程里（不是 ViewModel 的 viewModelScope）：
+     * 用户切去阅读页、标签页被销毁重建，遍历都不会中断 —— 这就是「边写边看书」。
+     */
+    private val indexScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private val _indexState = MutableStateFlow(IndexState())
+    val indexState: StateFlow<IndexState> = _indexState.asStateFlow()
+
+    /** 暂停 / 停止标记：遍历循环在每个源、每页、每批落库前检查 */
+    @Volatile private var indexPaused = false
+    @Volatile private var indexStopped = false
+    private var indexJob: Job? = null
+
+    /** 启动全量索引（v1.8.1.9）。已在跑时重复点击无效。 */
+    fun startBuild(type: SourceType, sourceIds: Set<String> = emptySet()) {
+        if (indexJob?.isActive == true) return
+        indexPaused = false
+        indexStopped = false
+        _indexState.value = IndexState(running = true, message = "准备中…")
+        indexJob = indexScope.launch {
+            try {
+                val total = build(
+                    type = type,
+                    sourceIds = sourceIds,
+                    onProgress = { p ->
+                        _indexState.value = IndexState(
+                            running = true,
+                            paused = indexPaused,
+                            message = progressMessage(p, indexPaused),
+                            indexedCount = p.indexedCount,
+                            scannedCount = p.scannedCount,
+                            doneSources = p.doneSources,
+                            totalSources = p.totalSources,
+                        )
+                    },
+                )
+                _indexState.value = IndexState(
+                    running = false,
+                    message = if (indexStopped) "已停止（已收录 $total 部）" else "完成：$total 部作品已打标签",
+                    indexedCount = total,
+                )
+            } catch (cancelled: CancellationException) {
+                _indexState.value = IndexState(running = false, message = "已停止")
+                throw cancelled
+            } catch (error: Exception) {
+                android.util.Log.w("TagIndex", "全量索引失败", error)
+                _indexState.value = IndexState(
+                    running = false,
+                    message = "建索引失败：${error.message ?: "未知错误"}",
+                )
+            }
+        }
+    }
+
+    /** 暂停遍历（当前这批落库完成后停在原地，不丢进度） */
+    fun pauseIndexing() {
+        if (indexJob?.isActive != true) return
+        indexPaused = true
+        _indexState.update { it.copy(paused = true) }
+    }
+
+    /** 从暂停处继续 */
+    fun resumeIndexing() {
+        if (indexJob?.isActive != true) return
+        indexPaused = false
+        _indexState.update { it.copy(paused = false) }
+    }
+
+    /** 彻底停止（已落库的标签保留） */
+    fun stopIndexing() {
+        indexStopped = true
+        indexPaused = false
+        indexJob?.cancel()
+        _indexState.update { it.copy(running = false, paused = false, message = "已停止") }
+    }
+
+    private fun progressMessage(p: Progress, paused: Boolean): String {
+        val base = "扫描 ${p.scannedCount} 部 · 打标签 ${p.indexedCount} 部 · " +
+            "${p.doneSources}/${p.totalSources} 源" +
+            (if (p.currentSource.isNotBlank()) "（${p.currentSource}）" else "")
+        return if (paused) "$base · 已暂停" else base
+    }
+
+    /** 遍历循环里的闸门：暂停时挂起等待，停止时由外层 break */
+    private suspend fun awaitIndexGate() {
+        while (indexPaused && !indexStopped) delay(200)
+    }
 
     /** 已收录作品数 */
     suspend fun count(type: SourceType): Int = tagInstanceDao.itemCount(type.name)
@@ -132,13 +242,24 @@ class TagIndexRepository(
      *
      * 不额外发详情请求 —— 每搜一次，标签层就厚一点，用户用得越多越准。
      */
-    suspend fun indexItems(type: SourceType, items: List<MediaItem>) {
+    suspend fun indexItems(
+        type: SourceType,
+        items: List<MediaItem>,
+        /**
+         * 分类页上下文（v1.8.1.9）：这批结果是从哪些标签的**真实分类页**命中的。
+         * 每项为「规范标签名 to 置信度」，会与作品自身字段打出的标签合并（同名取高分）。
+         * 纯关键词搜索不要传 —— 标题里出现某个词不等于作品属于该标签。
+         */
+        contextTags: List<Pair<String, Int>> = emptyList(),
+        contextOrigin: String = TagTagger.ORIGIN_STATION,
+    ) {
         if (items.isEmpty()) return
         val now = System.currentTimeMillis()
         val rows = mutableListOf<LocalTagEntity>()
         val tags = mutableListOf<TagInstanceEntity>()
+        val context = contextTags.map { TagTagger.ContextTag(it.first, it.second, contextOrigin) }
         items.forEach { item ->
-            val tagged = TagTagger.tag(item)
+            val tagged = TagTagger.tag(item, context)
             if (tagged.isEmpty()) return@forEach
             rows += LocalTagEntity(
                 sourceId = item.sourceId,
@@ -198,6 +319,9 @@ class TagIndexRepository(
         val semaphore = Semaphore(6)
 
         sources.forEachIndexed { index, source ->
+            // 暂停 / 停止（v1.8.1.9）：停在源边界，已落库的成果不丢
+            if (indexStopped) return@forEachIndexed
+            awaitIndexGate()
             val urls = categories[source.id].orEmpty()
                 .map { it.url }.filter { it.isNotBlank() }.distinct()
             // 分类入口常常抓不到列表（源改版 / 分类页失效）。再补几组关键词搜索入口，
@@ -206,7 +330,11 @@ class TagIndexRepository(
             if (probes.isNotEmpty()) {
                 val seen = mutableSetOf<String>()
                 for (page in 1..pagesPerSource) {
+                    if (indexStopped) break
+                    awaitIndexGate()
                     for (url in probes.take(6)) {
+                        if (indexStopped) break
+                        awaitIndexGate()
                         val items = runCatching {
                             contentRepository.explore(source.id, url, page)
                         }.getOrDefault(emptyList())
@@ -482,9 +610,16 @@ class TagIndexRepository(
      * 全量导出（不只是待打标队列）：PC 端合并后回传的是完整表，App 导入时按
      * 「同名标签取更高置信度」幂等合并，不会丢已有数据。
      */
-    suspend fun buildTagTable(type: SourceType): TagTable.Payload {
+    suspend fun buildTagTable(
+        type: SourceType,
+        /** 导出进度回调（v1.8.1.9）：已完成条目数 / 总条目数 */
+        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
+    ): TagTable.Payload {
         val now = System.currentTimeMillis()
-        val items = localTagDao.all(type.name).map { row ->
+        val rowsAll = localTagDao.all(type.name)
+        val total = rowsAll.size
+        onProgress(0, total)
+        val items = rowsAll.mapIndexed { index, row ->
             val tags = tagInstanceDao.tagsOf(type.name, row.sourceId, row.itemId).map { row2 ->
                 TagTable.Entry(
                     name = row2.tagName,
@@ -493,6 +628,7 @@ class TagIndexRepository(
                     origin = row2.origin,
                 )
             }
+            onProgress(index + 1, total)
             TagTable.Item(
                 sourceId = row.sourceId,
                 itemId = row.itemId,
@@ -505,6 +641,7 @@ class TagIndexRepository(
                 tags = tags,
             )
         }
+        onProgress(total, total)
         return TagTable.Payload(
             version = TagTable.VERSION,
             generatedAt = now,

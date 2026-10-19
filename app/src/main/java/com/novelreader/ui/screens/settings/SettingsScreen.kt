@@ -368,6 +368,7 @@ fun SettingsScreen(
             // 与 PC 打标工具共用同一份 tag_table.json（同名标签取更高置信度，幂等合并）。
             SectionTitle("标签")
             val tagImportBusy by viewModel.tagImportBusy.collectAsState()
+            val tagExportProgress by viewModel.tagExportProgress.collectAsState()
             var showTagUrlDialog by remember { mutableStateOf(false) }
             val tagImportLauncher = rememberLauncherForActivityResult(
                 ActivityResultContracts.OpenDocument(),
@@ -453,6 +454,16 @@ fun SettingsScreen(
                     },
                     enabled = !tagImportBusy,
                 ) { Text("导出") }
+            }
+            // v1.8.1.9：导出进度条（小说/漫画/视频逐条构建，完成后自动隐藏）
+            if (tagImportBusy && tagExportProgress >= 0f) {
+                androidx.compose.material3.LinearProgressIndicator(
+                    progress = { tagExportProgress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 8.dp),
+                )
             }
 
             Spacer(Modifier.height(24.dp))

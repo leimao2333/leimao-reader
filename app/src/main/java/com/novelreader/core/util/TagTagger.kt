@@ -49,12 +49,31 @@ object TagTagger {
     )
 
     /**
+     * 外部上下文标签（v1.8.1.9）。
+     *
+     * 用户从某个标签的**真实分类页**搜到这部作品时，「它出现在这个分类下」本身就是一条
+     * 证据。以前 [tag] 只看作品自身字段（标题 / 简介 / 站方 kind），拿不到这个信息，
+     * 于是「去全彩分类页搜一次」并不会给作品补上全彩 —— 搜索只是搜索，不改变标签层。
+     */
+    data class ContextTag(
+        val name: String,
+        val confidence: Int,
+        val origin: String = ORIGIN_STATION,
+    )
+
+    /**
      * 给一部作品打标签。
+     *
+     * @param context 外部上下文标签（分类页归属）。与站方 / 文本管道一样参与 [merge]：
+     *   同名取更高分 —— 站方自述 100 不会被分类页 90 顶掉，文本猜的 60 会被提到 90。
      *
      * 同名标签保留**置信度更高**的那条 —— 后续视觉 / 行为管道接入时，
      * 只要给出更高分就能自然覆盖文本管道的猜测，无需改动调用方。
      */
-    fun tag(item: MediaItem): List<Tag> {
+    fun tag(
+        item: MediaItem,
+        context: List<ContextTag> = emptyList(),
+    ): List<Tag> {
         val out = LinkedHashMap<String, Tag>()
         // 1) 站方声明（kind / tags / 浏览上下文）
         ItemTags.of(item).forEach { raw ->
@@ -73,6 +92,13 @@ object TagTagger {
                 if (name.isBlank()) return@forEach
                 merge(out, Tag(name, categoryOf(name), CONF_TEXT, ORIGIN_TEXT))
             }
+        }
+        // 3) 分类页上下文（v1.8.1.9）：从「全彩」这类分类页命中的作品，补上该分类标签。
+        //    置信度按入口类型由调用方给（真实分类页高、纯关键词搜索低或不给）。
+        context.forEach { ctx ->
+            val name = TagAlias.canonicalOf(ctx.name)
+            if (name.isBlank()) return@forEach
+            merge(out, Tag(name, categoryOf(name), ctx.confidence, ctx.origin))
         }
         return out.values.toList()
     }

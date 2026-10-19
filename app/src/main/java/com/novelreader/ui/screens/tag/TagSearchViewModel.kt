@@ -58,6 +58,11 @@ class TagSearchViewModel(
     private val _indexMessage = MutableStateFlow<String?>(null)
     val indexMessage: StateFlow<String?> = _indexMessage.asStateFlow()
 
+    /** UI 侧（如导出失败）直接把消息写进索引弹窗的状态条 */
+    fun notifyIndexMessage(message: String) {
+        _indexMessage.value = message
+    }
+
     private val _indexCount = MutableStateFlow(0)
     val indexCount: StateFlow<Int> = _indexCount.asStateFlow()
 
@@ -130,6 +135,44 @@ class TagSearchViewModel(
             } catch (error: Exception) {
                 android.util.Log.w("TagSearch", "视觉打标失败", error)
                 _indexMessage.value = "视觉打标失败：${error.message ?: "未知错误"}"
+            } finally {
+                _indexing.value = false
+            }
+        }
+    }
+
+    /** 导出云端打标表 JSON（收录清单 + 当前标签），供 PC 端工具补充打标；失败返回 null */
+    suspend fun exportTagTableJson(): String? = tagIndexRepository?.let { repo ->
+        runCatching { com.novelreader.core.util.TagTable.toJson(repo.buildTagTable(type)) }
+            .onFailure { android.util.Log.w("TagSearch", "导出收录清单失败", it) }
+            .getOrNull()
+    }
+
+    /**
+     * 从云端拉取打标表并合并（v1.8.1.5）：PC 端工具推到 GitHub 的
+     * `tagger/data/tag_table.json`，App 侧「同名标签取更高置信度」幂等合并。
+     */
+    fun importTagTableFromUrl(url: String) {
+        val repo = tagIndexRepository ?: run {
+            _indexMessage.value = "当前环境不支持本地索引"
+            return
+        }
+        val target = url.trim()
+        if (target.isEmpty() || _indexing.value) return
+        viewModelScope.launch {
+            _indexing.value = true
+            _indexMessage.value = "下载云端打标表…"
+            try {
+                val payload = repo.downloadCloudTable(target)
+                _indexMessage.value = "合并中（云端 ${payload.items.size} 条）…"
+                val count = repo.importTagTable(payload, type)
+                _indexCount.value = repo.count(type)
+                _indexMessage.value = "导入完成：$count 部作品已合并进本地标签层"
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                android.util.Log.w("TagSearch", "云端打标表导入失败", error)
+                _indexMessage.value = "导入失败：${error.message ?: "未知错误"}"
             } finally {
                 _indexing.value = false
             }

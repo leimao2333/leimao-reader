@@ -1,5 +1,7 @@
 package com.novelreader.ui.screens.tag
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -58,9 +60,12 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -74,6 +79,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
+import com.novelreader.data.repository.TagIndexRepository
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
 import com.novelreader.ui.components.CoverPlaceholderLetter
@@ -128,6 +134,28 @@ fun TagSearchScreen(
 
     // v1.8.1.3：全量索引预热入口（遍历源 + 详情打标，重活，按需触发）
     var showIndexDialog by remember { mutableStateOf(false) }
+    // v1.8.1.5：云端打标表（PC 工具 → GitHub → App 导入）
+    val context = LocalContext.current
+    val dialogScope = rememberCoroutineScope()
+    var cloudTableUrl by remember { mutableStateOf(TagIndexRepository.DEFAULT_CLOUD_TABLE_URL) }
+    val exportListLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        if (uri != null) {
+            dialogScope.launch {
+                val json = viewModel.exportTagTableJson()
+                if (json == null) {
+                    viewModel.notifyIndexMessage("导出收录清单失败")
+                } else {
+                    runCatching {
+                        context.contentResolver.openOutputStream(uri)?.use { stream ->
+                            stream.write(json.toByteArray(Charsets.UTF_8))
+                        } ?: error("无法写入所选位置")
+                    }.onFailure { viewModel.notifyIndexMessage("导出失败：${it.message}") }
+                }
+            }
+        }
+    }
     if (showIndexDialog) {
         AlertDialog(
             onDismissRequest = { if (!indexing) showIndexDialog = false },
@@ -146,6 +174,30 @@ fun TagSearchScreen(
                         Spacer(Modifier.height(4.dp))
                         Text(indexMessage!!, style = MaterialTheme.typography.bodySmall)
                     }
+                    Spacer(Modifier.height(8.dp))
+                    HorizontalDivider()
+                    Spacer(Modifier.height(8.dp))
+                    // v1.8.1.5：与 PC 端打标工具（仓库 tagger/）协作 —— 导出清单给 PC 补打标，
+                    // PC 推到 GitHub 后在这里导入合并（同名标签取更高置信度）。
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(
+                            onClick = { exportListLauncher.launch("leimao-tag-table.json") },
+                            enabled = !indexing,
+                        ) { Text("导出收录清单") }
+                        Spacer(Modifier.width(4.dp))
+                        TextButton(
+                            onClick = { viewModel.importTagTableFromUrl(cloudTableUrl) },
+                            enabled = !indexing,
+                        ) { Text("云端导入") }
+                    }
+                    OutlinedTextField(
+                        value = cloudTableUrl,
+                        onValueChange = { cloudTableUrl = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodySmall,
+                        label = { Text("云端打标表地址") },
+                    )
                 }
             },
             confirmButton = {

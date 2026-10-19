@@ -7,6 +7,7 @@ import com.novelreader.core.util.TagEntryUrl
 import com.novelreader.core.util.TagHit
 import com.novelreader.core.util.TagQuery
 import com.novelreader.core.util.TagRanking
+import com.novelreader.core.util.TagTable
 import com.novelreader.core.util.TagTagger
 import com.novelreader.core.visual.Wd14Inference
 import com.novelreader.core.visual.Wd14Labels
@@ -467,7 +468,137 @@ class TagIndexRepository(
         tags = tags.split('|').filter { it.isNotBlank() },
     )
 
+    // ===== 云端打标表（v1.8.1.5：PC 工具打标 → GitHub → App 导入补充）=====
+
+    /** 从 [url]（默认 [DEFAULT_CLOUD_TABLE_URL]）拉取云端打标表 */
+    suspend fun downloadCloudTable(url: String = DEFAULT_CLOUD_TABLE_URL): TagTable.Payload =
+        withContext(Dispatchers.IO) {
+            TagTable.parse(HttpClient.get(url, timeoutMs = 30_000))
+        } ?: error("云端打标表下载或解析失败：$url")
+
+    /**
+     * 导出**收录清单 + 当前标签**为打标表 —— PC 端工具（仓库 `tagger/`）的输入。
+     *
+     * 全量导出（不只是待打标队列）：PC 端合并后回传的是完整表，App 导入时按
+     * 「同名标签取更高置信度」幂等合并，不会丢已有数据。
+     */
+    suspend fun buildTagTable(type: SourceType): TagTable.Payload {
+        val now = System.currentTimeMillis()
+        val items = localTagDao.all(type.name).map { row ->
+            val tags = tagInstanceDao.tagsOf(type.name, row.sourceId, row.itemId).map { row2 ->
+                TagTable.Entry(
+                    name = row2.tagName,
+                    category = row2.category,
+                    confidence = row2.confidence,
+                    origin = row2.origin,
+                )
+            }
+            TagTable.Item(
+                sourceId = row.sourceId,
+                itemId = row.itemId,
+                itemType = type.name,
+                title = row.title,
+                cover = row.cover.orEmpty(),
+                detailUrl = row.detailUrl,
+                sourceName = row.sourceName,
+                author = row.author.orEmpty(),
+                tags = tags,
+            )
+        }
+        return TagTable.Payload(
+            version = TagTable.VERSION,
+            generatedAt = now,
+            source = TagTable.SOURCE_APP,
+            items = items,
+        )
+    }
+
+    /**
+     * 导入云端打标表：
+     * - 清单里 App 还没收录的条目，直接落进 `local_tags`（PC 端遍历的成果一起进索引）；
+     * - 标签按**同名取更高置信度**合并（[TagTable.mergeEntry]），站方 100 分不会被
+     *   PC 端的视觉 72 分顶掉，反之 PC 打上的「黑白」能补掉 App 侧没猜到的空缺。
+     *
+     * @return 导入覆盖的条目数
+     */
+    suspend fun importTagTable(payload: TagTable.Payload, type: SourceType): Int {
+        val now = System.currentTimeMillis()
+        var imported = 0
+        payload.items.filter { it.itemType == type.name }.forEach { item ->
+            val existingRows = tagInstanceDao.tagsOf(type.name, item.sourceId, item.itemId)
+            val rows = LinkedHashMap<String, TagInstanceEntity>()
+            existingRows.forEach { row ->
+                rows[row.tagName] = TagInstanceEntity(
+                    sourceId = item.sourceId,
+                    itemId = item.itemId,
+                    itemType = type.name,
+                    tagName = row.tagName,
+                    category = row.category,
+                    confidence = row.confidence,
+                    origin = row.origin,
+                    updatedAt = row.updatedAt.takeIf { it > 0 } ?: now,
+                )
+            }
+            item.tags.forEach { entry ->
+                val canonical = TagAlias.canonicalOf(entry.name)
+                if (canonical.isBlank()) return@forEach
+                val incoming = TagTable.Entry(canonical, entry.category, entry.confidence, entry.origin)
+                val merged = TagTable.mergeEntry(
+                    existing = rows[canonical]?.let {
+                        TagTable.Entry(it.tagName, it.category, it.confidence, it.origin)
+                    },
+                    incoming = incoming,
+                )
+                rows[canonical] = TagInstanceEntity(
+                    sourceId = item.sourceId,
+                    itemId = item.itemId,
+                    itemType = type.name,
+                    tagName = canonical,
+                    category = merged.category.ifBlank { TagTagger.CATEGORY_GENRE },
+                    confidence = merged.confidence.coerceIn(0, 100),
+                    origin = merged.origin.ifBlank { TagTagger.ORIGIN_TEXT },
+                    updatedAt = now,
+                )
+            }
+            val mergedTags = rows.values.toList()
+            localTagDao.upsertAll(
+                listOf(
+                    LocalTagEntity(
+                        sourceId = item.sourceId,
+                        itemId = item.itemId,
+                        itemType = type.name,
+                        title = item.title.ifBlank {
+                            localTagDao.all(type.name).firstOrNull {
+                                it.sourceId == item.sourceId && it.itemId == item.itemId
+                            }?.title.orEmpty()
+                        },
+                        cover = item.cover,
+                        detailUrl = item.detailUrl,
+                        sourceName = item.sourceName,
+                        author = item.author,
+                        tags = mergedTags.joinToString("|") { it.tagName },
+                        tagsLower = "|" + mergedTags.joinToString("|") { it.tagName.lowercase() } + "|",
+                        updatedAt = now,
+                    ),
+                ),
+            )
+            tagInstanceDao.upsertAll(mergedTags)
+            imported++
+        }
+        return imported
+    }
+
     companion object {
+        /**
+         * 云端打标表默认地址（v1.8.1.5）。
+         *
+         * 走 jsDelivr CDN（国内可达、带缓存）；`raw.githubusercontent.com` 直连经常被墙。
+         * PC 端工具把表推到 `tagger/data/tag_table.json` 后，这里拉到的就是最新版
+         * （jsDelivr 有分钟级缓存，改完稍等片刻）。
+         */
+        const val DEFAULT_CLOUD_TABLE_URL: String =
+            "https://cdn.jsdelivr.net/gh/leimao2333/leimao-reader@main/tagger/data/tag_table.json"
+
         /** 同一作品同一信号的最短记录间隔：半小时 */
         private const val SIGNAL_TTL_MS = 30 * 60 * 1000L
 

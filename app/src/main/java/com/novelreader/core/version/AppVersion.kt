@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.8.1.4"
+    const val CURRENT_VERSION = "1.8.1.5"
 
     /**
      * 更新日志。
@@ -25,6 +25,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.8.1.5",
+            date = "2026-10-19",
+            changes = listOf(
+                "**云端打标协作**：与 PC 端打标工具（仓库 `tagger/`）打通 —— App「导出收录清单」把已收录作品 + 当前标签存成 JSON；PC 端跑 WD14 封面打标后推回 GitHub；App「云端导入」按「同名标签取更高置信度」幂等合并，站方证据不会被覆盖。",
+                "**云端导入入口**：索引弹窗新增「导出收录清单 / 云端导入」按钮与可编辑的云端地址（默认 jsDelivr CDN 指向本仓库 `tagger/data/tag_table.json`，国内可达）。",
+                "PC 工具见仓库 `tagger/`：`pc_tagger.py`（清单→封面推理→合并→GitHub 上传）+ `vocab.json` 受控词表（216 组 / 1341 词，由 `gen_vocab.py` 从 App 生成）+ 打包 exe 说明。",
+            ),
+        ),
         VersionEntry(
             version = "1.8.1.4",
             date = "2026-10-19",

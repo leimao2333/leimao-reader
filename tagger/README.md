@@ -8,7 +8,8 @@
 
 | 文件 | 说明 |
 |---|---|
-| `pc_tagger.py` | 主工具（Python 3.10+） |
+| `pc_tagger.py` | 核心逻辑 + CLI（Python 3.10+） |
+| `pc_tagger_gui.py` | **Web 界面版**：运行后自动打开浏览器页面，遍历所有源打标，实时显示总体进度 / 当前源 / 各源进度表 / 日志，可中途停止 |
 | `gen_vocab.py` | 从 App 源码 `TagAlias.kt` 生成受控词表 `vocab.json`（词表改动后重跑） |
 | `vocab.json` | 受控词表（danbooru/english → 中文规范名），PC 端映射口径 |
 | `data/tag_table.json` | 云端打标表（App「云端导入」的默认地址） |
@@ -35,8 +36,10 @@ python pc_tagger.py --list leimao-tag-table.json --out tag_table.json --push \
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --name leimao-pc-tagger pc_tagger.py
-# 产物 dist/leimao-pc-tagger.exe（首次运行会随 exe 同目录建 models/ 缓存）
+pyinstaller --onefile --windowed --name leimao-pc-tagger pc_tagger_gui.py
+# 产物 dist/leimao-pc-tagger.exe（42MB，界面版；模型缓存在 exe 所在目录的 models/）
 ```
 
-注意：exe 需与 `vocab.json` 同目录放置（工具按脚本所在目录找词表）。
+exe 运行后自动打开浏览器 `http://127.0.0.1:8765/`：填入清单路径 → 开始遍历打标 →
+页面实时显示「总体进度 / 当前源 / 各源进度表 / 日志」→ 勾选推送 GitHub 即完成云端更新。
+exe 需与 `vocab.json` 同目录放置（词表按脚本所在目录查找）。

@@ -280,9 +280,28 @@ def push_to_github(args: argparse.Namespace, content: str) -> None:
     if not token:
         print("推送跳过：未提供 --token，且环境变量 GH_TOKEN 为空")
         return
-    repo = args.repo
-    path = args.path
-    branch = args.branch
+    push_to_github_simple(
+        token=token,
+        repo=args.repo,
+        branch=args.branch,
+        path=args.path,
+        content=content,
+        log=print,
+    )
+
+
+def push_to_github_simple(
+    token: str | None,
+    repo: str,
+    branch: str,
+    path: str,
+    content: str,
+    log,
+) -> None:
+    """通过 GitHub contents API 上传/更新一个文本文件（GUI 与 CLI 共用）。"""
+    if not token:
+        log("推送跳过：未提供 token（--token 或环境变量 GH_TOKEN）")
+        return
     api = f"https://api.github.com/repos/{repo}/contents/{path}"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
     sha = None
@@ -298,9 +317,9 @@ def push_to_github(args: argparse.Namespace, content: str) -> None:
         body["sha"] = sha
     resp = requests.put(api, headers=headers, data=json.dumps(body), timeout=60)
     if resp.status_code in (200, 201):
-        print(f"已推送 https://github.com/{repo}/blob/{branch}/{path}")
+        log(f"已推送 https://github.com/{repo}/blob/{branch}/{path}")
     else:
-        print(f"推送失败：{resp.status_code} {resp.text[:200]}")
+        log(f"推送失败：{resp.status_code} {resp.text[:200]}")
 
 
 def os_environ(key: str) -> str | None:

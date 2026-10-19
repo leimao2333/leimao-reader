@@ -103,6 +103,40 @@ class TagSearchViewModel(
     }
 
     /**
+     * 封面视觉打标（v1.8.1.4）：对已收录作品的封面跑 WD14 模型，
+     * 输出的 Danbooru 标签映射进受控词表后以 `origin = 视觉` 入库。
+     *
+     * 模型约 356MB，仅在 Wi-Fi 下按需下载（[TagIndexRepository.runVisualTagging] 负责）。
+     */
+    fun runVisualTagging() {
+        val repo = tagIndexRepository ?: run {
+            _indexMessage.value = "当前环境不支持视觉打标"
+            return
+        }
+        if (_indexing.value) return
+        viewModelScope.launch {
+            _indexing.value = true
+            _indexMessage.value = "准备视觉模型…"
+            try {
+                val count = repo.runVisualTagging(type) { message -> _indexMessage.value = message }
+                _indexCount.value = repo.count(type)
+                _indexMessage.value = if (count > 0) {
+                    "视觉打标完成：$count 部封面已入库"
+                } else {
+                    "没有待打标的封面（先搜索一次收录内容）"
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                android.util.Log.w("TagSearch", "视觉打标失败", error)
+                _indexMessage.value = "视觉打标失败：${error.message ?: "未知错误"}"
+            } finally {
+                _indexing.value = false
+            }
+        }
+    }
+
+    /**
      * 「按源搜索」：已启用的源列表 + 当前选中的源（null = 全部源）（v1.8.1.2）。
      *
      * 标签池是跨源收集的；只搜某一个源能避免几十个源一起等的长尾，也便于核对某个源的内容。

@@ -24,4 +24,23 @@ interface LocalTagDao {
     /** 清空某类型的索引（重新构建前调用） */
     @Query("DELETE FROM local_tags WHERE itemType = :type")
     suspend fun clear(type: String)
+
+    /**
+     * 还没有「视觉」来源标签、且有封面的条目（v1.8.1.4 封面视觉打标的队列）。
+     *
+     * `NOT EXISTS` 子查询保证重复跑不会重复推理 —— 打过一次的作品永远跳过。
+     */
+    @Query(
+        """SELECT t.sourceId AS sourceId, t.itemId AS itemId, t.cover AS cover FROM local_tags t
+           WHERE t.itemType = :type AND t.cover != ''
+             AND NOT EXISTS (
+                 SELECT 1 FROM tag_instances i
+                 WHERE i.itemType = t.itemType AND i.sourceId = t.sourceId AND i.itemId = t.itemId
+                   AND i.origin = '视觉')
+           LIMIT :limit""",
+    )
+    suspend fun coversWithoutVisual(type: String, limit: Int): List<CoverRef>
 }
+
+/** (sourceId, itemId, cover)：视觉打标队列的一行 */
+data class CoverRef(val sourceId: String, val itemId: String, val cover: String)

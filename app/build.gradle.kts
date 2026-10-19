@@ -39,8 +39,8 @@ android {
         // 版本规范：四段式 顶端版本.大版本.小版本.修订
         // 小版本每版 +1；小版本满 10 进大版本；大版本满 10 进顶端版本
         // versionCode = 顶端版本 * 1000000 + 大版本 * 10000 + 小版本 * 100 + 修订
-        versionCode = 1080103
-        versionName = "1.8.1.3"
+        versionCode = 1080104
+        versionName = "1.8.1.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -58,6 +58,18 @@ android {
             if (keystorePropsFile.exists()) {
                 signingConfig = signingConfigs.getByName("release")
             }
+        }
+    }
+
+    // v1.8.1.4：ONNX Runtime 的 native 库很大（每个 ABI 约 18MB），四合一包会到 88MB。
+    // 按 ABI 拆分：真机用户装 arm64 包（~40MB），模拟器用 x86_64 包；
+    // universalApk 兜底（含 v7a + arm64 + x86_64，给 32 位老设备），发版默认上传 arm64 包。
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("armeabi-v7a", "arm64-v8a", "x86_64")
+            isUniversalApk = true
         }
     }
 
@@ -133,6 +145,9 @@ dependencies {
 
     // ---- 图片加载 ----
     implementation("io.coil-kt:coil-compose:2.7.0")
+
+    // ---- 端侧推理（v1.8.1.4 封面视觉打标：WD14 tagger ONNX）----
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
 
     // ---- 视频播放 ----
     implementation("androidx.media3:media3-exoplayer:1.4.1")

@@ -133,8 +133,11 @@ NovelReader/
 - **换签历史**：2026-10-18 原密钥（旧指纹 `8ea0d34e5ddeeb2aa4ae2801572ccdf46c6eba002274a93208660774d3d147f2`）
   在本机/GitHub 均已无备份，确认无法恢复，故启用上述新密钥。**从 1.8.1.0 起签名已变，
   已装旧版的设备必须先卸载再安装**（数据会清空，升级前先导出备份）；装过 1.8.1.0 之后的版本可正常覆盖升级。
-- 构建：`gradle assembleRelease` → 产物 `app/build/outputs/apk/release/app-release.apk`（已签名，v2 方案）。
-- 发版前必检：`apksigner verify -v app-release.apk`，必须看到 `Verified using v2 scheme (APK Signature Scheme v2): true`，
+- 构建：`gradle assembleRelease` → 产物 `app/build/outputs/apk/release/`（已签名，v2 方案）。
+  **v1.8.1.4 起按 ABI 拆分**（ONNX Runtime 的 native 库每个 ABI 约 18MB，四合一会到 88MB）：
+  `app-arm64-v8a-release.apk`（~35MB，真机默认）、`app-armeabi-v7a-release.apk`（~30MB，32 位老设备）、
+  `app-x86_64-release.apk`（~38MB，模拟器）、`app-universal-release.apk`（~88MB，全 ABI 兜底）。
+- 发版前必检：`apksigner verify -v app-arm64-v8a-release.apk`，必须看到 `Verified using v2 scheme (APK Signature Scheme v2): true`，
   且 `certificate SHA-256 digest` 等于上面的指纹。
 - **发版前必须在模拟器实际安装验证**（用户明确要求）：启动 `legado_test` AVD → `adb install app-release.apk` → 拉起 MainActivity 确认首页正常渲染。若模拟器上残留旧包且签名不同会报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`，先 `adb uninstall com.novelreader` 再装。
 - **只上传 release 构建的包，禁止上传 debug 包**：debug 包含 `application-debuggable`、Compose live edit 支持代码与 ui-tooling，体积大 ~8MB（~25MB vs ~17.6MB），且签名证书是 `CN=Android Debug`（不是正式密钥），无法覆盖升级。v1.7.6.0 及更早的大部分 Release 都误传过 debug 包，v1.7.6.1 起才固定用 release 构建。

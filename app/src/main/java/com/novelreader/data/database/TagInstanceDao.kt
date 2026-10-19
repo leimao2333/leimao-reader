@@ -53,9 +53,9 @@ interface TagInstanceDao {
         excludeAdult: Int,
     ): List<ScoredRef>
 
-    /** 某部作品当前的标签行（行为回流时逐条加权用） */
+    /** 某部作品当前的标签行（行为回流 / 视觉合并时读全量行） */
     @Query(
-        """SELECT tagName, category, confidence, origin FROM tag_instances
+        """SELECT tagName, category, confidence, origin, updatedAt FROM tag_instances
            WHERE itemType = :type AND sourceId = :sourceId AND itemId = :itemId""",
     )
     suspend fun tagsOf(
@@ -68,10 +68,11 @@ interface TagInstanceDao {
 /** (sourceId, itemId) + 置信度：标签查询的中间结果，求交与排序用 */
 data class ScoredRef(val sourceId: String, val itemId: String, val confidence: Int)
 
-/** 单条标签行（行为加权的读模型） */
+/** 单条标签行（行为加权 / 视觉合并的读模型） */
 data class TagRow(
     val tagName: String,
     val category: String,
     val confidence: Int,
     val origin: String,
+    val updatedAt: Long = 0L,
 )

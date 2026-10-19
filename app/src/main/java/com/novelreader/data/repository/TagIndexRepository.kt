@@ -1,11 +1,17 @@
 package com.novelreader.data.repository
 
+import com.novelreader.core.network.HttpClient
+import com.novelreader.core.util.NetworkStatus
 import com.novelreader.core.util.TagAlias
 import com.novelreader.core.util.TagEntryUrl
 import com.novelreader.core.util.TagHit
 import com.novelreader.core.util.TagQuery
 import com.novelreader.core.util.TagRanking
 import com.novelreader.core.util.TagTagger
+import com.novelreader.core.visual.Wd14Inference
+import com.novelreader.core.visual.Wd14Labels
+import com.novelreader.core.visual.Wd14Mapper
+import com.novelreader.core.visual.Wd14TaggerSpec
 import com.novelreader.data.database.LocalTagDao
 import com.novelreader.data.database.TagInstanceDao
 import com.novelreader.data.model.LocalTagEntity
@@ -16,11 +22,14 @@ import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.SourceRepository
 import com.novelreader.domain.repository.TagBehaviorRecorder
 import com.novelreader.domain.repository.TagSignal
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * 自建标签层（v1.8.1.2）。
@@ -45,6 +54,8 @@ class TagIndexRepository(
     private val sourceRepository: SourceRepository,
     private val localTagDao: LocalTagDao,
     private val tagInstanceDao: TagInstanceDao,
+    /** 视觉打标需要 Context（模型目录 / Wi-Fi 判断）；测试环境传 null */
+    private val appContext: android.content.Context? = null,
 ) : TagBehaviorRecorder {
 
     /** 一个查询条件：一组等价写法（组内 OR）+ 可选的大类限定 */
@@ -296,6 +307,152 @@ class TagIndexRepository(
         }
         lastSignalAt[key] = now
         return true
+    }
+
+    // ===== 封面视觉打标（v1.8.1.4）=====
+
+    private var visualInference: Wd14Inference? = null
+
+    /**
+     * 确保 WD14 模型就绪：`model.onnx`（约 356MB）+ `selected_tags.csv` 存在则直接复用，
+     * 否则**仅 Wi-Fi** 下从镜像站（hf-mirror.com，HuggingFace 主站直连不通）按需下载。
+     *
+     * 模型不打包进 APK（体积不可接受），属于「用得越深、下得越值」的可选资产。
+     */
+    private suspend fun ensureVisualModel(onProgress: (String) -> Unit): Wd14Inference {
+        val context = appContext ?: error("当前环境不支持视觉打标")
+        val dir = File(context.filesDir, "tagger/wd14")
+        val model = File(dir, "model.onnx")
+        val tagCsv = File(dir, "selected_tags.csv")
+        if (!model.exists() || model.length() < 1024 * 1024) {
+            if (!NetworkStatus.isWifi(context)) {
+                error("视觉模型约 356MB，请在 Wi-Fi 环境下首次下载")
+            }
+            dir.mkdirs()
+            onProgress("下载视觉模型（约 356MB，仅首次）…")
+            val part = File(dir, "model.onnx.part")
+            part.delete()
+            HttpClient.downloadFile(Wd14TaggerSpec.DEFAULT_MODEL_URL, part) { downloaded, total ->
+                if (total > 0) {
+                    onProgress(
+                        "下载视觉模型 ${downloaded * 100 / total}%（${downloaded / 1048576}MB / ${total / 1048576}MB）",
+                    )
+                } else {
+                    onProgress("下载视觉模型 ${downloaded / 1048576}MB…")
+                }
+            }
+            if (!part.renameTo(model)) {
+                part.copyTo(model, overwrite = true)
+                part.delete()
+            }
+        }
+        if (!tagCsv.exists() || tagCsv.length() < 1024) {
+            onProgress("下载标签表…")
+            HttpClient.downloadFile(Wd14TaggerSpec.DEFAULT_TAGS_URL, tagCsv)
+        }
+        // 模型文件可能中途被换，旧会话直接关掉重建
+        visualInference?.close()
+        val labels = Wd14Labels.parse(tagCsv.readText())
+        visualInference = Wd14Inference(model, labels)
+        return visualInference!!
+    }
+
+    /**
+     * 对已收录作品的封面跑视觉打标：模型输出 Danbooru 标签 → [Wd14Mapper] 映射受控词表 →
+     * 以 `origin = 视觉` 合并进 `tag_instances`。
+     *
+     * 合并规则：**同标签取更高置信度**，站方（100）/ 行为加权的证据不会被视觉覆盖；
+     * 视觉新增的标签按 `概率 × 100` 记分（封顶 95，永远给站方留出位次）。
+     *
+     * @return 本轮真正打上标签的作品数
+     */
+    suspend fun runVisualTagging(
+        type: SourceType,
+        limit: Int = 60,
+        onProgress: (String) -> Unit,
+    ): Int {
+        val inference = ensureVisualModel(onProgress)
+        val pending = localTagDao.coversWithoutVisual(type.name, limit)
+        if (pending.isEmpty()) return 0
+        var done = 0
+        pending.forEachIndexed { index, ref ->
+            onProgress("视觉打标 ${index + 1}/${pending.size}（${done} 部命中）…")
+            val ok = runCatching {
+                val bitmap = withContext(Dispatchers.IO) { fetchCoverBitmap(ref.cover) }
+                    ?: return@runCatching false
+                val raw = withContext(Dispatchers.Default) { inference.tag(bitmap) }
+                bitmap.recycle()
+                if (raw.isEmpty()) return@runCatching false
+                applyVisualTags(type, ref.sourceId, ref.itemId, raw)
+                true
+            }.getOrDefault(false)
+            if (ok) done++
+        }
+        return done
+    }
+
+    /** 把一次推理结果合并进该作品的标签行（含既有行原样保底，避免 REPLACE 丢行） */
+    private suspend fun applyVisualTags(
+        type: SourceType,
+        sourceId: String,
+        itemId: String,
+        raw: List<Pair<String, Float>>,
+    ) {
+        val now = System.currentTimeMillis()
+        val out = LinkedHashMap<String, TagInstanceEntity>()
+        tagInstanceDao.tagsOf(type.name, sourceId, itemId).forEach { row ->
+            out[row.tagName] = TagInstanceEntity(
+                sourceId = sourceId,
+                itemId = itemId,
+                itemType = type.name,
+                tagName = row.tagName,
+                category = row.category,
+                confidence = row.confidence,
+                origin = row.origin,
+                updatedAt = row.updatedAt.takeIf { it > 0 } ?: now,
+            )
+        }
+        raw.forEach { (danbooruName, probability) ->
+            val controlled = Wd14Mapper.toControlled(danbooruName) ?: return@forEach
+            val confidence = (probability * 100).toInt().coerceIn(20, 95)
+            val category = if (TagAlias.isExplicitAdultIntent(controlled)) {
+                TagTagger.CATEGORY_ADULT
+            } else {
+                TagTagger.CATEGORY_GENRE
+            }
+            val old = out[controlled]
+            if (old == null || confidence > old.confidence) {
+                out[controlled] = TagInstanceEntity(
+                    sourceId = sourceId,
+                    itemId = itemId,
+                    itemType = type.name,
+                    tagName = controlled,
+                    category = category,
+                    confidence = confidence,
+                    origin = TagTagger.ORIGIN_VISUAL,
+                    updatedAt = now,
+                )
+            }
+        }
+        if (out.isNotEmpty()) tagInstanceDao.upsertAll(out.values.toList())
+    }
+
+    /** 封面字节：网络封面走 OkHttp，本地路径（本地书）直接读文件 */
+    private fun fetchCoverBitmap(coverUrl: String): android.graphics.Bitmap? {
+        if (coverUrl.isBlank()) return null
+        return runCatching {
+            if (coverUrl.startsWith("/")) {
+                val file = File(coverUrl)
+                if (!file.exists()) return null
+                return Wd14Inference.decodeScaled(file.readBytes()) ?: return null
+            }
+            val request = okhttp3.Request.Builder().url(coverUrl).build()
+            HttpClient.executeRaw(request).use { response ->
+                if (!response.isSuccessful) return null
+                val bytes = response.body?.bytes() ?: return null
+                Wd14Inference.decodeScaled(bytes)
+            }
+        }.getOrNull()
     }
 
     private fun LocalTagEntity.toItem(): MediaItem = MediaItem(

@@ -136,8 +136,10 @@ fun TagSearchScreen(
                 Column {
                     Text("索引会遍历已启用的源，逐部读源站题材并打标签存到本地。建好后标签搜索先命中本地，再补网络，复合筛选不受源站有没有分类页限制。")
                     Spacer(Modifier.height(8.dp))
+                    Text("封面视觉打标会对已收录封面跑 WD14 模型（Danbooru 体系），映射进受控词表后以「视觉」来源入库；模型约 356MB，仅 Wi-Fi 下按需下载一次。")
+                    Spacer(Modifier.height(8.dp))
                     Text(
-                        "已收录 $indexCount 部" + if (indexing) " · 正在建立…" else "",
+                        "已收录 $indexCount 部" + if (indexing) " · 正在处理…" else "",
                         style = MaterialTheme.typography.labelLarge,
                     )
                     if (!indexMessage.isNullOrBlank()) {
@@ -147,8 +149,13 @@ fun TagSearchScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = viewModel::buildIndex, enabled = !indexing) {
-                    Text(if (indexing) "建立中…" else "开始建立")
+                Row {
+                    TextButton(onClick = viewModel::buildIndex, enabled = !indexing) {
+                        Text(if (indexing) "建立中…" else "遍历建索引")
+                    }
+                    TextButton(onClick = viewModel::runVisualTagging, enabled = !indexing) {
+                        Text("封面视觉打标")
+                    }
                 }
             },
             dismissButton = {

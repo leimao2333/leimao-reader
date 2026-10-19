@@ -118,6 +118,7 @@ class AppContainer(context: Context) {
             sourceRepository,
             database.localTagDao(),
             database.tagInstanceDao(),
+            appContext,
         )
     }
 

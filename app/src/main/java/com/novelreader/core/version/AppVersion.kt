@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.8.1.3"
+    const val CURRENT_VERSION = "1.8.1.4"
 
     /**
      * 更新日志。
@@ -25,6 +25,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.8.1.4",
+            date = "2026-10-19",
+            changes = listOf(
+                "**封面视觉打标（WD14 ONNX）**：标签搜索的索引弹窗新增「封面视觉打标」—— 对已收录作品的封面跑 WD14 tagger（Danbooru 体系），映射进受控词表后以「视觉」来源入库；同标签取更高置信度，站方 / 行为证据不会被视觉覆盖。",
+                "**模型按需下载**：不打包进 APK。首次使用仅在 Wi-Fi 下从镜像站下载（约 356MB，HuggingFace 主站直连不通，默认走 hf-mirror.com），之后全部本地推理，无网络请求。",
+                "**白底补方 + 448 输入**：预处理与官方口径一致（不裁切、短边补白、BGR float），封面先降采样再推理，控制内存。",
+            ),
+        ),
         VersionEntry(
             version = "1.8.1.3",
             date = "2026-10-19",

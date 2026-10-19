@@ -34,6 +34,17 @@ else:
 DEFAULT_OUT = str(APP_DIR / "tag_table.json")
 DEFAULT_MODEL_DIR = str(APP_DIR / "wd14-model")
 
+
+def resource_path(name: str) -> str:
+    """内置资源定位：优先 exe 同目录（外置可替换），其次打包进 exe 的资源。"""
+    external = APP_DIR / name
+    if external.exists():
+        return str(external)
+    bundled = getattr(sys, "_MEIPASS", None)
+    if bundled and (Path(bundled) / name).exists():
+        return str(Path(bundled) / name)
+    return str(external)
+
 PAGE = """<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
 <title>磊毛阅读 · PC 端封面打标</title>
@@ -202,7 +213,10 @@ class TaggingJob(threading.Thread):
                 local_items = json.loads(
                     Path(list_path).read_text(encoding="utf-8"),
                 ).get("items", [])
-                log(f"本地清单条目：{len(local_items)}")
+                if local_items:
+                    log(f"本地清单条目：{len(local_items)}")
+                else:
+                    log("本地清单条目：0（文件里没有 items 字段——请确认是 App「导出收录清单」得到的 leimao-tag-table.json，而不是备份文件）")
                 items = core.merge_items(items, local_items)
         except Exception as exc:  # noqa: BLE001
             STATE.log(f"清单加载失败：{exc}")
@@ -413,7 +427,7 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.finished = False
                 STATE.running = True
                 STATE.stop_event.clear()
-            cfg["vocab"] = str(APP_DIR / "vocab.json")
+            cfg["vocab"] = resource_path("vocab.json")
             TaggingJob(cfg).start()
             self._send(200, b'{"ok":true}', "application/json; charset=utf-8")
         elif self.path == "/api/stop":

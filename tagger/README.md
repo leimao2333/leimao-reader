@@ -67,4 +67,4 @@ pyinstaller --onefile --windowed --name leimao-pc-tagger pc_tagger_gui.py
 
 exe 运行后自动打开浏览器 `http://127.0.0.1:8765/`：填入清单路径 → 开始遍历打标 →
 页面实时显示「总体进度 / 当前源 / 各源进度表 / 日志」→ 勾选推送 GitHub 即完成云端更新。
-exe 需与 `vocab.json` 同目录放置（词表按脚本所在目录查找）。
+exe 已把 `vocab.json` 内置打包 —— 单文件即用；外置同名文件优先（想换词表口径时放 exe 旁边即可覆盖）。

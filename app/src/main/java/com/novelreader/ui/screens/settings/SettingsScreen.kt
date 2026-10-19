@@ -434,6 +434,26 @@ fun SettingsScreen(
                     },
                 )
             }
+            // v1.8.1.7：标签导出 —— 本地标签层整体导出为 tag_table.json，可直接给 PC 打标工具当基底
+            val tagExportLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.CreateDocument("application/json"),
+            ) { uri -> uri?.let { viewModel.exportTagTableToUri(it) } }
+            SettingRow(
+                title = "标签导出",
+                subtitle = if (tagImportBusy) "导出中…" else
+                    "把本地标签层（小说/漫画/视频全类型）导出为 tag_table.json，可交给 PC 打标工具",
+            ) {
+                TextButton(
+                    onClick = {
+                        tagExportLauncher.launch(
+                            "leimao-tag-table-" +
+                                java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.CHINA)
+                                    .format(java.util.Date()) + ".json",
+                        )
+                    },
+                    enabled = !tagImportBusy,
+                ) { Text("导出") }
+            }
 
             Spacer(Modifier.height(24.dp))
 

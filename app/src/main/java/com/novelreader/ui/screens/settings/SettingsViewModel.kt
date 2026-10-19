@@ -212,6 +212,48 @@ class SettingsViewModel(
         return "标签导入完成：$imported 部作品已合并进本地标签层（云端 ${payload.items.size} 条）"
     }
 
+    /**
+     * 导出本地标签层为打标表 JSON（SAF Uri）。
+     *
+     * 与「导出收录清单」同一份 schema（tag_table.json），小说 / 漫画 / 视频三个类型的
+     * 标签层合并导出，PC 端打标工具可直接当基底清单消费。
+     */
+    fun exportTagTableToUri(uri: android.net.Uri) {
+        val repo = tagIndexRepository ?: run {
+            _backupMessage.value = "当前环境不支持标签导出"
+            return
+        }
+        val ctx = appContext ?: return
+        if (_tagImportBusy.value) return
+        viewModelScope.launch {
+            _tagImportBusy.value = true
+            _backupMessage.value = runCatching {
+                val json = withContext(Dispatchers.IO) {
+                    val allItems = buildList {
+                        for (type in com.novelreader.domain.model.SourceType.entries) {
+                            addAll(repo.buildTagTable(type).items)
+                        }
+                    }
+                    val payload = com.novelreader.core.util.TagTable.Payload(
+                        version = com.novelreader.core.util.TagTable.VERSION,
+                        generatedAt = System.currentTimeMillis(),
+                        source = com.novelreader.core.util.TagTable.SOURCE_APP,
+                        items = allItems,
+                    )
+                    com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(payload)
+                }
+                val written = withContext(Dispatchers.IO) {
+                    ctx.contentResolver.openOutputStream(uri, "wt")?.use { stream ->
+                        stream.write(json.toByteArray(Charsets.UTF_8))
+                        true
+                    } ?: error("无法写入所选文件")
+                }
+                if (written) "标签导出完成：${json.length / 1024} KB（小说/漫画/视频全类型）" else "导出失败"
+            }.getOrElse { "标签导出失败：${it.message ?: "未知错误"}" }
+            _tagImportBusy.value = false
+        }
+    }
+
     // ===== WebDav 云备份（v1.3.8.0） =====
 
     /** WebDav 配置（服务器 / 用户名 / 密码 / 路径） */

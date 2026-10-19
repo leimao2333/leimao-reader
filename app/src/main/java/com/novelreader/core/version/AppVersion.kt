@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.8.1.6"
+    const val CURRENT_VERSION = "1.8.1.7"
 
     /**
      * 更新日志。
@@ -25,6 +25,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.8.1.7",
+            date = "2026-10-19",
+            changes = listOf(
+                "**设置页标签导出**：设置中心「标签」区块补上导出 —— 本地标签层（小说 / 漫画 / 视频全类型）一键导出为 `tag_table.json`，可直接交给 PC 打标工具当基底清单。",
+                "**PC 打标工具 · 独立打标**：exe 只填书源即可完整跑通（遍历源站 → 标题解析 → WD14 封面打标 → 输出 / 推送），不再依赖 App 导出清单；`vocab.json` 词表内置进 exe，单文件即用。",
+                "**PC 打标工具 · 启动兜底**：「输出文件 / 模型目录」留空自动补默认值（exe 同目录），页面预填；本地清单 0 条时提示可能选错文件。",
+            ),
+        ),
         VersionEntry(
             version = "1.8.1.6",
             date = "2026-10-19",

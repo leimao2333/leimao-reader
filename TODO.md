@@ -54,10 +54,15 @@
 
 ## 三、视频
 
-- [ ] **9. 快退手势加开关（关闭后左右两边都是快进）**
-  - 现状：左右滑动分别是快退 / 快进。
-  - 设置项「双击/滑动快退」开关：关闭后左侧滑动也变成快进，两侧行为一致。
-  - 长按手势快进 10 秒（`VideoControls.kt`）保持独立，不受此开关影响。
+- [ ] **9. 长按快退加开关（关闭后左右长按都是快进）**
+  - 现状：**长按**右半屏 = 3x 快进，**长按**左半屏 = 连续快退（`REWIND_STEP_MS = 1000ms` / 每 250ms 一跳）。
+  - 需求是「长按快退」这一项加开关：关闭后长按左半屏也变成快进，即左右两侧长按行为一致，都是倍速快进。
+  - 与双击 ±10 秒、横滑调进度无关，那些保持原样，不要一起改。
+  - 实现位置：
+    - 手势分发：`ui/screens/video/VideoPlayerScreen.kt:428-434` 的 `onLongPress`，当前是 `beginSpeedBoost(if (forward) 1 else -1)`；开关关闭时始终传 `1`。
+    - 兜底也可放在 `ui/screens/video/VideoPlayerViewModel.kt:944` 的 `beginSpeedBoost(direction)`：`direction < 0` 时先读开关，关闭则直接走快进分支（这样即使别处传入 -1 也不会倒退）。
+    - 提示文案：`VideoPlayerScreen.kt:646` 的「快进中 / 快退中」需跟着方向走。
+  - 设置项放哪：与已有的「长按快进倍速」（`PreferencesManager.KEY_VIDEO_LONG_PRESS_SPEED`，设置页 `SettingsScreen.kt:295`）放同一段，命名如「长按左侧快退」，默认开启。
 
 - [ ] **10. CC 字幕之外增加 AI 字幕**
   - 现有外挂字幕能力在 `ui/screens/video/VideoPlayerScreen.kt` / `VideoControls.kt` / `VideoPlayerViewModel.kt`。

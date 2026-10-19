@@ -16,6 +16,7 @@ v1.8.1.6：支持「网络源导入」—— 直接拉取 GitHub 云端打标表
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 import webbrowser
@@ -24,6 +25,14 @@ from pathlib import Path
 
 import pc_tagger as core
 import source_engine
+
+# exe（PyInstaller onefile）里 __file__ 指向临时解包目录，取 exe 所在目录
+if getattr(sys, "frozen", False):
+    APP_DIR = Path(sys.executable).resolve().parent
+else:
+    APP_DIR = Path(__file__).resolve().parent
+DEFAULT_OUT = str(APP_DIR / "tag_table.json")
+DEFAULT_MODEL_DIR = str(APP_DIR / "wd14-model")
 
 PAGE = """<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
@@ -57,9 +66,10 @@ PAGE = """<!doctype html>
    书源内容类型：<select id="srcType"><option value="COMIC">漫画</option><option value="NOVEL">小说</option></select>
    <span class="muted">MacCMS（视频站）固定按视频收录</span>
  </div>
- <div class="row">输出文件：<input type="text" id="out"></div>
+ <div class="row">输出文件：<input type="text" id="out" value="__DEFAULT_OUT__"> <span class="muted">打标结果 JSON 的保存位置</span></div>
  <div class="row">
-   模型目录：<input type="text" id="model" style="width:200px">
+   模型目录：<input type="text" id="model" value="__DEFAULT_MODEL_DIR__" style="width:280px">
+   <span class="muted">WD14 模型缓存（约 356MB，首次自动下载）</span>
    下载并发：<input type="text" id="workers" value="6" style="width:40px">
    本轮上限(0=全部)：<input type="text" id="limit" value="0" style="width:60px">
  </div>
@@ -124,6 +134,8 @@ function render(s){
 function poll(){ fetch('/api/status').then(r=>r.json()).then(render).catch(()=>{}); }
 poll(); timer=setInterval(poll,800);
 </script></body></html>"""
+
+PAGE = PAGE.replace("__DEFAULT_OUT__", DEFAULT_OUT).replace("__DEFAULT_MODEL_DIR__", DEFAULT_MODEL_DIR)
 
 
 class State:
@@ -382,9 +394,11 @@ class Handler(BaseHTTPRequestHandler):
                 has_list = bool(str(cfg.get("list", "")).strip())
                 has_cloud = bool(str(cfg.get("cloud", "")).strip())
                 has_sources = bool(str(cfg.get("sources", "")).strip())
-                missing = [k for k in ("out", "model") if not str(cfg.get(k, "")).strip()]
-                if missing:
-                    raise ValueError(f"缺少配置：{', '.join(missing)}")
+                # out / model 缺省自动补默认值（exe 同目录），不再报错
+                if not str(cfg.get("out", "")).strip():
+                    cfg["out"] = DEFAULT_OUT
+                if not str(cfg.get("model", "")).strip():
+                    cfg["model"] = DEFAULT_MODEL_DIR
                 if not has_list and not has_cloud and not has_sources:
                     raise ValueError("网络清单、本地清单与书源导入至少要提供一个")
                 if has_list and not Path(str(cfg["list"])).exists():
@@ -399,7 +413,7 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.finished = False
                 STATE.running = True
                 STATE.stop_event.clear()
-            cfg["vocab"] = str(Path(__file__).resolve().parent / "vocab.json")
+            cfg["vocab"] = str(APP_DIR / "vocab.json")
             TaggingJob(cfg).start()
             self._send(200, b'{"ok":true}', "application/json; charset=utf-8")
         elif self.path == "/api/stop":

@@ -356,7 +356,11 @@ fun AppNavHost(
         composable(Routes.SETTINGS) {
             val viewModel: SettingsViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
-                    SettingsViewModel(it.preferencesManager, it.backupManager, container.context)
+                    SettingsViewModel(
+                        it.preferencesManager, it.backupManager, container.context,
+                        // v1.8.1.6：设置页直达「标签导入」
+                        it.tagIndexRepository,
+                    )
                 }
             )
             SettingsScreen(

@@ -363,6 +363,80 @@ fun SettingsScreen(
 
             Spacer(Modifier.height(24.dp))
 
+            // ===== 标签（v1.8.1.6）=====
+            // 打标表导入原先只在标签搜索页的索引弹窗里，入口太深 —— 设置页补一个直达入口，
+            // 与 PC 打标工具共用同一份 tag_table.json（同名标签取更高置信度，幂等合并）。
+            SectionTitle("标签")
+            val tagImportBusy by viewModel.tagImportBusy.collectAsState()
+            var showTagUrlDialog by remember { mutableStateOf(false) }
+            val tagImportLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocument(),
+            ) { uri -> uri?.let { viewModel.importTagTableFromUri(it) } }
+            SettingRow(
+                title = "标签导入",
+                subtitle = if (tagImportBusy) "导入中…" else
+                    "导入打标表（本地文件或云端地址），与 PC 打标工具的成果合并进本地标签层",
+            ) {
+                Row {
+                    TextButton(
+                        onClick = { showTagUrlDialog = true },
+                        enabled = !tagImportBusy,
+                    ) { Text("云端") }
+                    TextButton(
+                        onClick = {
+                            tagImportLauncher.launch(
+                                arrayOf("application/json", "text/*", "application/octet-stream"),
+                            )
+                        },
+                        enabled = !tagImportBusy,
+                    ) { Text("本地") }
+                }
+            }
+            if (showTagUrlDialog) {
+                var tagUrl by remember {
+                    mutableStateOf(
+                        com.novelreader.data.repository.TagIndexRepository.DEFAULT_CLOUD_TABLE_URL,
+                    )
+                }
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { showTagUrlDialog = false },
+                    title = { Text("云端标签导入") },
+                    text = {
+                        Column {
+                            Text(
+                                "拉取打标表并按「同名标签取更高置信度」合并进本地标签层；" +
+                                    "默认为 GitHub 仓库的云端地址（经 jsDelivr 分发）。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            androidx.compose.material3.OutlinedTextField(
+                                value = tagUrl,
+                                onValueChange = { tagUrl = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodySmall,
+                                label = { Text("打标表地址") },
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                showTagUrlDialog = false
+                                viewModel.importTagTableFromUrl(tagUrl)
+                            },
+                            enabled = tagUrl.isNotBlank() && !tagImportBusy,
+                        ) { Text("导入") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showTagUrlDialog = false }) { Text("取消") }
+                    },
+                )
+            }
+
+            Spacer(Modifier.height(24.dp))
+
             // ===== 存储 =====
             SectionTitle("存储")
             SettingRow(

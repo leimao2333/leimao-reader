@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -189,9 +190,24 @@ def download_cover(url: str, timeout: int = 20) -> bytes | None:
 def run(args: argparse.Namespace) -> int:
     from PIL import Image  # noqa: F401  提前失败，免得跑完下载才报缺依赖
 
-    list_path = Path(args.list)
-    items = json.loads(list_path.read_text(encoding="utf-8")).get("items", [])
-    print(f"清单条目：{len(items)}")
+    if not args.list and not args.cloud:
+        print("需要 --list（本地清单）或 --cloud（网络清单）至少一个")
+        return 2
+    items: list[dict] = []
+    if args.cloud:
+        cloud_url = args.cloud if args.cloud.startswith("http") else DEFAULT_CLOUD_TABLE_URL
+        print(f"拉取网络清单：{cloud_url}")
+        items = fetch_cloud_table(cloud_url)
+        print(f"网络清单条目：{len(items)}")
+    if args.list:
+        local = json.loads(Path(args.list).read_text(encoding="utf-8")).get("items", [])
+        print(f"本地清单条目：{len(local)}")
+        items = merge_items(items, local)
+        print(f"合并后条目：{len(items)}")
+
+    # 标题解析打标（MangaReader 式：作者 / 汉化组 / 作品 / 会场 等，origin=文本）
+    title_tagged = apply_title_tags(items)
+    print(f"标题解析命中：{title_tagged} 部")
 
     vocab = Vocab.load(Path(args.vocab))
 
@@ -275,7 +291,156 @@ def _write_out(args: argparse.Namespace, items: list[dict]) -> int:
     return tagged
 
 
-def push_to_github(args: argparse.Namespace, content: str) -> None:
+# ---------------------------------------------------------------- 网络清单 + 标题解析（v1.8.1.6）
+
+
+CLOUD_TABLE_URL = (
+    "https://cdn.jsdelivr.net/gh/leimao2333/leimao-reader@main/tagger/data/tag_table.json"
+)
+ORIGIN_TEXT = "文本"
+TEXT_CONFIDENCE = 60
+
+
+def fetch_cloud_table(url: str, timeout: int = 30) -> list[dict]:
+    """拉取云端打标表（App「导出收录清单」同 schema），返回 items。"""
+    resp = requests.get(url, timeout=timeout, headers={"User-Agent": USER_AGENT})
+    resp.raise_for_status()
+    return resp.json().get("items", [])
+
+
+def _clean_tag_value(value: str) -> str | None:
+    """过滤明显不是标签的碎片：空、纯数字、过长。"""
+    value = value.strip()
+    if not value or value.isdigit() or len(value) > 30:
+        return None
+    return value
+
+
+def parse_title_tags(title: str) -> list[tuple[str, str]]:
+    """从书名解析元数据标签（移植自 kawayiYokami/MangaReader 的 metadata_parser.py）。
+
+    识别 `[(C97)] [汉化组 (作者)] [(作品名)] 标题 [个人汉化] [无修正]` 这类
+    漫画圈惯用命名，输出 (大类, 标签值)：平台 / 组 / 作者 / 会场 / 作品 / 汉化 / 其他。
+    """
+    tags: list[tuple[str, str]] = []
+    text = (title or "").strip()
+    if not text:
+        return tags
+
+    def add(category: str, value: str | None) -> None:
+        value = _clean_tag_value(value or "")
+        if value and (category, value) not in tags:
+            tags.append((category, value))
+
+    # 杂志/平台信息 (Fantia) —— 开头圆括号且不含数字
+    platform_match = re.match(r"[\(（](.*?)[\)）](.*)", text)
+    if platform_match and not re.search(r"\d", platform_match.group(1)):
+        add("平台", platform_match.group(1))
+        text = platform_match.group(2).strip()
+
+    # [汉化组 (作者)]
+    group_author = re.search(r"\[(.*?) \((.*?)\)\]", text)
+    if group_author:
+        add("组", group_author.group(1))
+        add("作者", group_author.group(2))
+        text = text.replace(group_author.group(0), "", 1).strip()
+    else:
+        # [作者]（单独方括号）
+        author_match = re.search(r"\[(.*?)\]", text)
+        if author_match and "汉化" not in author_match.group(1):
+            add("作者", author_match.group(1))
+            text = text.replace(author_match.group(0), "", 1).strip()
+
+    # 会场 (C97)
+    event_match = re.match(r"\(([Cc][0-9]+)\)(.*)", text)
+    if event_match:
+        add("会场", event_match.group(1))
+        text = event_match.group(2).strip()
+
+    # (作品名) —— 后面不再跟方括号的那个圆括号
+    series_match = re.search(r"[\(（]([^()（）\d]*?)[\)）](?![^[]*\])", text)
+    if series_match and series_match.group(1).strip():
+        add("作品", series_match.group(1))
+        text = text[: text.rfind(series_match.group(0))].strip()
+
+    # 其余方括号：汉化 / 无修正 / 其他
+    while True:
+        bracket = re.search(r"\[(.*?)\]", text)
+        if not bracket:
+            break
+        content = bracket.group(1).strip()
+        if any(k in content for k in ("中国翻訳", "中国翻译", "中國翻譯", "中國翻訳")):
+            add("汉化", "中国翻译")
+        elif any(k in content for k in ("汉化", "漢化", "翻訳", "翻译", "翻譯")):
+            add("汉化", content)
+        elif any(k in content for k in ("無修正", "无修正", "無修")):
+            add("其他", "无修正")
+        else:
+            add("其他", content)
+        text = text.replace(f"[{bracket.group(1)}]", "", 1).strip()
+
+    return tags
+
+
+def apply_title_tags(items: list[dict]) -> int:
+    """对全部条目跑标题解析，把成果以 origin=文本、confidence=60 入 tags。
+
+    与 App 端文本猜测同口径；merge_entry 保证站方/行为标签不会被顶掉。
+    返回新增了标签的条目数。
+    """
+    touched = 0
+    for item in items:
+        parsed = parse_title_tags(item.get("title") or "")
+        if not parsed:
+            continue
+        merged = {t["name"]: dict(t) for t in item.get("tags", [])}
+        before = len(merged)
+        for category, value in parsed:
+            merged[value] = merge_entry(
+                merged.get(value),
+                {"name": value, "category": category, "confidence": TEXT_CONFIDENCE,
+                 "origin": ORIGIN_TEXT},
+            )
+        if len(merged) > before:
+            item["tags"] = sorted(merged.values(), key=lambda t: -t["confidence"])
+            touched += 1
+    return touched
+
+
+def item_key(item: dict) -> str:
+    return "|".join((
+        str(item.get("sourceId") or ""),
+        str(item.get("itemId") or ""),
+        str(item.get("itemType") or ""),
+    ))
+
+
+def merge_items(base: list[dict], extra: list[dict]) -> list[dict]:
+    """按 (sourceId, itemId, itemType) 合并两份清单；同名标签取更高置信度。
+
+    `base` 里的条目在先，`extra` 提供补充（标签级合并）；`extra` 独有的条目直接追加。
+    """
+    by_key: dict[str, dict] = {}
+    for item in base + extra:
+        key = item_key(item)
+        existing = by_key.get(key)
+        if existing is None:
+            item = dict(item)
+            item["tags"] = {t.get("name", ""): dict(t) for t in item.get("tags", [])}
+            by_key[key] = item
+            continue
+        for name, tag in item.get("tags", []):
+            existing["tags"][tag.get("name") or name] = merge_entry(
+                existing["tags"].get(tag.get("name") or name), dict(tag),
+            )
+    out = []
+    for item in by_key.values():
+        item["tags"] = sorted(item["tags"].values(), key=lambda t: -t.get("confidence", 0))
+        out.append(item)
+    return out
+
+
+def push_to_github(args, content: str) -> None:
     token = args.token or os_environ("GH_TOKEN")
     if not token:
         print("推送跳过：未提供 --token，且环境变量 GH_TOKEN 为空")
@@ -330,7 +495,9 @@ def os_environ(key: str) -> str | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="磊毛阅读 · PC 端封面打标工具")
-    parser.add_argument("--list", required=True, help="App 导出的收录清单 JSON（tag_table.json）")
+    parser.add_argument("--list", default=None, help="App 导出的收录清单 JSON（tag_table.json）；与 --cloud 至少给一个")
+    parser.add_argument("--cloud", nargs="?", const=DEFAULT_CLOUD_TABLE_URL, default=None,
+                        help=f"网络清单 URL（缺省 {DEFAULT_CLOUD_TABLE_URL}）：拉取云端表作为基底，与 --list 合并")
     parser.add_argument("--out", default="tag_table.json", help="输出路径（默认 ./tag_table.json）")
     parser.add_argument("--vocab", default=str(Path(__file__).resolve().parent / "vocab.json"), help="受控词表")
     parser.add_argument("--model-dir", default="models/wd14", help="模型缓存目录")

@@ -21,6 +21,8 @@ class SettingsViewModel(
     private val preferencesManager: PreferencesManager,
     private val backupManager: com.novelreader.core.backup.BackupManager? = null,
     private val appContext: android.content.Context? = null,
+    /** 本地标签索引（v1.8.1.6）：设置页直达「标签导入」，不必先找到标签搜索页的索引弹窗 */
+    private val tagIndexRepository: com.novelreader.data.repository.TagIndexRepository? = null,
 ) : ViewModel() {
 
     /** 备份 / 恢复结果提示（UI 展示后自动消失） */
@@ -141,6 +143,73 @@ class SettingsViewModel(
             _backupMessage.value = runCatching { mgr.import(uri) }
                 .getOrElse { "恢复失败：${it.message ?: "未知错误"}" }
         }
+    }
+
+    // ===== 标签导入（v1.8.1.6：与 PC 打标工具 / 标签搜索页同一套打标表）=====
+
+    /** 标签导入是否进行中（云端下载 / 本地解析共用） */
+    private val _tagImportBusy = MutableStateFlow(false)
+    val tagImportBusy: StateFlow<Boolean> = _tagImportBusy.asStateFlow()
+
+    /**
+     * 从本地文件导入打标表（SAF Uri）。
+     *
+     * 表里条目按 `itemType` 分流，小说 / 漫画 / 视频各自合并进对应类型的标签层；
+     * 合并口径与标签搜索页一致：同名标签取更高置信度，站方 100 分不会被顶掉。
+     */
+    fun importTagTableFromUri(uri: android.net.Uri) {
+        val repo = tagIndexRepository ?: run {
+            _backupMessage.value = "当前环境不支持标签导入"
+            return
+        }
+        val ctx = appContext ?: return
+        if (_tagImportBusy.value) return
+        viewModelScope.launch {
+            _tagImportBusy.value = true
+            _backupMessage.value = runCatching {
+                val json = withContext(Dispatchers.IO) {
+                    ctx.contentResolver.openInputStream(uri)?.use { stream ->
+                        stream.readBytes().toString(Charsets.UTF_8)
+                    } ?: error("无法读取所选文件")
+                }
+                importPayload(repo, json)
+            }.getOrElse { "标签导入失败：${it.message ?: "未知错误"}" }
+            _tagImportBusy.value = false
+        }
+    }
+
+    /** 从云端 URL 导入打标表（默认 GitHub 仓库 tagger/data/tag_table.json，经 jsDelivr 分发） */
+    fun importTagTableFromUrl(url: String) {
+        val repo = tagIndexRepository ?: run {
+            _backupMessage.value = "当前环境不支持标签导入"
+            return
+        }
+        val target = url.trim()
+        if (target.isEmpty() || _tagImportBusy.value) return
+        viewModelScope.launch {
+            _tagImportBusy.value = true
+            _backupMessage.value = runCatching {
+                val json = withContext(Dispatchers.IO) {
+                    com.novelreader.core.network.HttpClient.get(target, timeoutMs = 30_000)
+                }
+                importPayload(repo, json)
+            }.getOrElse { "标签导入失败：${it.message ?: "未知错误"}" }
+            _tagImportBusy.value = false
+        }
+    }
+
+    /** 解析打标表 JSON 并对全部类型执行幂等合并，返回结果消息 */
+    private suspend fun importPayload(
+        repo: com.novelreader.data.repository.TagIndexRepository,
+        json: String,
+    ): String {
+        val payload = com.novelreader.core.util.TagTable.parse(json)
+            ?: error("打标表解析失败（不是有效的 tag_table.json）")
+        var imported = 0
+        for (type in com.novelreader.domain.model.SourceType.entries) {
+            imported += repo.importTagTable(payload, type)
+        }
+        return "标签导入完成：$imported 部作品已合并进本地标签层（云端 ${payload.items.size} 条）"
     }
 
     // ===== WebDav 云备份（v1.3.8.0） =====

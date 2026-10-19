@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.8.1.5"
+    const val CURRENT_VERSION = "1.8.1.6"
 
     /**
      * 更新日志。
@@ -25,6 +25,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.8.1.6",
+            date = "2026-10-19",
+            changes = listOf(
+                "**设置页标签导入**：设置中心新增「标签」区块，支持从本地文件或云端地址导入打标表（原先只在标签搜索页的索引弹窗里），按 `itemType` 分流合并进小说 / 漫画 / 视频各自的标签层。",
+                "**PC 打标工具 · 网络源导入**：exe 可直接拉取 GitHub 云端打标表作为基底清单（与本地清单合并，本地优先），不必每次先从手机导出。",
+                "**PC 打标工具 · 标题解析打标**：参考 kawayiYokami/MangaReader 的 metadata_parser，从书名解析 作者 / 汉化组 / 作品 / 会场 / 平台 等元数据标签（识别 `[汉化组 (作者)] (C97) [作品名] 标题 [个人汉化]` 惯用命名），以「文本」来源、置信度 60 入库。",
+            ),
+        ),
         VersionEntry(
             version = "1.8.1.5",
             date = "2026-10-19",

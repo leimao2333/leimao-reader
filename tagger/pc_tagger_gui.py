@@ -5,6 +5,9 @@
 运行后在本机起一个 HTTP 服务并自动打开浏览器页面：遍历清单里**所有源**的作品
 逐部打标，页面实时显示总体进度条、当前源、每源进度表与滚动日志，可中途停止。
 
+v1.8.1.6：支持「网络源导入」—— 直接拉取 GitHub 云端打标表作为基底清单（可留空本地
+清单），并按 MangaReader 的方式从书名解析 作者/汉化组/作品/会场 等元数据标签。
+
 打包：pyinstaller --onefile --windowed --name leimao-pc-tagger pc_tagger_gui.py
 """
 
@@ -44,6 +47,7 @@ PAGE = """<!doctype html>
 
 <fieldset><legend>配置</legend>
  <div class="row">收录清单：<input type="text" id="list"> <span class="muted">App「导出收录清单」得到的 leimao-tag-table.json 的完整路径</span></div>
+ <div class="row">网络清单：<input type="text" id="cloud" style="width:480px" placeholder="https://cdn.jsdelivr.net/gh/leimao2333/leimao-reader@main/tagger/data/tag_table.json"> <span class="muted">拉云端表作为基底；两个都填则合并，留空本地则必填</span></div>
  <div class="row">输出文件：<input type="text" id="out"></div>
  <div class="row">
    模型目录：<input type="text" id="model" style="width:200px">
@@ -59,7 +63,7 @@ PAGE = """<!doctype html>
  <div class="row">
    <button id="start" onclick="start()">开始遍历打标</button>
    <button id="stop" class="stop" onclick="stop()" disabled>停止</button>
-   <span class="muted">模型约 356MB，首次自动从 hf-mirror 下载（仅一次）</span>
+   <span class="muted">视觉模型约 356MB 首次自动下载；标题解析（作者/汉化组/作品等）每次全量执行</span>
  </div>
 </fieldset>
 
@@ -83,7 +87,7 @@ let timer=null;
 function start(){
   fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({
-      list:v('list'), out:v('out'), model:v('model'), workers:+v('workers')||6,
+      list:v('list'), cloud:v('cloud'), out:v('out'), model:v('model'), workers:+v('workers')||6,
       limit:+v('limit')||0, push:document.getElementById('push').checked,
       repo:v('repo'), path:v('path'), token:v('token')
     })}).then(r=>r.json()).then(j=>{ if(!j.ok) alert('启动失败：'+(j.error||'')); });
@@ -159,13 +163,39 @@ class TaggingJob(threading.Thread):
         def log(msg: str) -> None:
             STATE.log(msg)
 
+        # v1.8.1.6：网络清单为基底，本地清单合并补充；两者都留空才报错
+        cloud_url = str(self.cfg.get("cloud") or "").strip()
+        list_path = str(self.cfg.get("list") or "").strip()
+        items: list[dict] = []
         try:
-            items = json.loads(Path(self.cfg["list"]).read_text(encoding="utf-8")).get("items", [])
+            if cloud_url:
+                if not cloud_url.startswith("http"):
+                    cloud_url = core.DEFAULT_CLOUD_TABLE_URL
+                log(f"拉取网络清单：{cloud_url}")
+                cloud_items = core.fetch_cloud_table(cloud_url)
+                log(f"网络清单条目：{len(cloud_items)}")
+                items = cloud_items
+            if list_path:
+                local_items = json.loads(
+                    Path(list_path).read_text(encoding="utf-8"),
+                ).get("items", [])
+                log(f"本地清单条目：{len(local_items)}")
+                items = core.merge_items(items, local_items)
+            if not items:
+                raise ValueError("网络清单与本地清单至少要提供一个")
+            log(f"合并后条目：{len(items)}")
         except Exception as exc:  # noqa: BLE001
-            STATE.log(f"清单读取失败：{exc}")
+            STATE.log(f"清单加载失败：{exc}")
             STATE.running, STATE.finished = False, True
             return
-        log(f"清单条目：{len(items)}")
+
+        # 标题解析打标（MangaReader 式：作者/汉化组/作品/会场/平台/其他，origin=文本）
+        try:
+            title_hit = core.apply_title_tags(items)
+            log(f"标题解析命中：{title_hit} 部（作者/汉化组/作品等，置信度 {core.TEXT_CONFIDENCE}）")
+        except Exception as exc:  # noqa: BLE001
+            log(f"标题解析失败（跳过）：{exc}")
+
         try:
             vocab = core.Vocab.load(Path(self.cfg["vocab"]))
         except Exception as exc:  # noqa: BLE001
@@ -304,11 +334,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 cfg = json.loads(body or b"{}")
-                required = ["list", "out", "model"]
-                missing = [k for k in required if not str(cfg.get(k, "")).strip()]
+                has_list = bool(str(cfg.get("list", "")).strip())
+                has_cloud = bool(str(cfg.get("cloud", "")).strip())
+                missing = [k for k in ("out", "model") if not str(cfg.get(k, "")).strip()]
                 if missing:
                     raise ValueError(f"缺少配置：{', '.join(missing)}")
-                if not Path(str(cfg["list"])).exists():
+                if not has_list and not has_cloud:
+                    raise ValueError("网络清单与本地清单至少要提供一个")
+                if has_list and not Path(str(cfg["list"])).exists():
                     raise ValueError(f"清单文件不存在：{cfg['list']}")
             except Exception as exc:  # noqa: BLE001
                 self._send(200, json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)

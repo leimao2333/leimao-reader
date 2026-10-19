@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -225,9 +226,13 @@ private fun VideoSectionsContent(
                     }
                 }
 
-                // key 用「分类id+标题」保证唯一：聚合模式下多个源的分类 url 可能重复
-                // （如空 url / 相同分类地址），此前只用 categoryId 会撞 key 导致闪退
-                items(state.rows, key = { "${it.categoryId}::${it.title}" }) { row ->
+                // key 用「位置+分类id+标题」保证唯一：聚合模式下多个源的分类 url 可能重复
+                // （如空 url / 相同分类地址），此前只用 categoryId 会撞 key 导致闪退；
+                // 只加标题仍有风险（同名的兜底排），v1.8.2.0 起再前置位置兜底。
+                itemsIndexed(
+                    state.rows,
+                    key = { index, row -> "$index::${row.categoryId}::${row.title}" },
+                ) { _, row ->
                     Column {
                         SectionHeader(
                             title = row.title,

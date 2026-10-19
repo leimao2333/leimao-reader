@@ -265,4 +265,36 @@ class HomeFeedPlanTest {
         // 兜底行不污染栏目下拉
         assertTrue(plan.categories.none { it == HomeFeedPlan.EXTRA_SOURCES_TITLE })
     }
+
+    /**
+     * 多个兜底行时标题必须互不相同（v1.8.2.0）。
+     *
+     * leftover 超过一排容量后会拆成好几排，但它们以前全叫「更多源」；首页拿排标题当
+     * LazyColumn 的 item key，撞名直接抛 `IllegalArgumentException` —— 用户滑到
+     * 首页底部必闪退。这里锁住「编号递增且唯一」。
+     */
+    @Test
+    fun `多个兜底行标题互不相同`() {
+        // 8 个互不相同的独有名栏目、每排只带 2 个源，maxRows=1 只够排一个普通栏目，
+        // 剩下的源全部进兜底行，于是必然产出多条「更多源」。
+        val sources = (1..8).map { "S$it" }
+        val plan = HomeFeedPlan.build(
+            sourceOrder = sources,
+            catsBySource = sources.associateWith { listOf(cat("独家$it", "/$it")) },
+            maxRows = 1,
+            maxSourcesPerRow = 2,
+        )
+        val extraTitles = plan.rows
+            .map { it.title }
+            .filter { it.startsWith(HomeFeedPlan.EXTRA_SOURCES_TITLE) }
+        assertTrue("应产生多条兜底行，实际 $extraTitles", extraTitles.size >= 2)
+        assertEquals(HomeFeedPlan.EXTRA_SOURCES_TITLE, extraTitles.first())
+        assertEquals("更多源 2", extraTitles[1])
+        // 唯一性才是 Compose key 不崩的关键
+        assertEquals(
+            "兜底行标题重复会导致首页滑到底闪退：$extraTitles",
+            extraTitles.size,
+            extraTitles.distinct().size,
+        )
+    }
 }

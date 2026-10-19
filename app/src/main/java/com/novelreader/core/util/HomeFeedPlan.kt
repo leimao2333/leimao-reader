@@ -49,6 +49,15 @@ object HomeFeedPlan {
         val urls: Map<String, List<CategorySource>> = emptyMap(),
     )
 
+    /**
+     * 兜底行的第 n 个标题（v1.8.2.0）。
+     *
+     * 第一个仍是「更多源」，之后带序号（更多源 2 / 更多源 3…）。**必须唯一**：
+     * 首页把排标题当 LazyColumn 的 item key，同名两排会让 Compose 抛异常闪退。
+     */
+    private fun extraRowTitle(index: Int): String =
+        if (index == 0) EXTRA_SOURCES_TITLE else "$EXTRA_SOURCES_TITLE ${index + 1}"
+
     /** 分类名是否带「推荐 / 热门 / 排行」语义 */
     fun isRecommendLike(title: String): Boolean {
         val t = title.lowercase()
@@ -159,12 +168,19 @@ object HomeFeedPlan {
         val covered = rows.flatMap { it.targets }.map { it.sourceId }.toSet()
         val leftover = sourceOrder.filter { it !in covered }
         var i = 0
+        var extraIndex = 0
         while (i < leftover.size) {
             val chunk = leftover.subList(i, minOf(i + maxSourcesPerRow, leftover.size))
             val targets = chunk.mapNotNull { sid ->
                 catsBySource[sid]?.firstOrNull()?.let { CategorySource(sid, it.url) }
             }
-            if (targets.isNotEmpty()) rows.add(Row(EXTRA_SOURCES_TITLE, targets))
+            if (targets.isNotEmpty()) {
+                // 标题必须唯一（v1.8.2.0）：首页 LazyColumn 拿「分类:标题」当 item key，
+                // 两排同名会直接抛 IllegalArgumentException 闪退。leftover 有几十个源时
+                // 这里会分成好几排 —— 以前全都叫「更多源」，用户滑到底必崩。
+                rows.add(Row(extraRowTitle(extraIndex), targets))
+                extraIndex++
+            }
             i += maxSourcesPerRow
         }
 

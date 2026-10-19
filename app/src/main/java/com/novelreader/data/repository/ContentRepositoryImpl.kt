@@ -287,6 +287,76 @@ class ContentRepositoryImpl(
             result
         }
 
+    /**
+     * 列表页封面补全（v1.8.2.0）。
+     *
+     * 有些源的列表规则根本没写 `coverUrl`（企鹅阅读 / 52PO小说 / 海马读书…），首页整排
+     * 卡片就退化成「书名首字」色块，可详情页其实拿得到封面。[detail] 只在用户点过之后
+     * 才把封面记进 [com.novelreader.core.util.CoverMemory]，所以首次进首页永远是占位块。
+     *
+     * 这里在**后台**把缺封面的条目逐条送去详情页取封面，取到就记住并回填。
+     * 三条纪律：
+     * - **有界**：[limit] 限死单次补的条数（每补一条 = 一次详情请求）；
+     * - **有闸**：并发 {@link COVER_BACKFILL_CONCURRENCY}，不和生产请求抢带宽；
+     * - **不记账**：直接调 adapter，不走 [detail] —— 补封面失败不该污染源错误日志，
+     *   那是「详情页打不开」才该记的事，混进来会让源健康度判断失真。
+     */
+    override suspend fun backfillCovers(items: List<MediaItem>, limit: Int): List<MediaItem> =
+        withContext(Dispatchers.IO) {
+            val missing = items
+                .filter { it.cover.isNullOrBlank() && it.detailUrl.isNotBlank() }
+                .let { if (limit > 0 && it.size > limit) it.take(limit) else it }
+            if (missing.isEmpty()) return@withContext items
+
+            android.util.Log.i("CoverFill", "补封面开始：缺 ${missing.size} 条 / 共 ${items.size} 条")
+            val gate = Semaphore(COVER_BACKFILL_CONCURRENCY)
+            val found = java.util.concurrent.ConcurrentHashMap<String, String>()
+            coroutineScope {
+                missing.map { item ->
+                    async {
+                        gate.withPermit {
+                            val adapter = resolveAdapter(item.sourceId)
+                            if (adapter == null) {
+                                android.util.Log.w(
+                                    "CoverFill",
+                                    "  跳过 ${item.sourceId} ${item.title}：适配器未加载",
+                                )
+                                return@withPermit
+                            }
+                            // 单条限时：详情请求没有超时的话，一个卡死的源能把整批拖到
+                            // 分钟级（连接 15s + 读 20s 是常见上限）。补封面是"锦上添花"，
+                            // 宁可放弃这一条，也不能让后台任务一直挂着。
+                            var failure: String? = null
+                            val detail = runCatching {
+                                withTimeoutOrNull(COVER_BACKFILL_TIMEOUT_MS) { adapter.detail(item) }
+                            }.onFailure { failure = it.message }.getOrNull()
+                            val cover = detail?.cover?.takeIf { it.isNotBlank() }
+                            android.util.Log.i(
+                                "CoverFill",
+                                "  ${item.sourceId} ${item.title.take(12)} → cover=${cover?.take(48) ?: "空"} ${failure ?: ""}",
+                            )
+                            if (cover == null) return@withPermit
+                            found[coverKey(item)] = cover
+                            com.novelreader.core.util.CoverMemory.remember(
+                                item.sourceId,
+                                item.id.ifBlank { item.detailUrl },
+                                cover,
+                            )
+                        }
+                    }
+                }.awaitAll()
+            }
+            android.util.Log.i("CoverFill", "补封面结束：成功 ${found.size} 条")
+            if (found.isEmpty()) return@withContext items
+            items.map { item ->
+                if (!item.cover.isNullOrBlank()) return@map item
+                val cover = found[coverKey(item)] ?: return@map item
+                item.copy(cover = cover)
+            }
+        }
+
+    private fun coverKey(item: MediaItem) = "${item.sourceId}\u0000${item.id.ifBlank { item.detailUrl }}"
+
     override suspend fun chapterList(item: MediaItem): List<ChapterItem> =
         withContext(Dispatchers.IO) {
             val adapter = resolveAdapter(item.sourceId)
@@ -599,6 +669,23 @@ class ContentRepositoryImpl(
     }
 
     private companion object {
+        /**
+         * 封面补全的并发上限（v1.8.2.0）。
+         *
+         * 补封面是「一条一次详情请求」的纯额外开销，并发压得低才能不跟首页正片
+         * 抢带宽；4 路下补 12 条通常 2~4 秒收工，用户已经在看列表，感知不到。
+         */
+        const val COVER_BACKFILL_CONCURRENCY = 4
+
+        /**
+         * 单条补封面的耗时上限（毫秒，v1.8.2.0）。
+         *
+         * 取 15 秒：慢源（企鹅阅读这类要过一层接口鉴权的）详情实测 8~12 秒才回来，
+         * 压到 8 秒会一条都补不到；而彻底卡死的源会一路拖到 socket 超时（35 秒），
+         * 15 秒足以把两者分开。
+         */
+        const val COVER_BACKFILL_TIMEOUT_MS = 15_000L
+
         /** 基本汉字区（U+4E00..U+9FFF）码点范围：用于「源名是中文吗」这一档排序 */
         val CJK_RANGE = '\u4E00'.code..'\u9FFF'.code
 

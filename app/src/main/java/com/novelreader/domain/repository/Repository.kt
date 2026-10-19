@@ -290,6 +290,23 @@ interface ContentRepository {
     ): List<MediaItem> = explore(sourceId, url, page)
 
     /**
+     * 列表页封面补全（v1.8.2.0）。
+     *
+     * 有些源的 `ruleExplore` / `ruleSearch` 压根没写 `coverUrl`（实测 138 个小说源里
+     * 36 个如此，企鹅阅读、52PO小说、海马读书…），于是一整排卡片全是「书名首字」色块；
+     * 但这些源的 `ruleBookInfo` **是有封面的**。此前只靠 [com.novelreader.core.util.CoverMemory]
+     * 在「用户点过一次详情」之后才补得上，首次进首页看到的仍是占位块。
+     *
+     * 这里主动出击：对 [items] 里**没有封面**的条目逐条去取详情，取到后写进
+     * CoverMemory 并回填进返回列表。调用方应当**后台**执行（不阻塞上屏）。
+     *
+     * @param limit 单次最多补几条（0 = 不限）。列表可能上百条，必须设上限：
+     *   每条都要打一次详情页请求，补 100 条等于把首屏变成一次全量抓取。
+     * @return 补过封面的新列表；一条都没补到时原样返回。
+     */
+    suspend fun backfillCovers(items: List<MediaItem>, limit: Int = 0): List<MediaItem> = items
+
+    /**
      * 取**单个源**的发现分类（v1.3.3.0 影视首页按当前源加载分类）。
      *
      * 与 [exploreSources] 不同：只查一个源，避免影视首页在源较多时

@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -128,8 +129,14 @@ private fun FeedRecommendSections(
             }
 
             else -> {
-                // key 用排标题：标题来自跨源栏目名合并，天然唯一
-                items(state.rows, key = { "${it.categoryId}::${it.title}" }) { row ->
+                // key = 位置 + 排标题。标题来自跨源栏目名合并，正常唯一；但兜底行
+                // （更多源）在源特别多时会分成好几排，早期实现直接拿标题当 key，
+                // 撞名就抛 IllegalArgumentException 闪退（实测滑到首页底部必崩）。
+                // 加上位置前缀后，即便标题再重复也只是复用错位，不会崩溃。
+                itemsIndexed(
+                    state.rows,
+                    key = { index, row -> "$index::${row.categoryId}::${row.title}" },
+                ) { _, row ->
                     Column {
                         FeedSectionHeader(title = row.title)
                         LazyRow(

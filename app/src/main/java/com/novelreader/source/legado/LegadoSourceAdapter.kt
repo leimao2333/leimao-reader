@@ -180,8 +180,27 @@ class LegadoSourceAdapter(
                     fields["totalChapter"]?.let { put("totalChapter", it) }
                 },
             )
-        }.filter { it.title.isNotBlank() }
+        }.filter {
+            it.title.isNotBlank() && it.detailUrl.isNotBlank() && !looksLikeChapterTitle(it.title)
+        }
+        // v1.8.2.0：只留「有名字也有地址」的条目。
+        // 有的源列表规则能抓到名字、`bookUrl` 规则却命不中（或渲染出空串），于是产出一批
+        // 「有名称、没地址」的残条目：首页卡片上看得见，点进去详情拿不到、目录自然也空。
+        // 这种条目留在列表里只会骗点击，直接从源头丢掉（详情地址为空 = 必然没目录）。
+        // 同时丢掉「书名其实是章节名」的条目：部分源的发现规则错位，把目录页当成了书籍
+        // 列表，抓出来的是「第四章　救养孤儿」「第十章　离奇玄幻」这种东西 —— 详情页打开
+        // 自然也没有目录（实测一个源能刷出上百条）。
     }
+
+    /**
+     * 标题看起来是「章节名」而不是「书名」。
+     *
+     * 只认最明确的一类：以「第 N 章 / 回 / 节 / 卷 / 篇 / 集 / 话」开头，且序号后跟
+     * 分隔符或空白（「第一章　讨论兴亡」「第12章：…」）。正常书名极少这样写，
+     * 而规则错位的源会把整本目录按章节名摊出来。
+     */
+    private fun looksLikeChapterTitle(title: String): Boolean =
+        CHAPTER_TITLE_RE.containsMatchIn(title.trim())
 
     // ===== 发现页（v1.2.3.0 对标 legado exploreUrl / ruleExplore） =====
 
@@ -950,7 +969,14 @@ class LegadoSourceAdapter(
         val extras = item.extras.toMutableMap()
 
         LegadoRuleEngine.withVariables(vars) {
-            cover = fieldValue("coverUrl") ?: cover
+            // 详情页的封面同样要转绝对地址（v1.8.2.0）。有的源详情规则给的是站内相对
+            // 路径（实测 `/files/article/image/104/104246/104246s.jpg`），直接拿去加载
+            // 必然失败 —— 列表规则那边一直有 toAbsoluteUrl，详情这边漏了，于是
+            // 「列表没封面 → 靠详情补封面」补回来的仍是一张破图。
+            cover = fieldValue("coverUrl")
+                ?.takeIf { it.isNotBlank() }
+                ?.let { LegadoRuleEngine.toAbsoluteUrl(baseUrl, it) ?: it }
+                ?: cover
             author = fieldValue("author") ?: author
             desc = fieldValue("intro") ?: desc
             // 详情页元信息（#27）：状态 / 字数 / 最新章节 / 更新时间
@@ -1905,3 +1931,18 @@ class LegadoSourceAdapter(
         }.getOrNull()
     }
 }
+
+/**
+ * 「章节名当书名」的识别正则（v1.8.2.0）。
+ *
+ * 只认最明确的一类：以「第 N 章 / 回 / 节 / 卷 / 篇 / 集 / 话」开头，序号后跟分隔符
+ * 或直接结束。部分源的发现规则错位，把目录页当书籍列表抓，于是首页里冒出
+ * 「第四章　救养孤儿」「第十章　离奇玄幻」这种条目 —— 点进去没有目录，纯属噪音。
+ *
+ * 正常书名极少这样写，宁可漏判也不误杀（不匹配「第一次」「第二天」这类常用词：
+ * 序号后必须紧跟章节单位字，再跟分隔符）。
+ */
+private val CHAPTER_TITLE_RE = Regex(
+    "^第[0-9０-９一二三四五六七八九十百千零〇两]{1,8}" +
+        "[章回節节卷篇集話话](?:[\\s:：、.．·\\-—]|$)",
+)

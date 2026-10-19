@@ -1241,6 +1241,80 @@ class HomeViewModel(
                 items = sinkAdults(dedup, feedAdultIds[type].orEmpty()),
                 error = if (dedup.isEmpty()) "该栏目暂无内容" else null,
             )
+            backfillFeedCovers(type)
+        }
+    }
+
+    /**
+     * 首页封面补全（v1.8.2.0）。
+     *
+     * 上屏**之后**才跑：先把列表按原样给用户看（有封面就是有，没有就是占位块），
+     * 再在后台逐条去详情页把缺的封面找回来。补到一张就刷新一次 state，
+     * 用户看到的是「色块一张张变成封面」，而不是干等一次全量抓取。
+     *
+     * 之所以不能在上屏前补：缺封面的条目常见于整排（企鹅阅读这类源的列表规则
+     * 压根没写 coverUrl），一次首屏最多几十条，串起来补会让首页多等十几秒。
+     */
+    private var coverBackfillJob: kotlinx.coroutines.Job? = null
+
+    private fun backfillFeedCovers(type: SourceType) {
+        if (type == SourceType.VIDEO) return
+        coverBackfillJob?.cancel()
+        coverBackfillJob = viewModelScope.launch {
+            val flow = feedStateOf(type)
+            var budget = MAX_COVER_BACKFILL_TOTAL
+            // 试过的条目不再试：有些源的详情页**也没有**封面（列表规则错位的源），
+            // 不记下来的话每轮都会重试同一批，白等。
+            val tried = HashSet<String>()
+            while (budget > 0) {
+                val snapshot = flow.value
+                val targets = if (snapshot.onRecommendTab) {
+                    snapshot.rows.flatMap { it.items }
+                } else {
+                    snapshot.items
+                }
+                // 按「排」的先后顺序取：用户第一眼看到的那几排优先补齐，
+                // 往下滑的时候大概率已经轮到它了。
+                val pool = targets.filter { it.cover.isNullOrBlank() }
+                if (pool.isEmpty()) break
+                // 一批里尽量覆盖多个源（每源最多 2 条）。实测缺封面的条目常常整片
+                // 来自同一个坏源，按顺序平铺取 24 条会全落在那个源身上，一轮下来
+                // 一条都补不到；按源轮转后一批能探到十来个源。
+                val batch = ArrayList<MediaItem>(COVER_BACKFILL_BATCH)
+                val perSource = HashMap<String, Int>()
+                for (item in pool) {
+                    if (batch.size >= COVER_BACKFILL_BATCH) break
+                    val key = "${item.sourceId}\u0000${item.id}"
+                    val used = perSource[item.sourceId] ?: 0
+                    // 先看源配额再记账：超配额的条目留到下一批，不该被标记成「试过」
+                    if (used >= COVER_PER_SOURCE_PER_BATCH) continue
+                    if (!tried.add(key)) continue
+                    perSource[item.sourceId] = used + 1
+                    batch.add(item)
+                }
+                if (batch.isEmpty()) break
+                val filled = runCatchingCc {
+                    contentRepository.backfillCovers(batch, COVER_BACKFILL_BATCH)
+                }.getOrNull().orEmpty()
+                val before = batch.count { !it.cover.isNullOrBlank() }
+                val after = filled.count { !it.cover.isNullOrBlank() }
+                if (filled.isNotEmpty() && after > before) {
+                    // 补到的封面已由仓库写进 CoverMemory，这里统一套一遍即可（同时覆盖
+                    // 期间新上屏的排）。state 可能已被刷新过，所以重新取一次当前值。
+                    val cur = flow.value
+                    flow.value = cur.copy(
+                        rows = cur.rows.map { row ->
+                            row.copy(items = com.novelreader.core.util.CoverMemory.fill(row.items))
+                        },
+                        items = com.novelreader.core.util.CoverMemory.fill(cur.items),
+                    )
+                }
+                budget -= batch.size
+                android.util.Log.i(
+                    "CoverFill",
+                    "[$type] 补封面：本批 ${batch.size} 条补到 ${after - before} 张，剩余预算 $budget",
+                )
+            }
         }
     }
 
@@ -1345,8 +1419,8 @@ class HomeViewModel(
                     loadedAtMs = System.currentTimeMillis(),
                 )
                 // 落盘要在协程里；这里由调用方（协程上下文）保证
+                backfillFeedCovers(type)
             }
-
             // v1.7.4.0：整轮改成**软上界**。以前 [FEED_ROW_DEADLINE_MS] 到点就直接丢弃
             // 剩下没跑完的排 —— 而漫画排里 Venera 源单源动辄撞上 10 秒探测超时
             // （实测 copy_manga / mh18 / kavita / komiic / baozi / happy 全部 10s+），
@@ -1424,6 +1498,7 @@ class HomeViewModel(
                 loadedAtMs = if (ordered.isNotEmpty()) System.currentTimeMillis() else 0L,
             )
             if (ordered.isNotEmpty()) saveFeedCache(type)
+            backfillFeedCovers(type)
 
             // 刷新时若正停在某个具体栏目，顺带把它也重新拉一遍 —— 否则横滑排更新了、
             // 用户正看的那个栏目还停在旧结果上。用独立协程发起：loadFeedCategory 会
@@ -1475,7 +1550,11 @@ class HomeViewModel(
     // v1.7.5.0：v3 → v4。v3 及以前的缓存是「15s 枚举截止」时代的产物 ——
     // 没轮到探测的源整体出局，计划只覆盖 28/34 个漫画源；源集没变所以旧校验
     // 会一直认这份残缺缓存，修复（两段式枚举）永远不生效。升键作废重来。
-    private fun feedCacheKey(type: SourceType) = "feed_${type.name.lowercase()}_v4"
+    //
+    // v1.8.2.0：v4 → v5。v4 的 rows 里存着按旧规则采到的条目 —— 包括「更多源」同名的
+    // 重复兜底行（滑到底闪退的根因）和「第四章 救养孤儿」这类章节名当书名的残条目。
+    // 不换代的话，用户升级后首页照旧从缓存冒出这些东西，修复等于没生效。
+    private fun feedCacheKey(type: SourceType) = "feed_${type.name.lowercase()}_v5"
 
     /** 某类型当前启用源 id 集合（推荐页缓存有效性校验基准） */
     private suspend fun currentEnabledFeedIds(type: SourceType): Set<String> = runCatching {
@@ -1512,6 +1591,9 @@ class HomeViewModel(
         }
         if (payload.adultIds.isNotEmpty()) feedAdultIds[type] = payload.adultIds.toSet()
         feedEnumerated[type] = payload.enumerated
+        // 缓存里的 rows 也可能是缺封面的（缓存只存 URL 与元数据，不存图片本身），
+        // 恢复完照样要补一轮（v1.8.2.0）
+        backfillFeedCovers(type)
         return true
     }
 
@@ -1848,6 +1930,21 @@ class HomeViewModel(
     private fun dramaKey(sourceId: String, catUrl: String) = "$sourceId|$catUrl"
 
     companion object {
+        /** 单批补封面条数（v1.8.2.0）：一批补完刷新一次界面，用户能看到色块逐个变封面 */
+        private const val COVER_BACKFILL_BATCH = 24
+
+        /** 每批里同一个源最多试几条（v1.8.2.0）：按源轮转，避免整批被一个坏源吃掉 */
+        private const val COVER_PER_SOURCE_PER_BATCH = 2
+
+        /**
+         * 一次进首页最多补多少条封面（v1.8.2.0）。
+         *
+         * 实测 2211 条首屏内容里 1414 条没封面（大半源列表规则不带 coverUrl），
+         * 全量补完是几十分钟的活。这里封在 120 条：足够铺满前面十几排，
+         * 不至于让一次进首页变成一场全量详情抓取。
+         */
+        private const val MAX_COVER_BACKFILL_TOTAL = 120
+
         /** 分区视图最多展示几排（v1.5.8.0 从 6 提到 12，尽量展示所有聚合出的分类） */
         private const val MAX_VIDEO_ROWS = 12
 

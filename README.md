@@ -152,3 +152,5 @@ NovelReader/
 ## 免责声明
 
 本项目仅用于学习与个人使用，请勿用于任何违法违规用途。请尊重内容版权，支持正版。
+
+> 最新版本与 APK 下载：见本仓库 [Releases](https://github.com/leimao2333/leimao-reader/releases) 页面。

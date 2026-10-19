@@ -6,7 +6,9 @@
 逐部打标，页面实时显示总体进度条、当前源、每源进度表与滚动日志，可中途停止。
 
 v1.8.1.6：支持「网络源导入」—— 直接拉取 GitHub 云端打标表作为基底清单（可留空本地
-清单），并按 MangaReader 的方式从书名解析 作者/汉化组/作品/会场 等元数据标签。
+清单）；导入书源文件 / 网址（legado shuyuan / App JSON 源 / MoonTV-MacCMS）由 PC
+直接**遍历源站**抓取标题 + 封面（source_engine.py 精简规则引擎）；并按 MangaReader
+的方式从书名解析 作者/汉化组/作品/会场 等元数据标签。
 
 打包：pyinstaller --onefile --windowed --name leimao-pc-tagger pc_tagger_gui.py
 """
@@ -21,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pc_tagger as core
+import source_engine
 
 PAGE = """<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
@@ -48,6 +51,12 @@ PAGE = """<!doctype html>
 <fieldset><legend>配置</legend>
  <div class="row">收录清单：<input type="text" id="list"> <span class="muted">App「导出收录清单」得到的 leimao-tag-table.json 的完整路径</span></div>
  <div class="row">网络清单：<input type="text" id="cloud" style="width:480px" placeholder="https://cdn.jsdelivr.net/gh/leimao2333/leimao-reader@main/tagger/data/tag_table.json"> <span class="muted">拉云端表作为基底；两个都填则合并，留空本地则必填</span></div>
+ <div class="row">书源导入：<input type="text" id="sources" style="width:440px" placeholder="shuyuan.json / MoonTV 配置 / https://…，多个用 | 分隔"> <span class="muted">PC 直接遍历源站抓标题+封面（legado 书源 / App JSON 源 / MacCMS）</span></div>
+ <div class="row">
+   遍历页数/分类：<input type="text" id="srcPages" value="2" style="width:40px">
+   书源内容类型：<select id="srcType"><option value="COMIC">漫画</option><option value="NOVEL">小说</option></select>
+   <span class="muted">MacCMS（视频站）固定按视频收录</span>
+ </div>
  <div class="row">输出文件：<input type="text" id="out"></div>
  <div class="row">
    模型目录：<input type="text" id="model" style="width:200px">
@@ -87,7 +96,9 @@ let timer=null;
 function start(){
   fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({
-      list:v('list'), cloud:v('cloud'), out:v('out'), model:v('model'), workers:+v('workers')||6,
+      list:v('list'), cloud:v('cloud'), sources:v('sources'),
+      srcPages:+v('srcPages')||2, srcType:v('srcType')||'COMIC',
+      out:v('out'), model:v('model'), workers:+v('workers')||6,
       limit:+v('limit')||0, push:document.getElementById('push').checked,
       repo:v('repo'), path:v('path'), token:v('token')
     })}).then(r=>r.json()).then(j=>{ if(!j.ok) alert('启动失败：'+(j.error||'')); });
@@ -163,7 +174,7 @@ class TaggingJob(threading.Thread):
         def log(msg: str) -> None:
             STATE.log(msg)
 
-        # v1.8.1.6：网络清单为基底，本地清单合并补充；两者都留空才报错
+        # v1.8.1.6：网络清单为基底，本地清单合并补充；三者（含书源）都留空才报错
         cloud_url = str(self.cfg.get("cloud") or "").strip()
         list_path = str(self.cfg.get("list") or "").strip()
         items: list[dict] = []
@@ -181,13 +192,47 @@ class TaggingJob(threading.Thread):
                 ).get("items", [])
                 log(f"本地清单条目：{len(local_items)}")
                 items = core.merge_items(items, local_items)
-            if not items:
-                raise ValueError("网络清单与本地清单至少要提供一个")
-            log(f"合并后条目：{len(items)}")
         except Exception as exc:  # noqa: BLE001
             STATE.log(f"清单加载失败：{exc}")
             STATE.running, STATE.finished = False, True
             return
+
+        # 网络源遍历（v1.8.1.6）：书源文件 / 网址 → 逐源抓 标题+封面 汇入清单
+        src_specs = [s.strip() for s in str(self.cfg.get("sources") or "").split("|") if s.strip()]
+        if src_specs:
+            src_pages = int(self.cfg.get("srcPages") or 2)
+            src_type = str(self.cfg.get("srcType") or "COMIC")
+            for spec in src_specs:
+                if STATE.stop_event.is_set():
+                    break
+                try:
+                    sources = source_engine.load_sources_from_text_or_url(spec, src_type, log)
+                except Exception as exc:  # noqa: BLE001
+                    log(f"书源装载失败 {spec[:60]}：{exc}")
+                    continue
+                log(f"书源装载成功：{len(sources)} 个源（每分类抓 {src_pages} 页）")
+                for source in sources:
+                    if STATE.stop_event.is_set():
+                        break
+                    log(f"遍历源：{source.name}（{type(source).__name__}）")
+                    try:
+                        found = source.explore(src_pages, log)
+                    except Exception as exc:  # noqa: BLE001
+                        log(f"  ✗ 遍历失败 {source.name}：{exc}")
+                        found = []
+                    with STATE.lock:
+                        STATE.sources[f"[遍历] {source.name}"] = {
+                            "total": len(found), "done": len(found), "hit": len(found),
+                        }
+                    if found:
+                        items = core.merge_items(items, found)
+                        log(f"  {source.name}：收录 {len(found)} 部，合并后共 {len(items)} 条")
+
+        if not items:
+            STATE.log("网络清单、本地清单与书源导入至少要提供一个")
+            STATE.running, STATE.finished = False, True
+            return
+        log(f"合并后条目：{len(items)}")
 
         # 标题解析打标（MangaReader 式：作者/汉化组/作品/会场/平台/其他，origin=文本）
         try:
@@ -336,11 +381,12 @@ class Handler(BaseHTTPRequestHandler):
                 cfg = json.loads(body or b"{}")
                 has_list = bool(str(cfg.get("list", "")).strip())
                 has_cloud = bool(str(cfg.get("cloud", "")).strip())
+                has_sources = bool(str(cfg.get("sources", "")).strip())
                 missing = [k for k in ("out", "model") if not str(cfg.get(k, "")).strip()]
                 if missing:
                     raise ValueError(f"缺少配置：{', '.join(missing)}")
-                if not has_list and not has_cloud:
-                    raise ValueError("网络清单与本地清单至少要提供一个")
+                if not has_list and not has_cloud and not has_sources:
+                    raise ValueError("网络清单、本地清单与书源导入至少要提供一个")
                 if has_list and not Path(str(cfg["list"])).exists():
                     raise ValueError(f"清单文件不存在：{cfg['list']}")
             except Exception as exc:  # noqa: BLE001

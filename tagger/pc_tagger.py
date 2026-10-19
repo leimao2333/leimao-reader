@@ -190,8 +190,8 @@ def download_cover(url: str, timeout: int = 20) -> bytes | None:
 def run(args: argparse.Namespace) -> int:
     from PIL import Image  # noqa: F401  提前失败，免得跑完下载才报缺依赖
 
-    if not args.list and not args.cloud:
-        print("需要 --list（本地清单）或 --cloud（网络清单）至少一个")
+    if not args.list and not args.cloud and not args.sources:
+        print("需要 --list（本地清单）/ --cloud（网络清单）/ --sources（书源）至少一个")
         return 2
     items: list[dict] = []
     if args.cloud:
@@ -204,6 +204,26 @@ def run(args: argparse.Namespace) -> int:
         print(f"本地清单条目：{len(local)}")
         items = merge_items(items, local)
         print(f"合并后条目：{len(items)}")
+
+    # 网络源遍历（书源文件/网址 → 逐源抓 标题+封面）
+    if args.sources:
+        import source_engine
+        for spec in [s.strip() for s in args.sources.split("|") if s.strip()]:
+            try:
+                sources = source_engine.load_sources_from_text_or_url(spec, args.src_type, print)
+            except Exception as exc:  # noqa: BLE001
+                print(f"书源装载失败 {spec[:60]}：{exc}")
+                continue
+            print(f"书源装载成功：{len(sources)} 个源")
+            for source in sources:
+                try:
+                    found = source.explore(args.src_pages, print)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  ✗ 遍历失败 {source.name}：{exc}")
+                    found = []
+                if found:
+                    items = merge_items(items, found)
+                    print(f"  {source.name}：收录 {len(found)} 部")
 
     # 标题解析打标（MangaReader 式：作者 / 汉化组 / 作品 / 会场 等，origin=文本）
     title_tagged = apply_title_tags(items)
@@ -498,6 +518,9 @@ def main() -> None:
     parser.add_argument("--list", default=None, help="App 导出的收录清单 JSON（tag_table.json）；与 --cloud 至少给一个")
     parser.add_argument("--cloud", nargs="?", const=DEFAULT_CLOUD_TABLE_URL, default=None,
                         help=f"网络清单 URL（缺省 {DEFAULT_CLOUD_TABLE_URL}）：拉取云端表作为基底，与 --list 合并")
+    parser.add_argument("--sources", default=None, help="书源文件/网址（legado shuyuan / App JSON 源 / MoonTV 配置，多个用 | 分隔）：PC 直接遍历抓 标题+封面")
+    parser.add_argument("--src-pages", type=int, default=2, help="书源遍历每分类抓几页（默认 2）")
+    parser.add_argument("--src-type", default="COMIC", choices=["COMIC", "NOVEL"], help="书源条目内容类型（MacCMS 固定 VIDEO）")
     parser.add_argument("--out", default="tag_table.json", help="输出路径（默认 ./tag_table.json）")
     parser.add_argument("--vocab", default=str(Path(__file__).resolve().parent / "vocab.json"), help="受控词表")
     parser.add_argument("--model-dir", default="models/wd14", help="模型缓存目录")

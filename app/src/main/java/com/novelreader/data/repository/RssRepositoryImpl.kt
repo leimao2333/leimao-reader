@@ -356,9 +356,14 @@ class RssRepositoryImpl(
                     isPreset = JournalCatalog.matchPreset(ref) != null,
                 )
             }
+        // 预设永远排前面（用户点名的六本是「开箱可订」的重点），其余按 Crossref 收录量降序。
+        // 不用 totalDois = Int.MAX_VALUE 把预设顶上去 —— 那个值会原样显示成「2147483647 篇」。
         return (presets + remote)
             .distinctBy { it.issn }
-            .sortedByDescending { it.totalDois }
+            .sortedWith(
+                compareByDescending<JournalCandidate> { it.isPreset }
+                    .thenByDescending { it.totalDois }
+            )
     }
 
     private fun com.novelreader.core.rss.JournalPreset.toCandidate(): JournalCandidate =
@@ -369,7 +374,8 @@ class RssRepositoryImpl(
             shortName = shortName,
             publisher = publisher,
             field = field,
-            totalDois = Int.MAX_VALUE,
+            // 预设刊的收录量不在本地数据里，留 0 让界面不显示「N 篇」
+            totalDois = 0,
             isPreset = true,
         )
 

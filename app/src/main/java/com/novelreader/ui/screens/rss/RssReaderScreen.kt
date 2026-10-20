@@ -1,7 +1,7 @@
 package com.novelreader.ui.screens.rss
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -186,32 +186,67 @@ class RssReaderViewModel(
     // ==================== 论文增强（v1.8.5.0） ====================
 
     /**
-     * 抓原文页抽正文 / 摘要。
+     * 抓原文页抽正文 / 摘要；失败时退回 Crossref 摘要，并给出**被拦的真实原因**。
      *
      * 期刊 RSS 的 description 通常只有一句引用（"Science, Volume 394, Issue 6821…"），
      *  Crossref 又没有 abstract 的刊（ACS / RSC 都不给），阅读页就是一张空卡。
-     * 这里退回原文页用 [ArticleBodyExtractor] 抽一层：付费墙下也能拿到摘要，
-     * 并顺手把 Highwire `citation_*` meta 里的题录补全。
+     *
+     * 为什么先问 Crossref：实测 Science / PNAS / Cell / ACS 的原文页全是 Cloudflare
+     * 挑战页（403），Nature 对无 cookie 客户端返回 404 —— 直接抓原文页基本白跑一趟。
+     * Crossref 免 key、无反爬，且 RSC（Chemical Science）等刊确实有 abstract，
+     * 摘要够长时这一步就能填满阅读页，还省下一次注定被拦的请求。
      */
     fun loadFullText() {
         val a = article.value ?: return
-        val url = a.link.ifBlank { a.paperMeta.doiUrl().ifBlank { PaperPdf.pdfUrl(a.doi) } }
-        if (url.isBlank()) {
-            _journal.value = _journal.value.copy(note = "这篇文章没有原文链接")
-            return
-        }
         viewModelScope.launch {
             _journal.value = _journal.value.copy(loading = true, note = "")
+
+            val crossref = if (a.doi.isNotBlank()) {
+                runCatching { CrossrefClient.workByDoi(a.doi) }.getOrNull()
+            } else null
+            val crossrefHtml = crossref?.abstractHtml.orEmpty()
+
+            if (RssContent.plainText(crossrefHtml).length >= USABLE_ABSTRACT_CHARS) {
+                _journal.value = _journal.value.copy(
+                    loading = false,
+                    fullTextHtml = crossrefHtml,
+                    partial = true,
+                    note = "已获取 Crossref 摘要；出版方正文页有反爬验证，全文需用浏览器打开",
+                    enrichedMeta = (article.value?.paperMeta ?: PaperMeta())
+                        .mergeWith(crossref?.toPaperMeta() ?: PaperMeta())
+                        .takeIf { it.hasContent },
+                )
+                return@launch
+            }
+
+            val url = a.link.ifBlank { a.paperMeta.doiUrl().ifBlank { PaperPdf.pdfUrl(a.doi) } }
+            if (url.isBlank()) {
+                _journal.value = _journal.value.copy(
+                    loading = false,
+                    note = if (crossrefHtml.isNotBlank()) "只有 Crossref 摘要这么长"
+                    else "这篇文章没有原文链接",
+                )
+                return@launch
+            }
             val html = runCatching {
                 HttpClient.get(url, ARTICLE_PAGE_HEADERS, timeoutMs = 25_000L)
             }.getOrNull()
             if (html.isNullOrBlank()) {
-                _journal.value = _journal.value.copy(loading = false, note = "打不开原文页（可能需要登录或被反爬拦截）")
+                _journal.value = _journal.value.copy(loading = false, note = "打不开原文页（超时或域名无法解析）")
+                return@launch
+            }
+            // 被反爬拦下：说清原因，别让用户以为 App 坏了
+            val blocked = ArticleBodyExtractor.blockedReason(html)
+            if (blocked.isNotEmpty()) {
+                _journal.value = _journal.value.copy(loading = false, note = blocked)
                 return@launch
             }
             val extraction = ArticleBodyExtractor.extract(html, url)
             if (extraction.isEmpty) {
-                _journal.value = _journal.value.copy(loading = false, note = "页面里没抽出正文，可点右上角用浏览器打开")
+                _journal.value = _journal.value.copy(
+                    loading = false,
+                    note = "页面里没抽出正文，可点右上角用浏览器打开",
+                )
                 return@launch
             }
             _journal.value = _journal.value.copy(
@@ -310,6 +345,12 @@ class RssReaderViewModel(
         val ARTICLE_PAGE_HEADERS: Map<String, String> = mapOf(
             "Accept-Language" to "zh-CN,zh;q=0.9,en;q=0.8",
         )
+
+        /**
+         * Crossref 摘要至少多少字才值得单独展示。
+         * 低于这个数说明只是「一句话摘要」，还不如去抓原文页试试。
+         */
+        const val USABLE_ABSTRACT_CHARS = 120
     }
 }
 
@@ -341,13 +382,11 @@ fun RssReaderScreen(
         if (a != null && !a.read) viewModel.markRead(true)
     }
 
-    // 一次性提示（抓到全文 / 只有摘要 / 打不开原文页）
-    LaunchedEffect(journalState.note) {
-        if (journalState.note.isNotBlank()) {
-            android.widget.Toast.makeText(context, journalState.note, android.widget.Toast.LENGTH_LONG).show()
-            viewModel.dismissJournalNote()
-        }
-    }
+    /**
+     * 论文动作的结果提示**常驻**在题录卡里，不用 Toast。
+     * 「出版方有反爬验证，抓不到正文」这类原因正是用户最需要看到的信息，
+     * 3 秒的 Toast 一眨就过去了；常驻到切换文章才清掉。
+     */
 
     /** 引用导出弹窗 */
     var showCitation by remember { mutableStateOf<CitationFormat?>(null) }
@@ -495,6 +534,7 @@ fun RssReaderScreen(
                         meta = paperMeta,
                         pdfUrl = pdfUrl,
                         loading = journalState.loading,
+                        note = journalState.note,
                         fetchedFullText = journalState.fullTextHtml.isNotBlank(),
                         partialFullText = journalState.partial,
                         onFetchFullText = { viewModel.loadFullText() },
@@ -586,6 +626,8 @@ private fun PaperCitationCard(
     meta: PaperMeta,
     pdfUrl: String,
     loading: Boolean,
+    /** 上一个动作的结果 / 失败原因（空 = 不显示） */
+    note: String,
     fetchedFullText: Boolean,
     partialFullText: Boolean,
     onFetchFullText: () -> Unit,
@@ -708,6 +750,24 @@ private fun PaperCitationCard(
                     Text("引用", style = MaterialTheme.typography.labelMedium)
                 }
             }
+
+            // 动作结果 / 失败原因常驻显示。
+            // 「出版方有反爬验证」这类信息是用户最需要看到的 —— 一闪而过的 Toast 会被错过。
+            if (note.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = note,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                    )
+                }
+            }
         }
     }
 }
@@ -760,14 +820,20 @@ private fun PaperCitationDialog(
                         .fillMaxWidth()
                         .heightIn(min = 140.dp, max = 280.dp),
                 ) {
-                    Box(modifier = Modifier.padding(10.dp)) {
+                    // 纵向滚动 + 自然换行。
+                    // 别用 horizontalScroll：引用条目的每一行都很长（DOI / 作者列表），
+                    // 横向滚动会让 Text 按无限宽测量从而完全不换行，右侧整段被裁掉。
+                    Box(
+                        modifier = Modifier
+                            .verticalScroll(rememberScrollState())
+                            .padding(10.dp),
+                    ) {
                         SelectionContainer {
                             Text(
                                 text = text,
                                 style = MaterialTheme.typography.bodySmall,
-                                // 引用格式靠等宽对齐，且要能横向滚动看完一整行
-                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                // 引用格式靠等宽对齐，字段名竖着成一列更好比对
+                                fontFamily = FontFamily.Monospace,
                             )
                         }
                     }

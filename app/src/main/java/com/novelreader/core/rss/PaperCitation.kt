@@ -148,8 +148,20 @@ object PaperCitation {
     private fun linkOf(meta: PaperMeta): String =
         meta.doiUrl().ifBlank { "https://doi.org/" }
 
+    /**
+     * BibTeX 特殊字符转义。
+     *
+     * `&` `%` `$` `#` 是 Must 级别（不转义直接报错），`_` 是会悄悄毁掉数学模式的
+     * 那一档 —— 标题里出现 `CO_2` / `deep_learning` 时，LaTeX 会把 `_` 当成下标命令。
+     * 化学与机器学习论文的标题撞上它的概率不低，所以一并转掉。
+     */
     private fun escapeBibtex(s: String): String =
-        s.replace("&", "\\&").replace("%", "\\%").replace("$", "\\$").replace("#", "\\#")
+        s.replace("\\", "\\textbackslash{}")
+            .replace("&", "\\&")
+            .replace("%", "\\%")
+            .replace("$", "\\$")
+            .replace("#", "\\#")
+            .replace("_", "\\_")
 
     private fun String.sanitizeKey(): String =
         lowercase().replace(Regex("[^a-z0-9]"), "")

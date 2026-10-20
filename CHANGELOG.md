@@ -17,20 +17,25 @@
 - **引用导出（BibTeX / RIS）**：题录卡点「引用」即生成 BibTeX（LaTeX / Overleaf）或 RIS（EndNote / Zotero / NoteExpress），cite key 自动取「第一作者姓 + 年 + 标题首词」，弹窗可整段选中复制。以前要回出版社网页走「Download citation → 选格式 → 再下载」。
 - **PDF 直链**：Science `10.1126` → `science.org/doi/pdf/…`、Nature `10.1038` → `nature.com/articles/….pdf`、PNAS `10.1073`、ACS/JACS `10.1021` → `pubs.acs.org/doi/pdf/…`；Cell 与 RSC 的 PDF 路径依赖 PII / 期刊代码，从原文链接里抠。拼不出来的出版社**不显示按钮**。
 - **获取全文**：抓原文页，按三层兜底抽正文（Highwire `citation_*` meta → 摘要容器 → 文本量最大的正文容器），顺手把页面 meta 里的完整作者列表补进题录。抽到的正文不足 1200 字时明确提示「只拿到摘要」。
+- **获取全文**：抓原文页，按三层兜底抽正文（Highwire `citation_*` meta → 摘要容器 → 文本量最大的正文容器），顺手把页面 meta 里的完整作者列表补进题录。抽到的正文不足 1200 字时明确提示「只拿到摘要」。**先问 Crossref 再抓原文页** —— 实测 Science / PNAS / Cell / ACS 的原文页全是 Cloudflare 挑战页（403），Nature 对无 cookie 客户端返回 404，直接抓基本白跑一趟；Crossref 免 key 无反爬，且 RSC（Chemical Science）确实有 abstract，够长时这一步就能填满阅读页。
 - **补全题录**：卷 / 期 / 页 / 完整作者 / 摘要缺失时点「补全题录」，向 Crossref `/works/{doi}` 拉一次结构化题录覆写。补全走的是**逐字段补空**（`PaperMeta.mergeWith`）而不是整体替换 —— Crossref 的题录可能比页面 meta 更全（卷 / 期 / 页），页面 Highwire meta 的作者列表又可能比 Crossref 更全，两个来源各有所长；直接替换会出现「补全之后卷期页反而没了」的倒退。
 - **期刊源自动归入「期刊」分组**：一次订阅六本顶刊后，源 chips 行会被它们占满。分组筛选让期刊和博客 / 资讯站能分开看待；用户之后仍可自行改分组或移出（升级前已订阅的同址期刊源会自动补分组）。
+- **动作结果常驻显示**：「出版方有反爬验证」「原文页返回 404」「题录已按 Crossref 补全」这类信息不再用 Toast 一闪而过 —— 它们恰恰是用户最需要看到的，常驻到切换文章才清掉。
 
 ### 修复
 
 - **JATS 摘要的斜体永远不结束**：`</?jats:italic>` 这种带 `?` 的写法会把闭标签也替成 `<i>`，得到 `<i>in vivo<i>` —— 浏览器看到的是嵌套的同名开标签。改成开标签与闭标签分开替换。
 - **cite key 里混进整个连字符词**：`Nobel-prizewinning breakthroughs` 不把连字符当分隔符的话，首个实词是 `Nobel-prizewinning`，cite key 变成 `zhang2026nobelprizewinning` —— 又长又难认。现在连字符 / 下划线 / 斜杠一并分词，得到 `zhang2026nobel`。
 - **`JournalCandidate.subscribeUrl` 不吃 ISSN 两侧空白**：搜索框带空格粘贴时拼出的地址谁也解析不了，且是运行时才暴露的静默故障。两边 trim 后由 `JournalCandidateTest` 断言与 `JournalFeed.urlOf` 一致。
+- **引用弹窗的 BibTeX 右侧被整段裁掉**：给正文 Text 加了 `horizontalScroll` —— 横向滚动会让 Text 按无限宽测量从而**完全不换行**，每一行都被右边界切掉。改成纵向滚动 + 自然换行。
+- **增补「被拦原因」识别**：`ArticleBodyExtractor.blockedReason` 认 Cloudflare 挑战页 / 无 cookie 的 404 页 / 登录墙，并给出人话原因。不识别的话这些页面会走完整套抽取流程后报一句「没抽出正文」—— 用户会以为 App 坏了，其实是出版方在拦爬虫。样例是真实报文（`src/test/resources/rss/blocked_*.html`）。
 
 ### 数据与测试
 
 - 数据库升到 **version 16**：`rss_articles` 新增 `doi` 与 `paperMetaJson` 两列（`MIGRATION_15_16`，含 DOI 索引）。题录用 JSON 而不是拆十几列 —— 以后加基金号 / 引用数 / ORCID 零迁移成本。备份 / 恢复走 Gson 序列化实体，新列自动往返。
-- 新增 `JournalFeedParseTest` 15 条、`CrossrefAndCitationTest` 21 条、`JournalCandidateTest` 4 条，样例全部是**真实抓取的报文**（`science.xml` / `nature.xml` / `pnas.xml`、Crossref `/journals/{issn}/works` 与 `/journals?query=` 响应）。
-- 全量单测 **854 用例 / 6 跳过 / 0 失败**。
+- 新增 `JournalFeedParseTest` 15 条、`CrossrefAndCitationTest` 21 条、`JournalCandidateTest` 4 条、`BlockedPageReasonTest` 6 条，样例全部是**真实抓取的报文**（`science.xml` / `nature.xml` / `pnas.xml`、Crossref `/journals/{issn}/works` 与 `/journals?query=` 响应、Cloudflare 挑战页与 Nature 404 页）。
+- **真机验证**（模拟器 x86_64，v1.8.5.0 release 包）：订阅 Nature → 30 篇入库、自动归入「期刊」分组；题录卡渲染完整；BibTeX / RIS 导出内容正确；「补全题录」成功；「打开 PDF」在真浏览器里正确落到 nature.com；DB 15→16 迁移无崩溃。
+- 全量单测 **861 用例 / 6 跳过 / 0 失败**。
 
 ## v1.8.4.4（2026-10-20）
 

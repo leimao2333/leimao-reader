@@ -1,5 +1,6 @@
 package com.novelreader.data.model
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -12,7 +13,13 @@ import androidx.room.PrimaryKey
  */
 @Entity(
     tableName = "rss_articles",
-    indices = [Index(value = ["feedId", "guid"], unique = true)],
+    indices = [
+        Index(value = ["feedId", "guid"], unique = true),
+        // 与 MIGRATION_15_16 的 CREATE INDEX 对应：题录卡「按 DOI 查 Crossref」
+        // 不必反序列化 JSON，将来做「这篇文章在哪本刊」这类统计也用得上。
+        // 两侧都要声明，否则 Room 迁移校验会以索引缺失在启动时崩掉。
+        Index(value = ["doi"]),
+    ],
 )
 data class RssArticleEntity(
     @PrimaryKey(autoGenerate = true)
@@ -38,7 +45,12 @@ data class RssArticleEntity(
      *
      * 单独存一列而不是只塞进 [paperMetaJson]：按 DOI 去重、按 DOI 查 Crossref
      * 都要能直接查，不必反序列化 JSON。
+     *
+     * [ColumnInfo.defaultValue] 必须与 `MIGRATION_15_16` 里的 `DEFAULT ''` 一致：
+     * Room 迁移后会拿实体推断的表结构与实际表结构逐列比对，少写这一句会以
+     * `Migration didn't properly handle: rss_articles` 在启动时崩掉（真机实测）。
      */
+    @ColumnInfo(defaultValue = "")
     val doi: String = "",
     /**
      * 论文题录 JSON（v1.8.5.0；`PaperMeta` 序列化，空 = 非期刊文章）。
@@ -46,6 +58,7 @@ data class RssArticleEntity(
      * 用 JSON 而不是拆成十几列：题录字段将来还会加（基金、引用数、ORCID…），
      * 拆列每加一个字段就要一次迁移，代价远大于收益。
      */
+    @ColumnInfo(defaultValue = "")
     val paperMetaJson: String = "",
     /** 已读标记 */
     val read: Boolean = false,

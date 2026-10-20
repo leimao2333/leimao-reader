@@ -163,6 +163,47 @@ object ArticleBodyExtractor {
 
     // ==================== 内部工具 ====================
 
+    /**
+     * 页面被反爬 / 错误页拦下时返回**人话原因**，正常页面返回空串。
+     *
+     * 实测（v1.8.5.0，`curl` 带完整浏览器 UA）：
+     * Science / PNAS / Cell / ACS 全部返回 Cloudflare 挑战页（`Just a moment...`），
+     * Nature 对不带 cookie 的客户端返回 `error=cookies_not_supported` 的 404 页。
+     *
+     * 为什么值得单独识别：不识别的话这些页面会走完整套抽取流程，最后报告一句
+     * 「没抽出正文」—— 用户会以为 App 坏了，其实是出版方在拦爬虫。
+     * 给出真实原因，用户才知道该改用浏览器打开。
+     *
+     * 样例是真实报文（`src/test/resources/rss/blocked_*.html`）。
+     */
+    fun blockedReason(html: String): String {
+        if (html.isBlank()) return "页面为空"
+        val lower = html.lowercase()
+        // Cloudflare 的 JS 挑战页：标题固定，且只有几 KB
+        if (lower.contains("just a moment...") ||
+            lower.contains("checking your browser") ||
+            lower.contains("cf-browser-verification") ||
+            lower.contains("attention required! | cloudflare") ||
+            lower.contains("enable javascript and cookies to continue")
+        ) {
+            return "出版方有反爬验证（Cloudflare），抓不到正文"
+        }
+        // Nature 一类：对无 cookie 客户端直接返回 404
+        val notFound = Regex("(?i)<title>\\s*(page not found|404|error)\\b").containsMatchIn(html) ||
+            Regex("(?i)<title>[^<]*not found").containsMatchIn(html)
+        if (notFound || lower.contains("error=cookies_not_supported")) {
+            return "原文页返回 404（可能需登录，或 DOI 尚未指向正式文章页）"
+        }
+        // 登录墙 / 订阅墙
+        if (lower.contains("sign in to continue") ||
+            lower.contains("purchase this article") ||
+            lower.contains("get access to the full version")
+        ) {
+            return "这篇需要登录或订阅才能阅读全文"
+        }
+        return ""
+    }
+
     private fun titleOf(doc: org.jsoup.nodes.Document): String {
         val candidates = listOf(
             doc.selectFirst("meta[name=citation_title]")?.attr("content"),

@@ -187,6 +187,18 @@ class CrossrefAndCitationTest {
     }
 
     @Test
+    fun `BibTeX 转义反斜杠与下划线`() {
+        val bib = PaperCitation.bibtex(
+            natureMeta,
+            "CO_2 fixation via deep_learning 50\\% faster",
+            listOf("Zhang San"),
+        )
+        // `_` 不转义会被 LaTeX 当成下标命令，化学 / 机器学习标题里很常见
+        assertTrue(bib.contains("CO\\_2 fixation via deep\\_learning"))
+        assertTrue(bib.contains("\\textbackslash{}"))
+    }
+
+    @Test
     fun `cite key 取第一作者姓 与 年`() {
         val key = PaperCitation.citeKey(natureMeta, "Nobel-prizewinning breakthroughs", natureMeta.authors)
         assertEquals("zhang2026nobel", key)

@@ -178,6 +178,11 @@
   - **阅读页增强**：`ArticleBodyExtractor` 抓原文页抽正文（Highwire `citation_*` meta →
     摘要容器 → 文本量最大容器），付费墙下也能读到摘要；可再按 DOI 向 Crossref 补题录。
     补全逐字段「补空」（`PaperMeta.mergeWith`），不整体替换 —— Crossref 与页面 meta 各有所长。
+  - **先问 Crossref 再抓原文页**：实测 Science / PNAS / Cell / ACS 原文页全是 Cloudflare
+    挑战页（403），Nature 对无 cookie 客户端返回 404 —— 直接抓原文页基本白跑。
+    Crossref 免 key 无反爬，且 RSC（Chemical Science）有 abstract，够长时不再抓原文页。
+  - `ArticleBodyExtractor.blockedReason` 认 Cloudflare 挑战 / 404 / 登录墙并给出人话原因；
+    动作结果在题录卡里**常驻**（不用 Toast 一闪而过）。
   - 期刊源自动归入「期刊」分组，分组筛选下期刊与博客 / 资讯站可分开看。
   - `rss_articles` 新增 `doi` / `paperMetaJson` 两列（DB version 16，`MIGRATION_15_16`）。
   - 涉及：`core/rss/{PaperMeta,PaperCitation,PaperMetaJson,PaperPdf,CrossrefJson,CrossrefClient,

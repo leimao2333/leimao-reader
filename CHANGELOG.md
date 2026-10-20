@@ -6,6 +6,32 @@
 >
 > 撰写约定：说明里出现 legado 规则语法（`@put` / `@get` / `@js` 等）时**必须用反引号包裹** —— 否则 GitHub 会把它们当成用户提及，Release 页面的 Contributors 会凭空多出同名用户。
 
+## v1.8.5.0（2026-10-20）
+
+> RSS 板块期刊改造：把 Science / Nature / Cell / Chemical Science / PNAS / JACS 做成「开箱可订」的期刊源，阅读页补上题录卡、引用导出、PDF 直链与全文抓取。
+
+### 新增
+
+- **六本顶刊开箱可订**：订阅页顶栏新增「书」图标，内置 Science、Nature、Cell、Chemical Science、PNAS、JACS 预设，点一下即订阅；也可按刊名 / ISSN / 出版社检索 Crossref 收录的**任意**期刊。期刊源走 `crossref:issn:` 虚拟订阅形态 —— 订阅、增量、未读、分组、收藏、阅读页全部沿用原有 RSS 链路，不新增一套数据通路。
+- **题录卡**：Science / Nature / PNAS / Cell 的 RSS 带 Prism 元数据（`prism:doi` / `prism:volume` / `prism:number` / `prism:startingPage` / `dc:creator`），此前全被解析器丢掉。现在这些字段解析成题录，阅读页在标题下方渲染「期刊, 卷(期): 页 (年)」题录卡，含文章类型、出版社、作者列表与 DOI。
+- **引用导出（BibTeX / RIS）**：题录卡点「引用」即生成 BibTeX（LaTeX / Overleaf）或 RIS（EndNote / Zotero / NoteExpress），cite key 自动取「第一作者姓 + 年 + 标题首词」，弹窗可整段选中复制。以前要回出版社网页走「Download citation → 选格式 → 再下载」。
+- **PDF 直链**：Science `10.1126` → `science.org/doi/pdf/…`、Nature `10.1038` → `nature.com/articles/….pdf`、PNAS `10.1073`、ACS/JACS `10.1021` → `pubs.acs.org/doi/pdf/…`；Cell 与 RSC 的 PDF 路径依赖 PII / 期刊代码，从原文链接里抠。拼不出来的出版社**不显示按钮**。
+- **获取全文**：抓原文页，按三层兜底抽正文（Highwire `citation_*` meta → 摘要容器 → 文本量最大的正文容器），顺手把页面 meta 里的完整作者列表补进题录。抽到的正文不足 1200 字时明确提示「只拿到摘要」。
+- **补全题录**：卷 / 期 / 页 / 完整作者 / 摘要缺失时点「补全题录」，向 Crossref `/works/{doi}` 拉一次结构化题录覆写。补全走的是**逐字段补空**（`PaperMeta.mergeWith`）而不是整体替换 —— Crossref 的题录可能比页面 meta 更全（卷 / 期 / 页），页面 Highwire meta 的作者列表又可能比 Crossref 更全，两个来源各有所长；直接替换会出现「补全之后卷期页反而没了」的倒退。
+- **期刊源自动归入「期刊」分组**：一次订阅六本顶刊后，源 chips 行会被它们占满。分组筛选让期刊和博客 / 资讯站能分开看待；用户之后仍可自行改分组或移出（升级前已订阅的同址期刊源会自动补分组）。
+
+### 修复
+
+- **JATS 摘要的斜体永远不结束**：`</?jats:italic>` 这种带 `?` 的写法会把闭标签也替成 `<i>`，得到 `<i>in vivo<i>` —— 浏览器看到的是嵌套的同名开标签。改成开标签与闭标签分开替换。
+- **cite key 里混进整个连字符词**：`Nobel-prizewinning breakthroughs` 不把连字符当分隔符的话，首个实词是 `Nobel-prizewinning`，cite key 变成 `zhang2026nobelprizewinning` —— 又长又难认。现在连字符 / 下划线 / 斜杠一并分词，得到 `zhang2026nobel`。
+- **`JournalCandidate.subscribeUrl` 不吃 ISSN 两侧空白**：搜索框带空格粘贴时拼出的地址谁也解析不了，且是运行时才暴露的静默故障。两边 trim 后由 `JournalCandidateTest` 断言与 `JournalFeed.urlOf` 一致。
+
+### 数据与测试
+
+- 数据库升到 **version 16**：`rss_articles` 新增 `doi` 与 `paperMetaJson` 两列（`MIGRATION_15_16`，含 DOI 索引）。题录用 JSON 而不是拆十几列 —— 以后加基金号 / 引用数 / ORCID 零迁移成本。备份 / 恢复走 Gson 序列化实体，新列自动往返。
+- 新增 `JournalFeedParseTest` 15 条、`CrossrefAndCitationTest` 21 条、`JournalCandidateTest` 4 条，样例全部是**真实抓取的报文**（`science.xml` / `nature.xml` / `pnas.xml`、Crossref `/journals/{issn}/works` 与 `/journals?query=` 响应）。
+- 全量单测 **854 用例 / 6 跳过 / 0 失败**。
+
 ## v1.8.4.4（2026-10-20）
 
 > 给 v1.8.4.3 的「尾段预缓冲下一集」补两道闸：别偷用户流量，也别抢正在播的那一集的带宽。

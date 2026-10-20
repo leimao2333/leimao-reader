@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Deselect
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material.icons.filled.SelectAll
@@ -72,6 +73,7 @@ import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
 import com.novelreader.core.rss.RssMessages
 import com.novelreader.core.rss.RssParser
+import com.novelreader.domain.model.JournalCandidate
 import com.novelreader.domain.model.RssArticle
 import com.novelreader.domain.model.RssFeed
 import com.novelreader.domain.model.RssFeedResult
@@ -82,7 +84,10 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -391,6 +396,61 @@ class RssViewModel(
         viewModelScope.launch { repository.toggleStar(article.articleId) }
     }
 
+    // ==================== 期刊订阅（v1.8.5.0） ====================
+
+    private val journalQuery = MutableStateFlow("")
+
+    /** 期刊检索中（点「搜索」或输入停顿 400ms 后开始，用于显示 loading） */
+    private val _journalSearching = MutableStateFlow(false)
+    val journalSearching: StateFlow<Boolean> = _journalSearching.asStateFlow()
+
+    /**
+     * 期刊候选列表。
+     *
+     * 空查询直接返回内置六本顶刊预设（纯内存，不联网）；
+     * 有查询时走 [RssRepository.searchJournals]（预设模糊匹配 + Crossref 检索）。
+     * 用 `debounce` 是因为检索框每敲一个字都会变，不防抖会把 Crossref 打到限流。
+     */
+    val journalCandidates: StateFlow<List<JournalCandidate>> = journalQuery
+        .debounce { q -> if (q.isEmpty()) 0L else 400L }
+        .distinctUntilChanged()
+        .flatMapLatest { q ->
+            flow {
+                _journalSearching.value = true
+                try {
+                    emit(runCatching { repository.searchJournals(q) }.getOrDefault(emptyList()))
+                } finally {
+                    _journalSearching.value = false
+                }
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** 打开期刊订阅面板：先展示预设，再按关键词检索 */
+    fun openJournalPanel() {
+        journalQuery.value = ""
+    }
+
+    fun searchJournals(query: String) {
+        journalQuery.value = query.trim()
+    }
+
+    /** 订阅一个期刊（就是加一个 `crossref:issn:` 虚拟源） */
+    fun subscribeJournal(candidate: JournalCandidate) {
+        viewModelScope.launch {
+            _refreshing.value = true
+            _message.value = "正在获取《${candidate.displayName}》最新论文…"
+            val result = runCatching { repository.addFeed(candidate.subscribeUrl) }
+                .getOrElse { RssFeedResult(0, "", "", error = it.message ?: "订阅失败") }
+            _refreshing.value = false
+            _message.value = if (result.ok) {
+                "已订阅《${result.title.ifBlank { candidate.displayName }}》（${result.fetchedArticles} 篇）"
+            } else {
+                result.error ?: "订阅失败"
+            }
+        }
+    }
+
     companion object {
         /** 超过 30 分钟未抓取即视为过期（进入页面时自动刷新） */
         private const val STALE_MILLIS = 30 * 60 * 1000L
@@ -437,6 +497,8 @@ fun RssScreen(
     LaunchedEffect(Unit) { viewModel.refreshIfStale() }
 
     var showAddDialog by rememberSaveable { mutableStateOf(false) }
+    /** 期刊订阅面板（v1.8.5.0） */
+    var showJournalDialog by rememberSaveable { mutableStateOf(false) }
     var manageFeed by remember { mutableStateOf<RssFeed?>(null) }
     var actionArticle by remember { mutableStateOf<RssArticle?>(null) }
     /** 正在重命名的分组（null = 没打开） */
@@ -492,6 +554,9 @@ fun RssScreen(
                             IconButton(onClick = { viewModel.refreshAll() }) {
                                 Icon(Icons.Filled.Refresh, contentDescription = "刷新全部")
                             }
+                        }
+                        IconButton(onClick = { showJournalDialog = true }) {
+                            Icon(Icons.Filled.MenuBook, contentDescription = "订阅期刊")
                         }
                         IconButton(onClick = { viewModel.markAllRead() }) {
                             Icon(Icons.Filled.DoneAll, contentDescription = "全部已读")
@@ -615,7 +680,9 @@ fun RssScreen(
 
                 feeds.isEmpty() -> EmptyState(
                     title = "还没有订阅",
-                    subtitle = "点右上角「＋」添加订阅地址\n支持 RSS / Atom 源，也可直接粘贴 OPML",
+                    subtitle = "点右上角「＋」添加订阅地址\n" +
+                        "点「书」图标可直接订阅 Science / Nature / Cell 等顶刊\n" +
+                        "支持 RSS / Atom 源，也可直接粘贴 OPML",
                     onAction = { showAddDialog = true },
                 )
 
@@ -678,6 +745,22 @@ fun RssScreen(
             dismissButton = {
                 TextButton(onClick = { showAddDialog = false }) { Text("取消") }
             },
+        )
+    }
+
+    // 期刊订阅面板（v1.8.5.0）
+    if (showJournalDialog) {
+        val journalCandidates by viewModel.journalCandidates.collectAsState()
+        val journalSearching by viewModel.journalSearching.collectAsState()
+        JournalSubscribeDialog(
+            candidates = journalCandidates,
+            searching = journalSearching,
+            subscribedUrls = remember(feeds) {
+                feeds.mapTo(mutableSetOf()) { it.url }
+            },
+            onQueryChange = { viewModel.searchJournals(it) },
+            onSubscribe = { viewModel.subscribeJournal(it) },
+            onDismiss = { showJournalDialog = false },
         )
     }
 

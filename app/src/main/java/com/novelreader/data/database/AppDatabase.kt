@@ -32,7 +32,7 @@ import com.novelreader.data.model.SourceEntity
         LocalTagEntity::class,
         TagInstanceEntity::class,
     ],
-    version = 15,
+    version = 16,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -351,6 +351,23 @@ abstract class AppDatabase : RoomDatabase() {
                     "CREATE INDEX IF NOT EXISTS index_tag_instances_itemType_tagName " +
                         "ON tag_instances (itemType, tagName)",
                 )
+            }
+        }
+
+        /**
+         * v15 -> v16：RSS 文章表新增论文题录（v1.8.5.0）。
+         *
+         * `doi` 单独成列是为了「按 DOI 去重 / 按 DOI 查 Crossref」不用反序列化；
+         * `paperMetaJson` 存整份 `PaperMeta`（期刊 / 卷 / 期 / 页 / 年 / 作者 / 类型），
+         * 将来加字段（基金、ORCID…）不必再迁移。
+         *
+         * 存量数据默认空串 = 非期刊文章，阅读页不渲染题录卡，行为与旧版一致。
+         */
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE rss_articles ADD COLUMN doi TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE rss_articles ADD COLUMN paperMetaJson TEXT NOT NULL DEFAULT ''")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_rss_articles_doi ON rss_articles (doi)")
             }
         }
 

@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns="http://purl.org/rss/1.0/"
+         xmlns:cc="http://web.resource.org/cc/"
+         xmlns:content="http://purl.org/rss/1.0/modules/content/"
+         xmlns:dc="http://purl.org/dc/elements/1.1/"
+         xmlns:enc="http://purl.oclc.org/net/rss_2.0/enc/"
+         xmlns:prism="http://prismstandard.org/namespaces/basic/2.0/">
+   <channel rdf:about="https://www.science.org/loi/science?af=R">
+      <title>AAAS: Science: Table of Contents</title>
+      <description>Table of Contents for Science. List of articles from both the latest and ahead of print issues.</description>
+      <link>https://www.science.org/loi/science?af=R</link>
+      <dc:publisher>AAAS</dc:publisher>
+      <dc:language>en-US</dc:language>
+      <prism:publicationName>Science</prism:publicationName>
+      <items>
+         <rdf:Seq>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aek0152?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aem4081?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.adq6530?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.ady7647?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.adz4903?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.adz5323?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aee0658?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aeh1409?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aeh4273?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aeh6251?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aei2693?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aei5957?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.adt1928?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.adz4600?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aee6550?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aeh4015?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aec6740?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aen1238?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aen1237?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.ael9047?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.ael9313?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aem0088?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.ael7305?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.ael5669?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.ael5505?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aem0511?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aem9151?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aem9387?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aen2354?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aen2356?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aen2358?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aen2359?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aen2357?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aen2353?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aen2355?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aem0383?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aen0122?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.ael4888?af=R"/>
+            <rdf:li rdf:resource="https://www.science.org/doi/abs/10.1126/science.aen1236?af=R"/>
+         </rdf:Seq>
+      </items>
+   </channel>
+   <image rdf:about="https://www.science.org/cms/asset/66915cc2-d78c-440c-bfde-711a97f5a502/default_cover.png">
+      <title>Science</title>
+      <url>https://www.science.org/cms/asset/66915cc2-d78c-440c-bfde-711a97f5a502/default_cover.png</url>
+      <link>https://www.science.org/loi/science?af=R</link>
+   </image>
+   <item rdf:about="https://www.science.org/doi/abs/10.1126/science.aek0152?af=R">
+      <title>An elegy for the unsung world-builders</title>
+      <link>https://www.science.org/doi/abs/10.1126/science.aek0152?af=R</link>
+      <content:encoded>Science, &lt;a href="https://www.science.org/toc/science/394/6821"&gt;Volume 394, Issue 6821&lt;/a&gt;, Page 278-278, October 2026. &lt;br/&gt;</content:encoded>
+      <description>Science, Volume 394, Issue 6821, Page 278-278, October 2026. &lt;br/&gt;</description>
+      <dc:identifier>doi:10.1126/science.aek0152</dc:identifier>
+      <dc:source>Science</dc:source>
+      <dc:date>2026-10-15T06:00:12Z</dc:date>
+      <dc:type>Books et al.</dc:type>
+      <dc:creator>Mary Ellen Hannibal</dc:creator>
+      <prism:publicationName>Science</prism:publicationName>
+      <prism:volume>394</prism:volume>
+      <prism:number>6821</prism:number>
+      <prism:startingPage>278</prism:startingPage>
+      <prism:endingPage>278</prism:endingPage>
+      <prism:coverDate>2026-10-15T07:00:00Z</prism:coverDate>
+      <prism:coverDisplayDate>2026-10-15T07:00:00Z</prism:coverDisplayDate>
+      <prism:doi>10.1126/science.aek0152</prism:doi>
+      <prism:url>https://www.science.org/doi/abs/10.1126/science.aek0152?af=R</prism:url>
+      <prism:copyright/>
+   </item>
+<item rdf:about="https://www.science.org/doi/abs/10.1126/science.aem4081?af=R">
+      <title>Fear the bioengineered future</title>
+      <link>https://www.science.org/doi/abs/10.1126/science.aem4081?af=R</link>
+      <content:encoded>Science, &lt;a href="https://www.science.org/toc/science/394/6821"&gt;Volume 394, Issue 6821&lt;/a&gt;, Page 279-279, October 2026. &lt;br/&gt;</content:encoded>
+      <description>Science, Volume 394, Issue 6821, Page 279-279, October 2026. &lt;br/&gt;</description>
+      <dc:identifier>doi:10.1126/science.aem4081</dc:identifier>
+      <dc:source>Science</dc:source>
+      <dc:date>2026-10-15T06:00:12Z</dc:date>
+      <dc:type>Books et al.</dc:type>
+      <dc:creator>Gregory J. Miller</dc:creator>
+      <prism:publicationName>Science</prism:publicationName>
+      <prism:volume>394</prism:volume>
+      <prism:number>6821</prism:number>
+      <prism:startingPage>279</prism:startingPage>
+      <prism:endingPage>279</prism:endingPage>
+      <prism:coverDate>2026-10-15T07:00:00Z</prism:coverDate>
+      <prism:coverDisplayDate>2026-10-15T07:00:00Z</prism:coverDisplayDate>
+      <prism:doi>10.1126/science.aem4081</prism:doi>
+      <prism:url>https://www.science.org/doi/abs/10.1126/science.aem4081?af=R</prism:url>
+      <prism:copyright/>
+   </item>
+<item rdf:about="https://www.science.org/doi/abs/10.1126/science.adq6530?af=R">
+      <title>Gate-tunable chiral spin mode in WSe2/WS2 moiré superlattices</title>
+      <link>https://www.science.org/doi/abs/10.1126/science.adq6530?af=R</link>
+      <content:encoded>Science, &lt;a href="https://www.science.org/toc/science/394/6821"&gt;Volume 394, Issue 6821&lt;/a&gt;, Page 316-320, October 2026. &lt;br/&gt;</content:encoded>
+      <description>Science, Volume 394, Issue 6821, Page 316-320, October 2026. &lt;br/&gt;</description>
+      <dc:identifier>doi:10.1126/science.adq6530</dc:identifier>
+      <dc:source>Science</dc:source>
+      <dc:date>2026-10-15T06:00:12Z</dc:date>
+      <dc:type>Research Article</dc:type>
+      <dc:creator>Zhexu Shan, Wenjian Su, Kenji Watanabe, Takashi Taniguchi, Shiyao Zhu, Yuanfeng Xu, Yanhao Tang</dc:creator>
+      <prism:publicationName>Science</prism:publicationName>
+      <prism:volume>394</prism:volume>
+      <prism:number>6821</prism:number>
+      <prism:startingPage>316</prism:startingPage>
+      <prism:endingPage>320</prism:endingPage>
+      <prism:coverDate>2026-10-15T07:00:00Z</prism:coverDate>
+      <prism:coverDisplayDate>2026-10-15T07:00:00Z</prism:coverDisplayDate>
+      <prism:doi>10.1126/science.adq6530</prism:doi>
+      <prism:url>https://www.science.org/doi/abs/10.1126/science.adq6530?af=R</prism:url>
+      <prism:copyright/>
+   </item>
+</rdf:RDF>

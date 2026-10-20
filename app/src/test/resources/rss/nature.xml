@@ -1,0 +1,222 @@
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:prism="http://prismstandard.org/namespaces/basic/2.0/" xmlns:dc="http://purl.org/dc/elements/1.1/"
+         xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns="http://purl.org/rss/1.0/" xmlns:admin="http://webns.net/mvcb/">
+    <channel rdf:about="http://feeds.nature.com/nature/rss/current">
+        <title>Nature</title>
+        <description>Nature is the foremost international weekly scientific journal in the world and is the flagship journal for Nature Portfolio. It publishes the finest peer-reviewed research in all fields of science and technology on the basis of its originality, importance, interdisciplinary interest, timeliness, accessibility, elegance and surprising conclusions. Nature publishes landmark papers, award winning news, leading comment and expert opinion on important, topical scientific news and events that enable readers to share the latest discoveries in science and evolve the discussion amongst the global scientific community.</description>
+        <link>http://feeds.nature.com/nature/rss/current</link>
+        <admin:generatorAgent rdf:resource="https://www.nature.com/"/>
+        <admin:errorReportsTo rdf:resource="mailto:feedback@nature.com"/>
+        <dc:publisher>Nature Publishing Group</dc:publisher>
+        <dc:language>en</dc:language>
+        <dc:rights>© 2026 Macmillan Publishers Limited, part of Springer Nature. All rights reserved.</dc:rights>
+        <prism:publicationName>Nature</prism:publicationName>
+        
+        
+        <prism:copyright>© 2026 Macmillan Publishers Limited, part of Springer Nature. All rights reserved.</prism:copyright>
+        <prism:rightsAgent>permissions@nature.com</prism:rightsAgent>
+        <image rdf:resource="https://www.nature.com/uploads/product/nature/rss.png"/>
+        <items>
+            <rdf:Seq>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03317-3"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03237-2"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03228-3"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03345-z"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03265-y"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03312-8"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03275-w"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03315-5"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03339-x"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03313-7"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11290-0"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03309-3"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03328-0"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-02623-0"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11293-x"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03341-3"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03112-0"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03348-w"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03308-4"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03303-9"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03195-9"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03253-2"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03338-y"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03178-w"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03329-z"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03238-1"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03336-0"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11263-3"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03152-6"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03233-6"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03194-w"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11242-8"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03301-x"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03202-z"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11267-z"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03239-0"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03307-5"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03114-y"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03081-4"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-02442-3"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03206-9"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03204-x"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03247-0"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-02645-8"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03075-2"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03322-6"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03223-8"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03219-4"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03266-x"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03085-0"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03205-w"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03061-8"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11239-3"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03302-w"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03203-y"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/d41586-026-03222-9"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11138-7"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11157-4"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11176-1"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11112-3"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11164-5"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11065-7"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11117-y"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11171-6"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11115-0"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11143-w"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11167-2"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11150-x"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11136-9"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11174-3"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11162-7"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11158-3"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11141-y"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11120-3"/>
+                
+                    <rdf:li rdf:resource="https://www.nature.com/articles/s41586-026-11109-y"/>
+                
+            </rdf:Seq>
+        </items>
+    </channel>
+    <image rdf:about="https://www.nature.com/uploads/product/nature/rss.png">
+        <title>Nature</title>
+        <url>https://www.nature.com/uploads/product/nature/rss.png</url>
+        <link>http://feeds.nature.com/nature/rss/current</link>
+    </image>
+    
+        <item rdf:about="https://www.nature.com/articles/d41586-026-03317-3">
+            <title><![CDATA[Toxic chemicals in fentanyl revealed by speedy technique ]]></title>
+            <link>https://www.nature.com/articles/d41586-026-03317-3</link>
+            <content:encoded>
+                <![CDATA[<p>Nature, Published online: 19 October 2026; <a href="https://www.nature.com/articles/d41586-026-03317-3">doi:10.1038/d41586-026-03317-3</a></p>Chemical fingerprinting charts the rises and declines of specific adulterants in illicit supplies of the drug.]]></content:encoded>
+            <dc:title><![CDATA[Toxic chemicals in fentanyl revealed by speedy technique ]]></dc:title>
+            
+            <dc:identifier>doi:10.1038/d41586-026-03317-3</dc:identifier>
+            <dc:source>Nature, Published online: 2026-10-19; | doi:10.1038/d41586-026-03317-3</dc:source>
+            <dc:date>2026-10-19</dc:date>
+            <prism:publicationName>Nature</prism:publicationName>
+            <prism:doi>10.1038/d41586-026-03317-3</prism:doi>
+            <prism:url>https://www.nature.com/articles/d41586-026-03317-3</prism:url>
+        </item>
+<item rdf:about="https://www.nature.com/articles/d41586-026-03237-2">
+            <title><![CDATA[Light and mirrors move large quantum computers closer to reality]]></title>
+            <link>https://www.nature.com/articles/d41586-026-03237-2</link>
+            <content:encoded>
+                <![CDATA[<p>Nature, Published online: 19 October 2026; <a href="https://www.nature.com/articles/d41586-026-03237-2">doi:10.1038/d41586-026-03237-2</a></p>Scientists improve photon-collecting device that could be used to connect multiple quantum-computing arrays.]]></content:encoded>
+            <dc:title><![CDATA[Light and mirrors move large quantum computers closer to reality]]></dc:title>
+            
+            <dc:identifier>doi:10.1038/d41586-026-03237-2</dc:identifier>
+            <dc:source>Nature, Published online: 2026-10-19; | doi:10.1038/d41586-026-03237-2</dc:source>
+            <dc:date>2026-10-19</dc:date>
+            <prism:publicationName>Nature</prism:publicationName>
+            <prism:doi>10.1038/d41586-026-03237-2</prism:doi>
+            <prism:url>https://www.nature.com/articles/d41586-026-03237-2</prism:url>
+        </item>
+<item rdf:about="https://www.nature.com/articles/d41586-026-03228-3">
+            <title><![CDATA[Audio long read: How to stay smart in the age of AI — the science of critical thinking]]></title>
+            <link>https://www.nature.com/articles/d41586-026-03228-3</link>
+            <content:encoded>
+                <![CDATA[<p>Nature, Published online: 19 October 2026; <a href="https://www.nature.com/articles/d41586-026-03228-3">doi:10.1038/d41586-026-03228-3</a></p>Although worries are growing about AI's potential to blunt reasoning skills, research has uncovered ways to keep the brain sharp.]]></content:encoded>
+            <dc:title><![CDATA[Audio long read: How to stay smart in the age of AI — the science of critical thinking]]></dc:title>
+            <dc:creator>Helen Pearson</dc:creator><dc:creator>Benjamin Thompson</dc:creator>
+            <dc:identifier>doi:10.1038/d41586-026-03228-3</dc:identifier>
+            <dc:source>Nature, Published online: 2026-10-19; | doi:10.1038/d41586-026-03228-3</dc:source>
+            <dc:date>2026-10-19</dc:date>
+            <prism:publicationName>Nature</prism:publicationName>
+            <prism:doi>10.1038/d41586-026-03228-3</prism:doi>
+            <prism:url>https://www.nature.com/articles/d41586-026-03228-3</prism:url>
+        </item>
+</rdf:RDF>

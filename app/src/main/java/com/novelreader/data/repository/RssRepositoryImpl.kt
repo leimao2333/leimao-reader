@@ -1,12 +1,18 @@
 package com.novelreader.data.repository
 
 import com.novelreader.core.network.HttpClient
+import com.novelreader.core.rss.CrossrefClient
+import com.novelreader.core.rss.JournalCatalog
+import com.novelreader.core.rss.JournalFeed
+import com.novelreader.core.rss.JournalRef
+import com.novelreader.core.rss.PaperMetaJson
 import com.novelreader.core.rss.ParsedFeed
 import com.novelreader.core.rss.RssParser
 import com.novelreader.core.util.LogSanitizer
 import com.novelreader.data.database.RssDao
 import com.novelreader.data.model.RssArticleEntity
 import com.novelreader.data.model.RssFeedEntity
+import com.novelreader.domain.model.JournalCandidate
 import com.novelreader.domain.model.RssArticle
 import com.novelreader.domain.model.RssFeed
 import com.novelreader.domain.model.RssFeedResult
@@ -52,6 +58,9 @@ class RssRepositoryImpl(
         private const val MAX_CONTENT_CHARS = 200_000
 
         private const val TAG = "RssRepository"
+
+        /** 期刊源默认归入的分组名（用户可自行改分组 / 移出） */
+        private const val JOURNAL_GROUP = "期刊"
     }
 
     // ==================== 读取 ====================
@@ -135,6 +144,9 @@ class RssRepositoryImpl(
         return try {
             val now = System.currentTimeMillis()
             val existing = dao.getFeedByUrl(fetched.url)
+            // 期刊源自动归到「期刊」分组：一次订阅六本顶刊后，源 chips 行会被它们占满，
+            // 分组筛选能把期刊和博客 / 资讯站分开看待（用户之后可以自己改分组）。
+            val journalGroup = JournalFeed.isJournalFeed(fetched.url)
             val feedId = if (existing != null) {
                 existing.feedId
             } else {
@@ -145,6 +157,7 @@ class RssRepositoryImpl(
                         siteUrl = fetched.feed.siteUrl,
                         description = fetched.feed.description,
                         iconUrl = fetched.feed.iconUrl,
+                        groupName = if (journalGroup) JOURNAL_GROUP else "",
                         lastFetchAt = now,
                         createdAt = now,
                     )
@@ -162,6 +175,10 @@ class RssRepositoryImpl(
                 iconUrl = fetched.feed.iconUrl,
                 fetchedAt = now,
             )
+            if (journalGroup && existing != null && existing.groupName.isBlank()) {
+                // 老库里已经订阅过的同址期刊源（升级前加的），补一个分组
+                dao.updateGroup(feedId, JOURNAL_GROUP)
+            }
             dao.trimFeed(feedId, KEEP_PER_FEED)
             RssFeedResult(
                 feedId = feedId,
@@ -279,8 +296,28 @@ class RssRepositoryImpl(
 
     // ==================== 内部工具 ====================
 
-    /** 抓取地址并解析；非订阅源则尝试从页面里发现订阅链接后重试 */
+    /**
+     * 抓取地址并解析；非订阅源则尝试从页面里发现订阅链接后重试。
+     *
+     * **期刊源走完全不同的分支**（v1.8.5.0）：`crossref:issn:xxxx-xxxx` 不是真实
+     * 地址，交给 [CrossrefClient] 拉该刊最新论文，再伪装成标准 [ParsedFeed]，
+     * 于是订阅、增量入库、未读、分组、收藏、阅读页全部沿用现有 RSS 链路，
+     * 一行新增数据通路都不用写。
+     */
     private suspend fun fetch(url: String): FetchOutcome = withContext(Dispatchers.IO) {
+        JournalFeed.issnOf(url)?.let { issn ->
+            val works = CrossrefClient.recentWorks(issn)
+            val journal = JournalCatalog.byIssn(issn)?.let { preset ->
+                JournalRef(
+                    issn = preset.issn,
+                    issns = listOf(preset.issn),
+                    title = preset.title,
+                    publisher = preset.publisher,
+                )
+            } ?: JournalRef(issn, listOf(issn), issn)
+            return@withContext FetchOutcome(url, JournalFeed.toParsedFeed(journal, works))
+        }
+
         val raw = HttpClient.get(url)
         when {
             RssParser.isOpml(raw) -> throw IllegalArgumentException("这是 OPML 订阅列表，已按批量导入处理")
@@ -293,6 +330,48 @@ class RssRepositoryImpl(
             }
         }
     }
+
+    // ==================== 期刊订阅（v1.8.5.0） ====================
+
+    override suspend fun searchJournals(query: String): List<JournalCandidate> {
+        val q = query.trim()
+        if (q.isEmpty()) {
+            // 空检索 = 直接列出内置顶刊预设，进页面就能看见要点名的那几本
+            return withContext(Dispatchers.IO) {
+                JournalCatalog.PRESETS.map { it.toCandidate() }
+            }
+        }
+        // 先按预设模糊匹配（中文简称也能命中），再补 Crossref 的检索结果
+        val presets = JournalCatalog.find(q).map { it.toCandidate() }
+        val remote = runCatching { CrossrefClient.searchJournals(q) }
+            .getOrDefault(emptyList())
+            .map { ref ->
+                JournalCandidate(
+                    issn = ref.issn,
+                    issns = ref.issns,
+                    title = ref.title,
+                    shortName = JournalCatalog.matchPreset(ref)?.shortName.orEmpty(),
+                    publisher = ref.publisher,
+                    totalDois = ref.totalDois,
+                    isPreset = JournalCatalog.matchPreset(ref) != null,
+                )
+            }
+        return (presets + remote)
+            .distinctBy { it.issn }
+            .sortedByDescending { it.totalDois }
+    }
+
+    private fun com.novelreader.core.rss.JournalPreset.toCandidate(): JournalCandidate =
+        JournalCandidate(
+            issn = issn,
+            issns = listOf(issn),
+            title = title,
+            shortName = shortName,
+            publisher = publisher,
+            field = field,
+            totalDois = Int.MAX_VALUE,
+            isPreset = true,
+        )
 
     /**
      * 增量入库：只插 guid 没见过的新文章。
@@ -318,6 +397,9 @@ class RssRepositoryImpl(
                 summary = article.summary,
                 contentHtml = article.contentHtml.take(MAX_CONTENT_CHARS),
                 imageUrl = article.imageUrl,
+                // 题录与 DOI 一起落库：阅读页 / 引用导出不再依赖重新抓一次源
+                doi = article.paperMeta.doi,
+                paperMetaJson = PaperMetaJson.toJson(article.paperMeta),
                 read = false,
                 starred = false,
                 fetchedAt = now,
@@ -376,6 +458,8 @@ class RssRepositoryImpl(
         summary = summary,
         contentHtml = contentHtml,
         imageUrl = imageUrl,
+        doi = doi.ifBlank { paperMetaJson.let { PaperMetaJson.fromJson(it).doi } },
+        paperMeta = PaperMetaJson.fromJson(paperMetaJson),
         read = read,
         starred = starred,
         feedTitle = feed?.title.orEmpty(),

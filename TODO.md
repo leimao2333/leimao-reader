@@ -161,6 +161,29 @@
   - 单源删除也统一走二次确认（原来直接删，误触就丢整源文章）。
   - 涉及：`RssDao.kt`、`RssRepository.kt`、`RssRepositoryImpl.kt`、`RssScreen.kt`。
 
+- [x] **17. RSS 期刊改造：顶刊题录 / 引用导出 / PDF / 全文** ✅ v1.8.5.0
+  - **期刊订阅**：`JournalCatalog` 内置 Science / Nature / Cell / Chemical Science / PNAS / JACS
+    六本预设（ISSN 全部经 Crossref 验证），订阅页顶栏「书」图标打开期刊面板；
+    搜索框走 `CrossrefClient.searchJournals`，可按刊名 / ISSN / 出版社订阅 Crossref 收录的任意期刊。
+    主路径选 Crossref 而非官方 RSS：ACS 与 RSC 的 RSS 实测 403（Cloudflare），
+    且 Crossref 的 `/journals/{issn}/works` 免 key、返回的结构化题录比各家 RSS 字段还齐。
+  - **虚拟订阅源**：`JournalFeed` 把 `crossref:issn:xxxx-xxxx` 伪装成标准 `ParsedFeed`
+    （guid 用 DOI、link 用 doi.org、contentHtml 用摘要、paperMeta 全量），
+    `RssRepositoryImpl.fetch()` 开头按 ISSN 分流 —— 订阅 / 增量 / 未读 / 分组 / 收藏 / 阅读页零新增链路。
+  - **题录解析**：`PaperMetaParser` 吃下 Prism（`prism:doi` / `prism:volume` / `prism:number` /
+    `prism:startingPage` / `dc:creator` / `dc:date`）与「正文里的一句期刊引用」两条路径；
+    普通博客不会误判成论文（`looksLikeCitation` 守卫 + `hasContent` 只认书目字段）。
+  - **引用导出**：`PaperCitation` 生成 BibTeX / RIS；`PaperPdf` 按 DOI 前缀拼 PDF 直链
+    （Cell / RSC 需从原文链接抠 PII / 期刊代码），拼不出就不显示按钮。
+  - **阅读页增强**：`ArticleBodyExtractor` 抓原文页抽正文（Highwire `citation_*` meta →
+    摘要容器 → 文本量最大容器），付费墙下也能读到摘要；可再按 DOI 向 Crossref 补题录。
+    补全逐字段「补空」（`PaperMeta.mergeWith`），不整体替换 —— Crossref 与页面 meta 各有所长。
+  - 期刊源自动归入「期刊」分组，分组筛选下期刊与博客 / 资讯站可分开看。
+  - `rss_articles` 新增 `doi` / `paperMetaJson` 两列（DB version 16，`MIGRATION_15_16`）。
+  - 涉及：`core/rss/{PaperMeta,PaperCitation,PaperMetaJson,PaperPdf,CrossrefJson,CrossrefClient,
+    JournalCatalog,JournalFeed,ArticleBodyExtractor}.kt`、`RssParser.kt`、`RssRepositoryImpl.kt`、
+    `JournalDialogs.kt`、`RssReaderScreen.kt`。
+
 ---
 
 ## 六、云端标签导入

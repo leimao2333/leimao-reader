@@ -33,6 +33,20 @@ data class RssArticleEntity(
     val contentHtml: String = "",
     /** 首图（列表缩略图） */
     val imageUrl: String = "",
+    /**
+     * 论文 DOI（v1.8.5.0；非期刊文章为空）。
+     *
+     * 单独存一列而不是只塞进 [paperMetaJson]：按 DOI 去重、按 DOI 查 Crossref
+     * 都要能直接查，不必反序列化 JSON。
+     */
+    val doi: String = "",
+    /**
+     * 论文题录 JSON（v1.8.5.0；`PaperMeta` 序列化，空 = 非期刊文章）。
+     *
+     * 用 JSON 而不是拆成十几列：题录字段将来还会加（基金、引用数、ORCID…），
+     * 拆列每加一个字段就要一次迁移，代价远大于收益。
+     */
+    val paperMetaJson: String = "",
     /** 已读标记 */
     val read: Boolean = false,
     /** 收藏标记 */

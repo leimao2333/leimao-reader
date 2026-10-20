@@ -41,6 +41,13 @@ data class ParsedArticle(
     val contentHtml: String,
     /** 首图（封面 / 列表缩略图） */
     val imageUrl: String,
+    /**
+     * 论文题录（v1.8.5.0；非期刊文章为空对象）。
+     *
+     * 学术出版社的 RSS（Science / Nature / PNAS / Cell）带 Prism 元数据，
+     * 阅读页据此渲染「期刊 / 卷 / 期 / 页 / DOI / 作者」题录卡，并支持导出引用。
+     */
+    val paperMeta: PaperMeta = PaperMeta(),
 )
 
 /**
@@ -234,7 +241,71 @@ object RssParser {
             summary = plain,
             contentHtml = html.ifBlank { "<p>${escapeHtml(plain)}</p>" },
             imageUrl = itemImage(item, html, base.ifBlank { feedUrl }),
+            paperMeta = paperMetaOf(item, link, author, pubDate, html),
         )
+    }
+
+    /**
+     * 从条目的 Prism / Dublin Core 字段建论文题录（v1.8.5.0）。
+     *
+     * 学术出版社的 RSS（Science / Nature / PNAS / Cell，都是 Atypon 平台发的 Prism RDF）
+     * 除标题外还带：`prism:doi` / `prism:volume` / `prism:number` / `prism:startingPage` /
+     * `prism:endingPage` / `prism:publicationName` / `dc:creator` / `dc:date` / `dc:type`。
+     * 这些字段此前解析时全被丢掉，阅读页只剩一个标题 —— 这里补上，正文（description）
+     * 里那句 `Science, Volume 394, Issue 6821, Page 278-278, October 2026` 作为兜底。
+     */
+    private fun paperMetaOf(
+        item: Element,
+        link: String,
+        author: String,
+        pubDate: Long,
+        contentHtml: String,
+    ): PaperMeta {
+        // 只有「看起来像学术条目」时才收钱解析：有 DOI 或有 prism 卷期字段
+        val hasPrism = item.children().any { c ->
+            val t = c.tagName().lowercase()
+            t.endsWith(":doi") || t.endsWith(":volume") || t.endsWith(":number") ||
+                t.endsWith(":publicationname") || t.endsWith(":identifier")
+        }
+        if (!hasPrism) return PaperMeta()
+        val description = rawInner(item, "description", "encoded", "content")
+            .ifBlank { contentHtml }
+        return PaperMetaParser.fromFeedFields(
+            doi = firstText(item, "doi", "identifier"),
+            publicationName = firstText(item, "publicationName", "source"),
+            volume = firstText(item, "volume"),
+            issue = firstText(item, "number"),
+            firstPage = firstText(item, "startingPage"),
+            lastPage = firstText(item, "endingPage"),
+            articleType = firstText(item, "type"),
+            creator = author.ifBlank { text(item, "creator") },
+            citationText = description,
+            link = link,
+            pubDateMs = pubDate,
+        )
+    }
+
+    /**
+     * 取第一个命中的非空文本。
+     *
+     * 与 [text] 的区别：[text] 会把多个同名元素用换行拼起来（多作者场景需要），
+     * 但 Prism 这类**单值字段**（publicationName / volume / doi……）遇到
+     * `prism:publicationName` + `dc:source` 同时命中时，拼接出来的值
+     * 会把整句引用混进期刊名。所以单值字段一律走这个。
+     */
+    private fun firstText(el: Element, vararg names: String): String {
+        // 外层按**字段优先级**遍历（publicationName 优先于 source），
+        // 内层才是文档顺序 —— 学术源里 dc:source 常常排在 prism:publicationName 前面，
+        // 按文档顺序取会把 "Nature, Published online: ... | doi:..." 当成期刊名
+        names.forEach { name ->
+            el.children().forEach { c ->
+                if (matches(c.tagName(), name)) {
+                    val v = c.text().trim()
+                    if (v.isNotEmpty()) return v
+                }
+            }
+        }
+        return ""
     }
 
     /** Atom 1.0：`<feed><entry>` */
@@ -275,6 +346,7 @@ object RssParser {
                 summary = plain,
                 contentHtml = html.ifBlank { "<p>${escapeHtml(plain)}</p>" },
                 imageUrl = itemImage(entry, html, baseUrl),
+                paperMeta = paperMetaOf(entry, link, stripAuthor(author), pubDate, html),
             )
         }
 

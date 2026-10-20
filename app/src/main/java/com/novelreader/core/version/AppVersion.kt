@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.8.4.4"
+    const val CURRENT_VERSION = "1.8.5.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,20 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.8.5.0",
+            date = "2026-10-20",
+            changes = listOf(
+                "**RSS 期刊改造：六本顶刊开箱可订**：订阅页顶栏新增「书」图标，内置 Science、Nature、Cell、Chemical Science、PNAS、JACS 六本顶刊预设，点一下即订阅；也可按刊名 / ISSN / 出版社检索 Crossref 收录的**任意**期刊。期刊源走 `crossref:issn:` 虚拟订阅形态 —— 订阅、增量、未读、分组、收藏、阅读页全部沿用原有 RSS 链路，不新增一套数据通路。",
+                "**题录卡：读论文不再只有一个标题**：Science / Nature / PNAS / Cell 的 RSS 带 Prism 元数据（`prism:doi` / `prism:volume` / `prism:number` / `prism:startingPage` / `dc:creator`），此前全被解析器丢掉。现在这些字段会解析成题录，阅读页在标题下方渲染「期刊, 卷(期): 页 (年)」题录卡，含文章类型、出版社、作者列表与 DOI。",
+                "**引用导出：BibTeX / RIS 一键复制**：题录卡点「引用」即生成 BibTeX（LaTeX / Overleaf）或 RIS（EndNote / Zotero / NoteExpress），cite key 自动取「第一作者姓 + 年 + 标题首词」，弹窗里可整段选中复制。以前要回出版社网页走「Download citation → 选格式 → 再下载」，手机上尤其实在难用。",
+                "**PDF 直链：按 DOI 拼地址，跳过三跳页面**：Science `10.1126` → `science.org/doi/pdf/…`、Nature `10.1038` → `nature.com/articles/….pdf`、PNAS `10.1073`、ACS/JACS `10.1021` → `pubs.acs.org/doi/pdf/…`；Cell 与 RSC 的 PDF 路径依赖 PII / 期刊代码，从原文链接里抠。拼不出来的出版社**不显示按钮**，不拿一个猜的地址让用户点开 404。",
+                "**获取全文：付费墙下也能读到摘要**：期刊 RSS 的 description 通常只有一句引用，Crossref 又拿不到 ACS / RSC 的 abstract，阅读页常常是一张空卡。新增「获取全文」抓原文页，按三层兜底抽正文（Highwire `citation_*` meta → 摘要容器 → 文本量最大的正文容器），顺手把页面 meta 里的完整作者列表补进题录。抽到的正文不足 1200 字时明确提示「只拿到摘要」。",
+                "**补全题录：按 DOI 问 Crossref**：卷 / 期 / 页 / 完整作者 / 摘要缺失时点「补全题录」，向 Crossref `/works/{doi}` 拉一次结构化题录覆写。Crossref 免 key、稳定，不受 ACS / RSC 的 Cloudflare 反爬影响 —— 这也是期刊数据主路径选它而不是官方 RSS 的原因（实测 ACS 与 RSC 的 RSS 均返回 403）。",
+                "**数据库升到 version 16**：`rss_articles` 新增 `doi` 与 `paperMetaJson` 两列（`MIGRATION_15_16`，含 DOI 索引）。题录用 JSON 而不是拆十几列 —— 以后加基金号 / 引用数 / ORCID 零迁移成本。普通博客文章两列皆空，不影响任何既有行为。",
+                "新增 `JournalFeedParseTest` 15 条、`CrossrefAndCitationTest` 18 条，样例全部是**真实抓取的报文**（`science.xml` / `nature.xml` / `pnas.xml`、Crossref `/journals/{issn}/works` 与 `/journals?query=` 响应）。",
+            ),
+        ),
         VersionEntry(
             version = "1.8.4.4",
             date = "2026-10-20",

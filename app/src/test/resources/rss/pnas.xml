@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns="http://purl.org/rss/1.0/"
+         xmlns:cc="http://web.resource.org/cc/"
+         xmlns:content="http://purl.org/rss/1.0/modules/content/"
+         xmlns:dc="http://purl.org/dc/elements/1.1/"
+         xmlns:prism="http://prismstandard.org/namespaces/basic/2.0/">
+   <channel rdf:about="https://www.pnas.org/loi/pnas?af=R">
+      <title>Proceedings of the National Academy of Sciences: Proceedings of the National Academy of Sciences: Table of Contents</title>
+      <description>Table of Contents for Proceedings of the National Academy of Sciences. List of articles from both the latest and ahead of print issues.</description>
+      <link>https://www.pnas.org/loi/pnas?af=R</link>
+      <dc:title>Proceedings of the National Academy of Sciences: Proceedings of the National Academy of Sciences: Table of Contents</dc:title>
+      <dc:publisher>Proceedings of the National Academy of Sciences</dc:publisher>
+      <dc:language>en-US</dc:language>
+      <prism:publicationName>Proceedings of the National Academy of Sciences</prism:publicationName>
+      <items>
+         <rdf:Seq>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/iti4126123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2631778123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2632686123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2633554123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2611254123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2617910123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2602433123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2607372123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2612779123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2602080123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2608188123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2612680123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2609260123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2606997123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2618289123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2610214123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2608919123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2538060123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2533263123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2617028123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2538056123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2621848123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2619427123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2614827123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2610192123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2535329123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2620484123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2534671123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2610795123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2608918123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2529793123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2617763123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2621299123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2612172123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2533689123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2612755123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2612387123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2535572123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2617882123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2603938123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2616716123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2607665123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2609894123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2606341123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2608835123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2528067123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2617004123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2613270123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2617216123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2612096123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2517238123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2610711123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2623525123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2620441123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2602553123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2521987123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2623018123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2603111123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2615485123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2619598123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2602244123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2619120123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2600686123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2604873123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2612173123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2613174123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2614934123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2602161123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2602630123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2606245123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2609982123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2605550123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2618654123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2619911123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2606713123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2524540123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2622215123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2602105123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2626267123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2625484123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2630039123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2629155123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2629157123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2626806123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2626184123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2612775123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2632392123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2632542123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2633437123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2633299123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2632391123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2633431123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2633441123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2631365123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2621667123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2632228123?af=R"/>
+            <rdf:li rdf:resource="https://www.pnas.org/doi/abs/10.1073/pnas.2633586123?af=R"/>
+         </rdf:Seq>
+      </items>
+   </channel>
+   <image rdf:about="https://www.pnas.org/cms/asset/433b8ee2-291a-4032-a821-9a689e8fcaa8/default_cover.png">
+      <title>Proceedings of the National Academy of Sciences</title>
+      <url>https://www.pnas.org/cms/asset/433b8ee2-291a-4032-a821-9a689e8fcaa8/default_cover.png</url>
+      <link>https://www.pnas.org/loi/pnas?af=R</link>
+   </image>
+   <item rdf:about="https://www.pnas.org/doi/abs/10.1073/iti4126123?af=R">
+      <title>In This Issue</title>
+      <link>https://www.pnas.org/doi/abs/10.1073/iti4126123?af=R</link>
+      <description>Proceedings of the National Academy of Sciences, Volume 123, Issue 41, October 2026. &lt;br/&gt;</description>
+      <dc:title>In This Issue</dc:title>
+      <dc:identifier>doi:10.1073/iti4126123</dc:identifier>
+      <dc:source>Proceedings of the National Academy of Sciences</dc:source>
+      <dc:date>2026-10-13T07:00:00Z</dc:date>
+      <prism:publicationName>Proceedings of the National Academy of Sciences</prism:publicationName>
+      <prism:volume>123</prism:volume>
+      <prism:number>41</prism:number>
+      <prism:coverDate>2026-10-13T07:00:00Z</prism:coverDate>
+      <prism:coverDisplayDate>2026-10-13T07:00:00Z</prism:coverDisplayDate>
+      <prism:doi>10.1073/iti4126123</prism:doi>
+      <prism:url>https://www.pnas.org/doi/abs/10.1073/iti4126123?af=R</prism:url>
+      <prism:copyright/>
+   </item>
+<item rdf:about="https://www.pnas.org/doi/abs/10.1073/pnas.2631778123?af=R">
+      <title>Profile of Michael N. Shadlen</title>
+      <link>https://www.pnas.org/doi/abs/10.1073/pnas.2631778123?af=R</link>
+      <description>Proceedings of the National Academy of Sciences, Volume 123, Issue 41, October 2026. &lt;br/&gt;Neuroscientist and neurologist Michael N. Shadlen is a world leader in the neurobiology of decision-making, a field of study he helped establish. His research explores higher brain functions—memory retrieval, reasoning, and multitasking, among others—that ...</description>
+      <dc:title>Profile of Michael N. Shadlen</dc:title>
+      <dc:identifier>doi:10.1073/pnas.2631778123</dc:identifier>
+      <dc:source>Proceedings of the National Academy of Sciences</dc:source>
+      <dc:date>2026-10-07T07:00:00Z</dc:date>
+      <dc:creator>Jennifer Viegas</dc:creator>
+      <prism:publicationName>Proceedings of the National Academy of Sciences</prism:publicationName>
+      <prism:volume>123</prism:volume>
+      <prism:number>41</prism:number>
+      <prism:coverDate>2026-10-13T07:00:00Z</prism:coverDate>
+      <prism:coverDisplayDate>2026-10-13T07:00:00Z</prism:coverDisplayDate>
+      <prism:doi>10.1073/pnas.2631778123</prism:doi>
+      <prism:url>https://www.pnas.org/doi/abs/10.1073/pnas.2631778123?af=R</prism:url>
+      <prism:copyright/>
+   </item>
+<item rdf:about="https://www.pnas.org/doi/abs/10.1073/pnas.2632686123?af=R">
+      <title>Barry Bloom and the convergence of immunology, infectious disease, and public health</title>
+      <link>https://www.pnas.org/doi/abs/10.1073/pnas.2632686123?af=R</link>
+      <description>Proceedings of the National Academy of Sciences, Volume 123, Issue 41, October 2026. &lt;br/&gt;In early 2026, the world lost Barry Bloom, a great advocate for public health, an extraordinarily accomplished immunologist, and a science advisor who helped refocus policy on controlling infectious diseases, including neglected diseases such as leprosy. ...</description>
+      <dc:title>Barry Bloom and the convergence of immunology, infectious disease, and public health</dc:title>
+      <dc:identifier>doi:10.1073/pnas.2632686123</dc:identifier>
+      <dc:source>Proceedings of the National Academy of Sciences</dc:source>
+      <dc:date>2026-10-07T07:00:00Z</dc:date>
+      <dc:creator>Sarah M. FortuneWilliam R. JacobsArturo CasadevallaDepartment of Immunology and Infectious Diseases, Harvard T.H. Chan School of Public Health, Boston, MA 02115bhttps://ror.org/05cf8a891Department of Microbiology and Immunology, Albert Einstein College of Medicine, Bronx, NY 10461chttps://ror.org/02ht1tz09Department of Molecular Microbiology and Immunology, Johns Hopkins Bloomberg School of Public Health, Baltimore, MD 21287</dc:creator>
+      <prism:publicationName>Proceedings of the National Academy of Sciences</prism:publicationName>
+      <prism:volume>123</prism:volume>
+      <prism:number>41</prism:number>
+      <prism:coverDate>2026-10-13T07:00:00Z</prism:coverDate>
+      <prism:coverDisplayDate>2026-10-13T07:00:00Z</prism:coverDisplayDate>
+      <prism:doi>10.1073/pnas.2632686123</prism:doi>
+      <prism:url>https://www.pnas.org/doi/abs/10.1073/pnas.2632686123?af=R</prism:url>
+      <prism:copyright/>
+   </item>
+</rdf:RDF>

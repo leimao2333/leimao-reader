@@ -1,5 +1,6 @@
 package com.novelreader.domain.repository
 
+import com.novelreader.domain.model.JournalCandidate
 import com.novelreader.domain.model.RssArticle
 import com.novelreader.domain.model.RssFeed
 import com.novelreader.domain.model.RssFeedResult
@@ -86,4 +87,16 @@ interface RssRepository {
 
     /** 全部标记已读；传 feedId 则只标记该源 */
     suspend fun markAllRead(feedId: Long? = null)
+
+    // ==================== 期刊订阅（v1.8.5.0） ====================
+
+    /**
+     * 检索期刊（Crossref `/journals`）。
+     *
+     * 命中的内置预设会带上中文简称，界面据此把 Science / Nature 这些顶刊顶到前面。
+     * 订阅动作就是拿返回值的 [JournalCandidate.subscribeUrl] 去调 [addFeed]。
+     *
+     * @param query 刊名 / ISSN / 出版社关键词；空串 = 返回内置预设
+     */
+    suspend fun searchJournals(query: String): List<JournalCandidate>
 }

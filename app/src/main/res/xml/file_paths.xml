@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="update" path="update/" />
+    <!-- v1.8.3.0：更新包改存私有目录（cacheDir 会被系统在磁盘吃紧时清掉，下到一半就没了） -->
+    <files-path name="update_files" path="update/" />
 </paths>

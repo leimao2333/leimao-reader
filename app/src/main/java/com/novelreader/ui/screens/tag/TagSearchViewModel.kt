@@ -159,6 +159,33 @@ class TagSearchViewModel(
     }
 
     /**
+     * 流式导出到 SAF（v1.8.3.0 待办 #20）。
+     *
+     * 与设置页的「标签导出」共用 [com.novelreader.data.repository.TagIndexRepository.exportTagTable]：
+     * 分页查库、边查边写，不再先在内存里拼一个十几 MB 的 JSON 字符串。
+     */
+    suspend fun exportTagTableToUri(
+        context: android.content.Context,
+        uri: android.net.Uri,
+        onProgress: (Float) -> Unit = {},
+    ): Boolean {
+        val repo = tagIndexRepository ?: return false
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri, "wt")?.bufferedWriter(Charsets.UTF_8)?.use { w ->
+                    repo.exportTagTable(listOf(type), w) { done, total ->
+                        onProgress(if (total > 0) done.toFloat() / total else 0f)
+                    }
+                } ?: error("无法写入所选位置")
+                true
+            }.getOrElse {
+                android.util.Log.w("TagSearch", "导出收录清单失败", it)
+                false
+            }
+        }
+    }
+
+    /**
      * 从云端拉取打标表并合并（v1.8.1.5）：PC 端工具推到 GitHub 的
      * 独立打标仓库（leimao2333/leimao-tagger）的 `data/tag_table.json`，App 侧「同名标签取更高置信度」幂等合并。
      */

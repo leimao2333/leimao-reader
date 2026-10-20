@@ -302,8 +302,11 @@ private class CacheTestSourceRepository(private val sources: List<SourceInfo>) :
     override suspend fun importSource(rawContent: String, fileName: String?): List<SourceInfo> =
         emptyList()
 
-    override suspend fun previewImport(rawContent: String, fileName: String?): List<SourceInfo> =
-        emptyList()
+    override suspend fun previewImport(
+        rawContent: String,
+        fileName: String?,
+        onProgress: ((done: Int, total: Int) -> Unit)?,
+    ): List<SourceInfo> = emptyList()
 
     override suspend fun previewImportBatch(
         files: List<com.novelreader.domain.model.SourceFileContent>,

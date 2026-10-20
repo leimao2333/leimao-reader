@@ -21,6 +21,18 @@ interface LocalTagDao {
     @Query("SELECT COUNT(*) FROM local_tags WHERE itemType = :type")
     suspend fun count(type: String): Int
 
+    /**
+     * 按页取某类型的索引（v1.8.3.0 待办 #20 流式导出用）。
+     *
+     * 导出全量时不再 `all()` 一次性把两万条读进内存再拼字符串 ——
+     * 边查边写，内存占用跟总条目数无关。`ORDER BY key` 保证分页稳定（否则 OFFSET 会漏行）。
+     */
+    @Query(
+        """SELECT * FROM local_tags WHERE itemType = :type
+           ORDER BY sourceId, itemId LIMIT :limit OFFSET :offset""",
+    )
+    suspend fun pageOfType(type: String, limit: Int, offset: Int): List<LocalTagEntity>
+
     /** 清空某类型的索引（重新构建前调用） */
     @Query("DELETE FROM local_tags WHERE itemType = :type")
     suspend fun clear(type: String)

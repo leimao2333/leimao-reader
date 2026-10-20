@@ -92,7 +92,14 @@ data class LegadoBookSource(
          */
         data class Detailed(val pairs: List<Pair<LegadoBookSource, String>>, val skipped: Int)
 
-        fun parseListWithRawDetailed(raw: String): Detailed {
+        /**
+         * @param onProgress 逐条解析进度（v1.8.3.0 待办 #21）：大书源包里几千条时
+         *        UI 需要知道「解析到第几个了」；回调里抛异常可直接中断整个解析
+         */
+        fun parseListWithRawDetailed(
+            raw: String,
+            onProgress: ((done: Int, total: Int) -> Unit)? = null,
+        ): Detailed {
             val element: JsonElement = runCatching {
                 JsonParser.parseString(raw.trim())
             }.getOrElse { throw IllegalArgumentException("JSON 解析失败") }
@@ -104,6 +111,7 @@ data class LegadoBookSource(
                     val obj = element.asJsonObject
                     if (obj.has("bookSourceName")) {
                         // 单对象路径：解析失败直接抛给上层（明确报错优于静默）
+                        onProgress?.invoke(1, 1)
                         return Detailed(listOf(parseOne(obj.toString()) to obj.toString()), 0)
                     }
                     val candidates = listOf("data", "bookSources", "sources", "list", "result")
@@ -116,10 +124,16 @@ data class LegadoBookSource(
                 else -> throw IllegalArgumentException("无法识别书源结构")
             }
 
+            val total = array.size()
+            onProgress?.invoke(0, total)
+            var index = 0
             val pairs = array.mapNotNull { item ->
+                onProgress?.invoke(index, total)
+                index++
                 runCatching { parseOne(item.toString()) to item.toString() }
                     .getOrElse { skipped++; null }
             }
+            onProgress?.invoke(total, total)
             return Detailed(pairs, skipped)
         }
 

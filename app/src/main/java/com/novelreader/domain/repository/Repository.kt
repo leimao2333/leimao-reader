@@ -49,8 +49,16 @@ interface SourceRepository {
      *
      * 当一个内容展开成多个源时（legado 列表 / MoonTV 配置），先调用本方法拿到候选列表，
      * 供用户在 UI 勾选要添加哪些，再通过 [importSelected] 批量注册勾选的源。
+     *
+     * @param onProgress 逐条解析进度（已解析条数, 总条数），在 IO 线程回调；
+     *        大书源包里几千个条目时用来显示进度（v1.8.3.0 待办 #21）。
+     *        在回调里抛 `CancellationException` 可以中断解析（用户点「取消」）。
      */
-    suspend fun previewImport(rawContent: String, fileName: String? = null): List<SourceInfo>
+    suspend fun previewImport(
+        rawContent: String,
+        fileName: String? = null,
+        onProgress: ((done: Int, total: Int) -> Unit)? = null,
+    ): List<SourceInfo>
 
     /**
      * 批量解析多个源文件（聚合包导入用，v1.5.6.0）。

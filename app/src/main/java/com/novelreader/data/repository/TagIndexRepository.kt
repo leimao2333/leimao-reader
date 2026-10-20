@@ -662,6 +662,91 @@ class TagIndexRepository(
     }
 
     /**
+     * **流式**导出打标表（v1.8.3.0 待办 #20）。
+     *
+     * 老实现是「全量读进内存 → 拼 Payload → Gson 一次性 toJson 成十几 MB 字符串 → 再转 byte[]」，
+     * 同一份数据在内存里存在 3~4 份（entity / Item / JSON 串 / UTF-16 字节），两万条要几百 MB、
+     * 十几秒起步，期间 UI 完全没反应。现在改成边查边写：
+     *
+     * - 按 [EXPORT_PAGE] 分页查 `local_tags`，每个类型的标签实例只读一次建索引（不再逐条查库）；
+     * - 直接写进调用方给的 [out]（SAF 的输出流），内存里最多只有一个分页；
+     * - 按已写条目数回调进度，调用方可以边写边刷新进度条。
+     *
+     * 输出为紧凑 JSON（不缩进）—— 漂亮格式会把文件撑大一倍，而消费方是程序不是人。
+     *
+     * @return 实际写出的条目数
+     */
+    suspend fun exportTagTable(
+        types: List<SourceType>,
+        out: java.io.Writer,
+        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
+    ): Int = withContext(Dispatchers.IO) {
+        val total = types.sumOf { localTagDao.count(it.name) }
+        var done = 0
+        onProgress(0, total)
+
+        val writer = com.google.gson.stream.JsonWriter(out)
+        writer.beginObject()
+        writer.name("version").value(TagTable.VERSION.toLong())
+        writer.name("generatedAt").value(System.currentTimeMillis())
+        writer.name("source").value(TagTable.SOURCE_APP)
+        writer.name("items").beginArray()
+
+        types.forEach { type ->
+            // 一次读出该类型的全部标签实例，按作品索引：导出两万条也不会变成两万次查询
+            val byItem = HashMap<Pair<String, String>, MutableList<TagInstanceEntity>>()
+            tagInstanceDao.allOfType(type.name).forEach { row ->
+                byItem.getOrPut(row.sourceId to row.itemId) { mutableListOf() }.add(row)
+            }
+            var offset = 0
+            while (true) {
+                val page = localTagDao.pageOfType(type.name, EXPORT_PAGE, offset)
+                if (page.isEmpty()) break
+                page.forEach { row ->
+                    writeItem(writer, type.name, row, byItem[row.sourceId to row.itemId].orEmpty())
+                    done++
+                }
+                offset += page.size
+                onProgress(done, total)
+            }
+        }
+
+        writer.endArray()
+        writer.endObject()
+        writer.flush()
+        done
+    }
+
+    /** 写一个条目（字段名必须与 [TagTable.Item] 的 Gson 序列化一致） */
+    private fun writeItem(
+        writer: com.google.gson.stream.JsonWriter,
+        itemType: String,
+        row: LocalTagEntity,
+        tags: List<TagInstanceEntity>,
+    ) {
+        writer.beginObject()
+        writer.name("sourceId").value(row.sourceId)
+        writer.name("itemId").value(row.itemId)
+        writer.name("itemType").value(itemType)
+        writer.name("title").value(row.title)
+        writer.name("cover").value(row.cover.orEmpty())
+        writer.name("detailUrl").value(row.detailUrl)
+        writer.name("sourceName").value(row.sourceName)
+        writer.name("author").value(row.author.orEmpty())
+        writer.name("tags").beginArray()
+        tags.forEach { tag ->
+            writer.beginObject()
+            writer.name("name").value(tag.tagName)
+            writer.name("category").value(tag.category)
+            writer.name("confidence").value(tag.confidence.toLong())
+            writer.name("origin").value(tag.origin)
+            writer.endObject()
+        }
+        writer.endArray()
+        writer.endObject()
+    }
+
+    /**
      * 导入云端打标表：
      * - 清单里 App 还没收录的条目，直接落进 `local_tags`（PC 端遍历的成果一起进索引）；
      * - 标签按**同名取更高置信度**合并（[TagTable.mergeEntry]），站方 100 分不会被
@@ -795,6 +880,9 @@ class TagIndexRepository(
 
         /** 批量导入时每批写入的条数（v1.8.2.0） */
         private const val IMPORT_CHUNK = 2000
+
+        /** 流式导出时每页读多少条（v1.8.3.0 待办 #20）：太大占内存，太小分页往返多 */
+        private const val EXPORT_PAGE = 500
 
         /** 文本标签被行为确认到多少分后改标「行为」来源 */
         private const val BEHAVIOR_PROMOTE_THRESHOLD = 80

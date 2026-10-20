@@ -63,11 +63,22 @@ object UpdateChecker {
      *
      * 下载地址是 api.github.com 的 asset 端点，必须带 `Accept: application/octet-stream`
      * 才会返回 APK 二进制（否则返回 JSON 元数据）；会 302 到 release-assets CDN。
+     *
+     * @param resumeFrom 断点续传起点（v1.8.3.0 待办 #18）：GitHub 的 release-assets CDN
+     *        支持 Range，网络中断后从已下载的字节继续，不必从头拉十几 MB。
      */
-    fun downloadApk(url: String, target: File, onProgress: (Long, Long) -> Unit) {
+    fun downloadApk(
+        url: String,
+        target: File,
+        resumeFrom: Long = 0L,
+        onProgress: (Long, Long) -> Unit,
+    ) {
         HttpClient.downloadFile(
             url, target,
             headers = mapOf("Accept" to "application/octet-stream"),
+            // 安装包十几 MB，默认 20s 读超时在慢网下会被掐断
+            timeoutMs = 120_000L,
+            resumeFrom = resumeFrom,
             onProgress = { d, t -> onProgress(d, t) },
         )
     }

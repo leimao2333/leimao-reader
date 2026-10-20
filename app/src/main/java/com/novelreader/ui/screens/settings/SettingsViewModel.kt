@@ -51,6 +51,40 @@ class SettingsViewModel(
     private val _updateError = MutableStateFlow<String?>(null)
     val updateError: StateFlow<String?> = _updateError.asStateFlow()
 
+    /**
+     * 进程级下载状态（v1.8.3.0 待办 #18 / #19）。
+     *
+     * 下载现在跑在 [com.novelreader.core.update.UpdateDownloadManager] 里，
+     * 前台 Service 负责保活与通知栏进度；这里只是把状态镜像成 UI 用的几个流。
+     * 好处：退出设置页再进来，进度还在，下载也没被掐掉。
+     */
+    val updateState: StateFlow<com.novelreader.core.update.UpdateDownloadManager.State> =
+        com.novelreader.core.update.UpdateDownloadManager.state
+
+    init {
+        viewModelScope.launch {
+            com.novelreader.core.update.UpdateDownloadManager.state.collect { st ->
+                if (st.version.isBlank()) {
+                    // 没任务（首次进入 / 已经安装完被 reset）：只复位进度，不动「检查中」的 busy
+                    _updateProgress.value = -1f
+                    return@collect
+                }
+                _updateProgress.value = st.progress
+                _updateBusy.value = st.running
+                st.error?.let {
+                    _updateError.value = it
+                    _updateBusy.value = false
+                }
+                if (st.finished) {
+                    // 安装交给 Service（前台自动拉起，后台走通知点击），这里只收尾弹框
+                    _updateProgress.value = 1f
+                    _updateBusy.value = false
+                    _updateInfo.value = null
+                }
+            }
+        }
+    }
+
     /** 手动检查更新 */
     fun checkUpdate() {
         if (_updateBusy.value) return
@@ -78,53 +112,22 @@ class SettingsViewModel(
         _updateError.value = null
     }
 
-    /** 下载并安装更新 */
+    /**
+     * 下载更新（v1.8.3.0 待办 #18 / #19）。
+     *
+     * 真正的下载不在这个 ViewModel 里跑，交给前台 [com.novelreader.core.update.UpdateDownloadService]
+     * —— 原实现挂在 `viewModelScope` 上，用户一退出设置页下载就被 cancel，
+     * 切后台还可能被系统回收进程。现在下载跟页面生命周期完全解耦：
+     * 退出页面继续下、切后台有前台服务兜底、断网后从 `.part` 处续传。
+     */
     fun downloadUpdate() {
         val info = _updateInfo.value ?: return
         val ctx = appContext ?: return
         if (_updateBusy.value) return
-        viewModelScope.launch {
-            _updateBusy.value = true
-            _updateProgress.value = 0f
-            _updateError.value = null
-            try {
-                val file = withContext(Dispatchers.IO) {
-                    val dir = ctx.cacheDir.resolve("update").apply { mkdirs() }
-                    val target = dir.resolve("leimao-reader-v${info.version}.apk")
-                    com.novelreader.core.update.UpdateChecker.downloadApk(
-                        info.apkUrl, target,
-                    ) { downloaded, total ->
-                        val pct = if (total > 0) downloaded.toFloat() / total else -1f
-                        _updateProgress.value = pct
-                    }
-                    target
-                }
-                _updateProgress.value = 1f
-                // 下载完成：关闭弹框并拉起系统安装
-                _updateInfo.value = null
-                _updateError.value = null
-                installApk(ctx, file)
-            } catch (e: Exception) {
-                // 下载失败：在弹框内展示错误，保留弹框让用户可重试
-                _updateError.value = e.message ?: "未知错误"
-            } finally {
-                _updateBusy.value = false
-            }
-        }
-    }
-
-    /** 拉起系统安装 APK（需要应用有「安装未知来源应用」权限） */
-    private fun installApk(context: android.content.Context, file: File) {
-        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW)
-        val uri = androidx.core.content.FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            file,
-        )
-        intent.setDataAndType(uri, "application/vnd.android.package-archive")
-        intent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(intent)
+        _updateError.value = null
+        _updateProgress.value = 0f
+        _updateBusy.value = true
+        com.novelreader.core.update.UpdateDownloadService.start(ctx, info)
     }
 
     /** 导出备份到 SAF Uri */
@@ -408,36 +411,32 @@ class SettingsViewModel(
             _tagImportBusy.value = true
             _tagExportProgress.value = 0f
             _backupMessage.value = runCatching {
-                val json = withContext(Dispatchers.IO) {
-                    val types = com.novelreader.domain.model.SourceType.entries
-                    val allItems = buildList {
-                        types.forEachIndexed { index, type ->
-                            val base = index.toFloat() / types.size
-                            // v1.8.1.9：逐条回报进度，三个类型各占总进度的 1/3
-                            addAll(
-                                repo.buildTagTable(type) { done, total ->
-                                    val frac = if (total > 0) done.toFloat() / total else 1f
-                                    _tagExportProgress.value = base + frac / types.size
-                                }.items,
-                            )
+                // v1.8.3.0 待办 #20：流式写出 —— 边分页查库边写 SAF 输出流，
+                // 不再「全量读进内存 → 拼 12MB 字符串 → 转 byte[]」那样三份数据同时驻留
+                val bytes = withContext(Dispatchers.IO) {
+                    ctx.contentResolver.openOutputStream(uri, "wt")?.use { raw ->
+                        val counter = CountingOutputStream(raw)
+                        counter.bufferedWriter(Charsets.UTF_8).use { writer ->
+                            repo.exportTagTable(
+                                types = com.novelreader.domain.model.SourceType.entries.toList(),
+                                out = writer,
+                            ) { done, total ->
+                                _tagExportProgress.value =
+                                    if (total > 0) (done.toFloat() / total).coerceIn(0f, 1f) else 0f
+                            }
+                                .also { writer.flush() }
                         }
-                    }
-                    val payload = com.novelreader.core.util.TagTable.Payload(
-                        version = com.novelreader.core.util.TagTable.VERSION,
-                        generatedAt = System.currentTimeMillis(),
-                        source = com.novelreader.core.util.TagTable.SOURCE_APP,
-                        items = allItems,
-                    )
-                    com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(payload)
-                }
-                val written = withContext(Dispatchers.IO) {
-                    ctx.contentResolver.openOutputStream(uri, "wt")?.use { stream ->
-                        stream.write(json.toByteArray(Charsets.UTF_8))
-                        true
+                        counter.count
                     } ?: error("无法写入所选文件")
                 }
-                if (written) "标签导出完成：${json.length / 1024} KB（小说/漫画/视频全类型）" else "导出失败"
-            }.getOrElse { "标签导出失败：${it.message ?: "未知错误"}" }
+                "标签导出完成：${(bytes / 1024f).toInt()} KB（小说/漫画/视频全类型，边查边写）"
+            }.getOrElse {
+                if (it is kotlinx.coroutines.CancellationException) {
+                    "已取消导出（文件可能不完整）"
+                } else {
+                    "标签导出失败：${it.message ?: "未知错误"}"
+                }
+            }
             _tagExportProgress.value = -1f
             _tagImportBusy.value = false
         }
@@ -838,3 +837,32 @@ private const val TAG_IMPORT_WRITE_BASE = 0.60f
 
 /** 写库段占总进度的比重 */
 private const val TAG_IMPORT_WRITE_WEIGHT = 0.40f
+
+/**
+ * 只数不缓的计数流（v1.8.3.0 待办 #20）。
+ *
+ * 流式导出完想告诉用户「写了多少 KB」，但写的是 SAF 的 OutputStream，
+ * 没法事后问长度 —— 顺手在写出路径上记一笔。不覆盖 `write(byte[],off,len)` 的
+ * 默认实现，让 BufferedOutputStream 的整块写也能被统计到。
+ */
+private class CountingOutputStream(
+    private val delegate: java.io.OutputStream,
+) : java.io.OutputStream() {
+
+    var count: Long = 0L
+        private set
+
+    override fun write(b: Int) {
+        delegate.write(b)
+        count++
+    }
+
+    override fun write(b: ByteArray, off: Int, len: Int) {
+        delegate.write(b, off, len)
+        count += len
+    }
+
+    override fun flush() = delegate.flush()
+
+    override fun close() = delegate.close()
+}

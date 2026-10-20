@@ -108,6 +108,19 @@ fun SettingsScreen(
     val updateProgress by viewModel.updateProgress.collectAsState()
     val updateInfo by viewModel.updateInfo.collectAsState()
     val updateError by viewModel.updateError.collectAsState()
+    val updateState by viewModel.updateState.collectAsState()
+
+    // Android 13+ 通知权限：前台下载服务没有通知也能跑，但用户看不到进度，开始下载前问一次
+    val notifyPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { viewModel.downloadUpdate() }
+    val requestDownload: () -> Unit = {
+        val permission = android.Manifest.permission.POST_NOTIFICATIONS
+        val granted = android.os.Build.VERSION.SDK_INT < 33 ||
+            androidx.core.content.ContextCompat.checkSelfPermission(context, permission) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (granted) viewModel.downloadUpdate() else notifyPermissionLauncher.launch(permission)
+    }
 
     Scaffold(
         snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
@@ -730,36 +743,45 @@ fun SettingsScreen(
                     }
                 }
             }
-            // 下载进度（下载 APK 时显示）
-            if (updateBusy && updateProgress >= 0f) {
+            // 下载进度（下载 APK 时显示；退出本页再回来仍在——状态在进程级 Manager 里）
+            if (updateState.running) {
+                val pct = updateState.progress
                 Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                     Text(
-                        text = if (updateProgress >= 1f) "下载完成，正在拉起安装…"
-                        else "正在下载更新… ${(updateProgress * 100).toInt()}%",
+                        text = if (pct >= 0f) {
+                            "正在后台下载 v${updateState.version}… ${(pct * 100).toInt()}%" +
+                                if (updateState.attempt > 0) "（第 ${updateState.attempt} 次续传）" else ""
+                        } else {
+                            "正在后台下载 v${updateState.version}…"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(6.dp))
-                    androidx.compose.material3.LinearProgressIndicator(
-                        progress = { updateProgress.coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                    if (pct < 0f) {
+                        androidx.compose.material3.LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    } else {
+                        androidx.compose.material3.LinearProgressIndicator(
+                            progress = { pct.coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
             }
         }
 
         // ===== 更新确认弹框（v1.5.4.0；v1.5.5.4 增加下载进度与失败反馈） =====
+        // v1.8.3.0：下载改为前台服务 + 断点续传，弹框随时可关（关掉 = 转后台继续下）
         updateInfo?.let { info ->
-            val downloading = updateBusy && updateProgress >= 0f
+            val downloading = updateBusy
+            val pct = updateState.progress
             androidx.compose.material3.AlertDialog(
-                onDismissRequest = {
-                    // 下载中禁止点外部关闭（避免下载状态丢失）
-                    if (!downloading) viewModel.dismissUpdateInfo()
-                },
+                onDismissRequest = { viewModel.dismissUpdateInfo() },
                 title = {
                     Text(
                         when {
-                            downloading && updateProgress >= 1f -> "下载完成"
                             downloading -> "正在下载 v${info.version}"
                             else -> "发现新版本 v${info.version}"
                         }
@@ -770,28 +792,40 @@ fun SettingsScreen(
                         if (downloading) {
                             // 下载中：显示进度条 + 百分比
                             Text(
-                                text = if (updateProgress >= 1f) {
-                                    "下载完成，正在拉起安装…"
-                                } else if (updateProgress > 0f) {
-                                    "正在下载… ${(updateProgress * 100).toInt()}%"
-                                } else {
-                                    "正在连接下载服务器…"
+                                text = when {
+                                    pct < 0f -> "正在连接下载服务器…"
+                                    pct >= 1f -> "下载完成，正在校验安装包…"
+                                    else -> "正在下载… ${(pct * 100).toInt()}%"
                                 },
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                             Spacer(Modifier.height(12.dp))
-                            androidx.compose.material3.LinearProgressIndicator(
-                                progress = { updateProgress.coerceIn(0f, 1f) },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
+                            if (pct < 0f) {
+                                androidx.compose.material3.LinearProgressIndicator(
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            } else {
+                                androidx.compose.material3.LinearProgressIndicator(
+                                    progress = { pct.coerceIn(0f, 1f) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
                             Spacer(Modifier.height(4.dp))
-                            if (info.apkSize > 0) {
+                            if (updateState.total > 0) {
                                 Text(
-                                    text = "已下载 ${(updateProgress * info.apkSize / 1024f / 1024f).let { "%.1f".format(it) }} / ${"%.1f".format(info.apkSize / 1024f / 1024f)} MB",
+                                    text = "已下载 ${formatMb(updateState.downloaded)} / " +
+                                        "${formatMb(updateState.total)} MB" +
+                                        if (updateState.attempt > 0) " · 第 ${updateState.attempt} 次续传" else "",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                text = "下载在后台进行，关掉本页或切到其它应用都不会中断，通知栏可看进度",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         } else {
                             // 未下载：显示更新说明 + 大小
                             val body = info.body.trim()
@@ -825,12 +859,12 @@ fun SettingsScreen(
                 },
                 confirmButton = {
                     TextButton(
-                        onClick = { viewModel.downloadUpdate() },
+                        onClick = { requestDownload() },
                         enabled = !downloading,
                     ) {
                         Text(
                             when {
-                                downloading -> if (updateProgress >= 1f) "完成" else "下载中…"
+                                downloading -> "下载中…"
                                 updateError != null -> "重试"
                                 else -> "下载更新"
                             }
@@ -838,10 +872,10 @@ fun SettingsScreen(
                     }
                 },
                 dismissButton = {
-                    TextButton(
-                        onClick = { viewModel.dismissUpdateInfo() },
-                        enabled = !downloading,
-                    ) { Text("取消") }
+                    TextButton(onClick = { viewModel.dismissUpdateInfo() }) {
+                        // 下载中不叫「取消」——点了只是收起弹框，下载继续
+                        Text(if (downloading) "后台下载" else "取消")
+                    }
                 },
             )
         }
@@ -1015,3 +1049,7 @@ private fun TagImportProgressDialog(
         },
     )
 }
+
+/** 字节 → MB 文本（更新下载进度用） */
+private fun formatMb(bytes: Long): String =
+    String.format(java.util.Locale.US, "%.1f", bytes / 1024f / 1024f)

@@ -49,6 +49,59 @@ class SourceManageViewModel(
     private val _downloading = MutableStateFlow(false)
     val downloading: StateFlow<Boolean> = _downloading.asStateFlow()
 
+    // ===== 大文件导入（v1.8.3.0 待办 #21）=====
+
+    /**
+     * 已从文件读进来的源内容。
+     *
+     * 存在 ViewModel 而不是 Compose 输入框里：几百 KB 的 JSON 塞进 `OutlinedTextField`
+     * 会让主线程每次都去测量整段文字，几 MB 的书源包直接卡死。超过 [EDITOR_CHAR_LIMIT]
+     * 就只在页面上显示「已选择 xxx.json（12.3 MB）」，导入时仍用这份内容。
+     */
+    private var pickedContent: String? = null
+
+    /** 已选文件信息（供导入页展示文件卡片） */
+    data class PickedFile(
+        val name: String,
+        val sizeBytes: Long,
+        val chars: Int,
+        /** true = 内容已填进输入框可以编辑；false = 太大，只展示文件卡片 */
+        val inEditor: Boolean,
+    )
+
+    private val _pickedFile = MutableStateFlow<PickedFile?>(null)
+    val pickedFile: StateFlow<PickedFile?> = _pickedFile.asStateFlow()
+
+    /** 从文件读到的正文（仅在内容不太大时非空，供输入框回填） */
+    private val _pickedText = MutableStateFlow<String?>(null)
+    val pickedText: StateFlow<String?> = _pickedText.asStateFlow()
+
+    /** 导入阶段（非空即显示进度弹窗）：读取文件 / 解析源 */
+    data class ImportStage(
+        val label: String,
+        val detail: String = "",
+        /** null = 不确定进度（解析格式未知时只能转圈） */
+        val fraction: Float? = null,
+        val cancelable: Boolean = true,
+    )
+
+    private val _importStage = MutableStateFlow<ImportStage?>(null)
+    val importStage: StateFlow<ImportStage?> = _importStage.asStateFlow()
+
+    /** 取消标志：解析回调里检查，抛异常打断（协程 cancel 打不断 CPU 密集的解析循环） */
+    @Volatile
+    private var importCancelled = false
+
+    private var importJob: kotlinx.coroutines.Job? = null
+
+    private companion object {
+        /** 超过这么多字符就不往输入框里塞（十万字级别的 TextField 已经在掉帧） */
+        const val EDITOR_CHAR_LIMIT = 200_000
+
+        /** 读取缓冲区 */
+        const val READ_BUFFER = 64 * 1024
+    }
+
     // ===== Venera 源登录（v1.3.0.0）=====
 
     /** Venera 源登录态：sourceId -> 是否已登录（读本地标记，不启动 WebView） */
@@ -172,9 +225,111 @@ class SourceManageViewModel(
         }
     }
 
+    /**
+     * 从 SAF 读取源文件（v1.8.3.0 待办 #21）。
+     *
+     * 原实现是在 Composable 的回调里直接 `readText()` —— 主线程同步读几十 MB 的
+     * 书源包必然 ANR。现在整段搬到 IO：按块读取、回报已读字节，回来后按体积决定
+     * 是回填输入框还是只留文件卡片。
+     */
+    fun loadSourceFile(
+        context: android.content.Context,
+        uri: android.net.Uri,
+        displayName: String?,
+    ) {
+        if (_loading.value) return
+        importCancelled = false
+        importJob = viewModelScope.launch {
+            _loading.value = true
+            _message.value = null
+            _importStage.value = ImportStage("读取文件", "正在读取…")
+            try {
+                val (name, bytes) = withContext(Dispatchers.IO) {
+                    val stream = context.contentResolver.openInputStream(uri)
+                        ?: error("无法读取所选文件")
+                    stream.use { input ->
+                        val buffer = ByteArray(READ_BUFFER)
+                        val out = java.io.ByteArrayOutputStream()
+                        var total = 0L
+                        while (true) {
+                            if (importCancelled) throw kotlinx.coroutines.CancellationException("已取消")
+                            val read = input.read(buffer)
+                            if (read <= 0) break
+                            out.write(buffer, 0, read)
+                            total += read
+                            _importStage.value = ImportStage(
+                                label = "读取文件",
+                                detail = "已读取 ${formatSize(total)}",
+                            )
+                        }
+                        (displayName ?: "source.json") to out.toByteArray()
+                    }
+                }
+                val text = String(bytes, Charsets.UTF_8)
+                val inEditor = text.length <= EDITOR_CHAR_LIMIT
+                pickedContent = text
+                _pickedFile.value = PickedFile(name, bytes.size.toLong(), text.length, inEditor)
+                _pickedText.value = if (inEditor) text else null
+                _message.value = if (inEditor) {
+                    "已读取 $name（${formatSize(bytes.size.toLong())}）"
+                } else {
+                    "已选择 $name（${formatSize(bytes.size.toLong())}，${text.length} 字符）——" +
+                        "文件过大，不再填进输入框，点「导入」直接解析"
+                }
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                _message.value = "已取消读取"
+            } catch (e: Exception) {
+                _message.value = "读取文件失败：${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                _loading.value = false
+                _importStage.value = null
+            }
+        }
+    }
+
+    /** 清掉已选文件（用户改用手动粘贴时） */
+    fun clearPickedFile() {
+        pickedContent = null
+        _pickedFile.value = null
+        _pickedText.value = null
+        _message.value = null
+    }
+
+    /** 导入已选文件（大文件走这条，正文不经过输入框） */
+    fun importPickedFile(fileName: String? = null) {
+        val content = pickedContent
+        if (content.isNullOrBlank()) {
+            _message.value = "请先选择文件或粘贴源内容"
+            return
+        }
+        doImport(content, fileName ?: _pickedFile.value?.name)
+    }
+
+    /** 取消导入 / 读取（仅在解析与读取阶段可取消） */
+    fun cancelImport() {
+        if (_importStage.value?.cancelable != true) return
+        importCancelled = true
+        importJob?.cancel()
+        _importStage.value = null
+        _loading.value = false
+        _message.value = "已取消导入"
+    }
+
     /** 导入源（原始内容 + 文件名） */
     fun importSource(rawContent: String, fileName: String? = null) {
-        viewModelScope.launch {
+        doImport(rawContent, fileName)
+    }
+
+    /**
+     * 导入主流程（v1.8.3.0 待办 #21 重写）。
+     *
+     * 两个阶段分别上报：解析（按条目数，legado 列表可精确到第几个）与结束。
+     * 解析跑在仓库的 IO 调度器里，进度回调在 IO 线程触发，这里只写 StateFlow。
+     */
+    private fun doImport(rawContent: String, fileName: String?) {
+        if (_loading.value) return
+        importCancelled = false
+        importJob = viewModelScope.launch {
             _loading.value = true
             _message.value = null
             try {
@@ -185,8 +340,16 @@ class SourceManageViewModel(
                         "（清单里的源包要按清单地址逐个下载）"
                     return@launch
                 }
+                _importStage.value = ImportStage("解析源", "正在识别源格式…")
                 // v1.4.7.0「可选添加」：先解析出候选源列表；v1.5.3.0 起单源也弹框确认
-                val candidates = sourceRepository.previewImport(rawContent, fileName)
+                val candidates = sourceRepository.previewImport(rawContent, fileName) { done, total ->
+                    if (importCancelled) throw kotlinx.coroutines.CancellationException("已取消")
+                    _importStage.value = ImportStage(
+                        label = "解析源",
+                        detail = if (total > 0) "$done / $total 个条目" else "已解析 $done 个条目",
+                        fraction = if (total > 0) done.toFloat() / total else null,
+                    )
+                }
                 val skipped = sourceRepositoryImpl?.lastImportSkipped() ?: 0
                 if (candidates.isNotEmpty()) {
                     _importCandidates.value = candidates
@@ -199,12 +362,22 @@ class SourceManageViewModel(
                 } else {
                     _message.value = "未解析到有效源"
                 }
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                _message.value = "已取消导入"
             } catch (e: Exception) {
                 _message.value = "导入失败：${e.message}"
             } finally {
                 _loading.value = false
+                _importStage.value = null
             }
         }
+    }
+
+    /** 字节 → 人类可读（读取进度用） */
+    private fun formatSize(value: Long): String = when {
+        value >= 1024L * 1024 -> String.format(java.util.Locale.US, "%.1f MB", value / 1024f / 1024f)
+        value >= 1024 -> String.format(java.util.Locale.US, "%.0f KB", value / 1024f)
+        else -> "$value B"
     }
 
     // ===== 可选添加（v1.4.7.0） =====

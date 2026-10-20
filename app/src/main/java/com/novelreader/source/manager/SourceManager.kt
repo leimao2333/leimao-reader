@@ -112,9 +112,15 @@ class SourceManager(
      * 与 [importSource] 共享同一套解析逻辑，只是**不写入注册表**，
      * 供「可选添加」流程先行列出候选源、用户勾选后再逐个注册（v1.4.7.0）。
      *
+     * @param onProgress 逐条解析进度（v1.8.3.0 待办 #21）：大书源包里几千个条目时用来显示进度；
+     *        回调里抛异常可直接中断解析
      * @return 解析出的所有源（每个含其原始内容，供后续注册 / 持久化）
      */
-    fun previewImport(rawContent: String, fileName: String? = null): List<ImportedSource> {
+    fun previewImport(
+        rawContent: String,
+        fileName: String? = null,
+        onProgress: ((done: Int, total: Int) -> Unit)? = null,
+    ): List<ImportedSource> {
         val validateResult = SourceValidator.validate(rawContent, fileName)
         if (!validateResult.valid) {
             throw IllegalArgumentException(validateResult.message)
@@ -134,7 +140,7 @@ class SourceManager(
 
         // legado 格式（单个或列表）
         if (format == SourceFormat.LEGADO) {
-            return importLegado(rawContent, fileName)
+            return importLegado(rawContent, fileName, onProgress)
         }
 
         // 自研 JSON / JS 格式（单源）
@@ -185,9 +191,13 @@ class SourceManager(
     }
 
     /** 导入 legado 书源（单个或列表） */
-    private fun importLegado(rawContent: String, fileName: String?): List<ImportedSource> {
-        // 解析出所有 legado 书源对象（保留各自完整原始 JSON）
-        val detailed = LegadoBookSource.parseListWithRawDetailed(rawContent)
+    private fun importLegado(
+        rawContent: String,
+        fileName: String?,
+        onProgress: ((done: Int, total: Int) -> Unit)? = null,
+    ): List<ImportedSource> {
+        // 解析出所有 legado 书源对象（保留各自完整原始 JSON）；逐条回报进度（待办 #21）
+        val detailed = LegadoBookSource.parseListWithRawDetailed(rawContent, onProgress)
         val pairs = detailed.pairs
         lastImportSkipped = detailed.skipped
         if (pairs.isEmpty()) {

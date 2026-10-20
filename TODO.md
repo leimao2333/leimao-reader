@@ -140,25 +140,63 @@
 
 ## 七、更新 / 导入 / 导出性能
 
-- [ ] **18. 检查更新下载时不能被打断**
-  - 现象：检查更新 / 下载安装包过程中，用户的返回、切页、锁屏等操作会中断下载或导致状态错乱。
-  - 需求：下载阶段禁止中断——要么锁定 UI 不让退出/切走，要么做成可续传（断点重新拉取），中断回来能接着下而不是从头再来。
-  - 涉及：更新下载相关逻辑（更新检查 / 下载入口），需先确认当前下载是否走后台线程、有哪些取消点。
+- [x] **18. 检查更新下载时不能被打断** ✅ v1.8.3.0
+  - 根因：下载协程挂在 `SettingsViewModel.viewModelScope` 上，**退出设置页（ViewModel 被清）= 下载被 cancel**；
+    弹框「取消」也直接丢掉进度，重新点又从头拉十几 MB。
+  - 实现：下载搬进进程级单例 `UpdateDownloadManager`（`SupervisorJob + Dispatchers.IO` 的独立作用域），
+    与页面 / ViewModel / Service 生命周期全部解耦；进度是一份 `StateFlow`，进出设置页都在。
+  - 弹框改成随时可关：下载中按钮文案是「后台下载」，关掉只是收起弹框，下载继续；
+    设置页「检查更新」下方常驻一行「正在后台下载 vX… 42%」+ 进度条（重进页面时可见）。
+  - **断点续传**：`HttpClient.downloadFile` 新增 `resumeFrom`，按 `.part` 已有长度发 `Range: bytes=N-`；
+    服务端返回 206 就追加写，返回 200（不认 Range）自动截断重写，不会拼出坏包。
+    中途失败退避 2s / 5s / 10s 重试 3 次，每次都从已下字节接着来；最后再用清单里的 `apkSize` 校验长度。
+  - 安装包位置从 `cacheDir/update` 挪到 `filesDir/update`（cache 在磁盘吃紧时会被系统清掉），
+    `file_paths.xml` 补 `<files-path>` 供 FileProvider 授权。
+  - 涉及：`core/update/UpdateDownloadManager.kt`（新建）、`HttpClient.kt`、`UpdateChecker.kt`、
+    `SettingsViewModel.kt`、`SettingsScreen.kt`、`res/xml/file_paths.xml`。
 
-- [ ] **19. 检查更新下载不能退到后台（保持前台）**
-  - 现象：下载时切到后台 / 锁屏，进程被系统回收，下载停滞或失败。
-  - 需求：下载中保持前台（前台 Service + 常驻通知），至少保证后台不被杀、进度可恢复；通知栏显示下载进度与完成提示。
-  - 涉及：同上更新下载模块；Android 8+ 必须配套通知渠道与前台 Service。
+- [x] **19. 检查更新下载不能退到后台（保持前台）** ✅ v1.8.3.0
+  - 实现：新增 `UpdateDownloadService`（前台 Service，`foregroundServiceType="dataSync"`，
+    `POST_NOTIFICATIONS` / `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_DATA_SYNC` 三个权限），
+    通知渠道 `update_download`（IMPORTANCE_LOW，不响铃不振动）。
+  - 通知内容：下载中显示「正在下载 vX · 42%（3.2 / 7.8 MB）」，续传时补「第 N 次续传」；
+    完成变成「更新包下载完成 · 点击安装」（点通知直接拉起系统安装器）；失败变「更新下载失败 · 原因」。
+    百分比没变就不重发通知（`setOnlyAlertOnce` + 本地去重），滑动通知栏不掉帧。
+  - 进程被杀也不会「下载假死」：Service 只负责保活与展示，被系统掐掉后重新 start 一下
+    就会接着订阅 Manager 的进度（`.part` 还在，续传继续）。
+  - 下载完成时：应用在前台 → 直接拉起安装器并清掉通知；在后台 → 只留通知（后台起 Activity 会被系统拦）。
+  - Android 13+ 在点「下载更新」前申请一次通知权限（不给也能下，只是看不到进度）。
+  - 涉及：`core/update/UpdateDownloadService.kt`（新建）、`AndroidManifest.xml`、`SettingsScreen.kt`。
 
-- [ ] **20. 标签导出太慢**
-  - 现象：导出标签表（云端标签 / 本地标签）耗时长，UI 卡住且没有任何进度反馈。
-  - 需求：优化导出性能——改流式写出（边查边写，不一次性把全量攒进内存）、分块处理、后台线程 + 进度条；大表支持增量导出或分卷。
-  - 涉及：标签导出相关逻辑（TagIndexRepository / 设置页导出入口），与第 17 条「云端导入进度条」对称。
+- [x] **20. 标签导出太慢** ✅ v1.8.3.0
+  - 根因：老实现是「三类型 `buildTagTable` 全量读进内存 → 拼 Payload → Gson `setPrettyPrinting().toJson`
+    成十几 MB 的 String → 再 `toByteArray()`」，同一份数据内存里存在 3~4 份；而且每条作品都要单独
+    查一次 `tagsOf`（两万条 = 两万次查询），缩进格式还把文件撑大一倍。
+  - 实现：新增 `TagIndexRepository.exportTagTable(types, out, onProgress)` ——
+    直接用 `JsonWriter` 往调用方给的 `Writer` 里写；按 `EXPORT_PAGE = 500` 分页查 `local_tags`
+    （新 DAO `pageOfType`，`ORDER BY sourceId, itemId` 保证分页不漏行），每个类型的 `tag_instances`
+    只读一次建 `Map<作品, 标签>`，不再逐条查库；内存里最多只有一个分页。
+    输出紧凑 JSON（消费方是程序，缩进只增加体积和 I/O）。
+  - 设置页「标签导出」与标签搜索页「导出收录清单」都改走这条流式路径，进度条按已写条目数推进；
+    写完用 `CountingOutputStream` 顺手统计字节数，提示「导出完成：XXXX KB」。
+  - 涉及：`LocalTagDao.kt`、`TagIndexRepository.kt`、`SettingsViewModel.kt`、`TagSearchViewModel.kt`、
+    `TagSearchScreen.kt`。
 
-- [ ] **21. 源导入时文件太大会卡死**
-  - 现象：导入书源 / 备份文件（尤其是体积大的 JSON）时主线程解析，UI 无响应直至 ANR 卡死。
-  - 需求：大文件导入改后台线程 + 流式 / 分块解析（不要一次性 read 整个文件进内存再 JSON.parse）；解析过程显示进度且可取消；文件超阈值时给出提示或限制。
-  - 涉及：源导入 / 备份恢复相关逻辑（设置页导入入口、源解析 util），解析应移到 `Dispatchers.IO` 并加进度回调。
+- [x] **21. 源导入时文件太大会卡死** ✅ v1.8.3.0
+  - 三处卡点全修：
+    1. **文件在主线程读**：源导入页原来在文件选择回调里直接 `readText()`，几十 MB 必 ANR。
+       改为 `SourceManageViewModel.loadSourceFile()`：IO 线程按 64KB 分块读、回报「已读取 X MB」。
+    2. **巨型文本塞进输入框**：几 MB 内容进 `OutlinedTextField` 会让每次重组都去测量整段文字。
+       现在超过 20 万字符就**不回填输入框**，页面只显示文件卡片（名字 / 体积 / 字符数 /「过大，未预览」），
+       点「导入」直接用 ViewModel 里的正文；粘贴判断也从 `lines()` 全量切分改成 `lineSequence()` 懒取首行。
+    3. **解析没有进度**：`legado` 列表解析新增逐条回调（`parseListWithRawDetailed(raw, onProgress)`），
+       沿 `SourceRepository.previewImport` → `SourceManager.previewImport` → `importLegado` 一路传下来，
+       弹窗显示「解析源 · 1200 / 3000 个条目」；解析在 IO 线程，进度用百分比进度条。
+  - 可取消：读取与解析阶段弹窗有「取消」，通过 `@Volatile importCancelled` 在回调里抛
+    `CancellationException` 打断（协程 cancel 打不断 CPU 密集的解析循环）。
+  - 新增单测 `SourceParseProgressTest`：逐条进度、单源报一次、回调抛异常可中断。
+  - 涉及：`SourceManageViewModel.kt`、`SourceImportScreen.kt`、`SourceManager.kt`、`LegadoBookSource.kt`、
+    `Repository.kt`、`SourceRepositoryImpl.kt`。
 
 ---
 

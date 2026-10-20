@@ -144,16 +144,9 @@ fun TagSearchScreen(
     ) { uri ->
         if (uri != null) {
             dialogScope.launch {
-                val json = viewModel.exportTagTableJson()
-                if (json == null) {
-                    viewModel.notifyIndexMessage("导出收录清单失败")
-                } else {
-                    runCatching {
-                        context.contentResolver.openOutputStream(uri)?.use { stream ->
-                            stream.write(json.toByteArray(Charsets.UTF_8))
-                        } ?: error("无法写入所选位置")
-                    }.onFailure { viewModel.notifyIndexMessage("导出失败：${it.message}") }
-                }
+                // v1.8.3.0 待办 #20：流式写出，边查边写（原来是先拼整串再一次性落盘）
+                val ok = viewModel.exportTagTableToUri(context, uri)
+                if (!ok) viewModel.notifyIndexMessage("导出收录清单失败")
             }
         }
     }

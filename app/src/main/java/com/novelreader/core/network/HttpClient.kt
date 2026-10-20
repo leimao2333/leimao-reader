@@ -261,6 +261,9 @@ object HttpClient {
      * @param byteTransform 整包字节处理（如加密图床的解密）；非空时改为「先读全量 → 转换 → 一次写盘」
      * @param onProgress 进度回调（已下载字节数, 总字节数，未知时为 -1），运行在下载线程
      * @param timeoutMs 自定义超时（毫秒）；大文件（标签表 / 安装包）默认 20s 读超时不够用
+     * @param resumeFrom 断点续传起点（v1.8.3.0 待办 #18）：>0 时发 `Range: bytes=N-`，
+     *        以追加方式写入 [target]（该文件必须已有 N 字节）。服务端不认 Range 返回 200 时
+     *        自动作废重来，不会写出半截拼接的坏文件。`byteTransform` 场景不支持续传。
      */
     fun downloadFile(
         url: String,
@@ -268,12 +271,16 @@ object HttpClient {
         headers: Map<String, String> = emptyMap(),
         byteTransform: ((ByteArray) -> ByteArray)? = null,
         timeoutMs: Long? = null,
+        resumeFrom: Long = 0L,
         onProgress: ((downloaded: Long, total: Long) -> Unit)? = null,
     ) {
         val builder = Request.Builder()
             .url(url)
             .header("User-Agent", DEFAULT_USER_AGENT)
         headers.forEach { (k, v) -> builder.header(k, v) }
+        // 整包变换必须从头来（变换后的长度和原始字节对不上，没法拼接）
+        val startBytes = if (byteTransform == null) resumeFrom.coerceAtLeast(0L) else 0L
+        if (startBytes > 0) builder.header("Range", "bytes=$startBytes-")
 
         val request = builder.build()
         // v1.8.3.0：大文件（十几 MB 的标签表 / 安装包）沿用默认 20s 读超时会被掐断，
@@ -288,8 +295,11 @@ object HttpClient {
                 throw NetworkException("下载失败: ${response.code} $url")
             }
             val body: ResponseBody = response.body ?: throw NetworkException("空响应: $url")
+            // 206 = 服务端接受了 Range，接着上次的字节往下写；200 = 忽略 Range，得从头写
+            val appending = startBytes > 0 && response.code == HTTP_PARTIAL_CONTENT
+            val skipped = if (appending) startBytes else 0L
             val contentLength = body.contentLength()
-            val total = if (contentLength > 0) contentLength else -1L
+            val total = if (contentLength > 0) contentLength + skipped else -1L
 
             target.parentFile?.mkdirs()
 
@@ -303,8 +313,9 @@ object HttpClient {
             }
 
             val input = body.byteStream()
-            val output = FileOutputStream(target)
-            var downloaded = 0L
+            // 续传时 append=true；否则覆盖（顺便把服务端忽略 Range 时残留的旧内容截掉）
+            val output = FileOutputStream(target, appending)
+            var downloaded = skipped
             val buffer = ByteArray(8 * 1024)
             try {
                 while (true) {

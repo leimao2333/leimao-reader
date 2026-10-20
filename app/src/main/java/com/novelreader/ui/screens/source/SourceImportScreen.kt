@@ -25,8 +25,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -57,28 +59,34 @@ fun SourceImportScreen(
     val message by viewModel.message.collectAsState()
     val downloadProgress by viewModel.downloadProgress.collectAsState()
     val downloading by viewModel.downloading.collectAsState()
+    // v1.8.3.0 待办 #21：文件读取 / 解析阶段的进度与已选文件
+    val importStage by viewModel.importStage.collectAsState()
+    val pickedFile by viewModel.pickedFile.collectAsState()
+    val pickedText by viewModel.pickedText.collectAsState()
 
-    // 判断内容是否为网址
+    // 判断内容是否为网址（用 lineSequence 懒切分：几 MB 的粘贴内容不能整串 split，
+    // 原实现 `rawContent.lines()` 会为了一次判断在主线程切出上万个字符串）
     val isUrl = remember(rawContent) {
-        val line = rawContent.lines().firstOrNull { it.isNotBlank() }?.trim()
+        val line = rawContent.lineSequence().firstOrNull { it.isNotBlank() }?.trim()
         line != null && (line.startsWith("http://") || line.startsWith("https://"))
     }
 
-    // 系统文件选择器：放开 MIME 过滤，避免 json/js/txt 文件不显示
+    // 文件读完后回填输入框（仅内容不太大时由 VM 提供 pickedText）
+    LaunchedEffect(pickedText) {
+        pickedText?.let { rawContent = it }
+    }
+
+    // 系统文件选择器：放开 MIME 过滤，避免 json/js/txt 文件不显示。
+    // v1.8.3.0：读取改由 ViewModel 在 IO 线程做 —— 这里只在主线程查个文件名
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                val name = queryDisplayName(context, uri) ?: "source.json"
-                val content = context.contentResolver
-                    .openInputStream(uri)
-                    ?.bufferedReader()
-                    ?.use { it.readText() }
-                    ?: ""
-                fileName = name
-                rawContent = content
-            }
+            val name = queryDisplayName(context, uri) ?: "source.json"
+            fileName = name
+            // 大文件不回填输入框，先清掉上一次的粘贴内容，避免「导入的是旧内容」
+            if (rawContent.length > 200_000) rawContent = ""
+            viewModel.loadSourceFile(context, uri, name)
         }
     }
 
@@ -118,6 +126,45 @@ fun SourceImportScreen(
                 Icon(Icons.Default.FolderOpen, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text("从文件选择（.json / .js / .txt）")
+            }
+            Spacer(Modifier.height(8.dp))
+            // 已选文件卡片（v1.8.3.0 待办 #21）：大文件不进输入框，这里显示文件名 / 体积，
+            // 点「导入」直接用已读进内存的正文解析
+            pickedFile?.let { picked ->
+                Spacer(Modifier.height(12.dp))
+                androidx.compose.material3.Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    androidx.compose.foundation.layout.Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    ) {
+                        androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
+                            Text(
+                                text = picked.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                text = buildString {
+                                    append(formatFileSize(picked.sizeBytes))
+                                    append(" · ")
+                                    append("${picked.chars} 字符")
+                                    if (!picked.inEditor) append(" · 过大，未预览")
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        androidx.compose.material3.TextButton(
+                            onClick = {
+                                rawContent = ""
+                                viewModel.clearPickedFile()
+                            },
+                        ) { Text("移除") }
+                    }
+                }
             }
             Spacer(Modifier.height(8.dp))
             Text(
@@ -190,15 +237,17 @@ fun SourceImportScreen(
             Button(
                 onClick = {
                     val content = rawContent.trim()
-                    if (isUrl) {
-                        viewModel.importFromUrl(
-                            content.lines().firstOrNull { it.isNotBlank() }?.trim() ?: content
+                    when {
+                        isUrl -> viewModel.importFromUrl(
+                            content.lineSequence().firstOrNull { it.isNotBlank() }?.trim() ?: content
                         )
-                    } else {
-                        viewModel.importSource(rawContent, fileName.ifBlank { null })
+                        // 大文件：正文在 ViewModel 里，不经过输入框
+                        content.isBlank() && pickedFile != null ->
+                            viewModel.importPickedFile(fileName.ifBlank { null })
+                        else -> viewModel.importSource(rawContent, fileName.ifBlank { null })
                     }
                 },
-                enabled = rawContent.isNotBlank() && !loading,
+                enabled = (rawContent.isNotBlank() || pickedFile != null) && !loading,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 if (loading) {
@@ -211,6 +260,48 @@ fun SourceImportScreen(
                 }
             }
         }
+    }
+
+    // ===== 导入进度弹窗（v1.8.3.0 待办 #21）=====
+    importStage?.let { stage ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { /* 只允许点取消 */ },
+            title = { Text(stage.label) },
+            text = {
+                Column {
+                    if (stage.fraction != null) {
+                        androidx.compose.material3.LinearProgressIndicator(
+                            progress = { stage.fraction.coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    } else {
+                        androidx.compose.material3.LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    if (stage.detail.isNotBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = stage.detail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "大文件解析在后台进行，界面不会再卡住",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { viewModel.cancelImport() },
+                    enabled = stage.cancelable,
+                ) { Text("取消") }
+            },
+        )
     }
 
     // ===== 可选添加对话框（v1.4.7.0）：解析出多个源时弹出勾选 =====
@@ -229,4 +320,11 @@ private fun queryDisplayName(context: Context, uri: android.net.Uri): String? {
             } else null
         }
     }.getOrNull()
+}
+
+/** 字节 → 人类可读（导入页文件卡片用） */
+private fun formatFileSize(value: Long): String = when {
+    value >= 1024L * 1024 -> String.format(java.util.Locale.US, "%.1f MB", value / 1024f / 1024f)
+    value >= 1024 -> String.format(java.util.Locale.US, "%.0f KB", value / 1024f)
+    else -> "$value B"
 }

@@ -232,6 +232,9 @@ object MacCmsParser {
                 put("director", str(o, "vod_director"))
                 put("lang", str(o, "vod_lang"))
                 put("typeName", str(o, "type_name"))
+                // v1.8.7.0（待办 #28）：vod_class 是多题材字段（「剧情,动作,悬疑」），
+                // 进标签层后一部片子能像小说 / 漫画那样带多个题材
+                put("class", str(o, "vod_class"))
                 put("total", str(o, "vod_total"))
                 // 详情接口才带 vod_play_url；用它区分「完整简介」是否值得带出 ——
                 // 搜索/列表响应不带，免得把 2KB 简介塞进导航参数里

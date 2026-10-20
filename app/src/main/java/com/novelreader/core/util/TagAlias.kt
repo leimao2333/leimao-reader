@@ -177,6 +177,8 @@ object TagAlias {
             "巨乳", "大胸", "爆乳", "豪乳", "豐乳", "丰乳", "丰满", "豐滿", "巨乳娘",
             "big breasts", "big boobs", "large breasts", "huge breasts", "big bust",
             "oppai", "おっぱい", "巨乳もの", "거유",
+            // v1.8.7.0（待办 #28）：「巨乳美乳」拆出来的是「美乳」，同一维度
+            "美乳", "美乳娘",
         ),
         setOf(
             "贫乳", "平胸", "小胸", "微乳", "扁胸", "幼乳",
@@ -205,7 +207,9 @@ object TagAlias {
         setOf("金发", "金髮", "blonde", "blond", "golden hair", "金髪", "금발"),
         setOf("黑发", "黑髮", "black hair", "黒髪", "흑발"),
         // ===== 服装 / 穿着 =====
-        setOf("制服", "校服", "学生服", "school uniform", "seifuku", "制服姿", "교복"),
+        setOf("制服", "校服", "学生服", "school uniform", "seifuku", "制服姿", "교복",
+            // v1.8.7.0（待办 #28）：「制服诱惑」是同一栏目的常见写法
+            "制服诱惑", "制服誘惑"),
         setOf("和服", "浴衣", "着物", "和装", "kimono", "yukata", "기모노"),
         setOf("泳装", "泳裝", "泳衣", "水着", "swimsuit", "beach", "bikini", "比基尼", "ビキニ", "수영복", "비키니"),
         setOf("婚纱", "婚纱礼服", "wedding dress", "wedding", "ウェディングドレス", "웨딩드레스"),
@@ -243,7 +247,10 @@ object TagAlias {
         setOf("帽子", "hat", "cap", "모자"),
         setOf("围巾", "圍巾", "scarf", "muffler", "マフラー", "목도리"),
         // ===== 分级 =====
-        setOf("成人", "限制级", "18禁", "r18", "hentai", "adult", "18+", "ero", "ecchi"),
+        setOf("成人", "限制级", "18禁", "r18", "hentai", "adult", "18+", "ero", "ecchi",
+            // v1.8.7.0（待办 #28）：采集站把同一栏写成「情色 / 色情 / 成人片」，
+            // 归到「成人」才能整类过滤（`成人:成人` 与 `成人:情色` 命中同一批）
+            "情色", "色情", "情色片", "色情片", "成人片", "av", "黄片", "黃片"),
         // v1.8.4.0：采集站把成人向动画写成「里番动漫 / 里番」，拆标签时会拆成
         // 「动漫」+「里番」两个（见 VideoTagLexicon.splitCompoundTag）；
         // 各种写法先归到「里番」，搜「裏番」「hentai anime」也能命中同一批。
@@ -293,7 +300,9 @@ object TagAlias {
         // ===== 情境（成人向标签的常见叫法）=====
         setOf("群交", "多人", "3p", "threesome", "group sex", "乱交", "亂交", "輪姦", "윤간"),
         setOf("露出", "野外", "野外露出", "exhibitionism", "public sex", "露出プレイ"),
-        setOf("偷窥", "偷窺", "窥视", "窺視", "voyeur", "peeping", "のぞき"),
+        setOf("偷窥", "偷窺", "窥视", "窺視", "voyeur", "peeping", "のぞき",
+            // v1.8.7.0（待办 #28）：「自拍偷拍」拆出来的是「偷拍」，与「偷窥」同一类内容
+            "偷拍", "偷拍视频", "偷拍自拍"),
         setOf("痴汉", "痴漢", "chikan", "molestation", "치한"),
         setOf("怀孕", "懷孕", "妊娠", "pregnant", "pregnancy", "임신"),
         setOf("母乳", "乳汁", "lactation", "breast milk", "母乳プレイ"),
@@ -367,6 +376,32 @@ object TagAlias {
         setOf("法国", "法國", "法剧", "法劇", "french"),
         setOf("日韩", "日韓", "日韩剧", "日韩片"),
         setOf("港台", "港臺", "港台剧", "港台片"),
+        // ===== 影视题材同义词（v1.8.7.0，待办 #28）=====
+        // 采集站 `vod_type_name` 里同一件事有多种叫法，不并组就会各自成键：
+        // 搜「伦理」搜不到只标了「理论片」的源，搜「综艺」搜不到只标「综艺节目」的。
+        // 规范名统一取最常用的中文短词，「X片 / X劇」后缀由 [genreBaseOf] 剥掉再查。
+        setOf(
+            "伦理", "倫理", "伦理片", "倫理片", "伦理剧", "倫理劇",
+            "理论片", "理論片", "理论", "理論", "三级伦理", "三級倫理",
+            "三级片", "三級片", "三级", "三級", "三级电影", "erotic", "softcore",
+        ),
+        setOf("综艺", "綜藝", "综艺节目", "綜藝節目", "variety", "variety show"),
+        setOf("真人秀", "实境秀", "實境秀", "reality show", "reality tv"),
+        setOf("脱口秀", "脫口秀", "talk show"),
+        setOf("歌舞", "歌舞片", "musical"),
+        setOf("青春", "青春片", "youth"),
+        setOf("同性", "同性恋", "同性戀", "同志", "lgbt", "queer"),
+        // 成人向采集站的常见栏目名（「素人搭讪」「探花系列」「福利姬」…）
+        setOf("素人", "素人娘", "amateur"),
+        setOf("探花", "探花系列", "探花视频"),
+        setOf("网红", "網紅", "influencer", "internet celebrity"),
+        setOf("解说", "解說", "解说视频", "commentary"),
+        setOf("传媒", "傳媒", "传媒公司"),
+        setOf("重口", "重口味", "hardcore"),
+        setOf("强奸", "強姦", "rape", "forced"),
+        setOf("乱伦", "亂倫", "incest"),
+        setOf("激情", "激情视频", "激情片"),
+        setOf("门事件", "事件门", "scandal"),
     )
 
     /**

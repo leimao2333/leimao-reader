@@ -43,6 +43,14 @@ object ItemTags {
      */
     const val EXTRAS_TAGS = "tags"
 
+    /**
+     * 采集站 `vod_class` 的 extras 键（v1.8.7.0 待办 #28）。
+     *
+     * 苹果 CMS 的 `vod_type_name` 只给一个主分类，`vod_class` 才是「剧情,动作,悬疑」
+     * 这种**多题材**字段 —— 有了它，一部片子的题材标签不必只靠标题窄口径去猜。
+     */
+    const val EXTRAS_CLASS = "class"
+
     /** 标签间分隔符：半/全角逗号、顿号、斜杠、竖线、空白 */
     private val SPLIT_REGEX = Regex("[,，、/|\\s]+")
 
@@ -76,7 +84,11 @@ object ItemTags {
             // 影视（v1.8.4.0）：分类名是**复合词**，一个字段表达两件事 ——
             // 「里番动漫」= 动漫 + 里番、「港剧」= 电视剧 + 香港。只存一个标签时
             // 「动漫」这个维度就丢了（搜动漫搜不到里番），所以先拆再归一。
-            SourceType.VIDEO -> addSplit(out, item.extras["typeName"], dropStatus = false, compound = true)
+            SourceType.VIDEO -> {
+                addSplit(out, item.extras["typeName"], dropStatus = false, compound = true)
+                // vod_class：多题材字段（v1.8.7.0 待办 #28），同一套拆分口径
+                addSplit(out, item.extras[EXTRAS_CLASS], dropStatus = false, compound = true)
+            }
             // legado 的 kind 偶尔被源写成状态（「连载中」/「1」），按片段过滤
             SourceType.NOVEL, SourceType.COMIC -> {
                 addSplit(out, item.extras["kind"], dropStatus = true)

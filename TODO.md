@@ -109,12 +109,12 @@
   - `TagTagger` 新增影视大类：`地区` / `语言` / `年代` / `主创`；`TagQuerySpec` 同步支持
     `地区:香港`、`年代:2025`、`主创:张三`（及 region / year / actor / lang 英文别名）。
   - **分类名拆标签**（同批补做）：采集站只给一个分类字符串，而它同时表达两件事 ——
-    「里番动漫」= 动漫 + 里番、「港剧」= 电视剧 + 香港。只存整串时「动漫」这个维度
-    整个丢失（搜动漫搜不到里番，搜里番也搜不到只标了「里番动漫」的源）。新增
+    「港剧」= 电视剧 + 香港、「日本动漫」= 日本 + 动漫。只存整串时「动漫」这个维度
+    整个丢失（搜「动漫」搜不到只标了复合名的源，搜复合名也命中不了按子维度检索的结果）。新增
     `VideoTagLexicon.splitCompoundTag()`，在 `ItemTags` 里对影视生效（浏览上下文与
     `type_name` 都走），和小说 / 漫画「一部作品多个标签」口径一致。
     附带收益：「电影片」统一成「电影」，「其他片」这类兜底分类只留一级类型。
-    「里番」同时进 `EXPLICIT_ADULT_CANONICALS`，隐藏成人内容时整类过滤得到。
+    成人向栏目名同时进 `EXPLICIT_ADULT_CANONICALS`，隐藏成人内容时整类过滤得到。
   - 未做：**系列**维度 —— 采集站没有稳定的系列字段，靠标题里的「第 N 季」猜会误伤
     （`VideoTitleKey` 明确把这类标识当内容标识、不剥离），先不碰。
 
@@ -134,13 +134,13 @@
   - 涉及：`core/util/VideoQualityTag.kt`（新建）、`PreferencesManager.kt`、
     `VideoPlayerViewModel.kt`、`VideoControls.kt`、`SettingsViewModel.kt`、`SettingsScreen.kt`。
 
-- [ ] **28. 视频标签整合多个标签（对齐小说 / 漫画口径，消除同义词分裂）**
+- [x] **28. 视频标签整合多个标签（对齐小说 / 漫画口径，消除同义词分裂）** ✅ v1.8.7.0
   - 现状：小说 / 漫画在 `core/util/ItemTags.kt` 的 `of()` 里走文本富化
     （`FanworkTags` + `ComicTagLexicon`，词表 = `ComicGenres`/`NovelGenres` +
     `TagAlias.GROUPS` 96 组同义译名），一部作品能拿到多个规范名标签；
     视频侧 `ItemTags.of()` **显式跳过**文本富化（v1.7.9.0 判断影视简介是剧情复述、噪声大），
     只靠 `VideoTagLexicon`（地区 / 语言 / 年代 / 主创 / 复合词拆分 / 标题窄口径补充）+
-    `TagAlias.canonicalOf` —— 采集站 `vod_type_name` 里大量同义写法（如「伦理」与「理论片」各写各的）
+    `TagAlias.canonicalOf` —— 采集站 `vod_type_name` 里大量同义写法各写各的
     没有归并源，同一维度散成多个标签、单部作品的标签数量也明显少于小说 / 漫画。
   - 需求：把视频做成和小说 / 漫画一致的「多标签整合」：
     - 题材同义词归并：补一张影视题材同义词表（扩 `TagAlias.GROUPS` 或给
@@ -150,6 +150,17 @@
       一部视频除 `type_name` 外评估是否从标题窄口径补题材（沿用现有
       `MAX_TITLE_GENRES` / 歧义小词口径）或纳入 `vod_class` 等额外字段。
   - 涉及：`core/util/ItemTags.kt`、`VideoTagLexicon.kt`、`TagAlias.kt`、`TagTagger.kt`、`TagQuerySpec.kt`。
+  - 落地（v1.8.7.0）：① `TagAlias.GROUPS` 新增 / 扩充约 20 组影视题材同义词
+    （综艺 / 真人秀 / 脱口秀 / 歌舞 / 青春 / 文艺 / 演唱会 / 选秀 等），
+    查询侧 `aliasesOf` 天然同口径；② `VideoTagLexicon.splitCompoundTag` 扩成七级解析
+    （一级类型 → 噪声过滤 → 登记别名 → 地区前缀 → 噪声后缀 → 全串覆盖分词 → 兜底归一），
+    显式分隔符先切段且片号类标识不切，认不出的整串保留不硬拆；
+    大洲分区名（如 `asia`）进 `REGION_PREFIXES`，归地区大类而非题材；
+    ③ `ItemTags.kt` 增加 `EXTRAS_CLASS`，`MacCmsParser` 把 `vod_class` 写进 extras，
+    第二分类名一并参与拆分；④ 新增 17 条 `VideoTagExpansionTest`（用例全部取真实
+    `vod_type_name`），影视四类测试共 66 条、全量 925 条单测通过。
+    已知遗留：VIDEO 的「作者」大类被片号 / 厂牌名污染、「作品」大类
+    被标题污染，需单独提待办。
 
 ---
 
@@ -195,7 +206,7 @@
     （`-` 排除与 `题材:` 前缀原样保留），不追加成新条件。
     排序：匹配类型（前缀 < 包含）→ 补全量更短 → 池内顺序（覆盖源数）。
     过滤：空格分段里已写进查询的条件整族屏蔽；正在输入的词本身是完整标签时也屏蔽同根词
-    （避免打完「无码」还满屏「无码漫画」）。
+    （避免打完「热血」还满屏「热血漫画」）。
 
 ---
 

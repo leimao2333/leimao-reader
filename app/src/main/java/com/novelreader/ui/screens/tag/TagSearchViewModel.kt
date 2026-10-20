@@ -17,6 +17,7 @@ import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.SourceRepository
 import com.novelreader.source.category.isAdult
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -27,6 +28,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeout
@@ -608,7 +610,6 @@ class TagSearchViewModel(
     private suspend fun indexProvenance(
         items: List<MediaItem>,
         proven: Map<String, Set<String>> = emptyMap(),
-        withContext: Boolean = true,
     ) {
         val repo = tagIndexRepository ?: return
         if (items.isEmpty()) return
@@ -616,23 +617,26 @@ class TagSearchViewModel(
         val fresh = items.filter { it.sourceId.isNotBlank() && it.id.isNotBlank() }
             .filter { indexedInSearch.add(itemKey(it)) }
         if (fresh.isEmpty()) return
-        val groups = TagProvenance.groupByProof(
-            items = fresh,
-            proven = if (withContext) proven else emptyMap(),
-            keyOf = ::itemKey,
-        )
-        groups.forEach { (tags, group) ->
-            val context = tags.map { TagAlias.canonicalOf(it) to CONTEXT_PAGE_CONFIDENCE }
-            runCatching { repo.indexItems(type, group, context) }
+        val groups = TagProvenance.groupByProof(fresh, proven, ::itemKey)
+        // 分组本身是纯内存计算（快），真正的打标与写库在 [TagIndexRepository.indexItems]
+        // 里切到 IO；这里再包一层是为了让「一组一组写」与最后的计数在同一个后台协程里。
+        withContext(Dispatchers.IO) {
+            groups.forEach { (tags, group) ->
+                val context = tags.map { TagAlias.canonicalOf(it) to CONTEXT_PAGE_CONFIDENCE }
+                runCatching { repo.indexItems(type, group, context) }
+            }
+            _indexCount.value = repo.count(type)
         }
-        _indexCount.value = repo.count(type)
     }
 
     /** 增量追加结果（先按 `sourceId:id` 再按标题去重，顺序保持） */
     private fun appendResults(items: List<MediaItem>) {
         if (items.isEmpty()) return
-        _results.value = SearchResultMerge.merge(_results.value, items)
+        _results.value = resultsAcc.addAll(items)
     }
+
+    /** 结果累加器：翻页只处理新到的一页，不重算整个列表 */
+    private val resultsAcc = SearchResultMerge.Accumulator()
 
     /**
      * 执行标签搜索（单标签 / 复合标签通用）。
@@ -892,7 +896,8 @@ class TagSearchViewModel(
                 )
                 if (generation != searchGeneration) return@launch
                 _activeTags.value = known.map(TagAlias::canonicalOf).distinct()
-                _results.value = final
+                // 用累加器接管当前结果：之后翻页只增量处理新到的一页（v1.8.4.1）
+                _results.value = resultsAcc.reset(final)
                 // 边搜边标记（v1.8.1.2）+ **证据化**打标（v1.8.4.1）。
                 // 以前是「整批同一个上下文」：只要每个标签都有分类页入口，就把所有结果
                 // 一起打上这些标签。但同一次搜索里往往混着关键词入口，那些结果只是
@@ -900,11 +905,8 @@ class TagSearchViewModel(
                 // 现在证据按**作品**记：只有这部作品自己从某个标签的分类页里被抓到过，
                 // 才补那个标签；索引里已有的结果只按自身字段刷新，不重复加成。
                 indexedInSearch.clear()
-                if (network.isNotEmpty() || localItems.isNotEmpty()) {
-                    viewModelScope.launch {
-                        indexProvenance(localItems, withContext = false)
-                        indexProvenance(network, outcome.proven)
-                    }
+                if (network.isNotEmpty()) {
+                    viewModelScope.launch { indexProvenance(network, outcome.proven) }
                 }
                 // 分页上下文：后续「加载更多」按同一批入口抓下一页（v1.8.1.2）
                 if (final.isNotEmpty()) {

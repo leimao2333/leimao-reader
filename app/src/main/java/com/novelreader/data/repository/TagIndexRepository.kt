@@ -254,41 +254,46 @@ class TagIndexRepository(
         contextOrigin: String = TagTagger.ORIGIN_STATION,
     ) {
         if (items.isEmpty()) return
-        val now = System.currentTimeMillis()
-        val rows = mutableListOf<LocalTagEntity>()
-        val tags = mutableListOf<TagInstanceEntity>()
-        val context = contextTags.map { TagTagger.ContextTag(it.first, it.second, contextOrigin) }
-        items.forEach { item ->
-            val tagged = TagTagger.tag(item, context)
-            if (tagged.isEmpty()) return@forEach
-            rows += LocalTagEntity(
-                sourceId = item.sourceId,
-                itemId = item.id,
-                itemType = type.name,
-                title = item.title,
-                cover = item.cover,
-                detailUrl = item.detailUrl,
-                sourceName = item.sourceName,
-                author = item.author,
-                tags = tagged.joinToString("|") { it.name },
-                tagsLower = "|" + tagged.joinToString("|") { it.name.lowercase() } + "|",
-                updatedAt = now,
-            )
-            tagged.forEach { tag ->
-                tags += TagInstanceEntity(
+        // v1.8.4.1：打标是纯 CPU 活（词表匹配 / 别名归一 / 正则），以前跟着**调用方**的
+        // 调度器跑 —— 标签搜索页在 Main 上调它，一页上千条时主线程被占住，直接 ANR。
+        // 这里统一挪到 IO，调用方不必再各自处理。
+        withContext(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            val rows = mutableListOf<LocalTagEntity>()
+            val tags = mutableListOf<TagInstanceEntity>()
+            val context = contextTags.map { TagTagger.ContextTag(it.first, it.second, contextOrigin) }
+            items.forEach { item ->
+                val tagged = TagTagger.tag(item, context)
+                if (tagged.isEmpty()) return@forEach
+                rows += LocalTagEntity(
                     sourceId = item.sourceId,
                     itemId = item.id,
                     itemType = type.name,
-                    tagName = tag.name,
-                    category = tag.category,
-                    confidence = tag.confidence,
-                    origin = tag.origin,
+                    title = item.title,
+                    cover = item.cover,
+                    detailUrl = item.detailUrl,
+                    sourceName = item.sourceName,
+                    author = item.author,
+                    tags = tagged.joinToString("|") { it.name },
+                    tagsLower = "|" + tagged.joinToString("|") { it.name.lowercase() } + "|",
                     updatedAt = now,
                 )
+                tagged.forEach { tag ->
+                    tags += TagInstanceEntity(
+                        sourceId = item.sourceId,
+                        itemId = item.id,
+                        itemType = type.name,
+                        tagName = tag.name,
+                        category = tag.category,
+                        confidence = tag.confidence,
+                        origin = tag.origin,
+                        updatedAt = now,
+                    )
+                }
             }
+            if (rows.isNotEmpty()) localTagDao.upsertAll(rows)
+            if (tags.isNotEmpty()) tagInstanceDao.upsertAll(tags)
         }
-        if (rows.isNotEmpty()) localTagDao.upsertAll(rows)
-        if (tags.isNotEmpty()) tagInstanceDao.upsertAll(tags)
     }
 
     /**

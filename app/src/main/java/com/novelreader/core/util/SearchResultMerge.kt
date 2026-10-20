@@ -24,6 +24,8 @@ object SearchResultMerge {
      * 合并若干批结果（前一批的位置优先，内容以后到的为准）。
      *
      * 保持顺序：作品第一次出现的位置不变，只是内容被后面的批次覆盖。
+     * 只用于**一次性**合并；翻页追加请用 [Accumulator]，否则每次都要把整个列表
+     * 重新算一遍标题键（O(n²)，几千条时会把主线程占死）。
      */
     fun merge(vararg batches: List<MediaItem>): List<MediaItem> {
         val byId = LinkedHashMap<String, MediaItem>()
@@ -31,5 +33,46 @@ object SearchResultMerge {
             batch.forEach { item -> byId[keyOf(item)] = item }
         }
         return byId.values.distinctBy { TagQuery.identityKey(it.title) }
+    }
+
+    /**
+     * 增量累加器（v1.8.4.1）：翻页时只处理**新到的一页**，不再重算整个列表。
+     *
+     * 之前的写法是每追加一页就把「已有结果 + 新结果」整体去重一次 ——
+     * 每次都要给每部作品算标题身份键（正则 + 繁简转换），滚十几屏就是
+     * 几十万次，主线程直接卡到 ANR。这里把身份键记在表里，追加是 O(本页条数)。
+     */
+    class Accumulator {
+
+        private val byId = LinkedHashMap<String, MediaItem>()
+
+        /** 标题身份键 → 作品 id（跨源同名只留第一条） */
+        private val titleOwner = HashMap<String, String>()
+
+        /** 重置成一批新结果（新搜索开始时调用） */
+        fun reset(items: List<MediaItem>): List<MediaItem> {
+            byId.clear()
+            titleOwner.clear()
+            return addAll(items)
+        }
+
+        /** 追加一批结果，返回当前快照（可直接喂给 StateFlow） */
+        fun addAll(items: List<MediaItem>): List<MediaItem> {
+            items.forEach { item ->
+                val id = keyOf(item)
+                val titleKey = TagQuery.identityKey(item.title)
+                val owner = titleOwner[titleKey]
+                if (byId.containsKey(id)) {
+                    // 同一条作品又出现：内容以新到的为准，位置保持不变
+                    byId[id] = item
+                    if (owner == null) titleOwner[titleKey] = id
+                    return@forEach
+                }
+                if (owner != null && owner != id) return@forEach
+                byId[id] = item
+                titleOwner[titleKey] = id
+            }
+            return ArrayList(byId.values)
+        }
     }
 }

@@ -68,4 +68,36 @@ class SearchResultMergeTest {
         val keys = merged.map { SearchResultMerge.keyOf(it) }
         assertEquals(keys.size, keys.distinct().size)
     }
+
+    // ===== 增量累加器（翻页用）=====
+
+    @Test
+    fun `累加器增量追加与一次性合并结果一致`() {
+        val page1 = listOf(item("s1", "1", "遮天"), item("s1", "2", "完美世界"))
+        val page2 = listOf(item("s1", "2", "完美世界（新）"), item("s2", "9", "遮天"))
+        val acc = SearchResultMerge.Accumulator()
+        acc.reset(page1)
+        val incremental = acc.addAll(page2)
+        val oneShot = SearchResultMerge.merge(page1, page2)
+        assertEquals(oneShot.map { it.title }, incremental.map { it.title })
+        assertEquals(oneShot.map { SearchResultMerge.keyOf(it) }, incremental.map { SearchResultMerge.keyOf(it) })
+    }
+
+    @Test
+    fun `累加器同 id 更新内容但位置不变`() {
+        val acc = SearchResultMerge.Accumulator()
+        acc.reset(listOf(item("s1", "1", "A"), item("s1", "2", "B")))
+        val out = acc.addAll(listOf(item("s1", "1", "A 修订版")))
+        assertEquals(listOf("A 修订版", "B"), out.map { it.title })
+        assertEquals(2, out.size)
+    }
+
+    @Test
+    fun `累加器跨源同名只留一条`() {
+        val acc = SearchResultMerge.Accumulator()
+        acc.reset(listOf(item("s1", "1", "遮天")))
+        val out = acc.addAll(listOf(item("s2", "9", "遮天")))
+        assertEquals(1, out.size)
+        assertEquals("s1", out.first().sourceId)
+    }
 }

@@ -24,6 +24,16 @@ import com.novelreader.domain.model.MediaItem
  */
 object TagQuery {
 
+    // 正则只编译一次（v1.8.4.1）。去重 / 求交时每部作品都要算一次身份键，
+    // 以前每次调用都 new 一个 Regex —— 一次搜索几千条、翻页再乘几轮，
+    // 光编译正则就能把主线程占满（实测在模拟器上触发 ANR）。
+    private val PERCENT_RE = Regex("%[0-9a-fA-F]{2}")
+    private val PERCENT20_RE = Regex("(?i)%20")
+    private val WHITESPACE_RE = Regex("[\\s　]+")
+    private val BRACKET_RE = Regex("[（(\\[【〔《<][^）)\\]】〕》>]*[）)\\]】〕》>]")
+    private val SEPARATOR_RE = Regex("[-—–_~～|/\\\\:：·]+")
+
+
     /**
      * 解析查询串为标签列表：按空白拆分、去空、去重、保序。
      *
@@ -37,10 +47,10 @@ object TagQuery {
 
     /** 百分号编码的 `%20` 及 URL 表单编码的 `+` 也作为标签分隔符。 */
     private fun splitLogicalTags(query: String): List<String> {
-        val hasPercentEncoding = Regex("%[0-9a-fA-F]{2}").containsMatchIn(query)
-        val withDecodedSeparators = query.replace(Regex("(?i)%20"), " ")
+        val hasPercentEncoding = PERCENT_RE.containsMatchIn(query)
+        val withDecodedSeparators = query.replace(PERCENT20_RE, " ")
         val normalized = if (hasPercentEncoding) withDecodedSeparators.replace('+', ' ') else withDecodedSeparators
-        return normalized.split(Regex("[\\s　]+"))
+        return normalized.split(WHITESPACE_RE)
     }
 
     /** 标题归一化：去所有空白 + 小写，用于跨标签/跨源匹配同一部作品 */
@@ -83,9 +93,9 @@ object TagQuery {
     private fun workKey(title: String): String {
         var s = title
         // 英文括号 + 中文括号 + 方括号 + 书名/角括号，连同内部内容一起去掉
-        s = s.replace(Regex("[（(\\[【〔《<][^）)\\]】〕》>]*[）)\\]】〕》>]"), " ")
+        s = s.replace(BRACKET_RE, " ")
         // 常见分隔后缀：--- 第12话 / - 番外 / ～xxx～
-        s = s.replace(Regex("[-—–_~～|/\\\\:：·]+"), " ")
+        s = s.replace(SEPARATOR_RE, " ")
         // 只保留文字与数字（中英日韩 + 数字），标点全部丢弃
         s = s.filter { it.isLetterOrDigit() }
         s = ChineseConverter.toSimplified(s)

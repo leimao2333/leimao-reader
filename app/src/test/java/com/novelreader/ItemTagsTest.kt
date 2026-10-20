@@ -35,8 +35,10 @@ class ItemTagsTest {
         val out = ItemTags.of(
             item(SourceType.VIDEO, tags = listOf("动作片"), extras = mapOf("typeName" to "喜剧片")),
         )
-        // 浏览上下文在前，extras 派生在后
-        assertEquals(listOf("动作片", "喜剧片"), out)
+        // 浏览上下文在前，extras 派生在后。
+        // v1.8.4.0：影视写法的「片」后缀会归一（动作片→动作、喜剧片→搞笑），
+        // 否则「动作」与「动作片」在标签层是两个键，搜哪个都只出一半。
+        assertEquals(listOf("动作", "搞笑"), out)
     }
 
     @Test
@@ -44,7 +46,8 @@ class ItemTagsTest {
         val out = ItemTags.of(
             item(SourceType.VIDEO, extras = mapOf("typeName" to "科幻片")),
         )
-        assertEquals(listOf("科幻片"), out)
+        // v1.8.4.0：片后缀归一
+        assertEquals(listOf("科幻"), out)
     }
 
     @Test
@@ -127,7 +130,7 @@ class ItemTagsTest {
             ItemTags.of(item(SourceType.NOVEL, extras = mapOf("kind" to "玄幻, 东方玄幻、奇幻"))),
         )
         assertEquals(
-            listOf("动作片", "喜剧片"),
+            listOf("动作", "搞笑"),
             ItemTags.of(item(SourceType.VIDEO, extras = mapOf("typeName" to "动作片/喜剧片"))),
         )
     }
@@ -137,7 +140,8 @@ class ItemTagsTest {
         val out = ItemTags.of(
             item(SourceType.VIDEO, tags = listOf("动作片"), extras = mapOf("typeName" to "动作片")),
         )
-        assertEquals(listOf("动作片"), out)
+        // 归一之后两者是同一个键，仍然只出现一次
+        assertEquals(listOf("动作"), out)
     }
 
     @Test

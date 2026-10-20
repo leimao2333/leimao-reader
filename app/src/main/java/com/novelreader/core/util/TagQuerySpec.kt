@@ -8,7 +8,7 @@ package com.novelreader.core.util
  * | 写法 | 含义 | 示例 |
  * |------|------|------|
  * | `-标签` / `!标签` | **排除**（对应嵌套查询的 must_not） | `无码 -有码` |
- * | `大类:标签` | 限定标签大类（题材 / 画风 / 受众 / 成人） | `题材:热血`、`成人:无码` |
+ * | `大类:标签` | 限定标签大类（题材 / 画风 / 受众 / 成人 / 地区 / 语言 / 年代 / 主创） | `题材:热血`、`成人:无码`、`地区:香港` |
  * | `前缀*` / `*后缀` | **通配**，按受控词表展开成一组标签 | `魔法*`、`*触手*` |
  *
  * 解析只负责把输入拆成 [Clause]（纯函数），展开通配与别名、拼嵌套查询由调用方完成 ——
@@ -18,8 +18,12 @@ package com.novelreader.core.util
  */
 object TagQuerySpec {
 
-    /** 受支持的标签大类（v1.8.1.2 的 [TagTagger] 大类口径） */
-    val CATEGORIES: Set<String> = setOf("题材", "画风", "受众", "成人")
+    /** 受支持的标签大类（v1.8.1.2 的 [TagTagger] 大类口径；v1.8.4.0 补影视四类） */
+    val CATEGORIES: Set<String> = setOf(
+        "题材", "画风", "受众", "成人",
+        // 影视专属（v1.8.4.0，待办 #12）：`地区:香港`、`年代:2025`、`主创:张三`
+        "地区", "语言", "年代", "主创",
+    )
 
     /** 大类的英文 / 别名写法 → 标准大类 */
     private val CATEGORY_ALIASES: Map<String, String> = mapOf(
@@ -27,6 +31,11 @@ object TagQuerySpec {
         "style" to "画风", "art" to "画风", "画风" to "画风",
         "audience" to "受众", "target" to "受众", "读者" to "受众",
         "adult" to "成人", "r18" to "成人", "18" to "成人", "分级" to "成人",
+        // 影视四类（v1.8.4.0）
+        "region" to "地区", "area" to "地区", "地区" to "地区", "国家" to "地区",
+        "lang" to "语言", "language" to "语言", "语言" to "语言",
+        "year" to "年代", "era" to "年代", "年代" to "年代",
+        "cast" to "主创", "actor" to "主创", "director" to "主创", "主创" to "主创", "演员" to "主创",
     )
 
     /** 解析结果：一个逻辑标签条件 */

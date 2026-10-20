@@ -191,4 +191,56 @@ class TagAliasTest {
         assertEquals(listOf("全彩", escapedFullColor), TagAlias.matchesInPool("全彩", pool))
         assertEquals(listOf("无码", escapedUncensored), TagAlias.matchesInPool("无码", pool))
     }
+
+    // ===== 影视写法归一（v1.8.4.0，待办 #11）=====
+
+    @Test
+    fun `影视类型的片字后缀归到同一组`() {
+        // 采集站的 vod_type_name 写「动作片」，漫画词表的规范名是「动作」
+        assertEquals("动作", TagAlias.canonicalOf("动作片"))
+        assertEquals("动作", TagAlias.canonicalOf("動作片"))
+        assertEquals("恋爱", TagAlias.canonicalOf("爱情片"))
+        assertEquals("科幻", TagAlias.canonicalOf("科幻电影"))
+        assertEquals("恐怖", TagAlias.canonicalOf("恐怖片"))
+        // 「喜剧」组（v1.7.2.0 起）的规范名是「搞笑」，这里沿用既有口径
+        assertEquals("搞笑", TagAlias.canonicalOf("喜剧片"))
+        assertEquals("犯罪", TagAlias.canonicalOf("犯罪片"))
+        assertEquals("纪录片", TagAlias.canonicalOf("记录片"))
+    }
+
+    @Test
+    fun `剥后缀后仍能展开整组别名`() {
+        val names = TagAlias.aliasesOf("动作片")
+        assertTrue("动作" in names)
+        assertTrue("动作片" in names)
+        assertTrue("action" in names)
+        // 搜索词也要带上整组，否则只按「动作片」去源站搜会漏
+        assertTrue(TagAlias.searchTermsFor("动作片").contains("动作"))
+    }
+
+    @Test
+    fun `不该被剥后缀的词原样保留`() {
+        // 基词不在受控词表里 → 不是影视类型，原样保留
+        assertEquals("卡片", TagAlias.canonicalOf("卡片"))
+        assertEquals("照片", TagAlias.canonicalOf("照片"))
+        assertEquals("唱片", TagAlias.canonicalOf("唱片"))
+        assertEquals("本周推荐", TagAlias.canonicalOf("本周推荐"))
+    }
+
+    @Test
+    fun `地区别名互通`() {
+        assertTrue("香港" in TagAlias.aliasesOf("港剧"))
+        assertTrue("美国" in TagAlias.aliasesOf("好莱坞"))
+        assertTrue("日本" in TagAlias.aliasesOf("日剧"))
+    }
+
+    @Test
+    fun `韩国在漫画口径下归到韩漫 影视地区标签因此不过归一`() {
+        // 已知取舍的守卫：漫画词表把「韩国」当成韩漫的别名（韩国漫画）。
+        // 影视的地区标签因此不能走 canonicalOf，否则一部韩剧会被标成「韩漫」
+        // —— 见 VideoTagLexicon 里地区那条 canonicalize = false。
+        // 好在搜索侧仍然通：aliasesOf(韩国) 里就含「韩国」，索引里的同名标签照样命中。
+        assertEquals("韩漫", TagAlias.canonicalOf("韩国"))
+        assertTrue("韩国" in TagAlias.aliasesOf("韩国"))
+    }
 }

@@ -29,6 +29,14 @@ object TagTagger {
     const val CATEGORY_STYLE = "画风"
     const val CATEGORY_AUDIENCE = "受众"
 
+    // ----- 影视专属大类（v1.8.4.0，待办 #12）-----
+    // 采集站的 vod_area / vod_lang / vod_year / vod_actor 一直躺在 extras 里没进标签层，
+    // 这几类把它们变成可搜索的维度（`地区:香港`、`年代:2025`）。
+    const val CATEGORY_REGION = "地区"
+    const val CATEGORY_LANGUAGE = "语言"
+    const val CATEGORY_ERA = "年代"
+    const val CATEGORY_CAST = "主创"
+
     // ===== 标签来源 =====
     const val ORIGIN_STATION = "站方"
     const val ORIGIN_TEXT = "文本"
@@ -81,7 +89,17 @@ object TagTagger {
             if (name.isBlank()) return@forEach
             merge(out, Tag(name, categoryOf(name), CONF_STATION, ORIGIN_STATION))
         }
-        // 2) 文本：标题 + 简介（影视简介多为剧情复述，噪声大，只做小说 / 漫画）
+        // 2) 影视：把源里已有、却一直没进标签层的维度补上（v1.8.4.0）
+        //    地区 / 语言 / 年代 / 主创来自结构化字段（置信度同站方）；
+        //    标题题材是文本猜的（60 分），会被站方 typeName 覆盖。
+        if (item.type == SourceType.VIDEO) {
+            VideoTagLexicon.derive(item).forEach { derived ->
+                val name = if (derived.canonicalize) TagAlias.canonicalOf(derived.name) else derived.name
+                if (name.isBlank()) return@forEach
+                merge(out, Tag(name, derived.category, derived.confidence, derived.origin))
+            }
+        }
+        // 3) 文本：标题 + 简介（影视简介多为剧情复述，噪声大，只做小说 / 漫画）
         if (item.type == SourceType.NOVEL || item.type == SourceType.COMIC) {
             val text = buildString {
                 append(item.title)
@@ -93,7 +111,7 @@ object TagTagger {
                 merge(out, Tag(name, categoryOf(name), CONF_TEXT, ORIGIN_TEXT))
             }
         }
-        // 3) 分类页上下文（v1.8.1.9）：从「全彩」这类分类页命中的作品，补上该分类标签。
+        // 4) 分类页上下文（v1.8.1.9）：从「全彩」这类分类页命中的作品，补上该分类标签。
         //    置信度按入口类型由调用方给（真实分类页高、纯关键词搜索低或不给）。
         context.forEach { ctx ->
             val name = TagAlias.canonicalOf(ctx.name)

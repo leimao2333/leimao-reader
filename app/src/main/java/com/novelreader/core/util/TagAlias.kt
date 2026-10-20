@@ -330,6 +330,31 @@ object TagAlias {
         setOf("篮球", "농구", "バスケ", "basketball"),
         setOf("足球", "축구", "サッカー", "soccer", "football"),
         setOf("网球", "테니스", "テニス", "tennis"),
+        // ===== 影视类型补充（v1.8.4.0，待办 #11）=====
+        // 采集站的 `vod_type_name` 会用到这些短词（「剧情片」「犯罪片」），
+        // 而漫画词表里没有对应的组，于是它们只能各自成键、互相搜不到。
+        // 规范名统一取组内首词的中文短词，「X片 / X劇」由 [genreBaseOf] 剥后缀归进来。
+        setOf("剧情", "劇情", "剧情片", "劇情片", "正剧", "drama film"),
+        setOf("犯罪", "犯罪片", "crime", "警匪", "警匪片", "刑侦", "刑偵", "缉毒", "緝毒", "黑帮", "黑幫"),
+        setOf("家庭", "家庭片", "家庭剧", "家庭劇", "亲情", "親情", "family film"),
+        setOf("灾难", "災難", "灾难片", "災難片", "disaster"),
+        setOf("传记", "傳記", "传记片", "傳記片", "biography", "biopic"),
+        setOf("纪录片", "記錄片", "记录片", "紀錄片", "documentary", "docu"),
+        setOf("古装", "古裝", "古装剧", "古裝劇", "costume drama"),
+        // ===== 影视地区（v1.8.4.0，待办 #12）=====
+        // 地区标签由 [VideoTagLexicon] 从 `vod_area` 直接产出（不走归一，避免被别的组改写），
+        // 这里建组是为了**搜索侧**能互通：搜「港剧」也要搜到只标了「香港」的片子。
+        // 「韩国」刻意不建组 —— 它在漫画词表里属于「韩漫」，影视这边按原样独立成标签。
+        setOf("香港", "港片", "港剧", "港劇", "香港片", "hongkong", "hong kong"),
+        setOf("台湾", "臺灣", "台片", "台剧", "台劇", "taiwan"),
+        setOf("美国", "美國", "美剧", "美劇", "美影", "好莱坞", "好萊塢", "hollywood"),
+        setOf("日本", "日剧", "日劇", "日影", "japan"),
+        setOf("泰国", "泰國", "泰剧", "泰劇", "thai"),
+        setOf("印度", "宝莱坞", "寶萊塢", "bollywood", "india"),
+        setOf("英国", "英國", "英剧", "英劇", "british"),
+        setOf("法国", "法國", "法剧", "法劇", "french"),
+        setOf("日韩", "日韓", "日韩剧", "日韩片"),
+        setOf("港台", "港臺", "港台剧", "港台片"),
     )
 
     /**
@@ -382,7 +407,34 @@ object TagAlias {
     fun canonicalOf(tag: String): String {
         val raw = tag.trim()
         if (raw.isEmpty()) return raw
-        return canonicalKey[norm(raw)] ?: raw
+        canonicalKey[norm(raw)]?.let { return it }
+        // v1.8.4.0（待办 #11）：影视源把类型写成「动作片 / 爱情片 / 科幻片」，
+        // 而受控词表的规范名是短词。剥掉影视后缀再查一次，两边才会落到同一个键上。
+        genreBaseOf(raw)?.let { base -> canonicalKey[norm(base)]?.let { return it } }
+        return raw
+    }
+
+    /**
+     * 影视类后缀（v1.8.4.0）。
+     *
+     * 顺序从长到短：「电视剧」要先于「剧」，「电影」要先于「影」这类前缀才不会被切错。
+     * 只在这些后缀前面是**已登记的题材词**时才剥离 —— 「卡片」「照片」「唱片」
+     * 的基词不在词表里，因此原样保留，不会被误改成「卡」「照」「唱」。
+     */
+    private val FILM_SUFFIXES = listOf(
+        "电视剧", "電視劇", "连续剧", "連續劇", "电影", "電影", "片", "剧", "劇",
+    )
+
+    /** 剥掉影视后缀后的题材基词；基词不在受控词表里时返回 null */
+    private fun genreBaseOf(raw: String): String? {
+        val text = raw.trim()
+        for (suffix in FILM_SUFFIXES) {
+            if (text.length <= suffix.length || !text.endsWith(suffix)) continue
+            val base = text.dropLast(suffix.length)
+            if (base.isBlank()) continue
+            if (canonicalKey.containsKey(norm(base)) || groupOf.containsKey(norm(base))) return base
+        }
+        return null
     }
 
     /** 用户主动选择成人分级 / 修饰状态标签时，视为本次搜索明确请求成人源。 */
@@ -404,7 +456,8 @@ object TagAlias {
      */
     fun aliasesOf(tag: String): Set<String> {
         val key = norm(tag)
-        val group = groupOf[key]
+        // 「动作片」这类影视写法先剥后缀再找组，否则查询侧和索引侧各说各话
+        val group = groupOf[key] ?: genreBaseOf(tag)?.let { groupOf[norm(it)] }
         if (group == null) return setOf(key)
         val out = LinkedHashSet<String>()
         out.add(key)
@@ -417,6 +470,9 @@ object TagAlias {
         val raw = tag.trim()
         if (raw.isEmpty()) return emptyList()
         val group = GROUPS.firstOrNull { aliases -> aliases.any { norm(it) == norm(raw) } }
+            ?: genreBaseOf(raw)?.let { base ->
+                GROUPS.firstOrNull { aliases -> aliases.any { norm(it) == norm(base) } }
+            }
             ?: return listOf(raw)
         return (listOf(raw) + group)
             .distinctBy(::norm)

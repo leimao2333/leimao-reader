@@ -43,6 +43,13 @@ class CacheManageViewModel(
      * 传 null 表示当前环境不管理漫画缓存（单测默认如此）。
      */
     private val downloadManager: com.novelreader.core.download.DownloadManager? = null,
+    /**
+     * 图片磁盘缓存（Coil `DiskCache`，v1.8.4.2）。
+     *
+     * 漫画内页 + 封面共用 `cacheDir/image_cache`，上限 512MB。以前这块只进不出，
+     * 缓存管理页既看不到也清不掉。传 null 表示当前环境不管理（单测默认如此）。
+     */
+    private val imageCache: com.novelreader.data.cache.ImageCacheStore? = null,
 ) : ViewModel() {
 
     private val _books = MutableStateFlow<List<BookCacheSummary>>(emptyList())
@@ -81,6 +88,18 @@ class CacheManageViewModel(
     private val _comicCacheSize = MutableStateFlow(0L)
     val comicCacheSize: StateFlow<Long> = _comicCacheSize.asStateFlow()
 
+    // ===== 图片磁盘缓存（v1.8.4.2）=====
+
+    /**
+     * 图片磁盘缓存占用（字节）：漫画内页 + 封面共用的 Coil `DiskCache`。
+     *
+     * 和上面的「漫画缓存」不是一回事：那边是**离线下载**的整话图片
+     * （`downloads/comic_cache/`，用户主动下载），这里是**浏览时顺手缓存**的
+     * 图片（`cacheDir/image_cache`，LRU 自动淘汰）。
+     */
+    private val _imageCacheSize = MutableStateFlow(0L)
+    val imageCacheSize: StateFlow<Long> = _imageCacheSize.asStateFlow()
+
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
@@ -115,6 +134,11 @@ class CacheManageViewModel(
             }
             _comicCaches.value = comic?.first ?: emptyList()
             _comicCacheSize.value = comic?.second ?: 0L
+            // 图片缓存要读 LRU journal（磁盘），同样离开主线程
+            _imageCacheSize.value = kotlinx.coroutines.withContext(ioDispatcher) {
+                val store = imageCache
+                if (store == null) 0L else runCatching { store.sizeBytes() }.getOrDefault(0L)
+            }
             _loading.value = false
         }
     }
@@ -180,12 +204,13 @@ class CacheManageViewModel(
         }
     }
 
-    /** 一键清空（章节缓存 + 视频预加载 + 视频播放缓存，v1.6.0.0 / v1.7.7.1） */
+    /** 一键清空（章节缓存 + 视频预加载 + 视频播放缓存 + 漫画离线缓存 + 图片缓存） */
     fun clearAllIncludingPrefetch() {
         viewModelScope.launch {
             val size = _videoPrefetchSize.value
             val playSize = _videoPlayCacheSize.value
             val comicSize = _comicCacheSize.value
+            val imageSize = _imageCacheSize.value
             runCatching {
                 chapterCacheRepository.clearAll()
                 videoPrefetchCache.clear()
@@ -193,8 +218,10 @@ class CacheManageViewModel(
                 kotlinx.coroutines.withContext(ioDispatcher) {
                     runCatching { videoPlayCache.clear() }
                     runCatching { downloadManager?.clearAllComicCache() }
+                    runCatching { imageCache?.clear() }
                 }
-                _message.value = "已清空全部缓存（含视频 ${formatSize(size + playSize)}、漫画 ${formatSize(comicSize)}）"
+                _message.value = "已清空全部缓存（含视频 ${formatSize(size + playSize)}、" +
+                    "漫画 ${formatSize(comicSize)}、图片 ${formatSize(imageSize)}）"
                 refresh()
             }.onFailure {
                 _message.value = "清空失败：${it.message}"
@@ -224,6 +251,30 @@ class CacheManageViewModel(
             }
             val shown = if (freed > 0L) freed else before
             _message.value = "已清空漫画缓存（${formatSize(shown)}）"
+            refresh()
+        }
+    }
+
+    /**
+     * 清空图片磁盘缓存（v1.8.4.2）。
+     *
+     * 清的是 Coil 的 `DiskCache`（漫画内页 + 封面）。内存里已解码的图片不受影响，
+     * 所以当前这一屏不会突然变白；翻到新的一页 / 重新进入才会重新联网。
+     */
+    fun clearImageCache() {
+        viewModelScope.launch {
+            val store = imageCache
+            if (store == null) {
+                _message.value = "当前环境不支持清理图片缓存"
+                return@launch
+            }
+            val before = _imageCacheSize.value
+            val freed = kotlinx.coroutines.withContext(ioDispatcher) {
+                runCatching { store.clear() }.getOrDefault(0L)
+            }
+            // journal 记的字节数和 UI 显示的可能有几 KB 偏差，取较大值免得提示「清空 0 B」
+            val shown = if (freed > 0L) freed else before
+            _message.value = "已清理图片缓存（${formatSize(shown)}）"
             refresh()
         }
     }

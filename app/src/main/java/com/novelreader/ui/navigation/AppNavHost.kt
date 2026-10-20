@@ -385,6 +385,8 @@ fun AppNavHost(
                         preferences = it.preferencesManager,
                         // 漫画离线图片缓存要单独统计/清理（v1.8.2.0）
                         downloadManager = it.downloadManager,
+                        // 浏览时落盘的图片（Coil DiskCache）单独统计/清理（v1.8.4.2）
+                        imageCache = com.novelreader.data.cache.CoilImageCacheStore(it.context),
                     )
                 }
             )

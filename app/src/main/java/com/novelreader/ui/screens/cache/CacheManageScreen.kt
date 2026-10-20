@@ -41,11 +41,14 @@ import com.novelreader.domain.repository.BookCacheSummary
 /**
  * 缓存管理页（#30，v1.6.0.0 扩展，v1.8.2.0 加漫画分区）。
  *
- * 四类缓存分区：
+ * 五类缓存分区：
  * - **视频播放缓存**（v1.7.7.1）：边播边存的视频分片，真正占空间的那类，可单独清理；
  * - **视频预加载**（v1.6.0.0）：播放地址 / 解析结果，很小；
  * - **漫画缓存**（v1.8.2.0）：离线阅读时下载的章节图片（`downloads/comic_cache/`），
  *   按漫画聚合，可单本删除或全清；
+ * - **漫画图片缓存**（v1.8.4.2）：浏览时顺手落盘的图片（Coil `DiskCache`，
+ *   `cacheDir/image_cache`，上限 512MB）—— 和上面那类不是一回事，一个是主动下载、
+ *   一个是临时缓存，所以要分开列、分开清；
  * - **章节缓存**：正文缓存表，按书聚合。
  *
  * 整页是一个 LazyColumn（v1.8.2.0 从「Column 套两个列表」改过来）：
@@ -65,6 +68,7 @@ fun CacheManageScreen(
     val videoPlayCacheSize by viewModel.videoPlayCacheSize.collectAsState()
     val comicCaches by viewModel.comicCaches.collectAsState()
     val comicCacheSize by viewModel.comicCacheSize.collectAsState()
+    val imageCacheSize by viewModel.imageCacheSize.collectAsState()
     val message by viewModel.message.collectAsState()
 
     var confirmClearAll by remember { mutableStateOf(false) }
@@ -73,9 +77,11 @@ fun CacheManageScreen(
     var pendingClearVideoPrefetch by remember { mutableStateOf(false) }
     var pendingClearVideoPlay by remember { mutableStateOf(false) }
     var pendingClearComic by remember { mutableStateOf(false) }
+    var pendingClearImage by remember { mutableStateOf(false) }
 
-    /** 四类缓存的总占用（概览与「清空」文案共用） */
-    val allCacheSize = totalSize + videoPrefetchSize + videoPlayCacheSize + comicCacheSize
+    /** 五类缓存的总占用（概览与「清空」文案共用） */
+    val allCacheSize = totalSize + videoPrefetchSize + videoPlayCacheSize +
+        comicCacheSize + imageCacheSize
 
     val listState = rememberLazyListState()
 
@@ -90,7 +96,7 @@ fun CacheManageScreen(
                 },
                 actions = {
                     if (books.isNotEmpty() || comicCaches.isNotEmpty() ||
-                        videoPrefetchSize > 0 || videoPlayCacheSize > 0
+                        videoPrefetchSize > 0 || videoPlayCacheSize > 0 || imageCacheSize > 0
                     ) {
                         TextButton(onClick = { confirmClearAll = true }) {
                             Text("清空")
@@ -208,6 +214,22 @@ fun CacheManageScreen(
                     }
                     HorizontalDivider()
                 }
+            }
+
+            // 漫画图片缓存分区（v1.8.4.2）：浏览时顺手缓存的图片（Coil DiskCache）
+            item(key = "image_section") {
+                CacheSection(
+                    title = "漫画图片缓存",
+                    subtitle = if (imageCacheSize > 0) {
+                        viewModel.formatSize(imageCacheSize)
+                    } else {
+                        "暂无"
+                    },
+                    description = "看漫画 / 加载封面时自动落盘的图片（上限 512MB，自动淘汰最久未看的）。" +
+                        "和上面的「漫画缓存」不是一回事 —— 那边是主动下载的整话图片，这里是浏览时的临时缓存。",
+                    actionLabel = if (imageCacheSize > 0) "清理" else null,
+                    onAction = { pendingClearImage = true },
+                )
             }
 
             // 章节缓存分区（正文）
@@ -370,7 +392,30 @@ fun CacheManageScreen(
         )
     }
 
-    // 清空全部确认（含视频 + 漫画）
+    // 清理图片缓存确认（v1.8.4.2）
+    if (pendingClearImage) {
+        AlertDialog(
+            onDismissRequest = { pendingClearImage = false },
+            title = { Text("清理漫画图片缓存") },
+            text = {
+                Text(
+                    "确定清理全部图片缓存（${viewModel.formatSize(imageCacheSize)}）？\n" +
+                        "已经显示出来的图片不受影响，翻到新的页面 / 重新进入会重新联网加载。",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.clearImageCache()
+                    pendingClearImage = false
+                }) { Text("清理") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingClearImage = false }) { Text("取消") }
+            },
+        )
+    }
+
+    // 清空全部确认（含视频 + 漫画 + 图片）
     if (confirmClearAll) {
         AlertDialog(
             onDismissRequest = { confirmClearAll = false },
@@ -379,6 +424,7 @@ fun CacheManageScreen(
                 Text(
                     "确定清空全部缓存（章节 ${viewModel.formatSize(totalSize)}、" +
                         "漫画 ${viewModel.formatSize(comicCacheSize)}、" +
+                        "图片 ${viewModel.formatSize(imageCacheSize)}、" +
                         "视频预加载 ${viewModel.formatSize(videoPrefetchSize)}、" +
                         "播放缓存 ${viewModel.formatSize(videoPlayCacheSize)}，" +
                         "共 ${viewModel.formatSize(allCacheSize)}）？\n" +

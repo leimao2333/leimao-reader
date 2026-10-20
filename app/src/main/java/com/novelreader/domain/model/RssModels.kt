@@ -53,8 +53,19 @@ data class RssFeedResult(
     val url: String,
     /** 本次新增文章数 */
     val newArticles: Int = 0,
+    /**
+     * 本次从源里一共解析出多少条（含库里已存在的，v1.8.4.2）。
+     *
+     * 用来区分两种「新增 0 篇」：**源本身就是空的**（PubMed 检索式没有结果、
+     * 博客停更）和**源有内容但没有新内容**。以前两者提示一样，用户没法判断
+     * 是订阅坏了还是源侧没东西。
+     */
+    val fetchedArticles: Int = 0,
     /** 失败原因（空 = 成功） */
     val error: String? = null,
 ) {
     val ok: Boolean get() = error == null
+
+    /** 抓取成功但源里一条都没有 —— 不是失败，但值得单独提示 */
+    val emptyFeed: Boolean get() = ok && fetchedArticles == 0
 }

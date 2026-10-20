@@ -987,7 +987,15 @@ class HomeViewModel(
      */
     private fun homeCacheKey() = "home_v4"
 
-    private fun channelCacheKey(channel: VideoChannel) = "channel_${channel.name}"
+    /**
+     * 频道缓存 key。
+     *
+     * v1.8.4.2 升到 `channel_v2_*`：payload 结构没变，但 `selectedCategory` 的语义变了
+     * （空串从「未选」变成「全部」，且默认值改成「全部」）。老缓存里存的是
+     * `plan.keys.first()` 随手取的子分类，不是用户的选择；不换 key 的话升级后
+     * 还是停在那个子分类上，得手动刷新才看到「全部」。换 key 让旧缓存自然作废。
+     */
+    private fun channelCacheKey(channel: VideoChannel) = "channel_v2_${channel.name}"
 
     /**
      * 当前启用视频源 id 集合（缓存有效性校验的基准）。
@@ -1072,8 +1080,9 @@ class HomeViewModel(
         if (p.sourceIds.toSet() != currentEnabledVideoIds()) return false
         stateOf(channel).value = VideoChannelState(
             categories = p.categories,
-            selectedCategory = p.selectedCategory.takeIf { it in p.categories }
-                ?: p.categories.first(),
+            // 空串 = 全部，是合法选中值（以前这里会因为 `"" !in categories` 被顶回首个分类）
+            selectedCategory = p.selectedCategory.takeIf { it.isBlank() || it in p.categories }
+                ?: CATEGORY_ALL,
             items = p.items,
         )
         return true
@@ -1683,7 +1692,14 @@ class HomeViewModel(
         val loadingMore: Boolean = false,
         /** 分类名（顶部 Tab，跨源去重保序） */
         val categories: List<String> = emptyList(),
-        /** 当前选中分类名（空 = 未选） */
+        /**
+         * 当前选中分类名；**空串 = 全部**（v1.8.4.2）。
+         *
+         * 默认就是「全部」：以前默认取 `plan.keys.first()`，而 plan 的排序只保证
+         * 「分类名恰好等于关键词」的排最前，动漫频道的分类多半叫「国产动漫 / 日本动漫 /
+         * 欧美动漫」，没有哪个是纯「动漫」，于是首项随源探测顺序漂移 —— 用户进来看到的
+         * 往往是某一个子分类，还会以为频道只有这点内容。
+         */
         val selectedCategory: String = "",
         /** 当前分类的海报（跨源聚合去重） */
         val items: List<MediaItem> = emptyList(),
@@ -1827,7 +1843,8 @@ class HomeViewModel(
 
     private fun loadMoreChannel(channel: VideoChannel) {
         val st = stateOf(channel).value
-        if (st.loading || st.loadingMore || st.selectedCategory.isEmpty()) return
+        // v1.8.4.2：selectedCategory 为空是「全部」，不再是「未选」——不能再拦。
+        if (st.loading || st.loadingMore || st.categories.isEmpty()) return
         loadChannelCategory(channel, st.selectedCategory, reset = false)
     }
 
@@ -1846,13 +1863,15 @@ class HomeViewModel(
                 return@launch
             }
             val categories = plan.keys.toList()
-            val first = categories.first()
+            // v1.8.4.2：默认「全部」而不是首个分类。首个分类只是「名字恰好等于关键词」
+            // 的兜底排序，动漫频道常常没有这种纯分类，落点就成了随源探测顺序漂移的
+            // 某个子分类（国产动漫 / 日本动漫…），看起来像频道内容不全。
             flow.value = flow.value.copy(
                 loading = false,
                 categories = categories,
-                selectedCategory = first,
+                selectedCategory = CATEGORY_ALL,
             )
-            loadChannelCategory(channel, first, reset = true)
+            loadChannelCategory(channel, CATEGORY_ALL, reset = true)
         }
     }
 
@@ -1867,7 +1886,10 @@ class HomeViewModel(
             else flow.value = st.copy(loadingMore = true)
 
             val plan = ensureChannelPlan(channel, rt)
-            val entries = plan[category].orEmpty()
+            // v1.8.4.2：空分类 = 「全部」—— 把各分类的（源, 分类地址）拍平后一起翻页。
+            // 以前这里直接 `plan[""]` 取不到任何条目就 return，于是「全部」是个**死选项**：
+            // 选中后列表被清空、显示「暂无内容」，用户只能退回某个子分类。
+            val entries = com.novelreader.core.util.VideoChannelCategories.entriesOf(plan, category)
             if (entries.isEmpty()) {
                 flow.value = flow.value.copy(loading = false, loadingMore = false)
                 return@launch
@@ -1896,8 +1918,9 @@ class HomeViewModel(
                 items = sinkAdults(
                     com.novelreader.core.util.VideoDedupe.byTitle(merged)
                         .map {
-                            // v1.6.5.0：分类名写进 tags，详情页标签小栏用
-                            val tagged = it.copy(tags = it.tags + category)
+                            // v1.6.5.0：分类名写进 tags，详情页标签小栏用。
+                            // v1.8.4.2：「全部」没有具体分类名，不能再塞空标签进去。
+                            val tagged = if (category.isBlank()) it else it.copy(tags = it.tags + category)
                             if (channel == VideoChannel.SHORT_DRAMA) {
                                 tagged.copy(extras = tagged.extras + (EXTRA_SHORT_DRAMA to "1"))
                             } else tagged
@@ -1906,7 +1929,9 @@ class HomeViewModel(
                 ),
                 loading = false,
                 loadingMore = false,
-                error = if (reset && fetched.isEmpty()) "该分类暂无内容" else null,
+                error = if (reset && fetched.isEmpty()) {
+                    if (category.isBlank()) "暂无内容" else "该分类暂无内容"
+                } else null,
             )
             // 内容有变化就落盘（首屏 / 翻页都算），下次冷启动直接上屏这批
             if (fetched.isNotEmpty()) saveChannelCache(channel)
@@ -2114,6 +2139,14 @@ class HomeViewModel(
 
         /** 短剧标记（extras key）：值为 "1" 时播放页默认竖屏 + 红果式选集 */
         const val EXTRA_SHORT_DRAMA = "isShortDrama"
+
+        /**
+         * 频道分类下拉里「全部」的选中值（v1.8.4.2）。
+         *
+         * 空串**不是「未选」**，而是「把本频道所有分类跨源聚合」这个真实选项：
+         * 加载时会把各分类的（源, 分类地址）拍平后一起翻页，再按标题去重。
+         */
+        const val CATEGORY_ALL = ""
 
         /**
          * 频道分类的排除词：分类名含这些词即视为「非正片」栏目，不进电影 / 动漫 / 短剧频道。

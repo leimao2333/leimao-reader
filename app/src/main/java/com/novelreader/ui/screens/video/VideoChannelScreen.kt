@@ -198,8 +198,9 @@ fun VideoChannelScreen(
 /**
  * 频道分类下拉（v1.5.10.0）。
  *
- * 未选分类（空串 = 全部）时按钮显示「分类」，已选时高亮并显示分类名 ——
- * 与片库筛选下拉同款式，一眼能看出当前在看哪个分类。
+ * 空串 = **全部**（v1.8.4.2）：跨该频道所有分类聚合，也是默认选项 ——
+ * 按钮上直接显示「全部」，而不是以前的「分类」（那看起来像「还没选」）。
+ * 选中具体分类时按钮高亮并显示分类名，一眼能看出当前在看哪个分类。
  */
 @Composable
 private fun CategoryDropdown(
@@ -224,7 +225,7 @@ private fun CategoryDropdown(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = selected.ifBlank { "分类" },
+                text = selected.ifBlank { "全部" },
                 style = MaterialTheme.typography.labelLarge,
                 color = content,
                 maxLines = 1,

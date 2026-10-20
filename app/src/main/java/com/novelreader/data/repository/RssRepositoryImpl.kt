@@ -168,6 +168,7 @@ class RssRepositoryImpl(
                 title = keepTitle,
                 url = fetched.url,
                 newArticles = newCount,
+                fetchedArticles = fetched.feed.articles.size,
             )
         } catch (e: Exception) {
             android.util.Log.w(TAG, "订阅入库失败：${LogSanitizer.sanitize(e.message)}")
@@ -204,7 +205,13 @@ class RssRepositoryImpl(
                 fetchedAt = now,
             )
             dao.trimFeed(feed.feedId, KEEP_PER_FEED)
-            RssFeedResult(feed.feedId, keepTitle, feed.url, newArticles = newCount)
+            RssFeedResult(
+                feed.feedId,
+                keepTitle,
+                feed.url,
+                newArticles = newCount,
+                fetchedArticles = fetched.feed.articles.size,
+            )
         } catch (e: Exception) {
             val reason = friendlyError(e)
             runCatching { dao.updateFetchResult(feed.feedId, now, reason) }

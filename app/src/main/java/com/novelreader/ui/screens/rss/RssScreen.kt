@@ -70,6 +70,7 @@ import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
+import com.novelreader.core.rss.RssMessages
 import com.novelreader.core.rss.RssParser
 import com.novelreader.domain.model.RssArticle
 import com.novelreader.domain.model.RssFeed
@@ -324,7 +325,7 @@ class RssViewModel(
                 }
             }.getOrElse { listOf(RssFeedResult(0, "", "", error = it.message ?: "导入失败")) }
             _refreshing.value = false
-            _message.value = summarize(results)
+            _message.value = RssMessages.summarize(results)
         }
     }
 
@@ -334,12 +335,7 @@ class RssViewModel(
             _refreshing.value = true
             val results = runCatching { repository.refreshAll() }.getOrDefault(emptyList())
             _refreshing.value = false
-            val newCount = results.sumOf { it.newArticles }
-            val failed = results.count { !it.ok }
-            _message.value = buildString {
-                append("已更新 ${results.size - failed}/${results.size} 个源，新增 $newCount 篇")
-                if (failed > 0) append("，$failed 个失败")
-            }
+            _message.value = RssMessages.refreshAll(results)
         }
     }
 
@@ -350,8 +346,7 @@ class RssViewModel(
             _refreshing.value = false
             _message.value = when {
                 result == null -> "刷新失败"
-                result.ok -> "已更新《${result.title}》，新增 ${result.newArticles} 篇"
-                else -> "《${result.title}》刷新失败：${result.error}"
+                else -> RssMessages.refreshOne(result)
             }
         }
     }
@@ -394,19 +389,6 @@ class RssViewModel(
 
     fun toggleStar(article: RssArticle) {
         viewModelScope.launch { repository.toggleStar(article.articleId) }
-    }
-
-    private fun summarize(results: List<RssFeedResult>): String {
-        if (results.isEmpty()) return "没有识别到可用的订阅地址"
-        val ok = results.filter { it.ok }
-        val bad = results.filterNot { it.ok }
-        val parts = mutableListOf<String>()
-        if (ok.isNotEmpty()) {
-            parts += "已订阅 ${ok.size} 个源，新增 ${ok.sumOf { it.newArticles }} 篇"
-        }
-        bad.take(3).forEach { parts += "订阅失败：${it.error}" }
-        if (bad.size > 3) parts += "另有 ${bad.size - 3} 个失败"
-        return parts.joinToString("\n")
     }
 
     companion object {

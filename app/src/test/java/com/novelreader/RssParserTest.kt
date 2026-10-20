@@ -279,7 +279,43 @@ class RssParserTest {
         assertTrue(error is IllegalArgumentException)
     }
 
+    /**
+     * 空的 RSS 是**合法**的，不能当成解析失败（v1.8.4.2）。
+     *
+     * 线上原型：PubMed 的 `rss/search/<id>/` 返回 200 + 合法 `<rss><channel>`，
+     * 但一个 `<item>` 都没有 —— 检索式本身没结果（E-utilities 查同一个词也是
+     * `count: 0`）。用户看到的就是「订阅成功但没文章」，若把这种源判成失败，
+     * 反而会引导他去反复重订阅。
+     */
+    @Test
+    fun `空频道不抛异常且保留源标题`() {
+        val feed = RssParser.parse(EMPTY_RSS2, "https://pubmed.ncbi.nlm.nih.gov/rss/search/x/")
+        assertEquals("rss2", feed.format)
+        assertTrue(feed.articles.isEmpty())
+        assertEquals("Intrinsic physicochemical activity at microplastic-water interfaces", feed.title)
+        assertTrue(feed.description.contains("Latest results from PubMed"))
+        // 没有 <link> 也不该崩，站点地址留空即可
+        assertEquals("", feed.siteUrl)
+    }
+
     companion object {
+        /** PubMed 空 feed 的真实响应（2026-10-20 抓取，1366 字节，0 个 item） */
+        private val EMPTY_RSS2 = """
+            <?xml version='1.0' encoding='UTF-8'?>
+            <rss xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:atom="http://www.w3.org/2005/Atom"
+                 xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0">
+              <channel>
+                <title>Intrinsic physicochemical activity at microplastic-water interfaces</title>
+                <description>Intrinsic physicochemical activity at microplastic-water interfaces: Latest results from PubMed</description>
+                <docs>http://www.rssboard.org/rss-specification</docs>
+                <generator>PubMed RSS feeds (2.20.1)</generator>
+                <language>en</language>
+                <lastBuildDate>Tue, 20 Oct 2026 05:43:57 +0000</lastBuildDate>
+                <ttl>120</ttl>
+              </channel>
+            </rss>
+        """.trimIndent()
+
         private val RSS2 = """
             <?xml version="1.0" encoding="UTF-8"?>
             <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"

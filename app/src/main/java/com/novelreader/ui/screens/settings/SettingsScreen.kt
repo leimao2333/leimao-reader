@@ -430,6 +430,7 @@ fun SettingsScreen(
             // 与 PC 打标工具共用同一份 tag_table.json（同名标签取更高置信度，幂等合并）。
             SectionTitle("标签")
             val tagImportBusy by viewModel.tagImportBusy.collectAsState()
+            val tagImportProgress by viewModel.tagImportProgress.collectAsState()
             val tagExportProgress by viewModel.tagExportProgress.collectAsState()
             var showTagUrlDialog by remember { mutableStateOf(false) }
             val tagImportLauncher = rememberLauncherForActivityResult(
@@ -588,6 +589,14 @@ fun SettingsScreen(
                     },
                 )
             }
+            // 导入进度弹窗（v1.8.3.0 待办 #17）：下载按字节、写库按分块，取消按钮只在可取消阶段可点
+            tagImportProgress?.let { progress ->
+                TagImportProgressDialog(
+                    progress = progress,
+                    onCancel = { viewModel.cancelTagImport() },
+                )
+            }
+
             // v1.8.1.7：标签导出 —— 本地标签层整体导出为 tag_table.json，可直接给 PC 打标工具当基底
             val tagExportLauncher = rememberLauncherForActivityResult(
                 ActivityResultContracts.CreateDocument("application/json"),
@@ -938,3 +947,71 @@ private fun formatCloudTime(ms: Long): String =
         java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.CHINA)
             .format(java.util.Date(ms))
     }
+
+/**
+ * 标签导入进度弹窗（v1.8.3.0 待办 #17）。
+ *
+ * 三段式：下载（字节）→ 解析 → 写库（分块条数）。
+ * 写库阶段不给取消 —— 那一步已经在往 Room 里落数据，
+ * 允许中途退出只会留下「local_tags 写了、tag_instances 没写」的半截状态。
+ */
+@Composable
+private fun TagImportProgressDialog(
+    progress: TagImportProgress,
+    onCancel: () -> Unit,
+) {
+    val percent = (progress.fraction * 100f).toInt().coerceIn(0, 100)
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { if (progress.cancelable) onCancel() },
+        title = { Text("正在导入标签") },
+        text = {
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = progress.phase.label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = if (progress.indeterminate) "--" else "$percent%",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                if (progress.indeterminate) {
+                    androidx.compose.material3.LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    androidx.compose.material3.LinearProgressIndicator(
+                        progress = { progress.fraction.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                if (progress.detail.isNotBlank()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = progress.detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (!progress.cancelable) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "正在写入本地标签库，请勿退出应用",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onCancel,
+                enabled = progress.cancelable,
+            ) { Text("取消") }
+        },
+    )
+}

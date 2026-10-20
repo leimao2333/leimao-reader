@@ -60,8 +60,23 @@ interface RssRepository {
     /** 重命名订阅 */
     suspend fun renameFeed(feedId: Long, title: String)
 
+    /** 修改分组（空串 = 移到未分组，v1.8.3.0 待办 #16） */
+    suspend fun setFeedGroup(feedId: Long, group: String)
+
+    /** 批量修改分组 */
+    suspend fun setFeedGroupBatch(feedIds: List<Long>, group: String)
+
+    /** 已有分组名（去重、按名称排序） */
+    suspend fun groupNames(): List<String>
+
+    /** 批量删源前查一下会连带删掉多少篇文章 */
+    suspend fun countArticlesOfFeeds(feedIds: List<Long>): Int
+
     /** 删除订阅（连同其文章） */
     suspend fun deleteFeed(feedId: Long)
+
+    /** 批量删除订阅（连同各自的文章） */
+    suspend fun deleteFeeds(feedIds: List<Long>)
 
     /** 标记单篇已读 / 未读 */
     suspend fun markRead(articleId: Long, read: Boolean)

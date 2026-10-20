@@ -151,6 +151,37 @@ class SettingsViewModel(
     private val _tagImportBusy = MutableStateFlow(false)
     val tagImportBusy: StateFlow<Boolean> = _tagImportBusy.asStateFlow()
 
+    /**
+     * 标签导入实时进度（v1.8.3.0 待办 #17）。
+     *
+     * 三段：下载（按字节）→ 解析 → 写入标签库（按分块）。
+     * 十几 MB 的表在老版本里是「点一下然后界面毫无反应几十秒」，
+     * 有了这段进度至少能看出卡在哪一步。
+     */
+    private val _tagImportProgress = MutableStateFlow<TagImportProgress?>(null)
+    val tagImportProgress: StateFlow<TagImportProgress?> = _tagImportProgress.asStateFlow()
+
+    private var tagImportJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * 取消标志。
+     *
+     * 下载走的是阻塞式流式读取，协程 `cancel()` 打断不了正在 `read()` 的线程，
+     * 所以在进度回调里查这个标志主动抛 [CancellationException] 跳出来。
+     */
+    @Volatile
+    private var tagImportCancelled = false
+
+    /** 用户取消导入（仅在可取消阶段生效；写入阶段按钮是禁用的） */
+    fun cancelTagImport() {
+        if (_tagImportProgress.value?.cancelable != true) return
+        tagImportCancelled = true
+        tagImportJob?.cancel()
+        _tagImportProgress.value = null
+        _tagImportBusy.value = false
+        _backupMessage.value = "已取消导入：已写入的部分保留，重新导入会按同名标签合并覆盖"
+    }
+
     /** 标签导出进度（0..1；-1 = 未在导出），v1.8.1.9 */
     private val _tagExportProgress = MutableStateFlow(-1f)
     val tagExportProgress: StateFlow<Float> = _tagExportProgress.asStateFlow()
@@ -191,52 +222,13 @@ class SettingsViewModel(
     }
 
     /**
-     * 导入云端最新打标表（v1.8.2.0）。
+     * 导入云端最新打标表（v1.8.2.0，v1.8.3.0 补进度条）。
      *
      * 有清单就用清单里的文件名（并加时间戳绕 CDN 缓存）；清单拿不到就退回默认整表地址，
      * 保证「云端更新了但清单接口抽风」时导入仍然可用。
      */
     fun importCloudLatest(manifestUrl: String = com.novelreader.data.repository.TagIndexRepository.DEFAULT_CLOUD_MANIFEST_URL) {
-        val repo = tagIndexRepository ?: run {
-            _backupMessage.value = "当前环境不支持标签导入"
-            return
-        }
-        if (_tagImportBusy.value) return
-        viewModelScope.launch {
-            _tagImportBusy.value = true
-            _backupMessage.value = runCatching {
-                val manifest = _cloudManifest.value ?: repo.fetchCloudManifest(manifestUrl)
-                    .also { _cloudManifest.value = it }
-                val url = if (manifest != null) {
-                    com.novelreader.data.repository.TagIndexRepository.tableUrlOf(manifestUrl, manifest.latest)
-                } else {
-                    com.novelreader.data.repository.TagIndexRepository.DEFAULT_CLOUD_TABLE_URL
-                }
-                // 十几 MB，超时要给够（慢网下 30 秒会被掐断）
-                val json = withContext(Dispatchers.IO) {
-                    com.novelreader.core.network.HttpClient.get(url, timeoutMs = 180_000)
-                }
-                val payload = com.novelreader.core.util.TagTable.parse(json)
-                    ?: error("云端打标表解析失败（可能拿到的是错误页）")
-                // 条数校验（v1.8.2.0）：CDN 可能还挂着上一版的文件（实测 jsDelivr 按 URL
-                // 缓存最长 7 天），不校验的话会「导入成功 0 条」，用户以为导入过了其实没有。
-                val expected = manifest?.count ?: 0
-                if (expected > 0 && payload.items.size != expected) {
-                    error(
-                        "云端表条数与版本清单不符（清单 $expected 条，实际下载到 ${payload.items.size} 条），" +
-                            "大概率是 CDN 缓存还没刷新，请稍后重试",
-                    )
-                }
-                var imported = 0
-                for (type in com.novelreader.domain.model.SourceType.entries) {
-                    imported += repo.importTagTable(payload, type)
-                }
-                preferencesManager.setTagCloudImport(payload.generatedAt, payload.items.size)
-                _cloudImported.value = payload.generatedAt to payload.items.size
-                "标签导入完成：$imported 部作品已合并（云端 ${payload.items.size} 条）"
-            }.getOrElse { "标签导入失败：${it.message ?: "未知错误"}" }
-            _tagImportBusy.value = false
-        }
+        startTagImport(TagImportSource.Cloud(manifestUrl))
     }
 
     /**
@@ -246,69 +238,157 @@ class SettingsViewModel(
      * 合并口径与标签搜索页一致：同名标签取更高置信度，站方 100 分不会被顶掉。
      */
     fun importTagTableFromUri(uri: android.net.Uri) {
-        val repo = tagIndexRepository ?: run {
-            _backupMessage.value = "当前环境不支持标签导入"
-            return
-        }
         val ctx = appContext ?: return
-        if (_tagImportBusy.value) return
-        viewModelScope.launch {
-            _tagImportBusy.value = true
-            _backupMessage.value = runCatching {
-                val json = withContext(Dispatchers.IO) {
-                    ctx.contentResolver.openInputStream(uri)?.use { stream ->
-                        stream.readBytes().toString(Charsets.UTF_8)
-                    } ?: error("无法读取所选文件")
-                }
-                importPayload(repo, json)
-            }.getOrElse { "标签导入失败：${it.message ?: "未知错误"}" }
-            _tagImportBusy.value = false
-        }
+        startTagImport(TagImportSource.Local(uri, ctx))
     }
 
     /** 从云端 URL 导入打标表（默认独立打标仓库 leimao2333/leimao-tagger 的 data/tag_table.json，经 jsDelivr 分发） */
     fun importTagTableFromUrl(url: String) {
+        val target = url.trim()
+        if (target.isEmpty()) return
+        startTagImport(TagImportSource.Url(target))
+    }
+
+    /**
+     * 统一的导入入口：下载 → 解析 → 写入，全程上报进度（v1.8.3.0 待办 #17）。
+     *
+     * 取消语义：下载 / 解析阶段可随时取消；写入阶段锁定取消（按钮禁用），
+     * 并且只在「类型边界」检查取消标志 —— 这样每个类型要么整批写完、要么完全没写，
+     * 不会留下 local_tags 写了、tag_instances 没写的半截数据。
+     */
+    private fun startTagImport(source: TagImportSource) {
         val repo = tagIndexRepository ?: run {
             _backupMessage.value = "当前环境不支持标签导入"
             return
         }
-        val target = url.trim()
-        if (target.isEmpty() || _tagImportBusy.value) return
-        viewModelScope.launch {
+        if (_tagImportBusy.value) return
+        tagImportCancelled = false
+        tagImportJob = viewModelScope.launch {
             _tagImportBusy.value = true
-            _backupMessage.value = runCatching {
-                val json = withContext(Dispatchers.IO) {
-                    com.novelreader.core.network.HttpClient.get(target, timeoutMs = 180_000)
+            _tagImportProgress.value = TagImportProgress(TagImportPhase.DOWNLOAD, 0f)
+            val message = try {
+                val loaded = loadTableText(repo, source)
+                _tagImportProgress.value = TagImportProgress(
+                    TagImportPhase.PARSE, TAG_IMPORT_DOWNLOAD_WEIGHT, "解析中…",
+                )
+                val payload = com.novelreader.core.util.TagTable.parse(loaded.json)
+                    ?: error("打标表解析失败（不是有效的 tag_table.json）")
+                // 条数校验（v1.8.2.0）：CDN 可能还挂着上一版的文件（jsDelivr 实测缓存最长 7 天），
+                // 不校验的话会「导入成功 0 条」，用户以为导入过了其实没有。
+                if (loaded.expectedCount > 0 && payload.items.size != loaded.expectedCount) {
+                    error(
+                        "云端表条数与版本清单不符（清单 ${loaded.expectedCount} 条，实际下载到 ${payload.items.size} 条），" +
+                            "大概率是 CDN 缓存还没刷新，请稍后重试",
+                    )
                 }
-                importPayload(repo, json, rememberAsCloud = true)
-            }.getOrElse { "标签导入失败：${it.message ?: "未知错误"}" }
-            _tagImportBusy.value = false
+                val rememberAsCloud = source !is TagImportSource.Local
+                val types = com.novelreader.domain.model.SourceType.entries
+                var imported = 0
+                types.forEachIndexed { index, type ->
+                    throwIfCancelled()
+                    val typeBase = index.toFloat() / types.size
+                    imported += repo.importTagTable(payload, type) { done, total ->
+                        val frac = if (total > 0) done.toFloat() / total else 1f
+                        _tagImportProgress.value = TagImportProgress(
+                            phase = TagImportPhase.WRITE,
+                            fraction = (TAG_IMPORT_WRITE_BASE +
+                                (typeBase + frac / types.size) * TAG_IMPORT_WRITE_WEIGHT)
+                                .coerceIn(0f, 1f),
+                            detail = "${typeLabel(type)} $done / $total",
+                            cancelable = false,
+                        )
+                    }
+                }
+                if (rememberAsCloud) {
+                    preferencesManager.setTagCloudImport(payload.generatedAt, payload.items.size)
+                    _cloudImported.value = payload.generatedAt to payload.items.size
+                }
+                "标签导入完成：$imported 部作品已合并进本地标签层（表内 ${payload.items.size} 条）"
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                "已取消导入（已写入的部分保留）"
+            } catch (t: Throwable) {
+                "标签导入失败：${t.message ?: "未知错误"}"
+            } finally {
+                _tagImportBusy.value = false
+                _tagImportProgress.value = null
+            }
+            _backupMessage.value = message
         }
     }
 
-    /** 解析打标表 JSON 并对全部类型执行幂等合并，返回结果消息 */
-    private suspend fun importPayload(
+    /** 取表文本：本地直接读，网络走带进度的下载 */
+    private suspend fun loadTableText(
         repo: com.novelreader.data.repository.TagIndexRepository,
-        json: String,
-        /**
-         * 是否把这次导入记为「云端已导入版本」（v1.8.2.0）。
-         *
-         * 只有从网络来的才算 —— 本地文件很可能是自己导出备份的旧表，
-         * 把它记成云端版本会让「有没有新版本」的判断失真。
-         */
-        rememberAsCloud: Boolean = false,
-    ): String {
-        val payload = com.novelreader.core.util.TagTable.parse(json)
-            ?: error("打标表解析失败（不是有效的 tag_table.json）")
-        var imported = 0
-        for (type in com.novelreader.domain.model.SourceType.entries) {
-            imported += repo.importTagTable(payload, type)
+        source: TagImportSource,
+    ): LoadedTable = withContext(Dispatchers.IO) {
+        when (source) {
+            is TagImportSource.Local -> {
+                val json = source.context.contentResolver.openInputStream(source.uri)?.use { stream ->
+                    stream.readBytes().toString(Charsets.UTF_8)
+                } ?: error("无法读取所选文件")
+                LoadedTable(json, 0)
+            }
+
+            is TagImportSource.Cloud -> {
+                _tagImportProgress.value = TagImportProgress(
+                    TagImportPhase.DOWNLOAD, 0f, "获取版本清单…",
+                )
+                val manifest = _cloudManifest.value ?: repo.fetchCloudManifest(source.manifestUrl)
+                    .also { _cloudManifest.value = it }
+                val url = if (manifest != null) {
+                    com.novelreader.data.repository.TagIndexRepository.tableUrlOf(
+                        source.manifestUrl, manifest.latest,
+                    )
+                } else {
+                    com.novelreader.data.repository.TagIndexRepository.DEFAULT_CLOUD_TABLE_URL
+                }
+                // 十几 MB，超时要给够（慢网下 30 秒会被掐断）
+                LoadedTable(downloadWithProgress(url), manifest?.count ?: 0)
+            }
+
+            is TagImportSource.Url -> LoadedTable(downloadWithProgress(source.url), 0)
         }
-        if (rememberAsCloud) {
-            preferencesManager.setTagCloudImport(payload.generatedAt, payload.items.size)
-            _cloudImported.value = payload.generatedAt to payload.items.size
+    }
+
+    /** 带字节进度的大文本下载；取消标志在回调里检查并抛异常跳出阻塞读 */
+    private fun downloadWithProgress(url: String): String =
+        com.novelreader.core.network.HttpClient.getTextWithProgress(url, timeoutMs = 180_000) { done, total ->
+            if (tagImportCancelled) throw kotlinx.coroutines.CancellationException("已取消")
+            val frac = if (total > 0) (done.toFloat() / total).coerceIn(0f, 1f) else 0f
+            _tagImportProgress.value = TagImportProgress(
+                phase = TagImportPhase.DOWNLOAD,
+                fraction = frac * TAG_IMPORT_DOWNLOAD_WEIGHT,
+                detail = if (total > 0) "${formatBytes(done)} / ${formatBytes(total)}"
+                else "已下载 ${formatBytes(done)}",
+                // jsDelivr 走分块传输时没有 Content-Length，这时百分比没有意义，
+                // 不如显示「已下载 X MB」并把进度条切成不确定态
+                indeterminate = total <= 0,
+            )
         }
-        return "标签导入完成：$imported 部作品已合并进本地标签层（云端 ${payload.items.size} 条）"
+
+    private fun throwIfCancelled() {
+        if (tagImportCancelled) throw kotlinx.coroutines.CancellationException("已取消")
+    }
+
+    private fun formatBytes(value: Long): String = when {
+        value >= 1024L * 1024 -> String.format(java.util.Locale.US, "%.1f MB", value / 1024f / 1024f)
+        value >= 1024 -> String.format(java.util.Locale.US, "%.0f KB", value / 1024f)
+        else -> "$value B"
+    }
+
+    private fun typeLabel(type: com.novelreader.domain.model.SourceType): String = when (type) {
+        com.novelreader.domain.model.SourceType.NOVEL -> "小说"
+        com.novelreader.domain.model.SourceType.COMIC -> "漫画"
+        com.novelreader.domain.model.SourceType.VIDEO -> "视频"
+    }
+
+    private data class LoadedTable(val json: String, val expectedCount: Int)
+
+    /** 三种导入来源：云端清单 / 直接 URL / 本地文件 */
+    private sealed interface TagImportSource {
+        data class Cloud(val manifestUrl: String) : TagImportSource
+        data class Url(val url: String) : TagImportSource
+        data class Local(val uri: android.net.Uri, val context: android.content.Context) : TagImportSource
     }
 
     /**
@@ -726,3 +806,35 @@ class SettingsViewModel(
         viewModelScope.launch { preferencesManager.setVideoPipEnabled(value) }
     }
 }
+
+/** 标签导入的三个阶段（v1.8.3.0 待办 #17） */
+enum class TagImportPhase(val label: String) {
+    DOWNLOAD("下载打标表"),
+    PARSE("解析打标表"),
+    WRITE("写入标签库"),
+}
+
+/**
+ * 标签导入进度快照。
+ *
+ * @param fraction 总进度 0..1（三段加权：下载 55%、解析 5%、写库 40%）
+ * @param detail 明细文案，如「3.2 MB / 12.4 MB」「漫画 12000 / 24000」
+ * @param cancelable 当前是否允许取消（写库阶段不允许，避免留下半截数据）
+ */
+data class TagImportProgress(
+    val phase: TagImportPhase,
+    val fraction: Float,
+    val detail: String = "",
+    val cancelable: Boolean = true,
+    /** 服务器没给 Content-Length（分块传输）时为 true：只能显示已下载量，算不出百分比 */
+    val indeterminate: Boolean = false,
+)
+
+/** 下载段占总进度的比重 */
+private const val TAG_IMPORT_DOWNLOAD_WEIGHT = 0.55f
+
+/** 写库段的起点（下载 + 解析之后） */
+private const val TAG_IMPORT_WRITE_BASE = 0.60f
+
+/** 写库段占总进度的比重 */
+private const val TAG_IMPORT_WRITE_WEIGHT = 0.40f

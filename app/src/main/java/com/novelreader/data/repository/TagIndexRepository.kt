@@ -667,9 +667,14 @@ class TagIndexRepository(
      * - 标签按**同名取更高置信度**合并（[TagTable.mergeEntry]），站方 100 分不会被
      *   PC 端的视觉 72 分顶掉，反之 PC 打上的「黑白」能补掉 App 侧没猜到的空缺。
      *
+     * @param onProgress 写入进度回调（已写条目数, 总条目数），在写库线程调用（v1.8.3.0 待办 #17）
      * @return 导入覆盖的条目数
      */
-    suspend fun importTagTable(payload: TagTable.Payload, type: SourceType): Int {
+    suspend fun importTagTable(
+        payload: TagTable.Payload,
+        type: SourceType,
+        onProgress: ((done: Int, total: Int) -> Unit)? = null,
+    ): Int {
         val now = System.currentTimeMillis()
         val typeItems = payload.items.filter { it.itemType == type.name }
         if (typeItems.isEmpty()) return 0
@@ -741,7 +746,14 @@ class TagIndexRepository(
         }
 
         // 分块写：单批 2000 条，既避免一次撑爆内存，也把事务数从「每条一个」降到十几批
-        localRows.chunked(IMPORT_CHUNK).forEach { localTagDao.upsertAll(it) }
+        val total = localRows.size
+        var written = 0
+        localRows.chunked(IMPORT_CHUNK).forEach { chunk ->
+            localTagDao.upsertAll(chunk)
+            written += chunk.size
+            // 每批回报一次：写库是整段导入里最耗时的一步，没有进度用户只会觉得「卡死」
+            onProgress?.invoke(written, total)
+        }
         tagRows.chunked(IMPORT_CHUNK).forEach { tagInstanceDao.upsertAll(it) }
         return typeItems.size
     }

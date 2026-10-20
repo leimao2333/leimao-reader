@@ -221,9 +221,40 @@ class RssRepositoryImpl(
         withContext(Dispatchers.IO) { dao.updateTitle(feedId, clean) }
     }
 
+    override suspend fun setFeedGroup(feedId: Long, group: String) {
+        withContext(Dispatchers.IO) { dao.updateGroup(feedId, group.trim()) }
+    }
+
+    override suspend fun setFeedGroupBatch(feedIds: List<Long>, group: String) {
+        if (feedIds.isEmpty()) return
+        withContext(Dispatchers.IO) { dao.updateGroupBatch(feedIds, group.trim()) }
+    }
+
+    override suspend fun groupNames(): List<String> = withContext(Dispatchers.IO) {
+        runCatching { dao.getGroupNames() }.getOrDefault(emptyList())
+    }
+
+    override suspend fun countArticlesOfFeeds(feedIds: List<Long>): Int {
+        if (feedIds.isEmpty()) return 0
+        return withContext(Dispatchers.IO) {
+            runCatching { dao.countArticlesOfFeeds(feedIds) }.getOrDefault(0)
+        }
+    }
+
     override suspend fun deleteFeed(feedId: Long) = withContext(Dispatchers.IO) {
         dao.deleteArticlesOfFeed(feedId)
         dao.deleteFeed(feedId)
+    }
+
+    override suspend fun deleteFeeds(feedIds: List<Long>) {
+        if (feedIds.isEmpty()) return
+        withContext(Dispatchers.IO) {
+            // 先清文章再删源：rss_articles 没有外键约束，顺序反了就会留孤儿数据
+            feedIds.chunked(500).forEach { chunk ->
+                dao.deleteArticlesOfFeeds(chunk)
+                dao.deleteFeeds(chunk)
+            }
+        }
     }
 
     override suspend fun markRead(articleId: Long, read: Boolean) = withContext(Dispatchers.IO) {

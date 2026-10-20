@@ -106,19 +106,35 @@
 
 ## 五、RSS
 
-- [ ] **16. RSS 源批量管理**
-  - **分组**：`RssFeedEntity` 加 `groupName` 字段（含 Room 迁移），列表支持按分组筛选 / 折叠。
-  - **批量删除**：多选模式 + 全选，批量删除源（连同 `RssArticleEntity` 的文章一起清，避免留孤儿数据）。
-  - 涉及：`data/database/RssDao.kt`、`ui/screens/rss/RssScreen.kt`、`RssReaderScreen.kt`。
+- [x] **16. RSS 源批量管理** ✅ v1.8.3.0
+  - **分组**：`RssFeedEntity.groupName` 字段历史上已有（v1.3.1.0 建表时预留），本轮补齐「能用的 UI + 批量改分组」：
+    顶部新增分组筛选行（全部分组 / 未分组 / 各分组名），长按分组 chip 可重命名（整组改名）；
+    单源长按管理弹窗补「分组」输入框，并给出已有分组的一键 chip，省得手打变成新分组。
+  - **批量删除**：顶栏「管理订阅」进入管理态 —— 源列表按分组分节、分节标题可折叠，
+    每行复选框，顶栏全选 / 反选，底部浮条「分组 + 删除」。
+    删除前查一次文章数，弹「删除 N 个订阅？会同时删除 M 篇文章」二次确认。
+  - 新增 DAO：`updateGroupBatch` / `getGroupNames` / `deleteFeeds` / `deleteArticlesOfFeeds` / `countArticlesOfFeeds`；
+    仓库层 `deleteFeeds` 先删文章再删源（`rss_articles` 无外键，顺序反了就留孤儿），500 条分块。
+  - 单源删除也统一走二次确认（原来直接删，误触就丢整源文章）。
+  - 涉及：`RssDao.kt`、`RssRepository.kt`、`RssRepositoryImpl.kt`、`RssScreen.kt`。
 
 ---
 
 ## 六、云端标签导入
 
-- [ ] **17. 云端导入增加进度条**
-  - 分三段上报进度：下载（按字节数算百分比）→ 解析 → 批量入库（按分块数算百分比，当前 `IMPORT_CHUNK = 2000`）。
-  - 弹窗内显示 `xx%` + 阶段文案，并支持取消（取消时要保证已写入的数据可回滚或至少不残留半截）。
-  - 涉及：`ui/screens/settings/SettingsViewModel.kt`（`importCloudLatest` / `importPayload`）、`data/repository/TagIndexRepository.kt`（`importTagTable`）、`ui/screens/settings/SettingsScreen.kt` 弹窗。
+- [x] **17. 云端导入增加进度条** ✅ v1.8.3.0
+  - 三段加权进度：下载 55% → 解析 5% → 写库 40%，弹窗显示「阶段名 / 百分比 / 明细 / 不定态进度条」。
+    明细文案：下载阶段 `3.2 MB / 12.4 MB`，写库阶段 `小说 16691 / 16691`。
+  - **服务器不给 Content-Length 时**（jsDelivr 走分块传输，实测就是 -1）百分比无意义，
+    改为显示 `--` + 无参 `LinearProgressIndicator`（流动条纹）+「已下载 X MB」，否则会出现
+    「下载了 7.4 MB 却显示 0%」的假进度。
+  - **取消**：下载/解析阶段可取消，写库阶段按钮禁用并提示「正在写入本地标签库，请勿退出应用」。
+    下载是阻塞流式读，协程 `cancel()` 打不断 `read()`，所以在进度回调里查 `@Volatile` 取消标志抛 `CancellationException`；
+    写库只在「类型边界」检查取消，保证每个类型要么整批写完、要么完全没写（不会出现 local_tags 写了、tag_instances 没写）。
+  - 新增 `HttpClient.getTextWithProgress`（临时文件 + `downloadFile` 流式读取 → UTF-8 解码 → 删临时文件），
+    `downloadFile` 补 `timeoutMs`（大文件 20s 读超时不够用；注意该参数必须放在最后一个 lambda 参数之前，否则尾随 lambda 会绑到它）。
+  - 统一入口 `startTagImport(TagImportSource.Cloud/Url/Local)`，云端 / URL / 本地三个导入共用同一套进度与取消。
+  - 涉及：`SettingsViewModel.kt`、`SettingsScreen.kt`、`TagIndexRepository.kt`、`HttpClient.kt`。
 
 ---
 

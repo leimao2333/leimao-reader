@@ -46,6 +46,14 @@ interface RssDao {
     @Query("UPDATE rss_feeds SET groupName = :group WHERE feedId = :feedId")
     suspend fun updateGroup(feedId: Long, group: String)
 
+    /** 批量改分组（v1.8.3.0 待办 #16，空串 = 移到未分组） */
+    @Query("UPDATE rss_feeds SET groupName = :group WHERE feedId IN (:feedIds)")
+    suspend fun updateGroupBatch(feedIds: List<Long>, group: String)
+
+    /** 已有分组名（去重、忽略未分组），供筛选栏与「移动到分组」选择 */
+    @Query("SELECT DISTINCT groupName FROM rss_feeds WHERE groupName != '' ORDER BY groupName ASC")
+    suspend fun getGroupNames(): List<String>
+
     /** 抓取成功后回写元信息（标题仅在为空时由调用方决定是否覆盖） */
     @Query(
         """
@@ -70,6 +78,10 @@ interface RssDao {
 
     @Query("DELETE FROM rss_feeds WHERE feedId = :feedId")
     suspend fun deleteFeed(feedId: Long)
+
+    /** 批量删源（v1.8.3.0 待办 #16），文章由调用方一并清理 */
+    @Query("DELETE FROM rss_feeds WHERE feedId IN (:feedIds)")
+    suspend fun deleteFeeds(feedIds: List<Long>)
 
     @Query("SELECT COUNT(*) FROM rss_feeds")
     suspend fun countFeeds(): Int
@@ -132,6 +144,14 @@ interface RssDao {
 
     @Query("DELETE FROM rss_articles WHERE feedId = :feedId")
     suspend fun deleteArticlesOfFeed(feedId: Long)
+
+    /** 批量删文章（与批量删源配合，避免留下孤儿数据） */
+    @Query("DELETE FROM rss_articles WHERE feedId IN (:feedIds)")
+    suspend fun deleteArticlesOfFeeds(feedIds: List<Long>)
+
+    /** 批量删源前统计将一并清掉的文章数，用于二次确认文案 */
+    @Query("SELECT COUNT(*) FROM rss_articles WHERE feedId IN (:feedIds)")
+    suspend fun countArticlesOfFeeds(feedIds: List<Long>): Int
 
     @Query("DELETE FROM rss_articles")
     suspend fun deleteAllArticles()

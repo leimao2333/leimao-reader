@@ -260,12 +260,14 @@ object HttpClient {
      * @param headers 额外请求头
      * @param byteTransform 整包字节处理（如加密图床的解密）；非空时改为「先读全量 → 转换 → 一次写盘」
      * @param onProgress 进度回调（已下载字节数, 总字节数，未知时为 -1），运行在下载线程
+     * @param timeoutMs 自定义超时（毫秒）；大文件（标签表 / 安装包）默认 20s 读超时不够用
      */
     fun downloadFile(
         url: String,
         target: File,
         headers: Map<String, String> = emptyMap(),
         byteTransform: ((ByteArray) -> ByteArray)? = null,
+        timeoutMs: Long? = null,
         onProgress: ((downloaded: Long, total: Long) -> Unit)? = null,
     ) {
         val builder = Request.Builder()
@@ -274,7 +276,14 @@ object HttpClient {
         headers.forEach { (k, v) -> builder.header(k, v) }
 
         val request = builder.build()
-        client.newCall(request).execute().use { response: Response ->
+        // v1.8.3.0：大文件（十几 MB 的标签表 / 安装包）沿用默认 20s 读超时会被掐断，
+        // 允许调用方指定；不指定时保持原行为
+        val call = if (timeoutMs == null) {
+            client.newCall(request)
+        } else {
+            clientWithTimeout(timeoutMs, retry = false).newCall(request)
+        }
+        call.execute().use { response: Response ->
             if (!response.isSuccessful) {
                 throw NetworkException("下载失败: ${response.code} $url")
             }
@@ -310,6 +319,29 @@ object HttpClient {
                 output.close()
                 input.close()
             }
+        }
+    }
+
+    /**
+     * GET 文本，带下载进度（v1.8.3.0 待办 #17）。
+     *
+     * 大文本（十几 MB 的打标表）走 [get] 只能干等，用户看不到任何进展。
+     * 这里借道 [downloadFile] 的流式读取拿到字节进度，再按 UTF-8 解码：
+     * 临时文件用完即删，取消（[onProgress] 抛异常）时同样会清掉。
+     *
+     * **阻塞式调用，必须在 IO 线程执行。**
+     */
+    fun getTextWithProgress(
+        url: String,
+        timeoutMs: Long? = null,
+        onProgress: ((downloaded: Long, total: Long) -> Unit)? = null,
+    ): String {
+        val tmp = File.createTempFile("nr_http_", ".tmp")
+        return try {
+            downloadFile(url, tmp, onProgress = onProgress, timeoutMs = timeoutMs)
+            tmp.readText(Charsets.UTF_8)
+        } finally {
+            runCatching { tmp.delete() }
         }
     }
 

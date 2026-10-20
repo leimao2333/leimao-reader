@@ -257,7 +257,14 @@ object TagAlias {
         setOf(
             "无码", "無碼", "无码版", "無碼版", "无修正", "無修正", "未修正", "无修饰", "無修飾",
             "无马赛克", "無馬賽克", "无遮", "無遮", "步兵", "無修正版本", "修正なし",
-            "uncensored", "uncensor", "uncensored version", "decensored",
+            // v1.8.4.1：AI 去码普及后源的写法多了这一批 —— 「去码 / 去馬賽克 / AI解码」
+            // 说的都是同一件事，不归到一组就会各自成键，搜哪个都只出一半。
+            "去码", "去碼", "去码版", "去碼版", "去修正", "去马赛克", "去馬賽克",
+            "去除马赛克", "去除馬賽克", "去格仔", "無格仔", "无格仔",
+            "ai去码", "ai去碼", "ai去马赛克", "ai去馬賽克", "ai无码", "ai無碼",
+            "ai解码", "ai解碼", "解码版", "解碼版", "无码破解", "無碼破解",
+            "uncensored", "uncensor", "uncensored version", "decensored", "de-censored",
+            "ai uncensored", "ai decensored", "ai uncensor",
             "no mosaic", "no-mosaic", "nomosaic", "no censor", "no-censor", "무수정", "노모자이크",
         ),
         setOf("有码", "有碼", "有修正", "有马赛克", "有馬賽克", "修正", "骑兵", "騎兵", "打码", "打碼",

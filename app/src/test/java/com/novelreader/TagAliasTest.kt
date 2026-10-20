@@ -243,4 +243,29 @@ class TagAliasTest {
         assertEquals("韩漫", TagAlias.canonicalOf("韩国"))
         assertTrue("韩国" in TagAlias.aliasesOf("韩国"))
     }
+
+    // ===== 无码组的「去码」写法（v1.8.4.1）=====
+
+    @Test
+    fun `去码与AI去码都归到无码`() {
+        listOf("去码", "去碼", "去马赛克", "去馬賽克", "去修正", "ai去码", "AI去碼", "ai解码", "解码版")
+            .forEach { raw ->
+                assertEquals("「$raw」应归到无码", "无码", TagAlias.canonicalOf(raw))
+            }
+    }
+
+    @Test
+    fun `步兵与去码互通`() {
+        // 「步兵」是早期叫法，「去码」是 AI 时代叫法，搜索侧要能互相命中
+        val aliases = TagAlias.aliasesOf("步兵")
+        assertTrue(aliases.contains("去码"))
+        assertTrue(aliases.contains("ai去码"))
+        assertTrue(TagAlias.aliasesOf("去码").contains("步兵"))
+    }
+
+    @Test
+    fun `去码仍算成人意图`() {
+        assertTrue(TagAlias.isExplicitAdultIntent("去码"))
+        assertTrue(TagAlias.isExplicitAdultIntent("ai去码"))
+    }
 }

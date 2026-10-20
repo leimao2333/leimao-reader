@@ -2,8 +2,10 @@ package com.novelreader.ui.screens.tag
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.novelreader.core.util.SearchResultMerge
 import com.novelreader.core.util.TagAlias
 import com.novelreader.core.util.TagEntryUrl
+import com.novelreader.core.util.TagProvenance
 import com.novelreader.core.util.TagQuery
 import com.novelreader.core.util.TagQuerySpec
 import com.novelreader.core.util.TagTagger
@@ -301,6 +303,22 @@ class TagSearchViewModel(
         val union: List<LinkedHashMap<String, MediaItem>>,
     )
 
+    /**
+     * 一页结果的「打标证据」（v1.8.4.1）。
+     *
+     * [proven] 只记录**真实分类页**命中的标签：作品出现在某个标签的分类页里，
+     * 才算「它属于这个标签」。纯关键词入口搜到的是「标题里出现了这个词」，
+     * 不能当成归属证据 —— 否则《全面接触》会被打上「全彩」。
+     */
+    private data class PageResult(
+        val items: List<MediaItem>,
+        /** `sourceId:id` → 该作品被真实分类页证明过的标签 */
+        val proven: Map<String, Set<String>> = emptyMap(),
+    )
+
+    /** 本次搜索已经写进索引的作品（`sourceId:id`），翻页时避免重复写库 */
+    private val indexedInSearch = mutableSetOf<String>()
+
     private var paging: PagingContext? = null
     private var nextPage = 2
     private var preloadJob: kotlinx.coroutines.Job? = null
@@ -341,6 +359,8 @@ class TagSearchViewModel(
         val note: String? = null,
         /** 严格求交时每个大集的并集，分页继续累积用（v1.8.1.2） */
         val union: List<LinkedHashMap<String, MediaItem>>? = null,
+        /** 打标证据：`sourceId:id` → 真实分类页证明过的标签（v1.8.4.1） */
+        val proven: Map<String, Set<String>> = emptyMap(),
     ) {
         companion object {
             val EMPTY = CompoundOutcome(emptyList())
@@ -478,13 +498,15 @@ class TagSearchViewModel(
         viewModelScope.launch {
             try {
                 val page = nextPage
-                val items = fetchPage(ctx, page)
+                val result = fetchPage(ctx, page)
                 if (generation != searchGeneration) return@launch
-                if (items.isEmpty()) {
+                if (result.items.isEmpty()) {
                     _hasMore.value = false
                 } else {
-                    appendResults(items)
+                    appendResults(result.items)
                     nextPage = page + 1
+                    // 翻页同样打标（v1.8.4.1）：以前只有第一页进索引，滚十页标签层不动
+                    indexProvenance(result.items, result.proven)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -510,44 +532,106 @@ class TagSearchViewModel(
             while (loaded < PRELOAD_PAGES) {
                 if (generation != searchGeneration) return@launch
                 val page = nextPage
-                val items = try {
+                val result = try {
                     fetchPage(ctx, page)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
                     android.util.Log.w("TagSearch", "预加载失败，page=$page", error)
-                    emptyList()
+                    PageResult(emptyList())
                 }
                 if (generation != searchGeneration) return@launch
-                if (items.isEmpty()) {
+                if (result.items.isEmpty()) {
                     _hasMore.value = false
                     return@launch
                 }
-                appendResults(items)
+                appendResults(result.items)
                 nextPage = page + 1
                 loaded++
+                // 预取的页同样进标签层：用户滚到底看到的这批，本来就已经抓回来了
+                indexProvenance(result.items, result.proven)
             }
         }
     }
 
-    /** 抓某一页（单标签 / 复合严格求交 / 组合直搜三种形态） */
-    private suspend fun fetchPage(ctx: PagingContext, page: Int): List<MediaItem> = when {
-        ctx.single -> searchOneTag(ctx.entriesPerTag[0], page)
-        ctx.allSearchOnly -> searchCombinedKeyword(
-            ctx.sources, ctx.keyword, Semaphore(WIDE_COMBINED_CONCURRENCY), page,
+    /** 抓某一页（单标签 / 复合严格求交 / 组合直搜三种形态），并带上打标证据 */
+    private suspend fun fetchPage(ctx: PagingContext, page: Int): PageResult = when {
+        ctx.single -> {
+            val proven = mutableMapOf<String, MutableSet<String>>()
+            val only = ctx.tags.firstOrNull()
+            val items = searchOneTag(
+                ctx.entriesPerTag[0],
+                page,
+                onCategoryHit = { item ->
+                    if (only != null) proven.getOrPut(itemKey(item)) { mutableSetOf() }.add(only)
+                },
+            )
+            PageResult(items, proven)
+        }
+        // 纯关键词搜索：结果只是「标题包含」，没有任何归属证据
+        ctx.allSearchOnly -> PageResult(
+            searchCombinedKeyword(ctx.sources, ctx.keyword, Semaphore(WIDE_COMBINED_CONCURRENCY), page),
         )
         else -> {
             val bySrc = ctx.entriesPerTag.map { list -> list.groupBy({ it.first }, { it.second }) }
-            strictIntersection(
+            val strict = strictIntersection(
                 bySrc, ctx.sources, page, Semaphore(TAG_SEARCH_CONCURRENCY), {}, ctx.union,
-            ).matched
+            )
+            PageResult(strict.matched, provenOf(strict, ctx.tags))
         }
     }
 
-    /** 增量追加结果（按作品身份键去重，顺序保持） */
+    /** 从求交结果里取出「同源命中」的证据：哪部作品被哪些标签的分类页证明过 */
+    private fun provenOf(result: StrictResult, tags: List<String>): Map<String, Set<String>> {
+        val out = mutableMapOf<String, MutableSet<String>>()
+        result.matched.forEach { item ->
+            val proofKey = TagProvenance.proofKey(item.sourceId, item.title) ?: return@forEach
+            result.provenKeysPerTag.forEachIndexed { index, keys ->
+                val tag = tags.getOrNull(index) ?: return@forEachIndexed
+                if (proofKey !in keys) return@forEachIndexed
+                out.getOrPut(itemKey(item)) { mutableSetOf() }.add(tag)
+            }
+        }
+        return out
+    }
+
+    /** 作品在索引里的唯一键（与 `TagIndexRepository.indexItems` 的入参口径一致） */
+    private fun itemKey(item: MediaItem): String = "${item.sourceId}:${item.id}"
+
+    /**
+     * 边搜边标记（v1.8.4.1）：**每一页**的结果都进标签层，且只补有证据的标签。
+     *
+     * @param proven 该作品被真实分类页证明过的标签（关键词命中不算）
+     * @param withContext false = 只按作品自身字段刷新（索引里已有的结果走这条，
+     *   避免把「用户搜过这个标签」重复加成）
+     */
+    private suspend fun indexProvenance(
+        items: List<MediaItem>,
+        proven: Map<String, Set<String>> = emptyMap(),
+        withContext: Boolean = true,
+    ) {
+        val repo = tagIndexRepository ?: return
+        if (items.isEmpty()) return
+        // 同一次搜索里已经写过的作品不再写（翻页 / 预取会重复抓到同一部）
+        val fresh = items.filter { it.sourceId.isNotBlank() && it.id.isNotBlank() }
+            .filter { indexedInSearch.add(itemKey(it)) }
+        if (fresh.isEmpty()) return
+        val groups = TagProvenance.groupByProof(
+            items = fresh,
+            proven = if (withContext) proven else emptyMap(),
+            keyOf = ::itemKey,
+        )
+        groups.forEach { (tags, group) ->
+            val context = tags.map { TagAlias.canonicalOf(it) to CONTEXT_PAGE_CONFIDENCE }
+            runCatching { repo.indexItems(type, group, context) }
+        }
+        _indexCount.value = repo.count(type)
+    }
+
+    /** 增量追加结果（先按 `sourceId:id` 再按标题去重，顺序保持） */
     private fun appendResults(items: List<MediaItem>) {
         if (items.isEmpty()) return
-        _results.value = (_results.value + items).distinctBy { TagQuery.identityKey(it.title) }
+        _results.value = SearchResultMerge.merge(_results.value, items)
     }
 
     /**
@@ -772,8 +856,20 @@ class TagSearchViewModel(
                 ).joinToString("；").takeIf { it.isNotBlank() }
 
                 _notice.value = headNote
+                val singleProven = mutableMapOf<String, MutableSet<String>>()
                 val outcome = if (knownEntries.size == 1) {
-                    CompoundOutcome(searchOneTag(knownEntries[0], onPartial = updatePartialResults))
+                    val only = known.firstOrNull()
+                    val items = searchOneTag(
+                        knownEntries[0],
+                        onPartial = updatePartialResults,
+                        // 只有分类页入口的结果才算「这部作品属于该标签」的证据
+                        onCategoryHit = { item ->
+                            if (only != null) {
+                                singleProven.getOrPut(itemKey(item)) { mutableSetOf() }.add(only)
+                            }
+                        },
+                    )
+                    CompoundOutcome(items, proven = singleProven)
                 } else {
                     searchCompound(knownEntries, known, updatePartialResults)
                 }
@@ -786,28 +882,28 @@ class TagSearchViewModel(
                         .let { if (searchOnlyResult) filterByGroupKeywords(it, tags) else it },
                     excludeTerms,
                 )
-                // 索引里的是「按真实题材命中」的，不再过标题过滤；与网络结果合并去重
-                val final = withoutExcluded(localItems + network, excludeTerms)
-                    .distinctBy { TagQuery.identityKey(it.title) }
+                // 索引里的是「按真实题材命中」的，不再过标题过滤；与网络结果合并去重。
+                // v1.8.4.1：先按 `sourceId:id` 收敛再按标题收敛 —— 同一部作品在索引里
+                // 存的是旧标题、网络返回的是新标题时，只按标题去重会留下两条同一个 id，
+                // 列表（LazyColumn key = sourceId:id）会直接崩。
+                val final = withoutExcluded(
+                    SearchResultMerge.merge(localItems, network),
+                    excludeTerms,
+                )
                 if (generation != searchGeneration) return@launch
                 _activeTags.value = known.map(TagAlias::canonicalOf).distinct()
                 _results.value = final
-                // 边搜边标记：把这批结果写进本地索引（后台执行，不打断搜索）
-                // 分类页上下文（v1.8.1.9）：**每个**标签都有真实分类页时，这批结果才是
-                // 「按分类归属」命中的（走严格求交），把它们作为证据补进标签层。
-                // 只要有一个标签只有关键词入口，这批就是「标题包含」的宽松结果，不补打 ——
-                // 否则《全面接触》这类噪声会真的被贴上「全彩」。
-                val allHaveCategoryPage = knownEntries.isNotEmpty() &&
-                    knownEntries.all { list -> list.any { !isSearchEntry(it) } }
-                val contextTags = if (allHaveCategoryPage) {
-                    known.map { TagAlias.canonicalOf(it) to CONTEXT_PAGE_CONFIDENCE }
-                } else {
-                    emptyList()
-                }
-                if (final.isNotEmpty()) {
+                // 边搜边标记（v1.8.1.2）+ **证据化**打标（v1.8.4.1）。
+                // 以前是「整批同一个上下文」：只要每个标签都有分类页入口，就把所有结果
+                // 一起打上这些标签。但同一次搜索里往往混着关键词入口，那些结果只是
+                // 「标题里出现了这个词」，《全面接触》就这样被贴上了「全彩」。
+                // 现在证据按**作品**记：只有这部作品自己从某个标签的分类页里被抓到过，
+                // 才补那个标签；索引里已有的结果只按自身字段刷新，不重复加成。
+                indexedInSearch.clear()
+                if (network.isNotEmpty() || localItems.isNotEmpty()) {
                     viewModelScope.launch {
-                        runCatching { tagIndexRepository?.indexItems(type, final, contextTags) }
-                        _indexCount.value = tagIndexRepository?.count(type) ?: 0
+                        indexProvenance(localItems, withContext = false)
+                        indexProvenance(network, outcome.proven)
                     }
                 }
                 // 分页上下文：后续「加载更多」按同一批入口抓下一页（v1.8.1.2）
@@ -891,12 +987,18 @@ class TagSearchViewModel(
         page: Int = 1,
         semaphore: Semaphore = Semaphore(TAG_SEARCH_CONCURRENCY),
         onPartial: (List<MediaItem>) -> Unit = {},
+        /**
+         * 真实分类页命中的回调（v1.8.4.1）。只有走了分类页的入口才回调 ——
+         * 关键词入口的结果只是「标题包含该词」，不能当归属证据。
+         */
+        onCategoryHit: (MediaItem) -> Unit = {},
     ): List<MediaItem> =
         coroutineScope {
             val accumulated = mutableListOf<MediaItem>()
             val lock = Any()
             addProgressTotal(entries.size)
-            entries.map { (srcId, url) ->
+            entries.map { entry ->
+                val (srcId, url) = entry
                 async {
                     val items = semaphore.withPermit {
                         try {
@@ -904,6 +1006,9 @@ class TagSearchViewModel(
                         } finally {
                             stepProgress()
                         }
+                    }
+                    if (items.isNotEmpty() && !isSearchEntry(entry)) {
+                        items.forEach(onCategoryHit)
                     }
                     if (items.isNotEmpty()) {
                         val snapshot = synchronized(lock) {
@@ -980,7 +1085,11 @@ class TagSearchViewModel(
         val bySrcPerTag = categoryEntries.map { list -> list.groupBy({ it.first }, { it.second }) }
         val strict = strictIntersection(bySrcPerTag, sources, 1, semaphore, onPartial)
         return if (strict.matched.isNotEmpty()) {
-            CompoundOutcome(strict.matched, union = strict.unionPerTag)
+            CompoundOutcome(
+                strict.matched,
+                union = strict.unionPerTag,
+                proven = provenOf(strict, tags),
+            )
         } else {
             CompoundOutcome.EMPTY
         }
@@ -988,6 +1097,14 @@ class TagSearchViewModel(
     private data class StrictResult(
         val matched: List<MediaItem>,
         val unionPerTag: List<LinkedHashMap<String, MediaItem>>,
+        /**
+         * 每个大集的「同源 + 同标题」证明键集合（v1.8.4.1）。
+         *
+         * 求交本身是**跨源**按标题算的（v1.7.9.9 口径，A 站有「无码」、B 站有「全彩」
+         * 时同名作品也要能对上）。但**打标**不能跟着跨源走：B 站那部同名作品不是同一部，
+         * 拿它当证据会给 A 站的作品贴错标签。所以这里额外记一份「同一个源自己命中过」的键。
+         */
+        val provenKeysPerTag: List<Set<String>> = emptyList(),
     )
 
     /**
@@ -1007,17 +1124,22 @@ class TagSearchViewModel(
         val unionPerTag = carry ?: MutableList(bySrcPerTag.size) {
             LinkedHashMap<String, MediaItem>()
         }
+        val provenKeys = MutableList(bySrcPerTag.size) { mutableSetOf<String>() }
         val fetched = fetchGrid(bySrcPerTag, sources, page, semaphore)
         fetched.forEachIndexed { tagIndex, perSource ->
-            perSource.values.flatten().forEach { item ->
-                val key = TagQuery.identityKey(item.title)
-                    .ifEmpty { "${item.sourceId}:${item.id}" }
-                unionPerTag[tagIndex].putIfAbsent(key, item)
+            perSource.forEach { (sourceId, items) ->
+                items.forEach { item ->
+                    val key = TagQuery.identityKey(item.title)
+                        .ifEmpty { "${item.sourceId}:${item.id}" }
+                    unionPerTag[tagIndex].putIfAbsent(key, item)
+                    // 同源命中才算证明（跨源同名只用于展示层的求交）
+                    TagProvenance.proofKey(sourceId, item.title)?.let { provenKeys[tagIndex].add(it) }
+                }
             }
         }
         val matched = TagQuery.intersect(unionPerTag.map { it.values.toList() })
         onPartial(matched)
-        return StrictResult(matched, unionPerTag)
+        return StrictResult(matched, unionPerTag, provenKeys)
     }
 
     /**

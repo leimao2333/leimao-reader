@@ -196,6 +196,7 @@ fun NovelReaderScreen(
     val toast by viewModel.toast.collectAsState()
     val collected by viewModel.collected.collectAsState()
     val shelfStateReady by viewModel.shelfStateReady.collectAsState()
+    val shelfPromptEnabled by viewModel.shelfPromptEnabled.collectAsState()
     val hasNextChapter by viewModel.hasNextChapter.collectAsState()
     val hasPrevChapter by viewModel.hasPrevChapter.collectAsState()
     val currentItemState by viewModel.currentItemState.collectAsState()
@@ -238,7 +239,7 @@ fun NovelReaderScreen(
     var showShelfPrompt by remember { mutableStateOf(false) }
     var shelfPrompted by remember { mutableStateOf(false) }
     LaunchedEffect(shelfStateReady, collected, displayItem) {
-        if (shelfStateReady && !collected && !shelfPrompted) {
+        if (shelfStateReady && !collected && !shelfPrompted && shelfPromptEnabled) {
             shelfPrompted = true
             showShelfPrompt = true
         }

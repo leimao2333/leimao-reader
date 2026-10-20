@@ -92,6 +92,11 @@ class PreferencesManager(private val context: Context) {
         /** 小说预缓存话数（向后预取接下来 N 章，1~5，默认 3；v1.6.0.0） */
         val KEY_NOVEL_PRELOAD_CHAPTERS = intPreferencesKey("novel_preload_chapters")
 
+        /** 小说「未加入书架」提示开关（v1.8.3.0，默认开启） */
+        val KEY_NOVEL_SHELF_PROMPT = booleanPreferencesKey("novel_shelf_prompt")
+        /** 漫画「未加入书架」提示开关（v1.8.3.0，默认开启） */
+        val KEY_COMIC_SHELF_PROMPT = booleanPreferencesKey("comic_shelf_prompt")
+
         // ----- v1.1.8.0 对标开源阅读补齐 -----
         /** 简繁转换：0=不转换 1=简转繁 2=繁转简（对标开源阅读 ChineseConverter） */
         val KEY_NOVEL_CONVERT_MODE = intPreferencesKey("novel_convert_mode")
@@ -563,6 +568,22 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setNovelPreloadChapters(value: Int) {
         context.dataStore.edit { it[KEY_NOVEL_PRELOAD_CHAPTERS] = value.coerceIn(0, 5) }
+    }
+
+    /** 小说「未加入书架」提示开关（v1.8.3.0，默认开启） */
+    val novelShelfPromptFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_NOVEL_SHELF_PROMPT] ?: true }
+
+    suspend fun setNovelShelfPrompt(value: Boolean) {
+        context.dataStore.edit { it[KEY_NOVEL_SHELF_PROMPT] = value }
+    }
+
+    /** 漫画「未加入书架」提示开关（v1.8.3.0，默认开启） */
+    val comicShelfPromptFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_COMIC_SHELF_PROMPT] ?: true }
+
+    suspend fun setComicShelfPrompt(value: Boolean) {
+        context.dataStore.edit { it[KEY_COMIC_SHELF_PROMPT] = value }
     }
 
     // ===== 漫画 =====

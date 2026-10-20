@@ -99,6 +99,8 @@ fun SettingsScreen(
     val videoVerticalSwipeSwitch by viewModel.videoVerticalSwipeSwitch.collectAsState()
     val videoPipEnabled by viewModel.videoPipEnabled.collectAsState()
     val hideAdult by viewModel.hideAdult.collectAsState()
+    val novelShelfPrompt by viewModel.novelShelfPrompt.collectAsState()
+    val comicShelfPrompt by viewModel.comicShelfPrompt.collectAsState()
 
     // 应用更新（v1.5.4.0）
     val updateBusy by viewModel.updateBusy.collectAsState()
@@ -198,6 +200,15 @@ fun SettingsScreen(
                 valueRange = 0f..5f,
                 steps = 4,
             )
+            SettingRow(
+                title = "未加入书架时提示",
+                subtitle = "打开未收藏的小说时询问是否加入书架",
+            ) {
+                Switch(
+                    checked = novelShelfPrompt,
+                    onCheckedChange = { viewModel.setNovelShelfPrompt(it) },
+                )
+            }
 
             Spacer(Modifier.height(24.dp))
 
@@ -255,6 +266,15 @@ fun SettingsScreen(
                 Switch(
                     checked = comicEdgeGesture,
                     onCheckedChange = { viewModel.setComicEdgeGesture(it) },
+                )
+            }
+            SettingRow(
+                title = "未加入书架时提示",
+                subtitle = "打开未收藏的漫画时询问是否加入书架",
+            ) {
+                Switch(
+                    checked = comicShelfPrompt,
+                    onCheckedChange = { viewModel.setComicShelfPrompt(it) },
                 )
             }
 

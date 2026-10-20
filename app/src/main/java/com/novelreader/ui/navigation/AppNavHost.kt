@@ -671,6 +671,7 @@ fun AppNavHost(
                         it.progressRepository,
                         it.preferencesManager,
                         it.downloadManager,
+                        it.bookRepository,
                     )
                 }
             )

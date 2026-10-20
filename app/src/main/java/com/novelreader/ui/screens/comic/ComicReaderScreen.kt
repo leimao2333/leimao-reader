@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -105,9 +106,38 @@ fun ComicReaderScreen(
     val preloadWifiOnly by viewModel.preloadWifiOnly.collectAsState()
     val landscapeDoublePage by viewModel.landscapeDoublePage.collectAsState()
     val edgeGesture by viewModel.edgeGesture.collectAsState()
+    val collected by viewModel.collected.collectAsState()
+    val shelfStateReady by viewModel.shelfStateReady.collectAsState()
+    val shelfPromptEnabled by viewModel.shelfPromptEnabled.collectAsState()
 
     LaunchedEffect(item, chapter) {
         viewModel.init(item, chapters, chapter)
+    }
+
+    // v1.8.3.0：漫画未加入书架时提示一次（设置里可关；必须等 shelfStateReady 防误弹）
+    var showShelfPrompt by remember { mutableStateOf(false) }
+    var shelfPrompted by remember { mutableStateOf(false) }
+    LaunchedEffect(shelfStateReady, collected, item) {
+        if (shelfStateReady && !collected && !shelfPrompted && shelfPromptEnabled) {
+            shelfPrompted = true
+            showShelfPrompt = true
+        }
+    }
+    if (showShelfPrompt) {
+        AlertDialog(
+            onDismissRequest = { showShelfPrompt = false },
+            title = { Text("加入书架") },
+            text = { Text("《${item.title}》还没加入书架，加入后可随时在书架继续阅读。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showShelfPrompt = false
+                    viewModel.toggleCollect()
+                }) { Text("加入书架") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showShelfPrompt = false }) { Text("暂不") }
+            },
+        )
     }
 
     // 进入/切换章节后，先预热前几张图片

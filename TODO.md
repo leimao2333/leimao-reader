@@ -10,12 +10,12 @@
 
 ## 一、阅读与书架（小说 / 漫画）
 
-- [ ] **1. 漫画增加「未加入书架」提示弹窗**
+- [x] **1. 漫画增加「未加入书架」提示弹窗**（v1.8.3.0）
   - 小说已有实现，位置：`ui/screens/novel/NovelReaderScreen.kt`（`showShelfPrompt`，打开阅读后询问一次）。
   - 漫画按同样逻辑在 `ui/screens/comic/ComicReaderScreen.kt` 补一份：打开漫画 → 若未收藏 → 弹窗询问「加入书架 / 暂不」。
   - 必须等收藏状态加载完成再判断（参考小说的 `shelfStateReady` 标记），否则初始 `false` 会误弹。
 
-- [ ] **2. 设置里给「未加入书架提示」加开关，小说与漫画分开**
+- [x] **2. 设置里给「未加入书架提示」加开关，小说与漫画分开**（v1.8.3.0）
   - `core/preferences/PreferencesManager.kt` 新增两个独立 key（如 `KEY_NOVEL_SHELF_PROMPT` / `KEY_COMIC_SHELF_PROMPT`），默认开启。
   - 设置页拆成两行分别控制，互不影响；关闭后对应模块不再弹窗。
 

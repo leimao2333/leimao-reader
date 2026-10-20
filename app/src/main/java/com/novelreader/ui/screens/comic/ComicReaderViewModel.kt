@@ -8,6 +8,7 @@ import com.novelreader.domain.model.MediaItem
 import java.io.File
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.ProgressRepository
+import com.novelreader.domain.repository.BookRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,7 +26,26 @@ class ComicReaderViewModel(
     private val progressRepository: ProgressRepository,
     private val preferences: PreferencesManager,
     private val downloadManager: com.novelreader.core.download.DownloadManager? = null,
+    private val bookRepository: BookRepository? = null,
 ) : ViewModel() {
+
+    /** 当前漫画是否已在书架（初始 false，须等 [shelfStateReady] 为 true 才可信） */
+    private val _collected = MutableStateFlow(false)
+    val collected: StateFlow<Boolean> = _collected.asStateFlow()
+
+    /** 收藏状态是否已加载完成（防止初始 false 误弹「加入书架」） */
+    private val _shelfStateReady = MutableStateFlow(false)
+    val shelfStateReady: StateFlow<Boolean> = _shelfStateReady.asStateFlow()
+
+    /** 「未加入书架」提示开关（设置页可关，默认开） */
+    private val _shelfPromptEnabled = MutableStateFlow(true)
+    val shelfPromptEnabled: StateFlow<Boolean> = _shelfPromptEnabled.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            preferences.comicShelfPromptFlow.collectLatest { _shelfPromptEnabled.value = it }
+        }
+    }
 
     /** 图片地址列表 */
     private val _images = MutableStateFlow<List<String>>(emptyList())
@@ -155,6 +175,26 @@ class ComicReaderViewModel(
         _chapterTitle.value = chapter.title
         syncPosition()
         loadContent(chapter)
+        viewModelScope.launch {
+            runCatching { bookRepository?.isCollected(item) == true }
+                .onSuccess { _collected.value = it; _shelfStateReady.value = true }
+                .onFailure { _shelfStateReady.value = true }
+        }
+    }
+
+    /** 收藏 / 取消收藏当前漫画 */
+    fun toggleCollect() {
+        val repo = bookRepository ?: return
+        val item = currentItem ?: return
+        viewModelScope.launch {
+            if (_collected.value) {
+                runCatching { repo.removeFromBookshelf(item) }
+                    .onSuccess { _collected.value = false }
+            } else {
+                runCatching { repo.addToBookshelf(item) }
+                    .onSuccess { _collected.value = true }
+            }
+        }
     }
 
     /** 当前已加载的章节，用于失败重试 */

@@ -503,6 +503,14 @@ class SettingsViewModel(
     private val _hideAdult = MutableStateFlow(true)
     val hideAdult: StateFlow<Boolean> = _hideAdult.asStateFlow()
 
+    /** 小说「未加入书架」提示开关（v1.8.3.0，默认开启） */
+    private val _novelShelfPrompt = MutableStateFlow(true)
+    val novelShelfPrompt: StateFlow<Boolean> = _novelShelfPrompt.asStateFlow()
+
+    /** 漫画「未加入书架」提示开关（v1.8.3.0，默认开启） */
+    private val _comicShelfPrompt = MutableStateFlow(true)
+    val comicShelfPrompt: StateFlow<Boolean> = _comicShelfPrompt.asStateFlow()
+
     // ===== 视频播放（v1.3.2.0） =====
     /** 进入播放页默认全屏 */
     private val _videoFullscreenDefault = MutableStateFlow(false)
@@ -607,6 +615,12 @@ class SettingsViewModel(
         viewModelScope.launch {
             preferencesManager.hideAdultFlow.collect { _hideAdult.value = it }
         }
+        viewModelScope.launch {
+            preferencesManager.novelShelfPromptFlow.collect { _novelShelfPrompt.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.comicShelfPromptFlow.collect { _comicShelfPrompt.value = it }
+        }
     }
 
     /** 切换「隐藏成人内容」开关 */
@@ -672,6 +686,16 @@ class SettingsViewModel(
     /** 小说预加载章数（v1.8.3.0，0=关） */
     fun setNovelPreloadChapters(value: Int) {
         viewModelScope.launch { preferencesManager.setNovelPreloadChapters(value) }
+    }
+
+    /** 小说「未加入书架」提示开关（v1.8.3.0） */
+    fun setNovelShelfPrompt(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setNovelShelfPrompt(value) }
+    }
+
+    /** 漫画「未加入书架」提示开关（v1.8.3.0） */
+    fun setComicShelfPrompt(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setComicShelfPrompt(value) }
     }
 
     fun setVideoDoubleTapSeek(value: Int) {

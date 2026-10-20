@@ -199,6 +199,9 @@ class NovelReaderViewModel(
     val preloadChapters: StateFlow<Int> =
         stateOf(preferences.novelPreloadChaptersFlow, PreferencesManager.DEFAULT_NOVEL_PRELOAD_CHAPTERS)
 
+    /** 「未加入书架」提示开关（设置页可关，默认开；v1.8.3.0） */
+    val shelfPromptEnabled: StateFlow<Boolean> = stateOf(preferences.novelShelfPromptFlow, true)
+
     fun setPreloadChapters(value: Int) {
         viewModelScope.launch { preferences.setNovelPreloadChapters(value) }
     }

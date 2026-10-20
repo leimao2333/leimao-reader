@@ -512,6 +512,14 @@ class SettingsViewModel(
     private val _videoLongPressSpeed = MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_LONG_PRESS_SPEED)
     val videoLongPressSpeed: StateFlow<Int> = _videoLongPressSpeed.asStateFlow()
 
+    /** 长按左侧快退开关（v1.8.3.0，默认开启） */
+    private val _videoLongPressRewind = MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_LONG_PRESS_REWIND)
+    val videoLongPressRewind: StateFlow<Boolean> = _videoLongPressRewind.asStateFlow()
+
+    /** 小说预加载章数（v1.8.3.0，0=关） */
+    private val _novelPreloadChapters = MutableStateFlow(PreferencesManager.DEFAULT_NOVEL_PRELOAD_CHAPTERS)
+    val novelPreloadChapters: StateFlow<Int> = _novelPreloadChapters.asStateFlow()
+
     /** 双击快进步长（秒） */
     private val _videoDoubleTapSeek = MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_DOUBLE_TAP_SEEK)
     val videoDoubleTapSeek: StateFlow<Int> = _videoDoubleTapSeek.asStateFlow()
@@ -577,6 +585,12 @@ class SettingsViewModel(
         }
         viewModelScope.launch {
             preferencesManager.videoLongPressSpeedFlow.collect { _videoLongPressSpeed.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.videoLongPressRewindFlow.collect { _videoLongPressRewind.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.novelPreloadChaptersFlow.collect { _novelPreloadChapters.value = it }
         }
         viewModelScope.launch {
             preferencesManager.videoDoubleTapSeekFlow.collect { _videoDoubleTapSeek.value = it }
@@ -648,6 +662,16 @@ class SettingsViewModel(
 
     fun setVideoLongPressSpeed(value: Int) {
         viewModelScope.launch { preferencesManager.setVideoLongPressSpeed(value) }
+    }
+
+    /** 长按左侧快退开关（v1.8.3.0） */
+    fun setVideoLongPressRewind(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setVideoLongPressRewind(value) }
+    }
+
+    /** 小说预加载章数（v1.8.3.0，0=关） */
+    fun setNovelPreloadChapters(value: Int) {
+        viewModelScope.launch { preferencesManager.setNovelPreloadChapters(value) }
     }
 
     fun setVideoDoubleTapSeek(value: Int) {

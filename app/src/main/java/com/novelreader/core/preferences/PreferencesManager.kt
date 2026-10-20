@@ -170,6 +170,8 @@ class PreferencesManager(private val context: Context) {
         val KEY_VIDEO_VERTICAL_SWIPE_SWITCH = booleanPreferencesKey("video_vertical_swipe_switch")
         /** 小窗播放（PIP）开关（v1.5.1.0，默认关闭；关闭时切后台不进入画中画） */
         val KEY_VIDEO_PIP_ENABLED = booleanPreferencesKey("video_pip_enabled")
+        /** 长按左侧快退开关（v1.8.3.0，默认开启；关闭后左右长按都变成快进） */
+        val KEY_VIDEO_LONG_PRESS_REWIND = booleanPreferencesKey("video_long_press_rewind")
         /**
          * 视频预加载集数（向后预取接下来 N 集的播放地址，1~6，默认 3；v1.6.0.0）。
          * 当前集起播后会自动预取后续 N 集，连播 / 点切下集秒起。
@@ -266,6 +268,8 @@ class PreferencesManager(private val context: Context) {
         const val DEFAULT_VIDEO_VERTICAL_SWIPE_SWITCH = true
         /** 默认关闭小窗播放（PIP） */
         const val DEFAULT_VIDEO_PIP_ENABLED = false
+        /** 默认开启「长按左侧快退」（v1.8.3.0） */
+        const val DEFAULT_VIDEO_LONG_PRESS_REWIND = true
         /** 默认视频 Tab 频道栏目：0=首页 */
         const val DEFAULT_VIDEO_CHANNEL_INDEX = 0
         /** 搜索历史分隔符（历史记录用单个字符串存储，分隔符分隔） */
@@ -640,6 +644,14 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setVideoLongPressSpeed(value: Int) {
         context.dataStore.edit { it[KEY_VIDEO_LONG_PRESS_SPEED] = value.coerceIn(10, 50) }
+    }
+
+    /** 长按左侧快退开关（v1.8.3.0，默认开启） */
+    val videoLongPressRewindFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_VIDEO_LONG_PRESS_REWIND] ?: DEFAULT_VIDEO_LONG_PRESS_REWIND }
+
+    suspend fun setVideoLongPressRewind(value: Boolean) {
+        context.dataStore.edit { it[KEY_VIDEO_LONG_PRESS_REWIND] = value }
     }
 
     /** 双击快进步长（秒） */

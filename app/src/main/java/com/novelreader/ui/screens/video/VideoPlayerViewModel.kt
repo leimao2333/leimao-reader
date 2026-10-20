@@ -86,6 +86,8 @@ data class VideoPrefs(
     val pipEnabled: Boolean = false,
     /** 预加载集数（向后预取接下来 N 集，默认 3；v1.6.0.0） */
     val prefetchAhead: Int = 3,
+    /** 长按左侧是否快退（v1.8.3.0，默认开启；关闭后左右长按都变成快进） */
+    val longPressRewind: Boolean = true,
     /** 是否已完成首次读取（UI 依据此判断能否应用"默认全屏"） */
     val loaded: Boolean = false,
 )
@@ -264,6 +266,7 @@ class VideoPlayerViewModel(
                 verticalSwipeSwitch = preferencesManager.videoVerticalSwipeSwitchFlow.first(),
                 pipEnabled = preferencesManager.videoPipEnabledFlow.first(),
                 prefetchAhead = preferencesManager.videoPrefetchAheadFlow.first(),
+                longPressRewind = preferencesManager.videoLongPressRewindFlow.first(),
                 loaded = true,
             )
             _prefs.value = loaded
@@ -305,6 +308,11 @@ class VideoPlayerViewModel(
             launch {
                 preferencesManager.videoPrefetchAheadFlow.collect { v ->
                     _prefs.update { it.copy(prefetchAhead = v) }
+                }
+            }
+            launch {
+                preferencesManager.videoLongPressRewindFlow.collect { v ->
+                    _prefs.update { it.copy(longPressRewind = v) }
                 }
             }
             launch {
@@ -943,6 +951,13 @@ class VideoPlayerViewModel(
      */
     fun beginSpeedBoost(direction: Int) {
         val player = player ?: return
+        // v1.8.3.0：「长按左侧快退」关闭时，左半屏也按快进处理
+        if (direction < 0 && !_prefs.value.longPressRewind) {
+            val s = _prefs.value.longPressSpeed
+            player.setPlaybackSpeed(s)
+            _state.update { it.copy(boostSpeed = s, boostDirection = 1) }
+            return
+        }
         if (direction < 0) {
             boostJob?.cancel()
             boostJob = viewModelScope.launch {

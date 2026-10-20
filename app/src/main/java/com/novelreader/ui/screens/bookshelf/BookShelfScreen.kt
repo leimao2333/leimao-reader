@@ -51,6 +51,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -200,10 +201,13 @@ fun BookShelfScreen(
                         }
                     },
                     actions = {
-                        IconButton(onClick = {
-                            txtPicker.launch(arrayOf("text/plain", "text/*", "application/octet-stream"))
-                        }) {
-                            Icon(Icons.Filled.LibraryAdd, contentDescription = "导入本地 TXT")
+                        TextButton(
+                            onClick = {
+                                txtPicker.launch(arrayOf("text/plain", "text/*", "application/octet-stream"))
+                            },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                        ) {
+                            Text("加载本地资源", style = MaterialTheme.typography.labelMedium)
                         }
                         Box {
                             IconButton(onClick = { layoutMenuOpen = true }) {

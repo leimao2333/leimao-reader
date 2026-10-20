@@ -92,6 +92,8 @@ fun SettingsScreen(
     val searchConcurrency by viewModel.searchConcurrency.collectAsState()
     val videoFullscreenDefault by viewModel.videoFullscreenDefault.collectAsState()
     val videoLongPressSpeed by viewModel.videoLongPressSpeed.collectAsState()
+    val videoLongPressRewind by viewModel.videoLongPressRewind.collectAsState()
+    val novelPreloadChapters by viewModel.novelPreloadChapters.collectAsState()
     val videoDoubleTapSeek by viewModel.videoDoubleTapSeek.collectAsState()
     val videoAutoNext by viewModel.videoAutoNext.collectAsState()
     val videoVerticalSwipeSwitch by viewModel.videoVerticalSwipeSwitch.collectAsState()
@@ -177,6 +179,25 @@ fun SettingsScreen(
                     )
                 }
             }
+
+            // 预加载章数（v1.8.3.0）：0=关闭，避免流量/内存紧张时仍强制预取
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = if (novelPreloadChapters == 0) "预加载章节：关闭"
+                else "预加载章节：$novelPreloadChapters 章",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = "阅读时向后预取接下来 N 章，越大翻章越顺但更耗流量；设为 0 可完全关闭",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Slider(
+                value = novelPreloadChapters.toFloat(),
+                onValueChange = { viewModel.setNovelPreloadChapters(it.toInt()) },
+                valueRange = 0f..5f,
+                steps = 4,
+            )
 
             Spacer(Modifier.height(24.dp))
 
@@ -286,7 +307,8 @@ fun SettingsScreen(
             }
             SettingRow(
                 title = "长按倍速",
-                subtitle = "长按右半屏以该倍速快进，左半屏连续快退（松手恢复）",
+                subtitle = if (videoLongPressRewind) "长按右半屏以该倍速快进，左半屏连续快退（松手恢复）"
+                else "长按左右半屏均以该倍速快进（长按快退已关闭）",
             ) {
                 Row {
                     listOf(15 to "1.5x", 20 to "2.0x", 30 to "3.0x").forEach { (value, label) ->
@@ -298,6 +320,15 @@ fun SettingsScreen(
                         Spacer(Modifier.width(8.dp))
                     }
                 }
+            }
+            SettingRow(
+                title = "长按左侧快退",
+                subtitle = "关闭后长按左半屏也变成快进，左右两侧行为一致（不影响双击快退）",
+            ) {
+                Switch(
+                    checked = videoLongPressRewind,
+                    onCheckedChange = { viewModel.setVideoLongPressRewind(it) },
+                )
             }
             SettingRow(
                 title = "双击快进步长",

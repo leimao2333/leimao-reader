@@ -34,6 +34,13 @@ interface ChapterCacheRepository {
     /** 删除某本书全部缓存 */
     suspend fun removeBook(sourceId: String, itemId: String)
 
+    /**
+     * 批量删除多本书的全部缓存（v1.8.3.0 待办 #5：批量删书 / 批量清缓存）。
+     *
+     * 走单条批量 SQL，避免循环单条。
+     */
+    suspend fun removeBooks(items: List<MediaItem>)
+
     /** 清空全部缓存 */
     suspend fun clearAll()
 

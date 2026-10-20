@@ -33,6 +33,10 @@ import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Source
 import androidx.compose.material3.AlertDialog
@@ -154,6 +158,13 @@ fun HomeScreen(
     val groupNames by viewModel.groupNames.collectAsState()
     val selectedGroup by viewModel.selectedGroup.collectAsState()
     var assignTarget by remember { mutableStateOf<MediaItem?>(null) }
+    // 删除书籍二次确认（v1.8.3.0 待办 #4）：单本与批量共用一个确认框
+    var deleteTargets by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    // 书架多选管理（v1.8.3.0 待办 #5）
+    var shelfSelecting by remember { mutableStateOf(false) }
+    var shelfSelected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // 批量移动到分组的目标条目
+    var shelfMoveTargets by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var manageGroup by remember { mutableStateOf<String?>(null) }
     var newGroupForItem by remember { mutableStateOf<MediaItem?>(null) }
     var coverEditForItem by remember { mutableStateOf<MediaItem?>(null) }
@@ -199,6 +210,12 @@ fun HomeScreen(
         0 -> SourceType.NOVEL
         1 -> SourceType.COMIC
         else -> SourceType.VIDEO
+    }
+
+    // 分组按类型隔离（v1.8.3.0 待办 #6）：切 tab 时同步给 ViewModel，
+    // 小说建的分组不再出现在漫画书架的分组 chip 里
+    androidx.compose.runtime.LaunchedEffect(currentType) {
+        viewModel.setShelfType(currentType)
     }
 
     // 影视 Tab 首次进入 / 每次切回时刷新源列表并按需加载首屏
@@ -418,9 +435,29 @@ fun HomeScreen(
                         onSelectGroup = { viewModel.selectGroup(it) },
                         onManageGroup = { manageGroup = it },
                         onAssignGroup = { assignTarget = it },
+                        // ===== 多选批量管理（v1.8.3.0 待办 #5） =====
+                        selecting = shelfSelecting,
+                        selectedKeys = shelfSelected,
+                        onToggleSelectMode = {
+                            shelfSelecting = !shelfSelecting
+                            shelfSelected = emptySet()
+                        },
+                        onSelectAll = { list -> shelfSelected = list.map { it.itemKey() }.toSet() },
+                        onInvertSelection = { list ->
+                            val all = list.map { it.itemKey() }.toSet()
+                            shelfSelected = all - shelfSelected
+                        },
+                        onDeleteSelected = { list -> deleteTargets = list },
+                        onMoveGroupSelected = { list -> shelfMoveTargets = list },
                         onItemClick = { item ->
-                            viewModel.continueReading(item) { chapters, target ->
-                                onContinueReading(item, chapters, target)
+                            if (shelfSelecting) {
+                                val k = item.itemKey()
+                                shelfSelected =
+                                    if (k in shelfSelected) shelfSelected - k else shelfSelected + k
+                            } else {
+                                viewModel.continueReading(item) { chapters, target ->
+                                    onContinueReading(item, chapters, target)
+                                }
                             }
                         },
                     )
@@ -465,6 +502,17 @@ fun HomeScreen(
                         title = { Text("移动到分组") },
                         text = {
                             Column {
+                                // 删除放首位（v1.8.3.0 待办 #4：长按删除恢复）
+                                TextButton(onClick = {
+                                    deleteTargets = listOf(item)
+                                    assignTarget = null
+                                }) {
+                                    Text(
+                                        text = "删除书籍（含缓存与进度）",
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
+                                }
+                                HorizontalDivider()
                                 if (groupNames.isEmpty()) {
                                     Text(
                                         text = "还没有分组，先新建一个吧",
@@ -497,6 +545,86 @@ fun HomeScreen(
                         confirmButton = {},
                         dismissButton = {
                             TextButton(onClick = { assignTarget = null }) { Text("取消") }
+                        },
+                    )
+                }
+
+                // 删除书籍确认（v1.8.3.0 待办 #4：二次确认 + 说明会清缓存与进度）
+                if (deleteTargets.isNotEmpty()) {
+                    val single = deleteTargets.size == 1
+                    AlertDialog(
+                        onDismissRequest = { deleteTargets = emptyList() },
+                        title = {
+                            Text(
+                                if (single) "删除「${deleteTargets.first().title}」？"
+                                else "删除 ${deleteTargets.size} 本书？",
+                            )
+                        },
+                        text = {
+                            Text(
+                                "删除会同时清除这些书的章节缓存与阅读进度，操作不可恢复。" +
+                                    "\n（书源里仍然存在，可重新搜索收藏）",
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                deleteTargets.forEach { viewModel.remove(it) }
+                                deleteTargets = emptyList()
+                                shelfSelecting = false
+                                shelfSelected = emptySet()
+                            }) {
+                                Text("删除", color = MaterialTheme.colorScheme.error)
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { deleteTargets = emptyList() }) { Text("取消") }
+                        },
+                    )
+                }
+
+                // 批量移动到分组（v1.8.3.0 待办 #5）
+                if (shelfMoveTargets.isNotEmpty()) {
+                    var batchGroup by remember { mutableStateOf("") }
+                    AlertDialog(
+                        onDismissRequest = { shelfMoveTargets = emptyList() },
+                        title = { Text("移动 ${shelfMoveTargets.size} 本到分组") },
+                        text = {
+                            Column {
+                                groupNames.forEach { g ->
+                                    TextButton(onClick = {
+                                        viewModel.setGroupBatch(shelfMoveTargets, g)
+                                        shelfMoveTargets = emptyList()
+                                        shelfSelecting = false
+                                        shelfSelected = emptySet()
+                                    }) { Text(g) }
+                                }
+                                TextButton(onClick = {
+                                    viewModel.setGroupBatch(shelfMoveTargets, "")
+                                    shelfMoveTargets = emptyList()
+                                    shelfSelecting = false
+                                    shelfSelected = emptySet()
+                                }) { Text("移出分组") }
+                                OutlinedTextField(
+                                    value = batchGroup,
+                                    onValueChange = { batchGroup = it },
+                                    label = { Text("新建分组") },
+                                    singleLine = true,
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(
+                                enabled = batchGroup.isNotBlank(),
+                                onClick = {
+                                    viewModel.setGroupBatch(shelfMoveTargets, batchGroup.trim())
+                                    shelfMoveTargets = emptyList()
+                                    shelfSelecting = false
+                                    shelfSelected = emptySet()
+                                },
+                            ) { Text("新建并移入") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { shelfMoveTargets = emptyList() }) { Text("取消") }
                         },
                     )
                 }
@@ -625,6 +753,14 @@ private fun BookshelfContent(
     onSelectGroup: (String?) -> Unit = {},
     onManageGroup: (String) -> Unit = {},
     onAssignGroup: (MediaItem) -> Unit = {},
+    /** 多选模式（v1.8.3.0 待办 #5） */
+    selecting: Boolean = false,
+    selectedKeys: Set<String> = emptySet(),
+    onToggleSelectMode: () -> Unit = {},
+    onSelectAll: (List<MediaItem>) -> Unit = {},
+    onInvertSelection: (List<MediaItem>) -> Unit = {},
+    onDeleteSelected: (List<MediaItem>) -> Unit = {},
+    onMoveGroupSelected: (List<MediaItem>) -> Unit = {},
     onItemClick: (MediaItem) -> Unit,
 ) {
     // 按当前 tab 类型过滤
@@ -648,19 +784,52 @@ private fun BookshelfContent(
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f),
             )
-            IconButton(onClick = onImportLocalBook) {
-                Icon(
-                    imageVector = Icons.Filled.LibraryAdd,
-                    contentDescription = "导入本地 TXT",
-                    tint = MaterialTheme.colorScheme.primary,
+            if (selecting) {
+                // 多选态：已选计数 + 全选 + 退出（v1.8.3.0 待办 #5）
+                Text(
+                    text = "已选 ${selectedKeys.size}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
                 )
-            }
-            IconButton(onClick = onToggleGridMode) {
-                Icon(
-                    imageVector = if (gridMode == 0) Icons.AutoMirrored.Filled.ViewList else Icons.Filled.GridView,
-                    contentDescription = if (gridMode == 0) "切换为列表" else "切换为封面墙",
-                    tint = MaterialTheme.colorScheme.primary,
-                )
+                IconButton(onClick = { onSelectAll(filtered) }) {
+                    Icon(
+                        imageVector = Icons.Filled.SelectAll,
+                        contentDescription = "全选",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                IconButton(onClick = { onInvertSelection(filtered) }) {
+                    Icon(
+                        imageVector = Icons.Filled.SwapHoriz,
+                        contentDescription = "反选",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                IconButton(onClick = onToggleSelectMode) {
+                    Icon(Icons.Filled.Close, contentDescription = "退出多选")
+                }
+            } else {
+                // 中文文字按钮，避免加号被误解成「添加源 / 新建分组」（#3）
+                TextButton(
+                    onClick = onImportLocalBook,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                ) {
+                    Text("加载本地资源", style = MaterialTheme.typography.labelMedium)
+                }
+                IconButton(onClick = onToggleSelectMode) {
+                    Icon(
+                        imageVector = Icons.Filled.SelectAll,
+                        contentDescription = "多选管理",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                IconButton(onClick = onToggleGridMode) {
+                    Icon(
+                        imageVector = if (gridMode == 0) Icons.AutoMirrored.Filled.ViewList else Icons.Filled.GridView,
+                        contentDescription = if (gridMode == 0) "切换为列表" else "切换为封面墙",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
         }
 
@@ -685,52 +854,90 @@ private fun BookshelfContent(
             }
         }
 
-        if (filtered.isEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = if (selectedGroup != null && typeFiltered.isNotEmpty()) "该分组下暂无内容\n长按封面可移动到分组"
-                    else "书架空空如也\n去搜索并收藏喜欢的内容吧",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        } else if (gridMode == 0) {
-            // 封面墙网格（复用书架组件）
-            BookGrid(
-                books = filtered,
-                columns = 3,
-                progressMap = progressMap,
-                lastChapterMap = lastChapterMap,
-                chapterCountMap = chapterCountMap,
-                selecting = false,
-                selectedKeys = emptySet(),
-                onClick = onItemClick,
-                onLongClick = onAssignGroup,
-            )
-        } else {
-            // 列表形式（复用书架网格 cell 的封面+信息，简化）
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                items(filtered, key = { it.itemKey() }) { item ->
-                    com.novelreader.ui.screens.bookshelf.BookGridCell(
-                        item = item,
-                        progress = progressMap[item.itemKey()],
-                        lastChapter = lastChapterMap[item.itemKey()],
-                        chapterCount = chapterCountMap[item.itemKey()],
-                        selected = false,
-                        selecting = false,
-                        onClick = { onItemClick(item) },
-                        onLongClick = { onAssignGroup(item) },
+        Box(modifier = Modifier.weight(1f)) {
+            if (filtered.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = if (selectedGroup != null && typeFiltered.isNotEmpty()) "该分组下暂无内容\n长按封面可移动到分组"
+                        else "书架空空如也\n去搜索并收藏喜欢的内容吧",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            } else if (gridMode == 0) {
+                // 封面墙网格（复用书架组件）
+                BookGrid(
+                    books = filtered,
+                    columns = 3,
+                    progressMap = progressMap,
+                    lastChapterMap = lastChapterMap,
+                    chapterCountMap = chapterCountMap,
+                    selecting = selecting,
+                    selectedKeys = selectedKeys,
+                    onClick = onItemClick,
+                    onLongClick = { item ->
+                        if (selecting) onItemClick(item) else onAssignGroup(item)
+                    },
+                )
+            } else {
+                // 列表形式（复用书架网格 cell 的封面+信息，简化）
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(3),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    items(filtered, key = { it.itemKey() }) { item ->
+                        com.novelreader.ui.screens.bookshelf.BookGridCell(
+                            item = item,
+                            progress = progressMap[item.itemKey()],
+                            lastChapter = lastChapterMap[item.itemKey()],
+                            chapterCount = chapterCountMap[item.itemKey()],
+                            selected = item.itemKey() in selectedKeys,
+                            selecting = selecting,
+                            onClick = { onItemClick(item) },
+                            onLongClick = {
+                                if (selecting) onItemClick(item) else onAssignGroup(item)
+                            },
+                        )
+                    }
+                }
+            }
+        }
+
+        // 多选批量操作浮条（v1.8.3.0 待办 #5）
+        if (selecting) {
+            val targets = filtered.filter { it.itemKey() in selectedKeys }
+            androidx.compose.material3.Surface(tonalElevation = 3.dp) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "已选 ${selectedKeys.size} 本",
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        enabled = targets.isNotEmpty(),
+                        onClick = { onMoveGroupSelected(targets) },
+                    ) { Text("分组") }
+                    TextButton(
+                        enabled = targets.isNotEmpty(),
+                        onClick = { onDeleteSelected(targets) },
+                    ) {
+                        Text(
+                            text = "删除",
+                            color = if (targets.isNotEmpty()) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }                }
             }
         }
     }

@@ -23,22 +23,36 @@ interface BookRepository {
     /** 从书架移除 */
     suspend fun removeFromBookshelf(item: MediaItem)
 
+    /**
+     * 批量从书架移除（v1.8.3.0 待办 #5）。
+     *
+     * 走单条批量 SQL，不要循环调 [removeFromBookshelf]：删 100 本会开 100 次事务。
+     */
+    suspend fun removeFromBookshelfBatch(items: List<MediaItem>)
+
     // ===== 分组管理（v1.3.0.0） =====
 
     /** 设置条目分组（空串 = 移出分组） */
     suspend fun setBookGroup(item: MediaItem, group: String)
 
-    /** 所有已用分组名 */
-    fun observeGroupNames(): Flow<List<String>>
+    /** 批量设置分组（空串 = 移出分组；v1.8.3.0 待办 #5） */
+    suspend fun setBookGroupBatch(items: List<MediaItem>, group: String)
+
+    /**
+     * 某类型下所有已用分组名。
+     *
+     * v1.8.3.0 待办 #6：小说与漫画分组完全分开，按内容类型过滤。
+     */
+    fun observeGroupNames(type: com.novelreader.domain.model.SourceType): Flow<List<String>>
 
     /** 更换书架条目封面（v1.2.3.0 长按书更换封面） */
     suspend fun updateBookCover(item: MediaItem, coverUrl: String)
 
-    /** 重命名分组 */
-    suspend fun renameGroup(oldName: String, newName: String)
+    /** 重命名某类型下的分组 */
+    suspend fun renameGroup(type: com.novelreader.domain.model.SourceType, oldName: String, newName: String)
 
-    /** 删除分组（组内条目变为未分组） */
-    suspend fun deleteGroup(name: String)
+    /** 删除某类型下的分组（组内条目变为未分组） */
+    suspend fun deleteGroup(type: com.novelreader.domain.model.SourceType, name: String)
 }
 
 /**

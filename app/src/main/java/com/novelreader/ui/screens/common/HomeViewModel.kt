@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -59,6 +60,8 @@ class HomeViewModel(
      * 测试传 TestDispatcher 即可保持确定性。
      */
     private val cacheDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
+    /** 书架条目清除器（v1.8.3.0 待办 #4：删书同时清章节缓存与阅读进度） */
+    private val shelfPurger: com.novelreader.core.bookshelf.ShelfPurger? = null,
 ) : ViewModel() {
 
     /**
@@ -125,6 +128,13 @@ class HomeViewModel(
     private val _groupNames = MutableStateFlow<List<String>>(emptyList())
     val groupNames: StateFlow<List<String>> = _groupNames.asStateFlow()
 
+    /**
+     * 当前书架所属类型（v1.8.3.0 待办 #6）。
+     *
+     * 分组名按它过滤：小说建的分组不会出现在漫画 / 视频书架里。
+     */
+    private val _shelfType = MutableStateFlow(SourceType.NOVEL)
+
     /** 当前选中的分组筛选（null = 全部；"" = 未分组） */
     private val _selectedGroup = MutableStateFlow<String?>(null)
     val selectedGroup: StateFlow<String?> = _selectedGroup.asStateFlow()
@@ -144,8 +154,17 @@ class HomeViewModel(
 
     private fun observeGroups() {
         viewModelScope.launch {
-            bookRepository.observeGroupNames().collectLatest { _groupNames.value = it }
+            _shelfType
+                .flatMapLatest { type -> bookRepository.observeGroupNames(type) }
+                .collectLatest { _groupNames.value = it }
         }
+    }
+
+    /** 切换书架类型（tab 切换），分组名随之切换（v1.8.3.0 待办 #6） */
+    fun setShelfType(type: SourceType) {
+        if (_shelfType.value == type) return
+        _shelfType.value = type
+        _selectedGroup.value = null // 旧分组属于上一个类型，切 tab 时回到「全部」
     }
 
     /** 切换分组筛选（null = 全部，"" = 未分组） */
@@ -158,11 +177,17 @@ class HomeViewModel(
         viewModelScope.launch { bookRepository.setBookGroup(item, group) }
     }
 
+    /** 批量移动到分组（空串 = 移出分组；v1.8.3.0 待办 #5，走批量 SQL） */
+    fun setGroupBatch(items: List<MediaItem>, group: String) {
+        if (items.isEmpty()) return
+        viewModelScope.launch { bookRepository.setBookGroupBatch(items, group) }
+    }
+
     /** 重命名分组 */
     fun renameGroup(oldName: String, newName: String) {
         if (newName.isBlank() || oldName == newName) return
         viewModelScope.launch {
-            bookRepository.renameGroup(oldName, newName.trim())
+            bookRepository.renameGroup(_shelfType.value, oldName, newName.trim())
             if (_selectedGroup.value == oldName) _selectedGroup.value = newName.trim()
         }
     }
@@ -170,7 +195,7 @@ class HomeViewModel(
     /** 删除分组（组内条目变为未分组） */
     fun deleteGroup(name: String) {
         viewModelScope.launch {
-            bookRepository.deleteGroup(name)
+            bookRepository.deleteGroup(_shelfType.value, name)
             if (_selectedGroup.value == name) _selectedGroup.value = null
         }
     }
@@ -216,7 +241,12 @@ class HomeViewModel(
 
     /** 移除收藏 */
     fun remove(item: MediaItem) {
-        viewModelScope.launch { bookRepository.removeFromBookshelf(item) }
+        viewModelScope.launch {
+            // v1.8.3.0 待办 #4：删书同时清章节缓存与阅读进度
+            val purger = shelfPurger
+            if (purger != null) purger.purge(listOf(item))
+            else bookRepository.removeFromBookshelf(item)
+        }
     }
 
     /**

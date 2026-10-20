@@ -56,6 +56,14 @@ class BookRepositoryImpl(
         bookDao.delete(item.sourceId, item.id)
     }
 
+    override suspend fun removeFromBookshelfBatch(items: List<MediaItem>) {
+        if (items.isEmpty()) return
+        // Room 的 IN 列表有变量上限（SQLite 999），按 500 分块更稳
+        items.map { "${it.sourceId}:${it.id}" }.chunked(500).forEach { keys ->
+            if (keys.isNotEmpty()) bookDao.deleteByKeys(keys)
+        }
+    }
+
     override suspend fun updateBookCover(item: MediaItem, coverUrl: String) {
         bookDao.updateCover(item.sourceId, item.id, coverUrl)
     }
@@ -66,14 +74,23 @@ class BookRepositoryImpl(
         bookDao.setGroup(item.sourceId, item.id, group.trim())
     }
 
-    override fun observeGroupNames(): Flow<List<String>> = bookDao.observeGroupNames()
-
-    override suspend fun renameGroup(oldName: String, newName: String) {
-        bookDao.renameGroup(oldName.trim(), newName.trim())
+    override suspend fun setBookGroupBatch(items: List<MediaItem>, group: String) {
+        if (items.isEmpty()) return
+        val g = group.trim()
+        items.map { "${it.sourceId}:${it.id}" }.chunked(500).forEach { keys ->
+            if (keys.isNotEmpty()) bookDao.setGroupByKeys(keys, g)
+        }
     }
 
-    override suspend fun deleteGroup(name: String) {
-        bookDao.clearGroup(name.trim())
+    override fun observeGroupNames(type: SourceType): Flow<List<String>> =
+        bookDao.observeGroupNames(type.name.lowercase())
+
+    override suspend fun renameGroup(type: SourceType, oldName: String, newName: String) {
+        bookDao.renameGroup(type.name.lowercase(), oldName.trim(), newName.trim())
+    }
+
+    override suspend fun deleteGroup(type: SourceType, name: String) {
+        bookDao.clearGroup(type.name.lowercase(), name.trim())
     }
 }
 

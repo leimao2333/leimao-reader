@@ -355,9 +355,11 @@ private class CacheTestBookRepository : BookRepository {
     override suspend fun isCollected(item: MediaItem): Boolean = false
     override suspend fun addToBookshelf(item: MediaItem) = Unit
     override suspend fun removeFromBookshelf(item: MediaItem) = Unit
+    override suspend fun removeFromBookshelfBatch(items: List<MediaItem>) = Unit
     override suspend fun setBookGroup(item: MediaItem, group: String) = Unit
-    override fun observeGroupNames(): Flow<List<String>> = flowOf(emptyList())
+    override suspend fun setBookGroupBatch(items: List<MediaItem>, group: String) = Unit
+    override fun observeGroupNames(type: SourceType): Flow<List<String>> = flowOf(emptyList())
     override suspend fun updateBookCover(item: MediaItem, coverUrl: String) = Unit
-    override suspend fun renameGroup(oldName: String, newName: String) = Unit
-    override suspend fun deleteGroup(name: String) = Unit
+    override suspend fun renameGroup(type: SourceType, oldName: String, newName: String) = Unit
+    override suspend fun deleteGroup(type: SourceType, name: String) = Unit
 }

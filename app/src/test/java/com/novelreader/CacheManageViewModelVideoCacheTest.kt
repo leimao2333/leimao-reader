@@ -136,6 +136,7 @@ class CacheManageViewModelVideoCacheTest {
 
         override suspend fun removeChapter(sourceId: String, itemId: String, chapterIndex: Int) = Unit
         override suspend fun removeBook(sourceId: String, itemId: String) = Unit
+        override suspend fun removeBooks(items: List<com.novelreader.domain.model.MediaItem>) = Unit
         override suspend fun clearAll() = Unit
         override suspend fun totalSize(): Long = 0L
         override suspend fun totalCount(): Int = 0

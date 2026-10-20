@@ -168,6 +168,20 @@ class AppContainer(context: Context) {
         DownloadManager(appContext)
     }
 
+    /**
+     * 书架条目清除器（v1.8.3.0 待办 #4/#5）。
+     *
+     * 删书时统一清书架行 + 章节缓存 + 阅读进度 + 漫画图片缓存，避免各处重复实现。
+     */
+    val shelfPurger: com.novelreader.core.bookshelf.ShelfPurger by lazy {
+        com.novelreader.core.bookshelf.ShelfPurger(
+            bookRepository,
+            chapterCacheRepository,
+            progressRepository,
+            downloadManager,
+        )
+    }
+
     /** 本地 TXT 书库（v1.2.0.0 对标 legado 本地书） */
     val localBookStore: com.novelreader.core.local.LocalBookStore by lazy {
         com.novelreader.core.local.LocalBookStore(appContext)

@@ -81,6 +81,7 @@ fun AppNavHost(
                         it.sourceRepository,
                         it.preferencesManager,
                         it.videoHomeCache,
+                        shelfPurger = it.shelfPurger,
                     )
                 }
             )
@@ -178,6 +179,7 @@ fun AppNavHost(
                         it.contentRepository,
                         it.preferencesManager,
                         it.localBookStore,
+                        it.shelfPurger,
                     )
                 }
             )

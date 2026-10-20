@@ -35,7 +35,9 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -62,6 +64,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -109,6 +112,7 @@ fun BookShelfScreen(
     // 本地 TXT 导入提示
     val importMessage by viewModel.importMessage.collectAsState()
     val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
 
     LaunchedEffect(importMessage) {
         importMessage?.let {
@@ -136,6 +140,17 @@ fun BookShelfScreen(
     // 多选
     var selecting by remember { mutableStateOf(false) }
     var selectedKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // v1.8.3.0 待办 #4/#5：删除二次确认、批量移动分组、全选菜单
+    var pendingDelete by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var moveGroupOpen by remember { mutableStateOf(false) }
+    var selectMenuOpen by remember { mutableStateOf(false) }
+    val groupNames by viewModel.groupNames.collectAsState()
+
+    // 分组 tab 变化 → 同步到 ViewModel（分组名按类型过滤，#6），并清空多选
+    LaunchedEffect(groupTab) {
+        viewModel.setGroupTab(groupTab)
+        selectedKeys = emptySet()
+    }
 
     // 列表加载后补齐最新章节/章节总数（每项一次）
     androidx.compose.runtime.LaunchedEffect(books) {
@@ -180,12 +195,43 @@ fun BookShelfScreen(
                         }
                     },
                     actions = {
+                        // 全选 / 反选 / 清空（v1.8.3.0 待办 #5）
+                        Box {
+                            IconButton(onClick = { selectMenuOpen = true }) {
+                                Icon(Icons.Filled.SelectAll, contentDescription = "选择")
+                            }
+                            DropdownMenu(
+                                expanded = selectMenuOpen,
+                                onDismissRequest = { selectMenuOpen = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("全选（${filtered.size} 项）") },
+                                    onClick = {
+                                        selectedKeys = filtered.map { it.itemKey() }.toSet()
+                                        selectMenuOpen = false
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("反选") },
+                                    onClick = {
+                                        val all = filtered.map { it.itemKey() }.toSet()
+                                        selectedKeys = all - selectedKeys
+                                        selectMenuOpen = false
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("清空选择") },
+                                    onClick = {
+                                        selectedKeys = emptySet()
+                                        selectMenuOpen = false
+                                    },
+                                )
+                            }
+                        }
                         IconButton(
                             onClick = {
-                                val targets = filtered.filter { it.itemKey() in selectedKeys }
-                                viewModel.removeBatch(targets)
-                                selecting = false
-                                selectedKeys = emptySet()
+                                // 删除前二次确认（#4）：确认框里说明会一并清缓存与进度
+                                pendingDelete = filtered.filter { it.itemKey() in selectedKeys }
                             },
                         ) {
                             Icon(Icons.Filled.Delete, contentDescription = "移除所选")
@@ -289,13 +335,56 @@ fun BookShelfScreen(
                 )
             }
         },
+        bottomBar = {
+            // 批量操作浮条（v1.8.3.0 待办 #5）：已选计数 + 删除 / 分组 / 清缓存
+            if (selecting) {
+                androidx.compose.material3.Surface(tonalElevation = 3.dp) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            text = "已选 ${selectedKeys.size} 本",
+                            style = MaterialTheme.typography.labelLarge,
+                            modifier = Modifier.weight(1f),
+                        )
+                        val targets = filtered.filter { it.itemKey() in selectedKeys }
+                        TextButton(
+                            enabled = targets.isNotEmpty(),
+                            onClick = { moveGroupOpen = true },
+                        ) { Text("分组") }
+                        TextButton(
+                            enabled = targets.isNotEmpty(),
+                            onClick = {
+                                viewModel.clearCacheBatch(targets)
+                                scope.launch {
+                                    snackbarHostState.showSnackbar("已清除 ${targets.size} 本的章节缓存")
+                                }
+                            },
+                        ) { Text("清缓存") }
+                        TextButton(
+                            enabled = targets.isNotEmpty(),
+                            onClick = { pendingDelete = targets },
+                        ) {
+                            Text(
+                                text = "删除",
+                                color = if (targets.isNotEmpty()) MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        },
     ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
-        ) {
-            // 分组 tab（小说/漫画/视频）
+        ) {            // 分组 tab（小说/漫画/视频）
             TabRow(selectedTabIndex = groupTab) {
                 listOf("全部", "小说", "漫画", "视频").forEachIndexed { index, label ->
                     Tab(
@@ -376,7 +465,7 @@ fun BookShelfScreen(
                         selecting = true
                         selectedKeys = toggleKey(selectedKeys, item.itemKey())
                     },
-                    onRemove = { viewModel.remove(it) }
+                    onRemove = { item -> pendingDelete = listOf(item) }
                 )
                 else -> BookGrid(
                     books = filtered,
@@ -402,6 +491,89 @@ fun BookShelfScreen(
                 )
             }
         }
+    }
+
+    // ===== 删除二次确认（v1.8.3.0 待办 #4） =====
+    if (pendingDelete.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { pendingDelete = emptyList() },
+            title = { Text("删除 ${pendingDelete.size} 本书？") },
+            text = {
+                Text(
+                    "删除会同时清除这些书的章节缓存与阅读进度，操作不可恢复。" +
+                        "\n（书籍本身在书源里仍然存在，可重新搜索收藏）",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.removeBatch(pendingDelete)
+                    pendingDelete = emptyList()
+                    selecting = false
+                    selectedKeys = emptySet()
+                    scope.launch {
+                        snackbarHostState.showSnackbar("已删除，缓存与进度已清理")
+                    }
+                }) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = emptyList() }) { Text("取消") }
+            },
+        )
+    }
+
+    // ===== 批量移动到分组（v1.8.3.0 待办 #5） =====
+    if (moveGroupOpen) {
+        val targets = filtered.filter { it.itemKey() in selectedKeys }
+        var newGroup by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { moveGroupOpen = false },
+            title = { Text("移动 ${targets.size} 本到分组") },
+            text = {
+                Column {
+                    if (groupNames.isEmpty()) {
+                        Text(
+                            text = "还没有分组，可在下方新建一个",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    groupNames.forEach { g ->
+                        TextButton(onClick = {
+                            viewModel.setGroupBatch(targets, g)
+                            moveGroupOpen = false
+                            selectedKeys = emptySet()
+                            scope.launch { snackbarHostState.showSnackbar("已移动到「$g」") }
+                        }) { Text(g) }
+                    }
+                    TextButton(onClick = {
+                        viewModel.setGroupBatch(targets, "")
+                        moveGroupOpen = false
+                        selectedKeys = emptySet()
+                    }) { Text("移出分组") }
+                    OutlinedTextField(
+                        value = newGroup,
+                        onValueChange = { newGroup = it },
+                        label = { Text("新建分组") },
+                        singleLine = true,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = newGroup.isNotBlank(),
+                    onClick = {
+                        viewModel.setGroupBatch(targets, newGroup.trim())
+                        moveGroupOpen = false
+                        selectedKeys = emptySet()
+                    },
+                ) { Text("新建并移入") }
+            },
+            dismissButton = {
+                TextButton(onClick = { moveGroupOpen = false }) { Text("取消") }
+            },
+        )
     }
 }
 

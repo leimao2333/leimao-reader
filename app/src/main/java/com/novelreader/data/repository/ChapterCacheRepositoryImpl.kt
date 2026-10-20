@@ -56,6 +56,13 @@ class ChapterCacheRepositoryImpl(
     override suspend fun removeBook(sourceId: String, itemId: String) =
         dao.deleteBook(sourceId, itemId)
 
+    override suspend fun removeBooks(items: List<MediaItem>) {
+        if (items.isEmpty()) return
+        items.map { "${it.sourceId}:${it.id}" }.chunked(500).forEach { keys ->
+            if (keys.isNotEmpty()) dao.deleteBooks(keys)
+        }
+    }
+
     override suspend fun clearAll() = dao.clearAll()
 
     override suspend fun totalSize(): Long = dao.totalSize()

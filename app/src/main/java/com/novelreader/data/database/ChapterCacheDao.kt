@@ -56,6 +56,14 @@ interface ChapterCacheDao {
     @Query("DELETE FROM chapter_cache WHERE sourceId = :sourceId AND itemId = :itemId")
     suspend fun deleteBook(sourceId: String, itemId: String)
 
+    /**
+     * 批量删除多本书的全部缓存（v1.8.3.0 待办 #5：批量删除书籍 / 批量清缓存）。
+     *
+     * 一次 SQL 用组合键清理，避免循环单条；[keys] 需非空。
+     */
+    @Query("DELETE FROM chapter_cache WHERE (sourceId || ':' || itemId) IN (:keys)")
+    suspend fun deleteBooks(keys: List<String>)
+
     /** 清空全部缓存 */
     @Query("DELETE FROM chapter_cache")
     suspend fun clearAll()

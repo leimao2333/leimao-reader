@@ -12,9 +12,13 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
@@ -29,6 +33,8 @@ class BookShelfViewModel(
     private val contentRepository: ContentRepository,
     private val preferencesManager: com.novelreader.core.preferences.PreferencesManager? = null,
     private val localBookStore: com.novelreader.core.local.LocalBookStore? = null,
+    /** 删书清理器（v1.8.3.0）：书架行 + 章节缓存 + 阅读进度 + 漫画图片缓存一起清 */
+    private val shelfPurger: com.novelreader.core.bookshelf.ShelfPurger? = null,
 ) : ViewModel() {
 
     /** 书架条目 */
@@ -54,6 +60,36 @@ class BookShelfViewModel(
     /** 封面墙 / 紧凑网格列数（2~6，持久化） */
     private val _columns = MutableStateFlow(3)
     val columns: StateFlow<Int> = _columns.asStateFlow()
+
+    // ===== 分组（v1.8.3.0 待办 #6：小说 / 漫画 / 视频分组完全分开） =====
+
+    /** 当前分组 tab 对应的类型（null = 全部，合并三类分组名去重） */
+    private val _groupType = MutableStateFlow<com.novelreader.domain.model.SourceType?>(null)
+
+    /** 当前可见分组名（供「批量移动到分组」选择） */
+    val groupNames: StateFlow<List<String>> = _groupType
+        .flatMapLatest { type ->
+            if (type == null) {
+                combine(
+                    bookRepository.observeGroupNames(com.novelreader.domain.model.SourceType.NOVEL),
+                    bookRepository.observeGroupNames(com.novelreader.domain.model.SourceType.COMIC),
+                    bookRepository.observeGroupNames(com.novelreader.domain.model.SourceType.VIDEO),
+                ) { a, b, c -> (a + b + c).distinct().sorted() }
+            } else {
+                bookRepository.observeGroupNames(type)
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** 切换分组 tab 时同步类型，让分组名列表跟随（0=全部 1=小说 2=漫画 3=视频） */
+    fun setGroupTab(tab: Int) {
+        _groupType.value = when (tab) {
+            1 -> com.novelreader.domain.model.SourceType.NOVEL
+            2 -> com.novelreader.domain.model.SourceType.COMIC
+            3 -> com.novelreader.domain.model.SourceType.VIDEO
+            else -> null
+        }
+    }
 
     init {
         observeBooks()
@@ -118,19 +154,43 @@ class BookShelfViewModel(
         }
     }
 
-    /** 移除收藏 */
+    /**
+     * 移除收藏（v1.8.3.0 待办 #4）。
+     *
+     * 删除书籍 = 同时清掉章节缓存、阅读进度与漫画图片缓存，
+     * 否则重新收藏后会读回旧进度 / 旧缓存。
+     */
     fun remove(item: MediaItem) {
         viewModelScope.launch {
-            bookRepository.removeFromBookshelf(item)
+            val purger = shelfPurger
+            if (purger != null) purger.purge(listOf(item))
+            else bookRepository.removeFromBookshelf(item)
         }
     }
 
-    /** 批量移除收藏（多选管理） */
+    /** 批量移除收藏（v1.8.3.0 待办 #5：走批量 SQL + 一并清缓存与进度） */
     fun removeBatch(items: List<MediaItem>) {
         if (items.isEmpty()) return
         viewModelScope.launch {
-            items.forEach { bookRepository.removeFromBookshelf(it) }
+            val purger = shelfPurger
+            if (purger != null) purger.purge(items)
+            else bookRepository.removeFromBookshelfBatch(items)
         }
+    }
+
+    /** 批量清除已缓存章节（保留书架条目；v1.8.3.0 待办 #5） */
+    fun clearCacheBatch(items: List<MediaItem>) {
+        if (items.isEmpty()) return
+        viewModelScope.launch {
+            val purger = shelfPurger
+            if (purger != null) purger.purgeCacheOnly(items)
+        }
+    }
+
+    /** 批量移动到分组（空串 = 移出分组；v1.8.3.0 待办 #5） */
+    fun setGroupBatch(items: List<MediaItem>, group: String) {
+        if (items.isEmpty()) return
+        viewModelScope.launch { bookRepository.setBookGroupBatch(items, group) }
     }
 
     /**

@@ -83,16 +83,17 @@ object TagTagger {
         context: List<ContextTag> = emptyList(),
     ): List<Tag> {
         val out = LinkedHashMap<String, Tag>()
+        val video = item.type == SourceType.VIDEO
         // 1) 站方声明（kind / tags / 浏览上下文）
         ItemTags.of(item).forEach { raw ->
             val name = TagAlias.canonicalOf(raw)
             if (name.isBlank()) return@forEach
-            merge(out, Tag(name, categoryOf(name), CONF_STATION, ORIGIN_STATION))
+            merge(out, Tag(name, categoryOf(name, video), CONF_STATION, ORIGIN_STATION))
         }
         // 2) 影视：把源里已有、却一直没进标签层的维度补上（v1.8.4.0）
         //    地区 / 语言 / 年代 / 主创来自结构化字段（置信度同站方）；
         //    标题题材是文本猜的（60 分），会被站方 typeName 覆盖。
-        if (item.type == SourceType.VIDEO) {
+        if (video) {
             VideoTagLexicon.derive(item).forEach { derived ->
                 val name = if (derived.canonicalize) TagAlias.canonicalOf(derived.name) else derived.name
                 if (name.isBlank()) return@forEach
@@ -108,7 +109,7 @@ object TagTagger {
             ComicTagLexicon.match(text, limit = 12).forEach { raw ->
                 val name = TagAlias.canonicalOf(raw)
                 if (name.isBlank()) return@forEach
-                merge(out, Tag(name, categoryOf(name), CONF_TEXT, ORIGIN_TEXT))
+                merge(out, Tag(name, categoryOf(name, video = false), CONF_TEXT, ORIGIN_TEXT))
             }
         }
         // 4) 分类页上下文（v1.8.1.9）：从「全彩」这类分类页命中的作品，补上该分类标签。
@@ -116,24 +117,45 @@ object TagTagger {
         context.forEach { ctx ->
             val name = TagAlias.canonicalOf(ctx.name)
             if (name.isBlank()) return@forEach
-            merge(out, Tag(name, categoryOf(name), ctx.confidence, ctx.origin))
+            merge(out, Tag(name, categoryOf(name, video), ctx.confidence, ctx.origin))
         }
         return out.values.toList()
     }
 
     private fun merge(out: MutableMap<String, Tag>, tag: Tag) {
         val old = out[tag.name]
-        if (old == null || tag.confidence > old.confidence) out[tag.name] = tag
+        if (old == null || tag.confidence > old.confidence ||
+            // 同分时让「维度类」大类胜出：影视的「香港」既是分类名（题材）又是
+            // vod_area 派生的地区，两条路径都会产出它，落库只能留一条 ——
+            // 留成题材的话 `地区:香港` 就查不到了。
+            (tag.confidence == old.confidence && rank(tag.category) > rank(old.category))
+        ) {
+            out[tag.name] = tag
+        }
+    }
+
+    /** 大类优先级：分级 > 维度（地区/语言/年代/主创）> 题材 */
+    private fun rank(category: String): Int = when (category) {
+        CATEGORY_ADULT -> 3
+        CATEGORY_REGION, CATEGORY_LANGUAGE, CATEGORY_ERA, CATEGORY_CAST -> 2
+        else -> 1
     }
 
     /**
      * 标签归类（受控词表层面）。
      *
      * 成人相关标签单独归到「成人」，便于隐藏成人内容时整类过滤；
+     * 影视的地区 / 语言 / 年代能认出来的，归到对应维度大类（v1.8.4.0）——
+     * 分类名拆出来的「香港」「国语」「2025」要和 `vod_area` 派生的是同一类，
+     * 否则 `地区:香港` 只查得到一半。
      * 其余暂归「题材」——后续接视觉管道时再补「画风」「受众」。
      */
-    private fun categoryOf(name: String): String = when {
+    private fun categoryOf(name: String, video: Boolean): String = when {
         TagAlias.isExplicitAdultIntent(name) -> CATEGORY_ADULT
+        !video -> CATEGORY_GENRE
+        VideoTagLexicon.regionOf(name) != null -> CATEGORY_REGION
+        VideoTagLexicon.languageOf(name) != null -> CATEGORY_LANGUAGE
+        VideoTagLexicon.yearOf(name) != null -> CATEGORY_ERA
         else -> CATEGORY_GENRE
     }
 }

@@ -107,6 +107,41 @@ class TagTaggerVideoTest {
         assertTrue("搞笑" in tags)
     }
 
+    // ===== 复合分类名拆标签（v1.8.4.0：和小说 / 漫画一样一部作品多个标签）=====
+
+    @Test
+    fun `里番动漫拆成动漫和里番两个标签`() {
+        val tags = tagMap(video(title = "无题", typeName = "里番动漫"))
+        // 类型维度：动画（「动漫」在词表里归一到「动画」，两个写法互通）
+        assertEquals("题材" to 100, tags["动画"])
+        // 具体维度：里番，且归到成人大类 —— 隐藏成人内容时要整类过滤
+        assertEquals("成人" to 100, tags["里番"])
+        assertEquals(2, tags.size)
+    }
+
+    @Test
+    fun `港剧拆成电视剧加香港 且香港是地区不是题材`() {
+        val tags = tagMap(video(title = "无题", typeName = "港剧"))
+        assertEquals("题材" to 100, tags["电视剧"])
+        // 关键：分类名拆出来的「香港」必须和 vod_area 派生的同类，
+        // 否则 `地区:香港` 只查得到一半
+        assertEquals("地区" to 100, tags["香港"])
+    }
+
+    @Test
+    fun `分类名与 vod_area 都是香港时只留一条地区标签`() {
+        val item = video(title = "无题", typeName = "香港剧", extras = mapOf("area" to "香港"))
+        val hit = TagTagger.tag(item).filter { it.name == "香港" }
+        assertEquals(1, hit.size)
+        assertEquals(TagTagger.CATEGORY_REGION, hit.first().category)
+    }
+
+    @Test
+    fun `兜底分类不产出噪声标签`() {
+        val tags = tagMap(video(title = "无题", typeName = "其他片"))
+        assertEquals(setOf("电影"), tags.keys)
+    }
+
     // ===== 不越界 =====
 
     @Test

@@ -36,9 +36,9 @@ class ItemTagsTest {
             item(SourceType.VIDEO, tags = listOf("动作片"), extras = mapOf("typeName" to "喜剧片")),
         )
         // 浏览上下文在前，extras 派生在后。
-        // v1.8.4.0：影视写法的「片」后缀会归一（动作片→动作、喜剧片→搞笑），
-        // 否则「动作」与「动作片」在标签层是两个键，搜哪个都只出一半。
-        assertEquals(listOf("动作", "搞笑"), out)
+        // v1.8.4.0：影视分类名是复合词，先拆成「一级类型 + 具体属性」再归一 ——
+        // 动作片 = 电影 + 动作、喜剧片 = 电影 + 搞笑（同一个类型标签只留一份）。
+        assertEquals(listOf("电影", "动作", "搞笑"), out)
     }
 
     @Test
@@ -46,8 +46,8 @@ class ItemTagsTest {
         val out = ItemTags.of(
             item(SourceType.VIDEO, extras = mapOf("typeName" to "科幻片")),
         )
-        // v1.8.4.0：片后缀归一
-        assertEquals(listOf("科幻"), out)
+        // v1.8.4.0：拆出类型 + 剥掉片后缀
+        assertEquals(listOf("电影", "科幻"), out)
     }
 
     @Test
@@ -130,7 +130,7 @@ class ItemTagsTest {
             ItemTags.of(item(SourceType.NOVEL, extras = mapOf("kind" to "玄幻, 东方玄幻、奇幻"))),
         )
         assertEquals(
-            listOf("动作", "搞笑"),
+            listOf("电影", "动作", "搞笑"),
             ItemTags.of(item(SourceType.VIDEO, extras = mapOf("typeName" to "动作片/喜剧片"))),
         )
     }
@@ -140,8 +140,47 @@ class ItemTagsTest {
         val out = ItemTags.of(
             item(SourceType.VIDEO, tags = listOf("动作片"), extras = mapOf("typeName" to "动作片")),
         )
-        // 归一之后两者是同一个键，仍然只出现一次
-        assertEquals(listOf("动作"), out)
+        // 归一 + 拆分之后两者都是同一个键，类型标签也只出现一次
+        assertEquals(listOf("电影", "动作"), out)
+    }
+
+    @Test
+    fun `影视复合分类名拆成类型加属性两个标签`() {
+        // v1.8.4.0：这是「输 A 搜 B」的另一半 —— 以前「里番动漫」只存成一个标签，
+        // 搜「动漫」搜不到里番、搜「里番」也搜不到只标了「里番动漫」的源。
+        assertEquals(
+            listOf("动画", "里番"),
+            ItemTags.of(item(SourceType.VIDEO, extras = mapOf("typeName" to "里番动漫"))),
+        )
+        // 地区后缀的拆成类型 + 地区
+        assertEquals(
+            listOf("动画", "国产"),
+            ItemTags.of(item(SourceType.VIDEO, extras = mapOf("typeName" to "国产动漫"))),
+        )
+        // 整串就是地区别名：港剧 = 电视剧 + 香港
+        assertEquals(
+            listOf("电视剧", "香港"),
+            ItemTags.of(item(SourceType.VIDEO, extras = mapOf("typeName" to "港剧"))),
+        )
+        // 兜底分类（其他片）只留一级类型，不制造「其他片」这种噪声标签
+        assertEquals(
+            listOf("电影"),
+            ItemTags.of(item(SourceType.VIDEO, extras = mapOf("typeName" to "其他片"))),
+        )
+        // 源内别名统一成规范名：电影片 → 电影
+        assertEquals(
+            listOf("电影"),
+            ItemTags.of(item(SourceType.VIDEO, extras = mapOf("typeName" to "电影片"))),
+        )
+    }
+
+    @Test
+    fun `小说漫画不拆复合分类名`() {
+        // 拆分只对影视生效：小说的 kind 是作者 / 源自己写的分类，不该被类型词改写
+        assertEquals(
+            listOf("都市异能"),
+            ItemTags.of(item(SourceType.NOVEL, extras = mapOf("kind" to "都市异能"))),
+        )
     }
 
     @Test

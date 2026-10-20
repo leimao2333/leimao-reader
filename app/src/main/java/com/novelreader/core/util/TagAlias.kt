@@ -169,7 +169,7 @@ object TagAlias {
             "machine translation", "mtl", "auto translate", "auto translation"),
         // ===== 载体 =====
         setOf("漫画", "comic", "manga", "comics", "卡通", "cartoon", "만화"),
-        setOf("动画", "动漫", "anime", "animation", "アニメ", "애니"),
+        setOf("动画", "动漫", "anime", "animation", "アニメ", "애니", "动画片", "動畫片"),
         setOf("小说", "novel", "web novel", "小説", "소설"),
         setOf("剧集", "drama", "ドラマ", "드라마"),
         // ===== 体型 / 属性 =====
@@ -244,6 +244,11 @@ object TagAlias {
         setOf("围巾", "圍巾", "scarf", "muffler", "マフラー", "목도리"),
         // ===== 分级 =====
         setOf("成人", "限制级", "18禁", "r18", "hentai", "adult", "18+", "ero", "ecchi"),
+        // v1.8.4.0：采集站把成人向动画写成「里番动漫 / 里番」，拆标签时会拆成
+        // 「动漫」+「里番」两个（见 VideoTagLexicon.splitCompoundTag）；
+        // 各种写法先归到「里番」，搜「裏番」「hentai anime」也能命中同一批。
+        setOf("里番", "裏番", "里番动漫", "里番動畫", "里番动画", "里番劇", "里番剧",
+            "エロアニメ", "hentai anime"),
         setOf("全年龄", "一般向", "all ages", "general", "safe", "全年齢"),
         // ===== 「有无修饰」的写法变体（v1.7.6.0）=====
         // 各站对同一件事的叫法不统一，而它们**分布在不同源上**：只按字面匹配时，
@@ -441,7 +446,7 @@ object TagAlias {
     fun isExplicitAdultIntent(tag: String): Boolean =
         canonicalOf(tag) in EXPLICIT_ADULT_CANONICALS
 
-    private val EXPLICIT_ADULT_CANONICALS = setOf("成人", "无码", "有码")
+    private val EXPLICIT_ADULT_CANONICALS = setOf("成人", "无码", "有码", "里番")
 
     /**
      * 该标签是否是**已登记的译名**（会在展示时被改名）。

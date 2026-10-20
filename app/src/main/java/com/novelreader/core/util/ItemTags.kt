@@ -67,11 +67,16 @@ object ItemTags {
      */
     fun of(item: MediaItem): List<String> {
         val out = LinkedHashSet<String>()
+        // 影视的分类名是复合词，浏览上下文与 type_name 一样要拆（v1.8.4.0）
+        val compound = item.type == SourceType.VIDEO
         // 1) 浏览上下文优先（用户就是从那个分类点进来的，语义最准）
-        item.tags.forEach { addSplit(out, it, dropStatus = false) }
+        item.tags.forEach { addSplit(out, it, dropStatus = false, compound = compound) }
         // 2) 按类型取 extras 派生
         when (item.type) {
-            SourceType.VIDEO -> addSplit(out, item.extras["typeName"], dropStatus = false)
+            // 影视（v1.8.4.0）：分类名是**复合词**，一个字段表达两件事 ——
+            // 「里番动漫」= 动漫 + 里番、「港剧」= 电视剧 + 香港。只存一个标签时
+            // 「动漫」这个维度就丢了（搜动漫搜不到里番），所以先拆再归一。
+            SourceType.VIDEO -> addSplit(out, item.extras["typeName"], dropStatus = false, compound = true)
             // legado 的 kind 偶尔被源写成状态（「连载中」/「1」），按片段过滤
             SourceType.NOVEL, SourceType.COMIC -> {
                 addSplit(out, item.extras["kind"], dropStatus = true)
@@ -111,8 +116,15 @@ object ItemTags {
      *
      * @param dropStatus true = 丢弃状态词片段（仅 legado kind 用：
      *   源可能把「连载中, 玄幻」写进 kind，状态片段不是分类）。
+     * @param compound true = 先把片段按影视分类名拆成「一级类型 + 具体属性」
+     *   （`里番动漫` → `动漫` + `里番`，v1.8.4.0）。
      */
-    private fun addSplit(out: LinkedHashSet<String>, raw: String?, dropStatus: Boolean) {
+    private fun addSplit(
+        out: LinkedHashSet<String>,
+        raw: String?,
+        dropStatus: Boolean,
+        compound: Boolean = false,
+    ) {
         val text = raw?.trim().orEmpty()
         if (text.isEmpty()) return
         text.split(SPLIT_REGEX).forEach { part ->
@@ -122,7 +134,13 @@ object ItemTags {
             // v1.7.9.0：同义写法统一成规范名（妖精 / elf / エルフ → 精灵），
             // 否则同一部作品上会并排出现「妖精」和「精灵」两个意思一样的标签。
             // 语义相邻但不同义的组（天使/恶魔、姐姐/妹妹…）不在归一范围内。
-            out.add(TagAlias.canonicalOf(tag))
+            if (compound) {
+                VideoTagLexicon.splitCompoundTag(tag).forEach { piece ->
+                    TagAlias.canonicalOf(piece).takeIf { it.isNotBlank() }?.let { out.add(it) }
+                }
+            } else {
+                out.add(TagAlias.canonicalOf(tag))
+            }
         }
     }
 }

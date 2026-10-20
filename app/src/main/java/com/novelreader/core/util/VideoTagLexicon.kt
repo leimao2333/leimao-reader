@@ -64,7 +64,21 @@ object VideoTagLexicon {
         listOf("欧美", "歐美", "西方", "western").forEach { put(it, "欧美") }
         listOf("日韩", "日韓").forEach { put(it, "日韩") }
         listOf("港台", "港臺").forEach { put(it, "港台") }
+        // v1.8.4.0：分类名里常出现「中国动漫」「海外动漫」，两个词本身就是地区
+        listOf("中国", "中國").forEach { put(it, "国产") }
+        listOf("海外", "海外劇", "海外剧").forEach { put(it, "海外") }
     }
+
+    /**
+     * 单字地区（「港剧」「美剧」「日漫」这类二级分类的残留部分）。
+     *
+     * 拆分类名时先把类型词（「剧」「动漫」）剥掉，剩下的常常只有一个字 ——
+     * 这个字单独成标签没有意义，能对上地区的就换成规范地区名。
+     */
+    private val SHORT_REGIONS: Map<String, String> = mapOf(
+        "港" to "香港", "台" to "台湾", "美" to "美国", "韩" to "韩国",
+        "日" to "日本", "泰" to "泰国", "英" to "英国", "法" to "法国", "印" to "印度",
+    )
 
     /** 语言规范名（`vod_lang` 的常见取值） */
     private val LANGUAGES: Map<String, String> = buildMap {
@@ -127,6 +141,92 @@ object VideoTagLexicon {
         }
         return out.toList()
     }
+
+    // ===== 分类名拆标签（v1.8.4.0：让影视和小说 / 漫画一样，一部作品带多个标签）=====
+
+    /** 地区归一（`内地` / `大陆` / `国产` → `国产`）；不是地区返回 null */
+    fun regionOf(raw: String): String? {
+        val text = raw.trim()
+        if (text.isEmpty()) return null
+        return REGIONS[normalize(text)] ?: SHORT_REGIONS[text]
+    }
+
+    /** 语言归一（`普通话` → `国语`）；不是语言返回 null */
+    fun languageOf(raw: String): String? {
+        val text = raw.trim()
+        if (text.isEmpty()) return null
+        return LANGUAGES[normalize(text)]
+    }
+
+    /**
+     * 把一个**影视分类名**拆成「一级类型 + 具体属性」（v1.8.4.0）。
+     *
+     * 采集站只给一个分类字符串，而它其实同时表达了两件事：
+     * `里番动漫` = 动漫（一级类型）+ 里番（具体属性），`港剧` = 电视剧 + 香港。
+     * 只存成一个标签时，「动漫」这个维度就整个丢了 —— 用户搜「动漫」搜不到里番，
+     * 搜「里番」也搜不到只标了「里番动漫」的源。小说 / 漫画那边一部作品本来就有
+     * 好几个标签（kind + 源自带 tags + 文本补充），影视这边靠这一步补齐。
+     *
+     * 返回**至少一个**标签，调用方无需判空；认不出的分类名原样返回。
+     */
+    fun splitCompoundTag(raw: String): List<String> {
+        val text = raw.trim()
+        if (text.isEmpty()) return emptyList()
+        val type = VideoTypeMap.typeOf(text) ?: return listOf(text)
+        // 名字就是类型本身（电影 / 电影片 / 动漫频道）→ 只留类型这一个标签，
+        // 顺带把「电影片」这类源内别名统一成规范名
+        if (VideoTypeMap.isAliasOf(text, type)) return listOf(type)
+        val detail = detailOf(text) ?: return listOf(type)
+        if (detail == type) return listOf(type)
+        return listOf(type, detail)
+    }
+
+    /** 从分类名里取出「具体属性」那一半；取不出（或明显是噪声）返回 null */
+    private fun detailOf(text: String): String? {
+        // 1) 剥类型词后缀：里番动漫 → 里番、国产动漫 → 国产、港台动漫 → 港台
+        for (word in TYPE_WORDS) {
+            if (text.length <= word.length || !text.endsWith(word)) continue
+            val rest = text.dropLast(word.length).trim()
+            if (rest.isEmpty()) continue
+            return normalizeDetail(rest)
+        }
+        // 2) 没有类型词后缀：港剧 → 香港（整串就是一个地区别名）、动作片 → 动作片
+        return normalizeDetail(text)
+    }
+
+    private fun normalizeDetail(raw: String): String? {
+        if (isNoise(raw)) return null
+        regionOf(raw)?.let { return it }
+        // 「国产剧」这种：剥掉「剧」再认地区
+        for (suffix in GENERIC_SUFFIXES) {
+            if (raw.length <= suffix.length || !raw.endsWith(suffix)) continue
+            val base = raw.dropLast(suffix.length)
+            if (isNoise(base)) return null
+            regionOf(base)?.let { return it }
+        }
+        return raw
+    }
+
+    /** 「其他片」「其它综艺」这类兜底分类不是标签，只留一级类型 */
+    private fun isNoise(raw: String): Boolean {
+        val text = raw.trim()
+        if (text.isEmpty()) return true
+        if (text in NOISE_WORDS) return true
+        return text.startsWith("其他") || text.startsWith("其它")
+    }
+
+    private val NOISE_WORDS = setOf("未知", "暂无", "无", "热门", "推荐", "最新", "全部", "更多", "综合")
+
+    /** 分类名里出现即表示「一级类型」的词（按长度从长到短匹配，避免「电视剧」被「剧」抢先） */
+    private val TYPE_WORDS: List<String> = listOf(
+        "电视剧", "電視劇", "连续剧", "連續劇", "动画片", "動畫片", "纪录片", "記錄片", "记录片",
+        "预告片", "預告片", "大电影", "动漫电影", "動漫電影", "电影", "電影", "动漫", "動漫",
+        "动画", "動畫", "番剧", "番劇", "剧集", "劇集", "综艺", "綜藝", "短剧", "短劇",
+        "体育", "體育", "资讯", "資訊", "影片",
+    )
+
+    /** 「国产剧」这种「地区 + 载体」写法里可剥的载体字 */
+    private val GENERIC_SUFFIXES: List<String> = listOf("剧", "劇", "片")
 
     /** 标题里认题材（按出现顺序，最多 [MAX_TITLE_GENRES] 个） */
     fun genresFromTitle(title: String): List<String> {

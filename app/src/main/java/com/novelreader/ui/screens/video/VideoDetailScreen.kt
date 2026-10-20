@@ -227,14 +227,17 @@ fun VideoDetailScreen(
 
             // ===== 元信息标签行：评分 · 年份 · 地区 · 语言 · 作者 · 源名 =====
             // 注：分类（typeName）不在本行——v1.6.5.0 起收进上方可点的「标签小栏」；
-            // author 对苹果 CMS 源就是 type_name，与标签小栏重复，也一并过滤
+            // author 对苹果 CMS 源就是 type_name，与标签小栏重复，也一并过滤。
+            // v1.8.4.0：分类名会被拆成多个标签（里番动漫 → 动画 + 里番），
+            // 原串不再等于任何一个标签，所以要按「是不是 typeName」判重。
             val itemTags = com.novelreader.core.util.ItemTags.of(display)
+            val rawType = display.extras["typeName"].orEmpty().trim()
             val tags = buildList {
                 display.extras["year"].orEmpty().takeIf { it.isNotBlank() }?.let { add(it) }
                 display.extras["area"].orEmpty().takeIf { it.isNotBlank() }?.let { add(it) }
                 display.extras["lang"].orEmpty().takeIf { it.isNotBlank() }?.let { add(it) }
                 display.author?.takeIf {
-                    it.isNotBlank() && it !in this && it !in itemTags
+                    it.isNotBlank() && it !in this && it !in itemTags && it != rawType
                 }?.let { add(it) }
                 display.sourceName.takeIf { it.isNotBlank() && it !in this }?.let { add(it) }
             }

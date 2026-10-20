@@ -635,6 +635,11 @@ class SettingsViewModel(
     private val _videoQuality = MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_QUALITY)
     val videoQuality: StateFlow<Int> = _videoQuality.asStateFlow()
 
+    /** 尾段预缓冲仅在 WiFi 下（v1.8.4.4，默认开启） */
+    private val _videoPrefetchWifiOnly =
+        MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_PREFETCH_WIFI_ONLY)
+    val videoPrefetchWifiOnly: StateFlow<Boolean> = _videoPrefetchWifiOnly.asStateFlow()
+
     init {
         observePrefs()
         observeWebDav()
@@ -708,6 +713,9 @@ class SettingsViewModel(
         }
         viewModelScope.launch {
             preferencesManager.videoQualityFlow.collect { _videoQuality.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.videoPrefetchWifiOnlyFlow.collect { _videoPrefetchWifiOnly.value = it }
         }
         viewModelScope.launch {
             preferencesManager.hideAdultFlow.collect { _hideAdult.value = it }
@@ -827,6 +835,11 @@ class SettingsViewModel(
     /** 默认清晰度偏好（0 = 自动；v1.8.4.0） */
     fun setVideoQuality(height: Int) {
         viewModelScope.launch { preferencesManager.setVideoQuality(height) }
+    }
+
+    /** 尾段预缓冲仅在 WiFi 下（v1.8.4.4） */
+    fun setVideoPrefetchWifiOnly(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setVideoPrefetchWifiOnly(value) }
     }
 }
 

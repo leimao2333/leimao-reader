@@ -5,7 +5,10 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.cache.CacheDataSource
 import com.novelreader.core.network.HttpClient
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 /**
@@ -54,10 +57,14 @@ object NextEpisodePrefetcher {
     ): Long = withContext(Dispatchers.IO) {
         if (url.isBlank() || budgetBytes <= 0L) return@withContext 0L
         val source = VideoMediaCache.cacheDataSource(headers) ?: return@withContext 0L
-        val written = runCatching {
+        val written = try {
             if (looksLikeHls(url)) prefetchHls(url, headers, budgetBytes, source)
             else prefetchRange(url, headers, budgetBytes, source)
-        }.getOrElse { e ->
+        } catch (e: CancellationException) {
+            // 换集 / 退出播放页：把任务停掉，别和「正在播的这一集」抢带宽
+            android.util.Log.d(TAG, "预缓冲已取消（已写 $url）")
+            throw e
+        } catch (e: Exception) {
             android.util.Log.d(TAG, "预缓冲失败：${e.javaClass.simpleName} ${e.message} @ $url")
             0L
         }
@@ -81,7 +88,7 @@ object NextEpisodePrefetcher {
      *
      * 用 `DataSpec` 的 position/length 限定范围，`CacheWriter` 只写这一段。
      */
-    private fun prefetchRange(
+    private suspend fun prefetchRange(
         url: String,
         headers: Map<String, String>,
         budget: Long,
@@ -91,7 +98,7 @@ object NextEpisodePrefetcher {
     /**
      * HLS：清单 → 变体清单（如果是主清单）→ 初始化分片 → 前 N 个分片。
      */
-    private fun prefetchHls(
+    private suspend fun prefetchHls(
         url: String,
         headers: Map<String, String>,
         budget: Long,
@@ -137,8 +144,12 @@ object NextEpisodePrefetcher {
      * 完全查不出原因。这里改成自己 `open` + `read` 循环：
      * `CacheDataSource` 读的时候会把字节 tee 进 `CacheDataSink`，
      * 效果与 `CacheWriter` 相同，但每一步的返回长度都能打日志。
+     *
+     * **可取消**（v1.8.4.4）：`source.read()` 是阻塞调用，协程 `cancel()` 打不断它，
+     * 于是切集后旧任务还会继续把 6MB 拉完 —— 正好和「让新一集起播更快」的目标相反。
+     * 所以每读一块就查一次协程状态，取消时立刻收手（最坏多读 128KB）。
      */
-    private fun write(
+    private suspend fun write(
         source: CacheDataSource,
         uri: String,
         headers: Map<String, String>,
@@ -159,11 +170,14 @@ object NextEpisodePrefetcher {
             val resolved = source.open(spec)
             val buffer = ByteArray(READ_BUFFER_BYTES)
             while (total < length) {
+                currentCoroutineContext().ensureActive()
                 val read = source.read(buffer, 0, buffer.size)
                 if (read == -1) break
                 total += read
             }
             android.util.Log.d(TAG, "读入 $total/$resolved 字节 @ $uri")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             // 预缓冲失败不影响播放，但要留痕：否则「下一集还是要转圈」时无从下手
             android.util.Log.d(TAG, "读入失败 ${e.javaClass.simpleName}: ${e.message} @ $uri")

@@ -100,6 +100,7 @@ fun SettingsScreen(
     val videoPipEnabled by viewModel.videoPipEnabled.collectAsState()
     val videoBufferSeconds by viewModel.videoBufferSeconds.collectAsState()
     val videoQuality by viewModel.videoQuality.collectAsState()
+    val videoPrefetchWifiOnly by viewModel.videoPrefetchWifiOnly.collectAsState()
     val hideAdult by viewModel.hideAdult.collectAsState()
     val novelShelfPrompt by viewModel.novelShelfPrompt.collectAsState()
     val comicShelfPrompt by viewModel.comicShelfPrompt.collectAsState()
@@ -440,6 +441,17 @@ fun SettingsScreen(
                         onClick = { viewModel.setVideoBufferSeconds(sec) },
                     )
                 }
+            }
+
+            // 尾段预缓冲仅在 WiFi（v1.8.4.4）：关掉预缓冲的省流量开关在这里兜第二道闸
+            SettingRow(
+                title = "尾段预缓冲仅 WiFi",
+                subtitle = "一集快播完时提前把下一集开头几 MB 拉进本地缓存（v1.8.4.3）。开启时只在 WiFi 下预缓冲；关闭后用流量也预缓冲，切集秒开",
+            ) {
+                Switch(
+                    checked = videoPrefetchWifiOnly,
+                    onCheckedChange = { viewModel.setVideoPrefetchWifiOnly(it) },
+                )
             }
 
             // 默认清晰度（v1.8.4.0，待办 #13）

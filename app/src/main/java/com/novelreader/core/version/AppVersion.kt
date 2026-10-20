@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.8.4.3"
+    const val CURRENT_VERSION = "1.8.4.4"
 
     /**
      * 更新日志。
@@ -25,6 +25,16 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.8.4.4",
+            date = "2026-10-20",
+            changes = listOf(
+                "**尾段预缓冲「仅 WiFi」开关（默认开）**：v1.8.4.3 的尾段预缓冲每集会悄悄下 6MB 下一集开头 —— 这个量在移动网络下是实打实的流量，用户还看不见。现在默认只在 WiFi 下预缓冲；用流量追剧、想要切集秒开的用户可在设置里关掉这个限制。",
+                "**切集时预缓冲立刻停手**：分片下载是阻塞读，协程 `cancel()` 打不断它 —— 于是换集后旧任务还会把剩下的几 MB 拉完，正在抢要播的那一集的带宽。现在每读 128KB 就查一次取消状态，最坏多读一块（128KB）。",
+                "**判定逻辑抽成纯函数**：`NextPrefetchPolicy` 把「剩余时长 / 有没有下一集 / 这集是否已触发 / 预缓存档位 / 仅 WiFi / 当前网络」六个条件收拢到一处，并返回「被拦下的原因」打进日志 —— 以前没预缓冲只能靠猜，`logcat -s NextPrefetch` 现在直接能看到为什么。",
+                "新增 `NextPrefetchPolicyTest` 9 条：触发点边界（20s 放行、20s+1 拦）、时长未知、没有下一集、同一集只下一次、预缓存关档优先于仅 WiFi、仅 WiFi 三种组合。",
+            ),
+        ),
         VersionEntry(
             version = "1.8.4.3",
             date = "2026-10-20",

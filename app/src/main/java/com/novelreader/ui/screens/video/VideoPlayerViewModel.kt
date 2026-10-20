@@ -16,6 +16,8 @@ import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import com.novelreader.core.media.NextEpisodePrefetcher
+import com.novelreader.core.media.NextPrefetchPolicy
 import com.novelreader.core.network.HttpClient
 import com.novelreader.core.preferences.PreferencesManager
 import com.novelreader.core.util.LineSwitch
@@ -93,6 +95,8 @@ data class VideoPrefs(
     val bufferSeconds: Int = 120,
     /** 默认清晰度偏好（0 = 自动，其余为期望高度；v1.8.4.0） */
     val qualityHeight: Int = 0,
+    /** 尾段预缓冲是否只在 WiFi 下做（v1.8.4.4，默认开启） */
+    val prefetchWifiOnly: Boolean = true,
     /** 是否已完成首次读取（UI 依据此判断能否应用"默认全屏"） */
     val loaded: Boolean = false,
 )
@@ -109,6 +113,14 @@ class VideoPlayerViewModel(
     private val progressRepository: ProgressRepository,
     private val preferencesManager: PreferencesManager,
     private val videoPrefetchCache: VideoPrefetchCache,
+    /**
+     * 「当前是否 WiFi」探测（v1.8.4.4，尾段预缓冲的「仅 WiFi」限制用）。
+     *
+     * ViewModel 里拿不到 Context，所以由注入方（AppNavHost）传一个探测函数进来。
+     * 默认恒为 true：不注入时行为等同于「不限制网络」，与 v1.8.4.3 一致，
+     * 不会因为漏注入就悄悄把功能关掉。
+     */
+    private val wifiProbe: () -> Boolean = { true },
 ) : ViewModel() {
 
     /** ExoPlayer 实例（由 UI 层绑定到 PlayerView） */
@@ -293,6 +305,7 @@ class VideoPlayerViewModel(
                 longPressRewind = preferencesManager.videoLongPressRewindFlow.first(),
                 bufferSeconds = preferencesManager.videoBufferSecondsFlow.first(),
                 qualityHeight = preferencesManager.videoQualityFlow.first(),
+                prefetchWifiOnly = preferencesManager.videoPrefetchWifiOnlyFlow.first(),
                 loaded = true,
             )
             _prefs.value = loaded
@@ -942,25 +955,38 @@ class VideoPlayerViewModel(
     }
 
     /**
-     * 尾段预缓冲下一集的开头（v1.8.4.3）。
+     * 尾段预缓冲下一集的开头（v1.8.4.3；v1.8.4.4 加「仅 WiFi」与可取消）。
      *
-     * 触发条件（全部满足才动手）：
-     * 1. 当前集剩余时长 ≤ [NEXT_EPISODE_TRIGGER_MS]；
-     * 2. **预缓存时长不是「关闭」档** —— 关掉预缓存的用户就是想省流量，
-     *    这时候偷偷下下一集等于把设置当摆设；
-     * 3. 存在下一集，且这一集还没触发过（同一集只下一次）。
+     * 判定全部交给 [NextPrefetchPolicy]（纯逻辑、可单测），这里只负责：
+     * 拿当前状态去问、把拦下来的原因打进日志、以及真正发起任务。
      *
      * 地址优先用 [prefetchCache]（进这一集时已经解析好了），没有再现场解析。
      * 全程静默：失败就是没预缓冲，不影响当前播放。
      */
     private fun maybePrefetchNextEpisode(positionMs: Long, durationMs: Long) {
         if (durationMs <= 0L) return
-        val remaining = durationMs - positionMs
-        if (remaining > NEXT_EPISODE_TRIGGER_MS || remaining < 0L) return
-        if (_prefs.value.bufferSeconds <= 0) return
         val current = currentEpisode ?: return
-        if (nextPrefetchedFor == current.url) return
-        val next = peekByOffset(1) ?: return
+        val next = peekByOffset(1)
+        val prefs = _prefs.value
+        // 只在「仅 WiFi」且前置条件都过的情况下才去探网络：ConnectivityManager 是系统调用，
+        // 每 400ms 无脑调一次没必要。策略里先排掉其余条件，这里用 lazy 保证顺序。
+        val wifiOnly = prefs.prefetchWifiOnly
+        val block = NextPrefetchPolicy.blockReason(
+            remainingMs = durationMs - positionMs,
+            hasNext = next != null,
+            alreadyTriggered = nextPrefetchedFor == current.url,
+            bufferSeconds = prefs.bufferSeconds,
+            wifiOnly = wifiOnly,
+            // 没开「仅 WiFi」时探测结果不参与判定，省一次系统调用
+            onWifi = if (wifiOnly) wifiProbe() else true,
+        )
+        if (block != null || next == null) {
+            // 只在「本来该触发但被拦下」时打日志：触发点之前的正常跳过不必刷屏
+            if (block != null && durationMs - positionMs <= NextPrefetchPolicy.TRIGGER_MS) {
+                android.util.Log.d("NextPrefetch", "跳过：$block @ ${current.url}")
+            }
+            return
+        }
         nextPrefetchedFor = current.url
         nextEpisodePrefetchJob?.cancel()
         nextEpisodePrefetchJob = viewModelScope.launch {
@@ -979,7 +1005,7 @@ class VideoPlayerViewModel(
                 url to headers
             }
             runCatching {
-                com.novelreader.core.media.NextEpisodePrefetcher.prefetch(resolved.first, resolved.second)
+                NextEpisodePrefetcher.prefetch(resolved.first, resolved.second)
             }
         }
     }
@@ -1415,13 +1441,7 @@ class VideoPlayerViewModel(
     companion object {
         /** 状态轮询间隔 */
         private const val TICK_MS = 400L
-        /**
-         * 尾段预缓冲的触发点：当前集剩余不足这么多毫秒就开始下下一集的开头（v1.8.4.3）。
-         *
-         * 20s 是「够下完 6MB、又不至于太早白花流量」的折中 —— 按 2Mbps 算 6MB ≈ 24s
-         * 正片，弱网下 20s 也基本能拉完；再早的话用户可能中途退出，白下。
-         */
-        private const val NEXT_EPISODE_TRIGGER_MS = 20_000L
+        // 尾段预缓冲的触发点自 v1.8.4.4 起挪到 NextPrefetchPolicy.TRIGGER_MS（连同全部判定条件）
         /** 播放中落盘间隔（毫秒） */
         private const val SAVE_INTERVAL_MS = 10_000L
         /** 长按快退：每步回退的毫秒数 */

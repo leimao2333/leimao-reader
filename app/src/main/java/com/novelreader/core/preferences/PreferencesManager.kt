@@ -204,6 +204,15 @@ class PreferencesManager(private val context: Context) {
          */
         val KEY_VIDEO_QUALITY = intPreferencesKey("video_quality")
         /**
+         * 尾段预缓冲下一集「仅在 WiFi 下」（v1.8.4.4，默认**开启**）。
+         *
+         * v1.8.4.3 加的尾段预缓冲会在每集结束前悄悄下 6MB 下一集开头 ——
+         * 这个量在移动网络下是实打实的流量消耗，且用户完全看不到。
+         * 默认只在 WiFi 下做；用流量追剧的用户可以在设置里关掉这个限制
+         * （关掉后移动网络也会预缓冲，换取切集秒开）。
+         */
+        val KEY_VIDEO_PREFETCH_WIFI_ONLY = booleanPreferencesKey("video_prefetch_wifi_only")
+        /**
          * 播放页「记住上次用的源（线路）」（v1.6.9.0）。
          *
          * JSON 数组，元素 `{key, lineName, lineIndex, updatedAt}`，key = `sourceId\u0001itemId`。
@@ -300,6 +309,8 @@ class PreferencesManager(private val context: Context) {
         const val DEFAULT_VIDEO_BUFFER_SECONDS = 120
         /** 默认清晰度：自动（跟随源给的码率 / 线路顺序；v1.8.4.0） */
         const val DEFAULT_VIDEO_QUALITY = 0
+        /** 默认「尾段预缓冲仅在 WiFi 下」（v1.8.4.4）：移动网络下不偷偷下 6MB */
+        const val DEFAULT_VIDEO_PREFETCH_WIFI_ONLY = true
         /** 默认视频 Tab 频道栏目：0=首页 */
         const val DEFAULT_VIDEO_CHANNEL_INDEX = 0
         /** 搜索历史分隔符（历史记录用单个字符串存储，分隔符分隔） */
@@ -783,6 +794,14 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setVideoQuality(height: Int) {
         context.dataStore.edit { it[KEY_VIDEO_QUALITY] = height.coerceIn(0, 2160) }
+    }
+
+    /** 尾段预缓冲仅在 WiFi 下（v1.8.4.4，默认开启） */
+    val videoPrefetchWifiOnlyFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_VIDEO_PREFETCH_WIFI_ONLY] ?: DEFAULT_VIDEO_PREFETCH_WIFI_ONLY }
+
+    suspend fun setVideoPrefetchWifiOnly(value: Boolean) {
+        context.dataStore.edit { it[KEY_VIDEO_PREFETCH_WIFI_ONLY] = value }
     }
 
     // ----- v1.3.3.0 影视首页 -----

@@ -761,6 +761,8 @@ fun AppNavHost(
                         it.progressRepository,
                         it.preferencesManager,
                         it.videoPrefetchCache,
+                        // 尾段预缓冲的「仅 WiFi」判定要问系统网络状态，ViewModel 里没有 Context（v1.8.4.4）
+                        wifiProbe = { com.novelreader.core.util.NetworkStatus.isWifi(it.context) },
                     )
                 }
             )

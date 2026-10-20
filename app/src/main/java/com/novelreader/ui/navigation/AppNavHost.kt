@@ -387,6 +387,8 @@ fun AppNavHost(
                         downloadManager = it.downloadManager,
                         // 浏览时落盘的图片（Coil DiskCache）单独统计/清理（v1.8.4.2）
                         imageCache = com.novelreader.data.cache.CoilImageCacheStore(it.context),
+                        // 应用内读过的论文 PDF（v1.8.5.1）
+                        pdfCache = it.pdfCache,
                     )
                 }
             )
@@ -431,6 +433,31 @@ fun AppNavHost(
                 }
             )
             com.novelreader.ui.screens.rss.RssReaderScreen(
+                viewModel = viewModel,
+                onBack = { navController.popBackStack() },
+                // 应用内读 PDF（v1.8.5.1）：不再跳浏览器，读完能直接返回原文
+                onOpenPdf = { url, title ->
+                    if (url.isNotBlank()) navController.navigate(Routes.pdfViewer(url, title))
+                },
+            )
+        }
+
+        // ===== 应用内 PDF 阅读（v1.8.5.1）=====
+        composable(
+            route = Routes.PDF_VIEWER,
+            arguments = listOf(
+                navArgument("url") { type = NavType.StringType; defaultValue = "" },
+                navArgument("title") { type = NavType.StringType; defaultValue = "" },
+            ),
+        ) { backStackEntry ->
+            val url = backStackEntry.arguments?.getString("url").orEmpty()
+            val title = backStackEntry.arguments?.getString("title").orEmpty()
+            val viewModel: com.novelreader.ui.screens.pdf.PdfViewerViewModel = viewModel(
+                factory = NovelViewModelFactory(container) {
+                    com.novelreader.ui.screens.pdf.PdfViewerViewModel(it.pdfCache, url, title)
+                }
+            )
+            com.novelreader.ui.screens.pdf.PdfViewerScreen(
                 viewModel = viewModel,
                 onBack = { navController.popBackStack() },
             )

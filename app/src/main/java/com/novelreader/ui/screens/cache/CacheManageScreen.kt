@@ -41,7 +41,7 @@ import com.novelreader.domain.repository.BookCacheSummary
 /**
  * 缓存管理页（#30，v1.6.0.0 扩展，v1.8.2.0 加漫画分区）。
  *
- * 五类缓存分区：
+ * 六类缓存分区：
  * - **视频播放缓存**（v1.7.7.1）：边播边存的视频分片，真正占空间的那类，可单独清理；
  * - **视频预加载**（v1.6.0.0）：播放地址 / 解析结果，很小；
  * - **漫画缓存**（v1.8.2.0）：离线阅读时下载的章节图片（`downloads/comic_cache/`），
@@ -49,6 +49,8 @@ import com.novelreader.domain.repository.BookCacheSummary
  * - **漫画图片缓存**（v1.8.4.2）：浏览时顺手落盘的图片（Coil `DiskCache`，
  *   `cacheDir/image_cache`，上限 512MB）—— 和上面那类不是一回事，一个是主动下载、
  *   一个是临时缓存，所以要分开列、分开清；
+ * - **论文 PDF 缓存**（v1.8.5.1）：订阅里「阅读 PDF」下载的原件
+ *   （`filesDir/pdf_cache/`，上限 300MB，按最久未读淘汰）；
  * - **章节缓存**：正文缓存表，按书聚合。
  *
  * 整页是一个 LazyColumn（v1.8.2.0 从「Column 套两个列表」改过来）：
@@ -69,6 +71,7 @@ fun CacheManageScreen(
     val comicCaches by viewModel.comicCaches.collectAsState()
     val comicCacheSize by viewModel.comicCacheSize.collectAsState()
     val imageCacheSize by viewModel.imageCacheSize.collectAsState()
+    val pdfCacheSize by viewModel.pdfCacheSize.collectAsState()
     val message by viewModel.message.collectAsState()
 
     var confirmClearAll by remember { mutableStateOf(false) }
@@ -78,10 +81,11 @@ fun CacheManageScreen(
     var pendingClearVideoPlay by remember { mutableStateOf(false) }
     var pendingClearComic by remember { mutableStateOf(false) }
     var pendingClearImage by remember { mutableStateOf(false) }
+    var pendingClearPdf by remember { mutableStateOf(false) }
 
-    /** 五类缓存的总占用（概览与「清空」文案共用） */
+    /** 六类缓存的总占用（概览与「清空」文案共用） */
     val allCacheSize = totalSize + videoPrefetchSize + videoPlayCacheSize +
-        comicCacheSize + imageCacheSize
+        comicCacheSize + imageCacheSize + pdfCacheSize
 
     val listState = rememberLazyListState()
 
@@ -96,7 +100,8 @@ fun CacheManageScreen(
                 },
                 actions = {
                     if (books.isNotEmpty() || comicCaches.isNotEmpty() ||
-                        videoPrefetchSize > 0 || videoPlayCacheSize > 0 || imageCacheSize > 0
+                        videoPrefetchSize > 0 || videoPlayCacheSize > 0 || imageCacheSize > 0 ||
+                        pdfCacheSize > 0
                     ) {
                         TextButton(onClick = { confirmClearAll = true }) {
                             Text("清空")
@@ -229,6 +234,22 @@ fun CacheManageScreen(
                         "和上面的「漫画缓存」不是一回事 —— 那边是主动下载的整话图片，这里是浏览时的临时缓存。",
                     actionLabel = if (imageCacheSize > 0) "清理" else null,
                     onAction = { pendingClearImage = true },
+                )
+            }
+
+            // 论文 PDF 缓存分区（v1.8.5.1）：应用内读过的期刊 PDF
+            item(key = "pdf_section") {
+                CacheSection(
+                    title = "论文 PDF 缓存",
+                    subtitle = if (pdfCacheSize > 0) {
+                        viewModel.formatSize(pdfCacheSize)
+                    } else {
+                        "暂无"
+                    },
+                    description = "订阅里「阅读 PDF」下载的论文原件（上限 300MB，自动淘汰最久未读的）。" +
+                        "清理后不影响订阅与题录，下次阅读会重新下载。",
+                    actionLabel = if (pdfCacheSize > 0) "清理" else null,
+                    onAction = { pendingClearPdf = true },
                 )
             }
 
@@ -415,7 +436,30 @@ fun CacheManageScreen(
         )
     }
 
-    // 清空全部确认（含视频 + 漫画 + 图片）
+    // 清理 PDF 缓存确认（v1.8.5.1）
+    if (pendingClearPdf) {
+        AlertDialog(
+            onDismissRequest = { pendingClearPdf = false },
+            title = { Text("清理论文 PDF 缓存") },
+            text = {
+                Text(
+                    "确定清理全部论文 PDF（${viewModel.formatSize(pdfCacheSize)}）？\n" +
+                        "订阅、题录与引用不受影响，下次阅读 PDF 会重新下载。",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.clearPdfCache()
+                    pendingClearPdf = false
+                }) { Text("清理") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingClearPdf = false }) { Text("取消") }
+            },
+        )
+    }
+
+    // 清空全部确认（含视频 + 漫画 + 图片 + PDF）
     if (confirmClearAll) {
         AlertDialog(
             onDismissRequest = { confirmClearAll = false },
@@ -425,6 +469,7 @@ fun CacheManageScreen(
                     "确定清空全部缓存（章节 ${viewModel.formatSize(totalSize)}、" +
                         "漫画 ${viewModel.formatSize(comicCacheSize)}、" +
                         "图片 ${viewModel.formatSize(imageCacheSize)}、" +
+                        "PDF ${viewModel.formatSize(pdfCacheSize)}、" +
                         "视频预加载 ${viewModel.formatSize(videoPrefetchSize)}、" +
                         "播放缓存 ${viewModel.formatSize(videoPlayCacheSize)}，" +
                         "共 ${viewModel.formatSize(allCacheSize)}）？\n" +

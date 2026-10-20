@@ -1,6 +1,6 @@
 # 待完成清单（Roadmap）
 
-> 基线版本：**v1.8.4.4**
+> 基线版本：**v1.8.5.1**
 > 记录时间：2026-10-19（最后更新 2026-10-20）
 > 说明：本文件只记录待开工的需求，做完后把对应条目的 `- [ ]` 改成 `- [x]` 并在该行末尾补上落地版本号，随后从清单里移除或折叠进 CHANGELOG。
 
@@ -74,9 +74,13 @@
 
 - [ ] **10. CC 字幕之外增加 AI 字幕**
   - 现有外挂字幕能力在 `ui/screens/video/VideoPlayerScreen.kt` / `VideoControls.kt` / `VideoPlayerViewModel.kt`。
-  - 新增 AI 字幕：播放时自动生成/挂载字幕轨道，需提供 开关 + 语言选择 + 与 CC 字幕的优先级（两者都有时以谁为准）。
-  - 需先确定实现方式（本地 ASR 还是云端接口），再决定要不要加网络权限提示与联网开关。
-  - 状态：**产品决策卡点** —— 本地 ASR（需随包模型）与云端接口（需密钥与计费）两条路都未定，未开工。
+  - **方案已定（2026-10-20）**：本地 ASR 模型，不走云端接口（免密钥、免计费、离线可用）。
+  - 设置项「字幕识别」开关：`SettingsScreen.kt` 新增开关，`PreferencesManager.kt` 新增 key，**默认关闭**。
+  - 模型按需下载：参考 `core/visual/Wd14Tagger.kt` / `Wd14Inference.kt` 的模式（hf-mirror 镜像，国内可达）。
+    开关打开 → 开始下载模型，并在开关下方显示下载进度条（可参考 `ui/components/SearchProgressBar.kt`）；
+    开关关闭 → 不下载模型；已下载的模型要给删除入口。
+  - 识别结果以字幕轨道形式接回播放器（`VideoControls.kt` 已有 CC 字幕轨概念），
+    并确定与 CC 字幕并存时的优先级。
 
 - [x] **11. 视频标签整合（消除「输 A 搜 B」）** ✅ v1.8.4.0
   - 根因：采集站的 `vod_type_name` 写「动作片 / 爱情片 / 科幻片」，受控词表的规范名是
@@ -161,7 +165,7 @@
   - 单源删除也统一走二次确认（原来直接删，误触就丢整源文章）。
   - 涉及：`RssDao.kt`、`RssRepository.kt`、`RssRepositoryImpl.kt`、`RssScreen.kt`。
 
-- [x] **17. RSS 期刊改造：顶刊题录 / 引用导出 / PDF / 全文** ✅ v1.8.5.0
+- [x] **22. RSS 期刊改造：顶刊题录 / 引用导出 / PDF / 全文** ✅ v1.8.5.0
   - **期刊订阅**：`JournalCatalog` 内置 Science / Nature / Cell / Chemical Science / PNAS / JACS
     六本预设（ISSN 全部经 Crossref 验证），订阅页顶栏「书」图标打开期刊面板；
     搜索框走 `CrossrefClient.searchJournals`，可按刊名 / ISSN / 出版社订阅 Crossref 收录的任意期刊。
@@ -188,6 +192,25 @@
   - 涉及：`core/rss/{PaperMeta,PaperCitation,PaperMetaJson,PaperPdf,CrossrefJson,CrossrefClient,
     JournalCatalog,JournalFeed,ArticleBodyExtractor}.kt`、`RssParser.kt`、`RssRepositoryImpl.kt`、
     `JournalDialogs.kt`、`RssReaderScreen.kt`。
+
+- [ ] **23. PDF 阅读增强：夜间反色 / 跳页 / 文字层**
+  - 现状（v1.8.5.1）：应用内只做「整页适配 + 缩放 + 翻页」，够读完一篇，但有三处明显的欠账。
+  - **夜间反色**：页面是白底位图，深色主题下全屏白得刺眼。可加一个渲染开关，
+    用 `ColorMatrix` 反色后再把亮度压回去（别直接 invert —— 图表和照片会变成负片），
+    偏好存 `PreferencesManager`，默认关。
+  - **跳页**：底部页码目前只显示不可点。论文按页引用（"见第 7 页"）时得划七下，
+    改成点页码弹输入框 + `scrollToPage`。
+  - **文字选择 / 全文搜索**：`PdfRenderer` 只出位图，拿不到文字层，这两件事做不到。
+    要做得换 PDFium 类库（每个 ABI +8~15MB，项目已经有 ONNX 的 18MB/ABI），
+    先看有没有真实需求再决定。
+
+- [ ] **24. RSS 订阅入口增加设置开关（默认关）+ 入口下移 + 阅读体验完善**
+  - 设置项「RSS 订阅入口」：`SettingsScreen.kt` 加开关，`PreferencesManager.kt` 新增 key，**默认关闭**。
+  - 现状：RSS 入口是首页顶栏的 RssFeed 图标按钮（`ui/screens/common/HomeScreen.kt` 的 `onOpenRss`）。
+  - 开关开启后，把 RSS 订阅入口从顶栏搬到「订阅，小说，漫画，视频」分类栏下方；关闭时保持原样。
+  - 阅读体验完善：`ui/screens/rss/RssReaderScreen.kt` / `RssScreen.kt` 的阅读排版、下拉刷新、已读状态、
+    正文抽取（`core/rss/ArticleBodyExtractor.kt`）等细节。
+  - 涉及：`SettingsScreen.kt`、`SettingsViewModel.kt`、`PreferencesManager.kt`、`HomeScreen.kt`、`ui/screens/rss/`。
 
 ---
 
@@ -268,6 +291,23 @@
   - 新增单测 `SourceParseProgressTest`：逐条进度、单源报一次、回调抛异常可中断。
   - 涉及：`SourceManageViewModel.kt`、`SourceImportScreen.kt`、`SourceManager.kt`、`LegadoBookSource.kt`、
     `Repository.kt`、`SourceRepositoryImpl.kt`。
+
+---
+
+## 八、PC 打标工具（leimao-tagger）
+
+- [ ] **25. PC 自动打标增加「标签搜索遍历」管道**
+  - 现状：`leimao-tagger/pc_tagger.py` / `pc_tagger_gui.py` 只走「收录清单 → 下封面 →
+    WD14 ONNX 推理 → 词表映射」的视觉管道（v1.8.1.5）。
+  - 需求：补上 App 已有的「用标签搜索遍历，将搜索结果自动打标」逻辑，参考：
+    - `ui/screens/tag/TagSearchViewModel.kt` / `TagSearchScreen.kt`（标签搜索与结果遍历）
+    - `data/repository/TagIndexRepository.kt` / `TagRepository.kt`（打标落库）
+    - `core/util/TagTagger.kt` / `ComicTagLexicon.kt`（标签层与文本管道口径：
+      `ORIGIN_STATION`=站方 100 分 / `ORIGIN_TEXT`=文本 60 分）
+  - 实现要点：按标签逐个发起搜索 → 遍历搜索结果页 → 对搜索结果自动打标 →
+    输出合并进 tag_table.json（与视觉管道结果合并时同名标签取更高置信度）。
+  - GUI（`pc_tagger_gui.py`）暴露该模式的开关与进度展示；输出仍供 App 端「云端导入」消费
+    （`publish_tags.py` 推送 GitHub 的链路不变）。
 
 ---
 

@@ -369,6 +369,14 @@ class RssReaderViewModel(
 fun RssReaderScreen(
     viewModel: RssReaderViewModel,
     onBack: () -> Unit,
+    /**
+     * 打开 PDF（v1.8.5.1）。
+     *
+     * 以前是 `Intent.ACTION_VIEW` 丢给浏览器 —— 跳出去读完就回不来了。
+     * 现在交给应用内阅读页（[com.novelreader.ui.screens.pdf.PdfViewerScreen]），
+     * 保留默认空实现是为了让只关心正文的调用方 / UI 测试不必传参。
+     */
+    onOpenPdf: (url: String, title: String) -> Unit = { _, _ -> },
 ) {
     val article by viewModel.article.collectAsState()
     val siblings by viewModel.siblings.collectAsState()
@@ -540,7 +548,9 @@ fun RssReaderScreen(
                         onFetchFullText = { viewModel.loadFullText() },
                         onEnrich = { viewModel.enrichFromCrossref() },
                         onOpenPdf = {
-                            if (pdfUrl.isNotBlank()) openInBrowser(context, pdfUrl)
+                            if (pdfUrl.isNotBlank()) {
+                                onOpenPdf(pdfUrl, a.title)
+                            }
                         },
                         onCite = { showCitation = it },
                     )
@@ -739,7 +749,8 @@ private fun PaperCitationCard(
                 ) {
                     Icon(Icons.Filled.PictureAsPdf, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(3.dp))
-                    Text("打开 PDF", style = MaterialTheme.typography.labelMedium)
+                    // v1.8.5.1：应用内阅读，不再跳浏览器
+                    Text("阅读 PDF", style = MaterialTheme.typography.labelMedium)
                 }
                 TextButton(
                     onClick = { onCite(CitationFormat.BIBTEX) },

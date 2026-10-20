@@ -47,6 +47,8 @@ object Routes {
     // ===== RSS 订阅（v1.3.1.0）=====
     const val RSS = "rss"                              // 订阅列表 + 文章流
     const val RSS_READER = "rss_reader/{articleId}"    // 订阅文章阅读
+    // 应用内 PDF 阅读（v1.8.5.1）：url 为 PDF 直链，title 仅用于顶栏显示
+    const val PDF_VIEWER = "pdf_viewer?url={url}&title={title}"
 
     // ===== 路由构建函数 =====
     /** 小说搜索页；initialKeyword 非空时进入后按该关键词预搜索（作者名跳转用） */
@@ -100,6 +102,19 @@ object Routes {
 
     /** 订阅文章阅读页（v1.3.1.0） */
     fun rssReader(articleId: Long): String = "rss_reader/$articleId"
+
+    /**
+     * 应用内 PDF 阅读页（v1.8.5.1）。
+     *
+     * 参数走查询串而不是路径段：URL 里带 `?` / `&` / `#`，塞进路径段会直接破坏路由。
+     * `URLEncoder` 把空格编成 `+`，而导航参数解码时不会把 `+` 还原成空格，
+     * 所以额外替换成 `%20`（论文标题里空格很多，不处理会显示成加号）。
+     */
+    fun pdfViewer(url: String, title: String = ""): String {
+        fun enc(s: String): String = java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
+        // 标题只用于顶栏，超长会撑爆路由，截断即可
+        return "pdf_viewer?url=${enc(url)}&title=${enc(title.take(120))}"
+    }
 
     /**
      * 标签搜索页（v1.5.10.0）；[tag] 为初始标签（可空），进入后有该标签即自动搜索。

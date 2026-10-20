@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.8.5.0"
+    const val CURRENT_VERSION = "1.8.5.1"
 
     /**
      * 更新日志。
@@ -25,6 +25,17 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.8.5.1",
+            date = "2026-10-20",
+            changes = listOf(
+                "**应用内读 PDF：读完能直接返回原文**：订阅里点「阅读 PDF」不再跳浏览器（跳出去读完就回不来，很多出版社还会先落进下载器）。新增 PDF 阅读页：整页适配屏幕、双指缩放 / 拖动、横向翻页、底部常驻页码，同一篇第二次打开直接用本地缓存。",
+                "**出版方拦截时说清原因**：没有机构订阅 / 被反爬拦下时，出版社返回的是 **200 + 一张网页**（Cloudflare 挑战页、登录页）。以前只能看到「文件损坏」；现在校验 PDF 魔数并区分「人机验证页 / 需要登录订阅 / 普通网页 / 接口数据」，同时保留「用浏览器打开」这条退路。",
+                "**渲染分辨率按像素预算算，不再只按屏宽**：A4 是 595×842 点，只给宽度会让页面被拉伸；高 DPI 平板按屏宽能算出 3000+ 宽（一页 25MB），低端机直接 OOM。现在按页面自身比例算高度，并把单页压在 3.2M 像素（约 12.8MB）以内。",
+                "**PDF 缓存可管可清**：论文 PDF 落在 `filesDir/pdf_cache/`（上限 300MB，按最久未读淘汰），缓存管理页新增「论文 PDF 缓存」分区，可单独清理，也计入「清空全部」。",
+                "新增 `PdfSourceTest` 18 条、`PdfRenderSizingTest` 9 条：魔数识别、BOM 前缀、四种拦截形态、缓存键稳定性，以及页面比例 / 像素预算 / 非法尺寸。",
+            ),
+        ),
         VersionEntry(
             version = "1.8.5.0",
             date = "2026-10-20",

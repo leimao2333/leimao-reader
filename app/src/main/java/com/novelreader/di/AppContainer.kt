@@ -170,6 +170,16 @@ class AppContainer(context: Context) {
     }
 
     /**
+     * 论文 PDF 缓存（应用内阅读，v1.8.5.1）。
+     *
+     * 落在 `filesDir/pdf_cache/`，同一篇论文第二次打开直接命中；
+     * 上限 300MB、按最久未打开淘汰（见 [com.novelreader.data.cache.PdfFileCache.prune]）。
+     */
+    val pdfCache: com.novelreader.data.cache.PdfFileCache by lazy {
+        com.novelreader.data.cache.PdfFileCache(appContext)
+    }
+
+    /**
      * 书架条目清除器（v1.8.3.0 待办 #4/#5）。
      *
      * 删书时统一清书架行 + 章节缓存 + 阅读进度 + 漫画图片缓存，避免各处重复实现。

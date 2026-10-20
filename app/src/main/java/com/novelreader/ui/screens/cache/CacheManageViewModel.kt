@@ -50,6 +50,13 @@ class CacheManageViewModel(
      * 缓存管理页既看不到也清不掉。传 null 表示当前环境不管理（单测默认如此）。
      */
     private val imageCache: com.novelreader.data.cache.ImageCacheStore? = null,
+    /**
+     * 论文 PDF 缓存（应用内阅读，v1.8.5.1）。
+     *
+     * 期刊 PDF 一篇 2~10MB，读完会一直留在 `filesDir/pdf_cache/`（上限 300MB，
+     * 按最久未打开淘汰）。用户看不到也清不掉的话，这里就是另一个「只进不出」的坑。
+     */
+    private val pdfCache: com.novelreader.data.cache.PdfCacheStore? = null,
 ) : ViewModel() {
 
     private val _books = MutableStateFlow<List<BookCacheSummary>>(emptyList())
@@ -100,6 +107,12 @@ class CacheManageViewModel(
     private val _imageCacheSize = MutableStateFlow(0L)
     val imageCacheSize: StateFlow<Long> = _imageCacheSize.asStateFlow()
 
+    // ===== 论文 PDF 缓存（v1.8.5.1）=====
+
+    /** PDF 缓存占用（字节）：应用内读过的论文 PDF */
+    private val _pdfCacheSize = MutableStateFlow(0L)
+    val pdfCacheSize: StateFlow<Long> = _pdfCacheSize.asStateFlow()
+
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
@@ -137,6 +150,11 @@ class CacheManageViewModel(
             // 图片缓存要读 LRU journal（磁盘），同样离开主线程
             _imageCacheSize.value = kotlinx.coroutines.withContext(ioDispatcher) {
                 val store = imageCache
+                if (store == null) 0L else runCatching { store.sizeBytes() }.getOrDefault(0L)
+            }
+            // PDF 缓存要遍历目录取文件长度
+            _pdfCacheSize.value = kotlinx.coroutines.withContext(ioDispatcher) {
+                val store = pdfCache
                 if (store == null) 0L else runCatching { store.sizeBytes() }.getOrDefault(0L)
             }
             _loading.value = false
@@ -204,13 +222,14 @@ class CacheManageViewModel(
         }
     }
 
-    /** 一键清空（章节缓存 + 视频预加载 + 视频播放缓存 + 漫画离线缓存 + 图片缓存） */
+    /** 一键清空（章节缓存 + 视频预加载 + 视频播放缓存 + 漫画离线缓存 + 图片缓存 + PDF 缓存） */
     fun clearAllIncludingPrefetch() {
         viewModelScope.launch {
             val size = _videoPrefetchSize.value
             val playSize = _videoPlayCacheSize.value
             val comicSize = _comicCacheSize.value
             val imageSize = _imageCacheSize.value
+            val pdfSize = _pdfCacheSize.value
             runCatching {
                 chapterCacheRepository.clearAll()
                 videoPrefetchCache.clear()
@@ -219,9 +238,11 @@ class CacheManageViewModel(
                     runCatching { videoPlayCache.clear() }
                     runCatching { downloadManager?.clearAllComicCache() }
                     runCatching { imageCache?.clear() }
+                    runCatching { pdfCache?.clear() }
                 }
                 _message.value = "已清空全部缓存（含视频 ${formatSize(size + playSize)}、" +
-                    "漫画 ${formatSize(comicSize)}、图片 ${formatSize(imageSize)}）"
+                    "漫画 ${formatSize(comicSize)}、图片 ${formatSize(imageSize)}、" +
+                    "PDF ${formatSize(pdfSize)}）"
                 refresh()
             }.onFailure {
                 _message.value = "清空失败：${it.message}"
@@ -281,6 +302,29 @@ class CacheManageViewModel(
 
     fun consumeMessage() {
         _message.value = null
+    }
+
+    /**
+     * 清空论文 PDF 缓存（v1.8.5.1）。
+     *
+     * 清的是应用内读过的期刊 PDF 文件。清完不影响订阅 / 题录 / 引用，
+     * 下次点「阅读 PDF」重新下载即可。
+     */
+    fun clearPdfCache() {
+        viewModelScope.launch {
+            val store = pdfCache
+            if (store == null) {
+                _message.value = "当前环境不支持清理 PDF 缓存"
+                return@launch
+            }
+            val before = _pdfCacheSize.value
+            val freed = kotlinx.coroutines.withContext(ioDispatcher) {
+                runCatching { store.clear() }.getOrDefault(0L)
+            }
+            val shown = if (freed > 0L) freed else before
+            _message.value = "已清理 PDF 缓存（${formatSize(shown)}）"
+            refresh()
+        }
     }
 
     /** 格式化字节数为可读字符串 */

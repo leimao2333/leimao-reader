@@ -99,6 +99,22 @@ object VideoMediaCache {
     }
 
     /**
+     * 直接拿一个「写进同一份缓存」的数据源（v1.8.4.3，尾段预缓冲用）。
+     *
+     * 预缓冲下一集时用它 + `CacheWriter` 把分片写进 [cache] —— key 与播放器
+     * 自己读分片时算出来的 key 一致（都是分片 URL 字符串），所以播放器切到下一集
+     * 就是**缓存命中**，不再重新下载。未初始化时返回 null（预缓冲直接跳过）。
+     */
+    fun cacheDataSource(headers: Map<String, String>): CacheDataSource? {
+        val c = cache ?: return null
+        return CacheDataSource.Factory()
+            .setCache(c)
+            .setUpstreamDataSourceFactory(httpFactory(headers))
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+            .createDataSource() as? CacheDataSource
+    }
+
+    /**
      * 某个地址已经落盘的字节数（HLS 分片按 URL 分别缓存，这里按前缀汇总不了，
      * 因此主要用于「当前分片/整文件」这类粗粒度展示）。
      */

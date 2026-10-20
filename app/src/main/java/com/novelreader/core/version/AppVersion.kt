@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.8.4.2"
+    const val CURRENT_VERSION = "1.8.4.3"
 
     /**
      * 更新日志。
@@ -25,6 +25,17 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.8.4.3",
+            date = "2026-10-20",
+            changes = listOf(
+                "**尾段自动缓冲下一集的开头**：一集只剩最后二十来秒时，后台悄悄把下一集开头的几 MB 拉进磁盘缓存（默认 6MB）。切集时播放器直接命中缓存，省掉「解析地址 → 连上 → 下第一个分片」的 3~10 秒黑屏；自动连播也不会再卡一下。",
+                "**HLS 下的是分片，不是清单**：采集站的视频大多是 `.m3u8`，清单本身只有几百字节 —— 缓存它对起播毫无帮助。所以先取清单、解析出前 8 个分片（含 `#EXT-X-MAP` 初始化分片、主清单先取变体），再逐个写进同一份磁盘缓存，key 用分片 URL，和播放器自己算的一致才能命中。",
+                "**尊重「预缓存时长 = 关闭」**：关掉预缓存就是想省流量，这时候不该在尾段偷偷下下一集，所以这一档直接不预缓冲。",
+                "**同一集只下一次**：进度条每 400ms 走一次，靠「这一集是否已触发」标记挡住重复下载；换集时标记清零、旧任务取消。",
+                "新增 `HlsPlaylistTest` 8 条：清单识别、分片地址补全、注释与空行不算地址、主清单取变体、条数上限、`EXT-X-MAP` 属性乱序、非法 base 宁可不下、HLS 地址判定。",
+            ),
+        ),
         VersionEntry(
             version = "1.8.4.2",
             date = "2026-10-20",

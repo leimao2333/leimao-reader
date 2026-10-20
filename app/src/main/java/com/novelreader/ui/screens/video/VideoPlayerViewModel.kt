@@ -246,6 +246,17 @@ class VideoPlayerViewModel(
     /** 当前正在看的视频条目（用于构造预取 key：sourceId + itemId + lineIndex + episode.index） */
     private var prefetchKeyPrefix: String = ""
 
+    /**
+     * 尾段预缓冲下一集的任务（v1.8.4.3）。
+     *
+     * 和上面的 [prefetchJob] 不是一回事：那个只解析**播放地址**（几百字节），
+     * 这个是把下一集开头的几个分片真的下到磁盘缓存里，切过去时起播不用等。
+     */
+    private var nextEpisodePrefetchJob: Job? = null
+
+    /** 已经为哪一集触发过尾段预缓冲（同一集只触发一次，避免每 400ms 重复下） */
+    private var nextPrefetchedFor: String? = null
+
     /** 缓存最近一次播放的地址与请求头（外挂字幕重载时复用） */
     private var lastVideoUrl: String? = null
     private var lastVideoHeaders: Map<String, String> = emptyMap()
@@ -849,6 +860,9 @@ class VideoPlayerViewModel(
         _episodeTitle.value = episode.title
         _currentEpisodeUrl.value = episode.url
         endSpeedBoost()
+        // 换集了：上一集的尾段预缓冲作废，新的一集重新判定（v1.8.4.3）
+        nextEpisodePrefetchJob?.cancel()
+        nextPrefetchedFor = null
         // 新一集：轨道组是新的，之前锁的清晰度已失效，允许再按偏好锁一次（v1.8.4.0）
         qualityAppliedForMedia = false
         // 命中预缓存：直接用缓存地址起播，跳过解析（切下一集时秒起）
@@ -925,6 +939,49 @@ class VideoPlayerViewModel(
     private fun peekByOffset(offset: Int): ChapterItem? {
         val i = currentIndex
         return _episodes.value.getOrNull(i + offset)
+    }
+
+    /**
+     * 尾段预缓冲下一集的开头（v1.8.4.3）。
+     *
+     * 触发条件（全部满足才动手）：
+     * 1. 当前集剩余时长 ≤ [NEXT_EPISODE_TRIGGER_MS]；
+     * 2. **预缓存时长不是「关闭」档** —— 关掉预缓存的用户就是想省流量，
+     *    这时候偷偷下下一集等于把设置当摆设；
+     * 3. 存在下一集，且这一集还没触发过（同一集只下一次）。
+     *
+     * 地址优先用 [prefetchCache]（进这一集时已经解析好了），没有再现场解析。
+     * 全程静默：失败就是没预缓冲，不影响当前播放。
+     */
+    private fun maybePrefetchNextEpisode(positionMs: Long, durationMs: Long) {
+        if (durationMs <= 0L) return
+        val remaining = durationMs - positionMs
+        if (remaining > NEXT_EPISODE_TRIGGER_MS || remaining < 0L) return
+        if (_prefs.value.bufferSeconds <= 0) return
+        val current = currentEpisode ?: return
+        if (nextPrefetchedFor == current.url) return
+        val next = peekByOffset(1) ?: return
+        nextPrefetchedFor = current.url
+        nextEpisodePrefetchJob?.cancel()
+        nextEpisodePrefetchJob = viewModelScope.launch {
+            val hit = prefetchCache[next.url]
+            val resolved = if (hit != null) {
+                hit
+            } else {
+                val result = runCatching {
+                    withContext(Dispatchers.IO) { contentRepository.content(next) }
+                }.getOrNull()
+                val url = result?.videoUrl
+                if (url.isNullOrBlank()) return@launch
+                val headers = result.videoHeaders
+                // 顺手塞进地址预缓存，切集时连解析都省了
+                prefetchCache[next.url] = url to headers
+                url to headers
+            }
+            runCatching {
+                com.novelreader.core.media.NextEpisodePrefetcher.prefetch(resolved.first, resolved.second)
+            }
+        }
     }
 
     private fun play(
@@ -1331,6 +1388,8 @@ class VideoPlayerViewModel(
                         isBuffering = player.playbackState == Player.STATE_BUFFERING,
                     )
                 }
+                // 尾段预缓冲下一集（v1.8.4.3）：只剩最后二十来秒时把下一集开头拉进磁盘缓存
+                maybePrefetchNextEpisode(player.currentPosition.coerceAtLeast(0L), duration)
                 // 播放中周期性落盘（v1.3.4.0）：此前只在切集 / 退出时保存，
                 // 进程被杀 / 崩溃 / 被系统回收时进度就丢了，「继续观看」会退回上一集。
                 sinceSave += TICK_MS
@@ -1348,6 +1407,7 @@ class VideoPlayerViewModel(
         tickerJob?.cancel()
         boostJob?.cancel()
         prefetchJob?.cancel()
+        nextEpisodePrefetchJob?.cancel()
         lineProbeJob?.cancel()
         detachPlayer(player)
     }
@@ -1355,6 +1415,13 @@ class VideoPlayerViewModel(
     companion object {
         /** 状态轮询间隔 */
         private const val TICK_MS = 400L
+        /**
+         * 尾段预缓冲的触发点：当前集剩余不足这么多毫秒就开始下下一集的开头（v1.8.4.3）。
+         *
+         * 20s 是「够下完 6MB、又不至于太早白花流量」的折中 —— 按 2Mbps 算 6MB ≈ 24s
+         * 正片，弱网下 20s 也基本能拉完；再早的话用户可能中途退出，白下。
+         */
+        private const val NEXT_EPISODE_TRIGGER_MS = 20_000L
         /** 播放中落盘间隔（毫秒） */
         private const val SAVE_INTERVAL_MS = 10_000L
         /** 长按快退：每步回退的毫秒数 */

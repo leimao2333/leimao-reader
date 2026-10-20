@@ -208,7 +208,8 @@ class VeneraSourceAdapter(
         return MediaItem(
             id = id,
             title = c.str("title").orEmpty(),
-            cover = c.str("cover")?.takeIf { it.isNotBlank() },
+            // v1.8.3.0：清洗封面（JS undefined 拼出的假地址要清空，见 CoverUrl）
+            cover = com.novelreader.core.util.CoverUrl.sanitize(c.str("cover")),
             author = c.str("subTitle")?.takeIf { it.isNotBlank() },
             desc = c.str("description")?.takeIf { it.isNotBlank() },
             type = SourceType.COMIC,
@@ -246,7 +247,7 @@ class VeneraSourceAdapter(
         itemTags(obj)?.let { extras[com.novelreader.core.util.ItemTags.EXTRAS_TAGS] = it }
         return item.copy(
             title = obj.str("title")?.takeIf { it.isNotBlank() } ?: item.title,
-            cover = obj.str("cover")?.takeIf { it.isNotBlank() } ?: item.cover,
+            cover = com.novelreader.core.util.CoverUrl.sanitize(obj.str("cover")) ?: item.cover,
             author = obj.str("subTitle")?.takeIf { it.isNotBlank() } ?: item.author,
             desc = obj.str("description")?.takeIf { it.isNotBlank() } ?: item.desc,
             extras = extras,

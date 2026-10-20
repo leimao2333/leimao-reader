@@ -35,7 +35,8 @@ class JsSourceAdapter(
             MediaItem(
                 id = map.str("id") ?: "",
                 title = map.str("title") ?: "",
-                cover = map.str("cover"),
+                // v1.8.3.0：JS 返回的 cover 可能是 undefined 字符串化的垃圾值，清洗后置空
+                cover = com.novelreader.core.util.CoverUrl.sanitize(map.str("cover")),
                 author = map.str("author"),
                 desc = map.str("desc"),
                 type = type,
@@ -50,7 +51,7 @@ class JsSourceAdapter(
         val result = SourceJsEngine.callFunction(scope, "detail", item.detailUrl)
         val map = toMap(result)
         return item.copy(
-            cover = map.str("cover") ?: item.cover,
+            cover = com.novelreader.core.util.CoverUrl.sanitize(map.str("cover")) ?: item.cover,
             author = map.str("author") ?: item.author,
             desc = map.str("desc") ?: item.desc,
         )

@@ -52,6 +52,8 @@ fun ComicSearchScreen(
     val history by viewModel.history.collectAsState()
     val sources by viewModel.sources.collectAsState()
     val selectedSourceIds by viewModel.selectedSourceIds.collectAsState()
+    val shelfKeys by viewModel.shelfKeys.collectAsState()
+    val longPressShelfEnabled by viewModel.longPressShelfEnabled.collectAsState()
 
     // 深链关键词：进入即搜索（与小说 / 影视搜索页一致）
     androidx.compose.runtime.LaunchedEffect(initialKeyword) {
@@ -124,8 +126,11 @@ fun ComicSearchScreen(
                     results = state.results,
                     isEmptyHint = "正在搜索中，结果将实时显示…",
                     onItemClick = onItemClick,
+                    onToggleShelf = viewModel::toggleShelf,
+                    shelfKeys = shelfKeys,
                     type = SourceType.COMIC,
                     unitLabel = "漫画源",
+                    longPressEnabled = longPressShelfEnabled,
                 )
             }
             state.error != null -> {
@@ -150,8 +155,11 @@ fun ComicSearchScreen(
                     results = state.results,
                     isEmptyHint = "",
                     onItemClick = onItemClick,
+                    onToggleShelf = viewModel::toggleShelf,
+                    shelfKeys = shelfKeys,
                     type = SourceType.COMIC,
                     unitLabel = "漫画源",
+                    longPressEnabled = longPressShelfEnabled,
                 )
             }
         }

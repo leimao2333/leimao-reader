@@ -46,6 +46,7 @@ fun NovelSearchScreen(
     val fuzzyEnabled by viewModel.fuzzyEnabled.collectAsState()
     val history by viewModel.history.collectAsState()
     val shelfKeys by viewModel.shelfKeys.collectAsState()
+    val longPressShelfEnabled by viewModel.longPressShelfEnabled.collectAsState()
     val sources by viewModel.sources.collectAsState()
     val selectedSourceIds by viewModel.selectedSourceIds.collectAsState()
 
@@ -119,6 +120,7 @@ fun NovelSearchScreen(
                     onRead = onRead,
                     onToggleShelf = viewModel::toggleShelf,
                     shelfKeys = shelfKeys,
+                    longPressEnabled = longPressShelfEnabled,
                 )
             }
             // 搜索完成但有错误
@@ -149,6 +151,7 @@ fun NovelSearchScreen(
                     onRead = onRead,
                     onToggleShelf = viewModel::toggleShelf,
                     shelfKeys = shelfKeys,
+                    longPressEnabled = longPressShelfEnabled,
                 )
             }
         }

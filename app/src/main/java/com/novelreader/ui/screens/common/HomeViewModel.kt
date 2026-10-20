@@ -1593,6 +1593,12 @@ class HomeViewModel(
     }.getOrDefault(emptyList()).map { it.id }.toSet()
 
     /** 从磁盘恢复推荐内容；返回是否恢复成功（有缓存、源集一致、计划不残缺、rows 非空） */
+    /** 清掉列表里的脏封面地址（脏值 → null，好让补封面逻辑接手） */
+    private fun List<MediaItem>.cleanCovers(): List<MediaItem> = map { item ->
+        val c = com.novelreader.core.util.CoverUrl.sanitize(item.cover)
+        if (c == item.cover) item else item.copy(cover = c)
+    }
+
     private suspend fun hydrateFeedFromCache(type: SourceType): Boolean {
         val cache = videoCache ?: return false
         val payload = withContext(cacheDispatcher) {
@@ -1610,7 +1616,9 @@ class HomeViewModel(
             aliveCount = payload.aliveCount,
             categories = payload.categories,
             selectedCategory = com.novelreader.core.util.HomeFeedPlan.RECOMMEND_TITLE,
-            rows = payload.rows,
+            // v1.8.3.0：老缓存里可能留着脏封面地址（JS undefined 拼出来的假 URL），
+            // 不先清掉的话补封面逻辑会误判「已有封面」，整排永远是色块
+            rows = payload.rows.map { row -> row.copy(items = row.items.cleanCovers()) },
             loading = false,
             error = null,
             loadedAtMs = System.currentTimeMillis(),

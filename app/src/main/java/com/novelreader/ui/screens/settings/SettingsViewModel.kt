@@ -511,6 +511,10 @@ class SettingsViewModel(
     private val _comicShelfPrompt = MutableStateFlow(true)
     val comicShelfPrompt: StateFlow<Boolean> = _comicShelfPrompt.asStateFlow()
 
+    /** 搜索结果长按加入书架开关（v1.8.3.0 待办 #14，默认开启） */
+    private val _searchLongPressShelf = MutableStateFlow(true)
+    val searchLongPressShelf: StateFlow<Boolean> = _searchLongPressShelf.asStateFlow()
+
     // ===== 视频播放（v1.3.2.0） =====
     /** 进入播放页默认全屏 */
     private val _videoFullscreenDefault = MutableStateFlow(false)
@@ -621,6 +625,9 @@ class SettingsViewModel(
         viewModelScope.launch {
             preferencesManager.comicShelfPromptFlow.collect { _comicShelfPrompt.value = it }
         }
+        viewModelScope.launch {
+            preferencesManager.searchLongPressShelfFlow.collect { _searchLongPressShelf.value = it }
+        }
     }
 
     /** 切换「隐藏成人内容」开关 */
@@ -696,6 +703,11 @@ class SettingsViewModel(
     /** 漫画「未加入书架」提示开关（v1.8.3.0） */
     fun setComicShelfPrompt(value: Boolean) {
         viewModelScope.launch { preferencesManager.setComicShelfPrompt(value) }
+    }
+
+    /** 搜索结果长按加入书架开关（v1.8.3.0 待办 #14） */
+    fun setSearchLongPressShelf(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setSearchLongPressShelf(value) }
     }
 
     fun setVideoDoubleTapSeek(value: Int) {

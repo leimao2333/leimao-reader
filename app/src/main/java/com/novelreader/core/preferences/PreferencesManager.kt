@@ -97,6 +97,13 @@ class PreferencesManager(private val context: Context) {
         /** 漫画「未加入书架」提示开关（v1.8.3.0，默认开启） */
         val KEY_COMIC_SHELF_PROMPT = booleanPreferencesKey("comic_shelf_prompt")
 
+        /**
+         * 搜索结果长按加入书架（v1.8.3.0 待办 #14，默认开启）。
+         *
+         * 关闭后长按搜索结果不再弹操作菜单，避免误触；收藏按钮仍可用。
+         */
+        val KEY_SEARCH_LONG_PRESS_SHELF = booleanPreferencesKey("search_long_press_shelf")
+
         // ----- v1.1.8.0 对标开源阅读补齐 -----
         /** 简繁转换：0=不转换 1=简转繁 2=繁转简（对标开源阅读 ChineseConverter） */
         val KEY_NOVEL_CONVERT_MODE = intPreferencesKey("novel_convert_mode")
@@ -584,6 +591,14 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setComicShelfPrompt(value: Boolean) {
         context.dataStore.edit { it[KEY_COMIC_SHELF_PROMPT] = value }
+    }
+
+    /** 搜索结果长按加入书架开关（v1.8.3.0 待办 #14，默认开启） */
+    val searchLongPressShelfFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_SEARCH_LONG_PRESS_SHELF] ?: true }
+
+    suspend fun setSearchLongPressShelf(value: Boolean) {
+        context.dataStore.edit { it[KEY_SEARCH_LONG_PRESS_SHELF] = value }
     }
 
     // ===== 漫画 =====

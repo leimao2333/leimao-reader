@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 class VideoSearchViewModel(
     private val contentRepository: ContentRepository,
     private val preferencesManager: PreferencesManager,
+    private val bookRepository: com.novelreader.domain.repository.BookRepository,
     private val sourceRepository: com.novelreader.domain.repository.SourceRepository? = null,
 ) : ViewModel() {
 
@@ -44,6 +45,14 @@ class VideoSearchViewModel(
     private val _state = MutableStateFlow(SearchState())
     val state: StateFlow<SearchState> = _state.asStateFlow()
 
+    /** 已收藏的条目 key 集合（"sourceId|itemId"），供搜索结果收藏态高亮（v1.8.3.0 待办 #15） */
+    private val _shelfKeys = MutableStateFlow<Set<String>>(emptySet())
+    val shelfKeys: StateFlow<Set<String>> = _shelfKeys.asStateFlow()
+
+    /** 长按搜索结果弹操作菜单的开关（v1.8.3.0 待办 #14，设置里可关） */
+    private val _longPressShelfEnabled = MutableStateFlow(true)
+    val longPressShelfEnabled: StateFlow<Boolean> = _longPressShelfEnabled.asStateFlow()
+
     private val _fuzzyEnabled = MutableStateFlow(PreferencesManager.DEFAULT_FUZZY_SEARCH)
     val fuzzyEnabled: StateFlow<Boolean> = _fuzzyEnabled.asStateFlow()
 
@@ -66,6 +75,24 @@ class VideoSearchViewModel(
                     ?.filter { it.enabled }
                     .orEmpty()
             }.getOrDefault(emptyList())
+        }
+        // 收藏变化时刷新收藏态（v1.8.3.0 待办 #15）
+        viewModelScope.launch {
+            bookRepository.observeBookshelf().collect { books ->
+                _shelfKeys.value = books.map { "${it.sourceId}|${it.id}" }.toSet()
+            }
+        }
+        viewModelScope.launch {
+            preferencesManager.searchLongPressShelfFlow.collect { _longPressShelfEnabled.value = it }
+        }
+    }
+
+    /** 加入 / 移出收藏（搜索结果卡片直接操作，v1.8.3.0 待办 #15） */
+    fun toggleShelf(item: com.novelreader.domain.model.MediaItem) {
+        viewModelScope.launch {
+            val key = "${item.sourceId}|${item.id}"
+            if (key in _shelfKeys.value) bookRepository.removeFromBookshelf(item)
+            else bookRepository.addToBookshelf(item)
         }
     }
 

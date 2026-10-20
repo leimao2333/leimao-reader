@@ -42,3 +42,6 @@ tagger/build_pyi/
 tagger/models/
 tagger/*.spec
 leimao-tagger/
+
+# 打标工具已迁出到独立仓库（leimao-tagger），本地残留目录 / 模型 / 临时产物一律不入库
+tagger/

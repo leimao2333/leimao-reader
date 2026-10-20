@@ -59,6 +59,10 @@ class NovelSearchViewModel(
     private val _shelfKeys = MutableStateFlow<Set<String>>(emptySet())
     val shelfKeys: StateFlow<Set<String>> = _shelfKeys.asStateFlow()
 
+    /** 长按搜索结果弹操作菜单的开关（v1.8.3.0 待办 #14，设置里可关） */
+    private val _longPressShelfEnabled = MutableStateFlow(true)
+    val longPressShelfEnabled: StateFlow<Boolean> = _longPressShelfEnabled.asStateFlow()
+
     /** 模糊搜索开关 */
     private val _fuzzyEnabled = MutableStateFlow(PreferencesManager.DEFAULT_FUZZY_SEARCH)
     val fuzzyEnabled: StateFlow<Boolean> = _fuzzyEnabled.asStateFlow()
@@ -84,6 +88,10 @@ class NovelSearchViewModel(
             bookRepository.observeBookshelf().collect { books ->
                 _shelfKeys.value = books.map { "${it.sourceId}|${it.id}" }.toSet()
             }
+        }
+        // 长按菜单开关（v1.8.3.0 待办 #14）
+        viewModelScope.launch {
+            preferencesManager.searchLongPressShelfFlow.collect { _longPressShelfEnabled.value = it }
         }
         // 按源搜索：载入已启用的源列表
         viewModelScope.launch {

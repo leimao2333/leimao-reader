@@ -3,6 +3,7 @@ package com.novelreader.ui.components
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -18,9 +19,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -55,6 +60,9 @@ import com.novelreader.source.search.VideoTitleKey
  * @param unitLabel 源数量单位文案（「书源」/「播放源」）
  * @param metaLine 元信息行生成器；默认按 [type] 自动选 [BookMeta] 或 [VideoMeta]
  * @param onRead 「阅读」按钮回调；为 null 时不显示按钮（影视点击卡片即进详情，无需此按钮）
+ * @param onToggleShelf 收藏（加入/移出书架）回调；为 null 时不显示收藏按钮
+ * @param shelfKeys 已在书架的条目 key 集合（`"sourceId|itemId"`）
+ * @param longPressEnabled 长按是否弹操作菜单（v1.8.3.0 待办 #14，设置里可关）
  */
 @Composable
 fun GroupedSearchResults(
@@ -68,6 +76,7 @@ fun GroupedSearchResults(
     unitLabel: String = "书源",
     metaLine: ((MediaItem) -> String)? = null,
     keyOf: ((MediaItem) -> String)? = null,
+    longPressEnabled: Boolean = true,
 ) {
     if (results.isEmpty()) {
         if (isEmptyHint.isNotBlank()) {
@@ -104,6 +113,16 @@ fun GroupedSearchResults(
     // 侧边滚动条（v1.8.2.0）：搜索结果动辄上百条，没有位置指示很难知道自己翻到哪了
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
 
+    // 长按操作菜单的目标条目（v1.8.3.0 待办 #14）；groupSize 用于多源聚合卡片补「展开换源」
+    var actionTarget by remember { mutableStateOf<MediaItem?>(null) }
+    var actionGroupSize by remember { mutableStateOf(1) }
+    var actionGroupKey by remember { mutableStateOf<String?>(null) }
+
+    /** 统一的收藏动作：先关菜单再执行，避免列表即时刷新时菜单还压在上面 */
+    val toggleShelfAndDismiss: ((MediaItem) -> Unit)? = onToggleShelf?.let { fn ->
+        { item -> actionTarget = null; fn(item) }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
             state = listState,
@@ -131,6 +150,13 @@ fun GroupedSearchResults(
                                 onRead = onRead?.let { fn -> { fn(member) } },
                                 onToggleShelf = onToggleShelf?.let { fn -> { fn(member) } },
                                 inShelf = "${member.sourceId}|${member.id}" in shelfKeys,
+                                onLongClick = if (longPressEnabled) {
+                                    {
+                                        actionTarget = member
+                                        actionGroupSize = group.size
+                                        actionGroupKey = groupKey
+                                    }
+                                } else null,
                             )
                         }
                         // 收起按钮
@@ -167,6 +193,17 @@ fun GroupedSearchResults(
                             if (hasMulti) expandedKeys = expandedKeys + groupKey
                             else onItemClick(head)
                         },
+                        onLongClick = if (longPressEnabled) {
+                            {
+                                actionTarget = head
+                                actionGroupSize = group.size
+                                actionGroupKey = groupKey
+                            }
+                        } else null,
+                        // 折叠态也给收藏入口（v1.8.3.0 待办 #15）：绝大多数结果都是
+                        // 折叠卡片，只在展开行里放收藏图标等于「默认看不见」。
+                        inShelf = "${head.sourceId}|${head.id}" in shelfKeys,
+                        onToggleShelf = onToggleShelf?.let { fn -> { fn(head) } },
                     )
                 }
             }
@@ -179,10 +216,30 @@ fun GroupedSearchResults(
                 .align(Alignment.CenterEnd)
                 .padding(end = 2.dp),
         )
+
+        // ===== 长按操作菜单（v1.8.3.0 待办 #14）=====
+        val target = actionTarget
+        if (target != null) {
+            SearchResultActionSheet(
+                item = target,
+                inShelf = "${target.sourceId}|${target.id}" in shelfKeys,
+                isVideo = type == com.novelreader.domain.model.SourceType.VIDEO,
+                groupSize = actionGroupSize,
+                unitLabel = unitLabel,
+                onExpandGroup = actionGroupKey?.let { key ->
+                    { actionTarget = null; expandedKeys = expandedKeys + key }
+                },
+                onToggleShelf = toggleShelfAndDismiss?.let { fn -> { fn(target) } },
+                onRead = onRead?.let { fn -> { actionTarget = null; fn(target) } },
+                onOpenDetail = { actionTarget = null; onItemClick(target) },
+                onDismiss = { actionTarget = null },
+            )
+        }
     }
 }
 
 /** 折叠态的聚合卡片：书名 / 作者 / 源数量徽标 */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun GroupCard(
     head: MediaItem,
@@ -191,12 +248,18 @@ private fun GroupCard(
     unitLabel: String,
     metaOf: (MediaItem) -> String,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+    inShelf: Boolean = false,
+    onToggleShelf: (() -> Unit)? = null,
 ) {
     // 扁平聚合卡片（无 Card 阴影），对齐开源阅读紧凑观感
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick,
+            )
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -281,6 +344,19 @@ private fun GroupCard(
                     )
                 }
             }
+        if (onToggleShelf != null) {
+            Icon(
+                imageVector = if (inShelf) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                contentDescription = if (inShelf) "已收藏" else "收藏",
+                tint = if (inShelf) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .size(22.dp)
+                    .clickable(onClick = onToggleShelf)
+                    .padding(2.dp),
+            )
+            if (hasMulti) Spacer(Modifier.width(6.dp))
+        }
         if (hasMulti) {
             Icon(
                 Icons.Filled.ExpandMore,
@@ -288,5 +364,130 @@ private fun GroupCard(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
+
+/**
+ * 长按搜索结果弹出的操作菜单（v1.8.3.0 待办 #14）。
+ *
+ * 长按与点击刻意分开：点卡片仍然进详情 / 阅读，长按才出这层菜单，
+ * 想收藏不必先点开再退回来。菜单只列当前页实际支持的动作
+ * （没有收藏能力的列表不显示收藏项）。
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun SearchResultActionSheet(
+    item: MediaItem,
+    inShelf: Boolean,
+    isVideo: Boolean,
+    groupSize: Int,
+    unitLabel: String,
+    onExpandGroup: (() -> Unit)?,
+    onToggleShelf: (() -> Unit)?,
+    onRead: (() -> Unit)?,
+    onOpenDetail: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp),
+        ) {
+            // 标题行：让用户确认长按的是哪一条（聚合组里可能是多个源中的某一个）
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = item.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val sub = listOfNotNull(
+                        item.author?.takeIf { it.isNotBlank() },
+                        item.sourceName.takeIf { it.isNotBlank() },
+                    ).joinToString(" · ")
+                    if (sub.isNotEmpty()) {
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = sub,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+            androidx.compose.material3.HorizontalDivider(
+                thickness = 0.5.dp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+            )
+            if (onToggleShelf != null) {
+                SheetActionRow(
+                    icon = if (inShelf) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                    label = when {
+                        isVideo && inShelf -> "取消收藏"
+                        isVideo -> "加入收藏"
+                        inShelf -> "移出书架"
+                        else -> "加入书架"
+                    },
+                    onClick = onToggleShelf,
+                )
+            }
+            if (onRead != null) {
+                SheetActionRow(
+                    icon = Icons.Filled.MenuBook,
+                    label = if (isVideo) "播放" else "阅读",
+                    onClick = onRead,
+                )
+            }
+            SheetActionRow(
+                icon = Icons.Filled.OpenInNew,
+                label = "查看详情",
+                onClick = onOpenDetail,
+            )
+            if (groupSize > 1 && onExpandGroup != null) {
+                SheetActionRow(
+                    icon = Icons.Filled.ExpandMore,
+                    label = "展开 $groupSize 个${unitLabel}换源",
+                    onClick = onExpandGroup,
+                )
+            }
+        }
+    }
+}
+
+/** 菜单里的一行操作：图标 + 文案，整行可点 */
+@Composable
+private fun SheetActionRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(22.dp),
+        )
+        Spacer(Modifier.width(14.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
     }
 }

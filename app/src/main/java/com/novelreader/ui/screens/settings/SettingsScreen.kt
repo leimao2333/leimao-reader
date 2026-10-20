@@ -101,6 +101,7 @@ fun SettingsScreen(
     val hideAdult by viewModel.hideAdult.collectAsState()
     val novelShelfPrompt by viewModel.novelShelfPrompt.collectAsState()
     val comicShelfPrompt by viewModel.comicShelfPrompt.collectAsState()
+    val searchLongPressShelf by viewModel.searchLongPressShelf.collectAsState()
 
     // 应用更新（v1.5.4.0）
     val updateBusy by viewModel.updateBusy.collectAsState()
@@ -297,6 +298,16 @@ fun SettingsScreen(
                 valueRange = 1f..16f,
                 steps = 15,
             )
+            Spacer(Modifier.height(8.dp))
+            SettingRow(
+                title = "长按搜索结果加入书架",
+                subtitle = "长按结果弹出菜单，可直接收藏 / 阅读 / 查看详情；关闭后只保留点击与收藏按钮（v1.8.3.0）",
+            ) {
+                Switch(
+                    checked = searchLongPressShelf,
+                    onCheckedChange = { viewModel.setSearchLongPressShelf(it) },
+                )
+            }
 
             Spacer(Modifier.height(24.dp))
 

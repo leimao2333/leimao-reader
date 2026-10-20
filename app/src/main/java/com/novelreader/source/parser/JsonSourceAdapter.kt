@@ -38,7 +38,10 @@ class JsonSourceAdapter(
             MediaItem(
                 id = fields["id"] ?: fields["url"] ?: "",
                 title = fields["title"] ?: "",
-                cover = absoluteUrl(ruleSet.baseUrl, fields["cover"]),
+                // v1.8.3.0：清洗封面（见 CoverUrl，JS undefined 拼出的假地址要清空）
+                cover = com.novelreader.core.util.CoverUrl.sanitize(
+                    absoluteUrl(ruleSet.baseUrl, fields["cover"]),
+                ),
                 author = fields["author"],
                 desc = fields["desc"],
                 type = type,
@@ -60,7 +63,9 @@ class JsonSourceAdapter(
         rule.fields.forEach { (key, expr) ->
             val value = HtmlSelectorEngine.extract(html, expr)
             when (key) {
-                "cover" -> cover = absoluteUrl(ruleSet.baseUrl, value) ?: cover
+                "cover" -> com.novelreader.core.util.CoverUrl.sanitize(
+                    absoluteUrl(ruleSet.baseUrl, value),
+                )?.let { cover = it }
                 "author" -> author = value ?: author
                 "desc" -> desc = value ?: desc
                 "title" -> Unit // 标题一般不变，忽略

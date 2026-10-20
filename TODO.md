@@ -91,14 +91,16 @@
 
 ## 四、搜索
 
-- [ ] **14. 搜索结果长按加入书架（可在设置里开关）**
+- [x] **14. 搜索结果长按加入书架（可在设置里开关）** ✅ v1.8.3.0
   - 小说 / 漫画 / 视频三个搜索页共用 `ui/components/GroupedSearchResults.kt`，在此统一加长按手势。
   - 长按 → 菜单「加入书架」；行为与点击默认进阅读页区分开。
   - 设置项开关，默认开启。
+  - 实现：`MediaItemCard` / `GroupCard` 改用 `combinedClickable`（长按带震动反馈），长按弹 `SearchResultActionSheet`（标题 + 加入书架/移出书架 + 阅读/播放 + 查看详情 + 展开 N 个源换源），菜单只列当前页实际支持的动作；视频文案走「加入收藏」。开关 `PreferencesManager.KEY_SEARCH_LONG_PRESS_SHELF`（`search_long_press_shelf`，默认 true），三个 VM 各自暴露 `longPressShelfEnabled`，设置页「搜索」区块可关。
 
-- [ ] **15. 搜索结果在「阅读」按钮旁新增收藏按钮**
+- [x] **15. 搜索结果在「阅读」按钮旁新增收藏按钮** ✅ v1.8.3.0
   - 每条结果行内在「阅读」旁加一个收藏（心形/星形）图标，已收藏时高亮。
   - 同样落在 `GroupedSearchResults.kt`，一处改动三页生效。
+  - 实现：漫画 / 视频搜索 VM 补 `bookRepository` + `shelfKeys` + `toggleShelf`（`AppNavHost` 注入 `it.bookRepository`）；收藏图标除展开行外，**折叠的聚合卡片右侧也补了一个**（结果默认都是折叠态，只放展开行等于默认看不见）。
 
 ---
 

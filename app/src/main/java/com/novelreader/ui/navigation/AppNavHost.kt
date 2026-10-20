@@ -597,7 +597,7 @@ fun AppNavHost(
             val initialKeyword = backStackEntry.arguments?.getString("keyword").orEmpty()
             val viewModel: ComicSearchViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
-                    ComicSearchViewModel(it.contentRepository, it.preferencesManager, it.sourceRepository)
+                    ComicSearchViewModel(it.contentRepository, it.preferencesManager, it.bookRepository, it.sourceRepository)
                 }
             )
             ComicSearchScreen(
@@ -697,7 +697,7 @@ fun AppNavHost(
             val initialKeyword = backStackEntry.arguments?.getString("keyword").orEmpty()
             val viewModel: VideoSearchViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
-                    VideoSearchViewModel(it.contentRepository, it.preferencesManager, it.sourceRepository)
+                    VideoSearchViewModel(it.contentRepository, it.preferencesManager, it.bookRepository, it.sourceRepository)
                 }
             )
             VideoSearchScreen(

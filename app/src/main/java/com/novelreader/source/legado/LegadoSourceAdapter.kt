@@ -162,7 +162,12 @@ class LegadoSourceAdapter(
             MediaItem(
                 id = detailUrl.ifBlank { title },
                 title = title,
-                cover = LegadoRuleEngine.toAbsoluteUrl(baseUrl, fields["coverUrl"]),
+                // v1.8.3.0：封面必须过 CoverUrl 清洗（JS undefined 会被拼成
+                // `https://站点/org.mozilla.javascript.Undefined@hash` 这种假地址，
+                // 非空但永远加载不出来，还会让首页补封面逻辑误判「已有封面」）
+                cover = com.novelreader.core.util.CoverUrl.sanitize(
+                    LegadoRuleEngine.toAbsoluteUrl(baseUrl, fields["coverUrl"]),
+                ),
                 author = fields["author"],
                 desc = intro,
                 type = info.type,
@@ -973,10 +978,12 @@ class LegadoSourceAdapter(
             // 路径（实测 `/files/article/image/104/104246/104246s.jpg`），直接拿去加载
             // 必然失败 —— 列表规则那边一直有 toAbsoluteUrl，详情这边漏了，于是
             // 「列表没封面 → 靠详情补封面」补回来的仍是一张破图。
-            cover = fieldValue("coverUrl")
+            // v1.8.3.0：同上，详情补出来的封面也要清洗，脏值宁可留空让下一次补
+            (fieldValue("coverUrl")
                 ?.takeIf { it.isNotBlank() }
                 ?.let { LegadoRuleEngine.toAbsoluteUrl(baseUrl, it) ?: it }
-                ?: cover
+                ?.let { com.novelreader.core.util.CoverUrl.sanitize(it) })
+                ?.let { cover = it }
             author = fieldValue("author") ?: author
             desc = fieldValue("intro") ?: desc
             // 详情页元信息（#27）：状态 / 字数 / 最新章节 / 更新时间

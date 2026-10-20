@@ -98,7 +98,9 @@ class BookRepositoryImpl(
 fun BookEntity.toDomain(): MediaItem = MediaItem(
     id = itemId,
     title = title,
-    cover = cover,
+    // v1.8.3.0：库里可能存着早期从 JS 源拿到的脏封面（undefined 拼成的假地址），
+    // 读出时统一清成 null，书架 / 首页才不会一直裂图
+    cover = com.novelreader.core.util.CoverUrl.sanitize(cover),
     author = author,
     desc = desc,
     type = SourceType.fromString(type) ?: SourceType.NOVEL,

@@ -2,6 +2,7 @@ package com.novelreader.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -45,7 +46,9 @@ import com.novelreader.domain.model.MediaItem
  * @param onRead 可选「阅读」按钮回调（小说搜索结果用）；为 null 时不显示阅读按钮。
  * @param onToggleShelf 可选「加入/移出书架」回调；为 null 时不显示收藏按钮（#22）。
  * @param inShelf 当前是否已在书架，决定收藏按钮文案与图标。
+ * @param onLongClick 可选长按回调（v1.8.3.0 待办 #14：长按弹出操作菜单）；为 null 时只有点击。
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun MediaItemCard(
     item: MediaItem,
@@ -53,12 +56,18 @@ fun MediaItemCard(
     onRead: (() -> Unit)? = null,
     onToggleShelf: (() -> Unit)? = null,
     inShelf: Boolean = false,
+    onLongClick: (() -> Unit)? = null,
 ) {
     // 扁平列表项（无 Card 阴影/elevation），对齐开源阅读紧凑、流畅的观感
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            // v1.8.3.0 待办 #14：combinedClickable 自带长按震动反馈，
+            // 点击仍走 onClick（进详情 / 阅读），长按单独弹操作菜单，两者不冲突。
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick,
+            )
             .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
         Row(modifier = Modifier.fillMaxWidth()) {

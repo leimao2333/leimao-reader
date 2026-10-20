@@ -134,6 +134,23 @@
   - 涉及：`core/util/VideoQualityTag.kt`（新建）、`PreferencesManager.kt`、
     `VideoPlayerViewModel.kt`、`VideoControls.kt`、`SettingsViewModel.kt`、`SettingsScreen.kt`。
 
+- [ ] **28. 视频标签整合多个标签（对齐小说 / 漫画口径，消除同义词分裂）**
+  - 现状：小说 / 漫画在 `core/util/ItemTags.kt` 的 `of()` 里走文本富化
+    （`FanworkTags` + `ComicTagLexicon`，词表 = `ComicGenres`/`NovelGenres` +
+    `TagAlias.GROUPS` 96 组同义译名），一部作品能拿到多个规范名标签；
+    视频侧 `ItemTags.of()` **显式跳过**文本富化（v1.7.9.0 判断影视简介是剧情复述、噪声大），
+    只靠 `VideoTagLexicon`（地区 / 语言 / 年代 / 主创 / 复合词拆分 / 标题窄口径补充）+
+    `TagAlias.canonicalOf` —— 采集站 `vod_type_name` 里大量同义写法（如「伦理」与「理论片」各写各的）
+    没有归并源，同一维度散成多个标签、单部作品的标签数量也明显少于小说 / 漫画。
+  - 需求：把视频做成和小说 / 漫画一致的「多标签整合」：
+    - 题材同义词归并：补一张影视题材同义词表（扩 `TagAlias.GROUPS` 或给
+      `VideoTagLexicon` 加题材等价组），覆盖 `vod_type_name` 常见同义写法，
+      统一归一到规范名；**查询侧 `aliasesOf` 必须同口径**（#11 教训：只改存储侧不改查询侧仍搜不到）。
+    - 复合词拆分维持 `splitCompoundTag`（#12 已做，勿重复）；
+      一部视频除 `type_name` 外评估是否从标题窄口径补题材（沿用现有
+      `MAX_TITLE_GENRES` / 歧义小词口径）或纳入 `vod_class` 等额外字段。
+  - 涉及：`core/util/ItemTags.kt`、`VideoTagLexicon.kt`、`TagAlias.kt`、`TagTagger.kt`、`TagQuerySpec.kt`。
+
 ---
 
 ## 四、搜索
@@ -148,6 +165,37 @@
   - 每条结果行内在「阅读」旁加一个收藏（心形/星形）图标，已收藏时高亮。
   - 同样落在 `GroupedSearchResults.kt`，一处改动三页生效。
   - 实现：漫画 / 视频搜索 VM 补 `bookRepository` + `shelfKeys` + `toggleShelf`（`AppNavHost` 注入 `it.bookRepository`）；收藏图标除展开行外，**折叠的聚合卡片右侧也补了一个**（结果默认都是折叠态，只放展开行等于默认看不见）。
+
+- [x] **26. 搜索结果展示方式：宫格 / 列表可切换（视频 / 漫画 / 小说 / 订阅）** ✅ v1.8.6.0
+  - 设置里给四个模块（视频、漫画、小说、订阅）各加一个「搜索结果展示」选项：宫格模式 / 列表模式，
+    偏好存 `PreferencesManager.kt`（每模块独立 key，如 `KEY_SEARCH_LAYOUT_NOVEL` 等），默认列表（保持现状）。
+  - 搜索页加切换小图标：`NovelSearchScreen.kt` / `ComicSearchScreen.kt` / `VideoSearchScreen.kt`
+    顶栏（返回按钮旁）放宫格/列表切换图标（如 `Icons.Filled.GridView` / `ViewList`），点击即时切换并写回设置。
+  - 订阅（`RssScreen.kt`）的期刊检索结果面板同样支持两种展示，切换图标放期刊面板顶栏。
+  - 列表模式沿用现有 `ui/components/GroupedSearchResults.kt` 的折叠聚合逻辑；
+    宫格模式需实现对应的网格布局（注意聚合卡片「N 个源」展开/收起始在列表态，宫格态要有等价交互）。
+  - 四个 VM 各自暴露 `searchLayout`（StateFlow），与设置页改动实时同步。
+  - 实现（v1.8.6.0）：偏好 `KEY_SEARCH_LAYOUT_NOVEL/COMIC/VIDEO/RSS`（默认 false = 列表），
+    `PreferencesManager` 暴露 `searchGrid*Flow` + `setSearchGrid*`；三个搜索页顶栏加宫格/列表切换图标，
+    设置页「搜索」区加四个开关行（各模块独立记忆）。
+    `GroupedSearchResults.kt` 新增宫格态：`GridResults`（两列 `LazyVerticalGrid`）+ `GridResultCell`
+    （封面 0.72 比例、多源徽标、收藏角标）+ `GridSourceSheet`（宫格撑不开就地展开，多源组点击弹换源面板，
+    语义与列表态展开一致）。订阅侧 `JournalSubscribeDialog` 加同一套切换（宫格卡片 `JournalGridCell`）。
+
+- [x] **27. 标签搜索输入提示词（本地已有标签自动提示）** ✅ v1.8.6.0
+  - 现状：`ui/screens/tag/TagSearchScreen.kt` 只有一个标签输入框（`query`，回车 `addTag`）+ 热门推荐 chip；输入时无本地标签提示，只能凭记忆盲打。
+  - 需求：输入框聚焦并输入时，基于**本地已有标签**弹出提示词列表（前缀优先 / 包含匹配，同口径按覆盖源数排序）。
+  - 点击提示词直接 `addTag`；多标签空格组合场景下只提示当前正在输的那一个词。
+  - 提示数据全部本地：复用 VM 已有的 `allTags`（`TagIndexRepository` 标签池按 Type 区分），不引网络请求。
+  - 小说 / 漫画 / 视频三个类型各自生效（页面按 `type` 打开天然隔离，无需额外偏好 key）。
+  - 涉及：`TagSearchScreen.kt`、`TagSearchViewModel.kt`（新增 `suggestions` StateFlow）。
+  - 实现（v1.8.6.0）：`core/util/TagSuggestions.kt` 纯函数（`currentWord` / `of` / `applyToQuery` / `matchScore`）
+    + `TagSuggestionsTest` 15 个用例。`TagSearchViewModel` 在 `setQuery` 时用按覆盖源数倒序的标签池计算提示，
+    `TagSearchScreen` 用 `DropdownMenu`（最高 264dp）浮层展示，点选走 `applyToQuery` 原地替换最后一段
+    （`-` 排除与 `题材:` 前缀原样保留），不追加成新条件。
+    排序：匹配类型（前缀 < 包含）→ 补全量更短 → 池内顺序（覆盖源数）。
+    过滤：空格分段里已写进查询的条件整族屏蔽；正在输入的词本身是完整标签时也屏蔽同根词
+    （避免打完「无码」还满屏「无码漫画」）。
 
 ---
 
@@ -193,6 +241,30 @@
     JournalCatalog,JournalFeed,ArticleBodyExtractor}.kt`、`RssParser.kt`、`RssRepositoryImpl.kt`、
     `JournalDialogs.kt`、`RssReaderScreen.kt`。
 
+- [x] **29. PDF 导入功能：本地 PDF 直接添加到订阅的书架** ✅ v1.8.6.0
+  - 现状：应用内 PDF 阅读（`ui/screens/pdf/`，v1.8.5.1）只吃 PDF 直链 ——
+    `PdfViewerViewModel` 收 `url`，经 `PdfFileCache` 下载后 `PdfRenderer` 打开，没有本地文件入口；
+    本地导入（书架 / 首页「加载本地资源」）只支持 TXT（picker 限 `text/plain`），
+    落到 `LocalBookStore` 由小说 / 漫画书架消费，订阅侧没有本地文档位。
+  - 需求：订阅模块提供「导入 PDF」入口 —— 系统文件选择器选本地 PDF → 复制进应用私有目录 →
+    **直接出现在订阅的书架 / 列表**，点击即读（复用 `Routes.PDF_VIEWER`）。
+  - 实现要点：
+    - 入口放 `RssScreen.kt` 顶栏（与期刊面板「书」图标同段），单选 / 多选按需定。
+    - 存储：PDF 不进 `books` 表（那是小说 / 漫画书架）；用订阅侧独立存储，
+      若需新实体 / 新表，按备注规矩写 Room 迁移并自增 DB 版本。
+    - 阅读：`PdfViewerViewModel` 目前只认 http url，需支持本地路径
+      （如把导入文件纳入 `PdfFileCache` 键空间，或给 VM 加 local 分支 ——
+      注意分享用的 FileProvider 分支别受影响）。
+    - 管理：订阅列表内长按可删除（同步清理文件）；阅读进度可参考 `WatchProgress` 的思路。
+  - 涉及：`RssScreen.kt`、`Routes.kt`、`ui/screens/pdf/PdfViewerViewModel.kt`、`PdfFileCache.kt`、
+    `AppDatabase.kt`（若新表）。
+  - 实现（v1.8.6.0）：新建 `rss_pdfs` 表（`RssPdfEntity` + `RssPdfDao`，DB version 17 / `MIGRATION_16_17`），
+    `core/rss/RssPdfStore.kt` 负责导入（`contentResolver.openInputStream` → `filesDir/rss_pdf/<uuid>.pdf`，
+    先验 `%PDF` 魔数、128MB 上限）与删除（库记录 + 文件同清）。
+    订阅页顶栏加 `PictureAsPdf` 图标（picker 限 `application/pdf`），主列表顶部「本地 PDF」分区与文章混排，
+    点击走 `Routes.PDF_VIEWER` 的 `file://` 地址；`PdfViewerViewModel.load()` 加本地分支（同样验魔数后直接 open），
+    `res/xml/file_paths.xml` 补 `files-path rss_pdf`（分享用）。长按删除带二次确认。
+
 - [ ] **23. PDF 阅读增强：夜间反色 / 跳页 / 文字层**
   - 现状（v1.8.5.1）：应用内只做「整页适配 + 缩放 + 翻页」，够读完一篇，但有三处明显的欠账。
   - **夜间反色**：页面是白底位图，深色主题下全屏白得刺眼。可加一个渲染开关，
@@ -204,13 +276,16 @@
     要做得换 PDFium 类库（每个 ABI +8~15MB，项目已经有 ONNX 的 18MB/ABI），
     先看有没有真实需求再决定。
 
-- [ ] **24. RSS 订阅入口增加设置开关（默认关）+ 入口下移 + 阅读体验完善**
+- [x] **24. RSS 订阅入口增加设置开关（默认关）+ 入口下移 + 阅读体验完善** ✅ v1.8.6.0
   - 设置项「RSS 订阅入口」：`SettingsScreen.kt` 加开关，`PreferencesManager.kt` 新增 key，**默认关闭**。
   - 现状：RSS 入口是首页顶栏的 RssFeed 图标按钮（`ui/screens/common/HomeScreen.kt` 的 `onOpenRss`）。
   - 开关开启后，把 RSS 订阅入口从顶栏搬到「订阅，小说，漫画，视频」分类栏下方；关闭时保持原样。
   - 阅读体验完善：`ui/screens/rss/RssReaderScreen.kt` / `RssScreen.kt` 的阅读排版、下拉刷新、已读状态、
     正文抽取（`core/rss/ArticleBodyExtractor.kt`）等细节。
   - 涉及：`SettingsScreen.kt`、`SettingsViewModel.kt`、`PreferencesManager.kt`、`HomeScreen.kt`、`ui/screens/rss/`。
+  - 实现（v1.8.6.0）：`KEY_RSS_ENTRY_BELOW`（`rss_entry_below`，默认 false）→ 设置页「订阅（RSS）」区块开关；
+    开启后首页顶栏 RssFeed 图标条件隐藏（`if (!rssEntryBelow)`），分类导航下方首行渲染 `RssEntryRow` 常驻入口。
+    阅读体验：`RssReaderScreen` 顶栏加 A-/A+ 调正文字号（`KEY_RSS_FONT_SIZE`，12~24 默认 16，行高按 1.6 倍联动）。
 
 ---
 

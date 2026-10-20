@@ -73,6 +73,7 @@ class AppContainer(context: Context) {
                 AppDatabase.MIGRATION_13_14,
                 AppDatabase.MIGRATION_14_15,
                 AppDatabase.MIGRATION_15_16,
+                AppDatabase.MIGRATION_16_17,
             )
             .build()
     }
@@ -162,6 +163,16 @@ class AppContainer(context: Context) {
     /** RSS 订阅仓库（v1.3.1.0） */
     val rssRepository: com.novelreader.domain.repository.RssRepository by lazy {
         com.novelreader.data.repository.RssRepositoryImpl(database.rssDao())
+    }
+
+    /**
+     * 订阅书架里的本地 PDF 存储（v1.8.6.0 待办 #29）。
+     *
+     * 文件落 `filesDir/rss_pdf/`，元数据走 `rss_pdfs` 表；
+     * 导入 / 删除都由这里的 store 收口，RssScreen 不直接碰 DAO 与文件。
+     */
+    val rssPdfStore: com.novelreader.core.rss.RssPdfStore by lazy {
+        com.novelreader.core.rss.RssPdfStore(appContext, database.rssPdfDao())
     }
 
     /** 下载管理器 */

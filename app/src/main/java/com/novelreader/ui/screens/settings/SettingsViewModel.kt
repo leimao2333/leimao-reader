@@ -594,6 +594,25 @@ class SettingsViewModel(
     private val _searchLongPressShelf = MutableStateFlow(true)
     val searchLongPressShelf: StateFlow<Boolean> = _searchLongPressShelf.asStateFlow()
 
+    // ===== 搜索结果展示（v1.8.6.0 待办 #26） =====
+    /** 四个模块各自记忆搜索结果布局：false = 列表（默认），true = 宫格 */
+    private val _searchGridNovel = MutableStateFlow(false)
+    val searchGridNovel: StateFlow<Boolean> = _searchGridNovel.asStateFlow()
+
+    private val _searchGridComic = MutableStateFlow(false)
+    val searchGridComic: StateFlow<Boolean> = _searchGridComic.asStateFlow()
+
+    private val _searchGridVideo = MutableStateFlow(false)
+    val searchGridVideo: StateFlow<Boolean> = _searchGridVideo.asStateFlow()
+
+    private val _searchGridRss = MutableStateFlow(false)
+    val searchGridRss: StateFlow<Boolean> = _searchGridRss.asStateFlow()
+
+    // ===== RSS 订阅（v1.8.6.0 待办 #24） =====
+    /** RSS 订阅入口是否移到首页分类导航下方（默认关 = 顶栏图标） */
+    private val _rssEntryBelow = MutableStateFlow(PreferencesManager.DEFAULT_RSS_ENTRY_BELOW)
+    val rssEntryBelow: StateFlow<Boolean> = _rssEntryBelow.asStateFlow()
+
     // ===== 视频播放（v1.3.2.0） =====
     /** 进入播放页默认全屏 */
     private val _videoFullscreenDefault = MutableStateFlow(false)
@@ -729,11 +748,52 @@ class SettingsViewModel(
         viewModelScope.launch {
             preferencesManager.searchLongPressShelfFlow.collect { _searchLongPressShelf.value = it }
         }
+        viewModelScope.launch {
+            preferencesManager.rssEntryBelowFlow.collect { _rssEntryBelow.value = it }
+        }
+        // 搜索结果展示（v1.8.6.0 待办 #26）：四个模块独立记忆
+        viewModelScope.launch {
+            preferencesManager.searchGridNovelFlow.collect { _searchGridNovel.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.searchGridComicFlow.collect { _searchGridComic.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.searchGridVideoFlow.collect { _searchGridVideo.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.searchGridRssFlow.collect { _searchGridRss.value = it }
+        }
     }
 
     /** 切换「隐藏成人内容」开关 */
     fun setHideAdult(value: Boolean) {
         viewModelScope.launch { preferencesManager.setHideAdult(value) }
+    }
+
+    /** 切换 RSS 订阅入口位置（v1.8.6.0 待办 #24） */
+    fun setRssEntryBelow(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setRssEntryBelow(value) }
+    }
+
+    /** 切换小说搜索结果宫格展示（v1.8.6.0 待办 #26） */
+    fun setSearchGridNovel(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setSearchGridNovel(value) }
+    }
+
+    /** 切换漫画搜索结果宫格展示（v1.8.6.0 待办 #26） */
+    fun setSearchGridComic(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setSearchGridComic(value) }
+    }
+
+    /** 切换视频搜索结果宫格展示（v1.8.6.0 待办 #26） */
+    fun setSearchGridVideo(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setSearchGridVideo(value) }
+    }
+
+    /** 切换订阅（期刊检索）结果宫格展示（v1.8.6.0 待办 #26） */
+    fun setSearchGridRss(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setSearchGridRss(value) }
     }
 
     fun setDarkTheme(value: Boolean) {

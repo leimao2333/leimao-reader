@@ -1,5 +1,8 @@
 package com.novelreader.ui.screens.rss
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -33,6 +36,8 @@ import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material.icons.filled.SelectAll
@@ -41,6 +46,8 @@ import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -73,6 +80,8 @@ import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
 import com.novelreader.core.rss.RssMessages
 import com.novelreader.core.rss.RssParser
+import com.novelreader.core.rss.sizeLabel
+import com.novelreader.data.model.RssPdfEntity
 import com.novelreader.domain.model.JournalCandidate
 import com.novelreader.domain.model.RssArticle
 import com.novelreader.domain.model.RssFeed
@@ -114,10 +123,16 @@ data class DeleteConfirm(
  *
  * 数据全部来自 Room Flow，界面无需手动刷新：
  * 抓取入库后列表自动更新；筛选（全部 / 未读 / 收藏）在内存中完成，不额外查库。
+ *
+ * @param pdfStore 订阅书架里的本地 PDF 存储（v1.8.6.0 待办 #29；null = 不可用，
+ *   只影响 PDF 区，订阅主链路不受影响）
+ * @param prefs 偏好设置（v1.8.6.0 待办 #26：期刊检索结果的宫格/列表记忆；null = 不持久化）
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class RssViewModel(
     private val repository: RssRepository,
+    private val pdfStore: com.novelreader.core.rss.RssPdfStore? = null,
+    private val prefs: com.novelreader.core.preferences.PreferencesManager? = null,
 ) : ViewModel() {
 
     /** 当前选中的订阅源（null = 全部） */
@@ -139,6 +154,17 @@ class RssViewModel(
     val selected: StateFlow<Long?> = selectedFeedId.asStateFlow()
 
     val currentFilter: StateFlow<RssFilter> = filter.asStateFlow()
+
+    // ==================== 期刊检索结果展示（v1.8.6.0 待办 #26） ====================
+
+    /** 期刊订阅面板里检索结果的展示方式：false = 列表（默认），true = 宫格 */
+    val searchGrid: StateFlow<Boolean> = prefs?.searchGridRssFlow
+        ?.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+        ?: MutableStateFlow(false)
+
+    fun setSearchGrid(value: Boolean) {
+        viewModelScope.launch { prefs?.setSearchGridRss(value) }
+    }
 
     // ==================== 分组 / 批量管理（v1.8.3.0 待办 #16） ====================
 
@@ -294,6 +320,41 @@ class RssViewModel(
     fun dismissMessage() {
         _message.value = null
     }
+
+    // ==================== 本地 PDF 导入（v1.8.6.0 待办 #29） ====================
+
+    private val _pdfBusy = MutableStateFlow(false)
+    val pdfBusy: StateFlow<Boolean> = _pdfBusy.asStateFlow()
+
+    /** 订阅书架里的本地 PDF（按导入时间倒序） */
+    val pdfs: StateFlow<List<com.novelreader.data.model.RssPdfEntity>> = pdfStore?.observe()
+        ?.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+        ?: MutableStateFlow(emptyList())
+
+    /** 导入一个本地 PDF（复制进应用目录 + 落库） */
+    fun importPdf(uri: android.net.Uri, displayName: String?) {
+        val store = pdfStore ?: return
+        viewModelScope.launch {
+            _pdfBusy.value = true
+            runCatching { store.import(uri, displayName) }
+                .onSuccess { _message.value = "已导入 PDF" }
+                .onFailure { _message.value = it.message ?: "导入失败" }
+            _pdfBusy.value = false
+        }
+    }
+
+    /** 删除本地 PDF（库记录 + 文件一起清） */
+    fun deletePdf(entity: com.novelreader.data.model.RssPdfEntity) {
+        val store = pdfStore ?: return
+        viewModelScope.launch {
+            store.delete(entity)
+            _message.value = "已删除《${entity.name}》"
+        }
+    }
+
+    /** 本地 PDF 的文件（导入后即可读；被外部清理掉时返回 null） */
+    fun pdfFileOf(entity: com.novelreader.data.model.RssPdfEntity): java.io.File? =
+        pdfStore?.fileOf(entity)
 
     /**
      * 进入页面时的自动刷新：只要有源超过 [STALE_MILLIS] 没抓过就刷一遍。
@@ -470,6 +531,8 @@ fun RssScreen(
     viewModel: RssViewModel,
     onOpenArticle: (Long) -> Unit,
     onBack: () -> Unit,
+    /** 打开 PDF（本地导入的与期刊 PDF 直链共用应用内阅读页；v1.8.6.0 待办 #29） */
+    onOpenPdf: (String, String) -> Unit = { _, _ -> },
 ) {
     val feeds by viewModel.feeds.collectAsState()
     val articles by viewModel.articles.collectAsState()
@@ -486,6 +549,9 @@ fun RssScreen(
     val selectedFeeds by viewModel.selectedFeeds.collectAsState()
     val collapsedGroups by viewModel.collapsedGroups.collectAsState()
     val deleteConfirm by viewModel.deleteConfirm.collectAsState()
+    // 本地 PDF 导入（v1.8.6.0 待办 #29）
+    val pdfs by viewModel.pdfs.collectAsState()
+    val pdfBusy by viewModel.pdfBusy.collectAsState()
 
     val context = androidx.compose.ui.platform.LocalContext.current
     LaunchedEffect(message) {
@@ -505,6 +571,25 @@ fun RssScreen(
     var renameGroupTarget by remember { mutableStateOf<String?>(null) }
     /** 打开中的「移动到分组」选择器 */
     var moveToGroupPicker by remember { mutableStateOf(false) }
+    /** 待确认删除的本地 PDF（v1.8.6.0 待办 #29） */
+    var pdfDeleteTarget by remember { mutableStateOf<RssPdfEntity?>(null) }
+    /** 顶栏溢出菜单（v1.8.6.0：图标太多会把标题挤成两行） */
+    var showOverflow by remember { mutableStateOf(false) }
+
+    // 本地 PDF 导入（v1.8.6.0 待办 #29）：系统文件选择器只放行 PDF
+    val pdfPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            val displayName = runCatching {
+                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx) else null
+                }
+            }.getOrNull() ?: uri.lastPathSegment
+            viewModel.importPdf(uri, displayName)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -516,7 +601,7 @@ fun RssScreen(
                             else "已选 ${selectedFeeds.size} / ${visibleFeeds.size}",
                         )
                     } else {
-                        Text("订阅")
+                        Text("订阅", maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 },
                 navigationIcon = {
@@ -543,7 +628,7 @@ fun RssScreen(
                             )
                         }
                     } else {
-                        if (refreshing) {
+                        if (refreshing || pdfBusy) {
                             CircularProgressIndicator(
                                 modifier = Modifier
                                     .size(22.dp)
@@ -555,11 +640,46 @@ fun RssScreen(
                                 Icon(Icons.Filled.Refresh, contentDescription = "刷新全部")
                             }
                         }
-                        IconButton(onClick = { showJournalDialog = true }) {
-                            Icon(Icons.Filled.MenuBook, contentDescription = "订阅期刊")
-                        }
-                        IconButton(onClick = { viewModel.markAllRead() }) {
-                            Icon(Icons.Filled.DoneAll, contentDescription = "全部已读")
+                        // 导入本地 PDF / 订阅期刊 / 全部已读收进溢出菜单（v1.8.6.0）
+                        Box {
+                            IconButton(onClick = { showOverflow = true }) {
+                                Icon(Icons.Filled.MoreVert, contentDescription = "更多")
+                            }
+                            DropdownMenu(
+                                expanded = showOverflow,
+                                onDismissRequest = { showOverflow = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("导入本地 PDF") },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.PictureAsPdf, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        showOverflow = false
+                                        pdfPicker.launch(arrayOf("application/pdf"))
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("订阅期刊") },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.MenuBook, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        showOverflow = false
+                                        showJournalDialog = true
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("全部标为已读") },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.DoneAll, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        showOverflow = false
+                                        viewModel.markAllRead()
+                                    },
+                                )
+                            }
                         }
                         IconButton(onClick = { showAddDialog = true }) {
                             Icon(Icons.Filled.Add, contentDescription = "添加订阅")
@@ -678,11 +798,75 @@ fun RssScreen(
                     onLongClickFeed = { manageFeed = it },
                 )
 
+                // 本地 PDF（v1.8.6.0 待办 #29）：没有订阅源也要能看到导入的 PDF。
+                // PDF 区固定在列表顶部，文章照常列在下方——「订阅的书架」从此有两种内容。
+                pdfs.isNotEmpty() -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 16.dp),
+                ) {
+                    item(key = "pdf_header") {
+                        Text(
+                            text = "本地 PDF · ${pdfs.size}",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(
+                                start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp,
+                            ),
+                        )
+                    }
+                    items(pdfs, key = { "pdf_${it.id}" }) { pdf ->
+                        PdfRow(
+                            pdf = pdf,
+                            onClick = {
+                                val file = viewModel.pdfFileOf(pdf)
+                                if (file != null) {
+                                    // file:// 前缀让 PdfViewerViewModel 走「本地直开」分支
+                                    onOpenPdf("file://${file.absolutePath}", pdf.name)
+                                } else {
+                                    android.widget.Toast.makeText(
+                                        context, "PDF 文件已丢失", android.widget.Toast.LENGTH_SHORT,
+                                    ).show()
+                                }
+                            },
+                            onLongClick = { pdfDeleteTarget = pdf },
+                        )
+                    }
+                    if (feeds.isNotEmpty() && articles.isNotEmpty()) {
+                        item(key = "pdf_article_divider") {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(top = 8.dp),
+                                thickness = 0.5.dp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                            )
+                        }
+                        items(articles, key = { it.articleId }) { article ->
+                            ArticleRow(
+                                article = article,
+                                onClick = { onOpenArticle(article.articleId) },
+                                onLongClick = { actionArticle = article },
+                            )
+                        }
+                    } else {
+                        item(key = "pdf_tail_hint") {
+                            Text(
+                                text = if (feeds.isEmpty()) {
+                                    "点右上角「＋」添加订阅地址，或用「书」图标订阅 Science / Nature 等顶刊"
+                                } else {
+                                    "当前筛选下没有文章"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(16.dp),
+                            )
+                        }
+                    }
+                }
+
                 feeds.isEmpty() -> EmptyState(
                     title = "还没有订阅",
                     subtitle = "点右上角「＋」添加订阅地址\n" +
                         "点「书」图标可直接订阅 Science / Nature / Cell 等顶刊\n" +
-                        "支持 RSS / Atom 源，也可直接粘贴 OPML",
+                        "支持 RSS / Atom 源，也可直接粘贴 OPML\n" +
+                        "点右上角 PDF 图标可导入本地 PDF",
                     onAction = { showAddDialog = true },
                 )
 
@@ -707,6 +891,31 @@ fun RssScreen(
                 }
             }
         }
+    }
+
+    // 本地 PDF 删除二次确认（v1.8.6.0 待办 #29）
+    pdfDeleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pdfDeleteTarget = null },
+            title = { Text("删除 PDF") },
+            text = {
+                Text(
+                    "删除《${target.name}》？\n" +
+                        "本地文件会一并移除，无法恢复。",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deletePdf(target)
+                        pdfDeleteTarget = null
+                    },
+                ) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pdfDeleteTarget = null }) { Text("取消") }
+            },
+        )
     }
 
     // 添加订阅
@@ -752,12 +961,15 @@ fun RssScreen(
     if (showJournalDialog) {
         val journalCandidates by viewModel.journalCandidates.collectAsState()
         val journalSearching by viewModel.journalSearching.collectAsState()
+        val journalGrid by viewModel.searchGrid.collectAsState()
         JournalSubscribeDialog(
             candidates = journalCandidates,
             searching = journalSearching,
             subscribedUrls = remember(feeds) {
                 feeds.mapTo(mutableSetOf()) { it.url }
             },
+            grid = journalGrid,
+            onToggleGrid = { viewModel.setSearchGrid(!journalGrid) },
             onQueryChange = { viewModel.searchJournals(it) },
             onSubscribe = { viewModel.subscribeJournal(it) },
             onDismiss = { showJournalDialog = false },
@@ -1160,6 +1372,64 @@ private fun ManageBottomBar(
                 else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
+
+/**
+ * 订阅书架里的本地 PDF 行（v1.8.6.0 待办 #29）。
+ *
+ * 点击走应用内 PDF 阅读页（[com.novelreader.ui.screens.pdf.PdfViewerScreen]）；
+ * 长按删除（库记录 + 文件一起清）。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun PdfRow(
+    pdf: RssPdfEntity,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.PictureAsPdf,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = pdf.name,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "${pdf.sizeLabel()} · ${RssFormat.relativeTime(pdf.addedAt).ifBlank { "刚刚导入" }}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Icon(
+            imageVector = Icons.Filled.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

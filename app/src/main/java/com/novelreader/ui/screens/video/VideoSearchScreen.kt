@@ -4,12 +4,15 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.FilterChip
@@ -54,6 +57,8 @@ fun VideoSearchScreen(
     val selectedSourceIds by viewModel.selectedSourceIds.collectAsState()
     val shelfKeys by viewModel.shelfKeys.collectAsState()
     val longPressShelfEnabled by viewModel.longPressShelfEnabled.collectAsState()
+    /** 结果展示：true = 宫格，false = 列表（v1.8.6.0 待办 #26，与设置页同一 key） */
+    val searchGrid by viewModel.searchGrid.collectAsState()
 
     // 深链关键词：进入即搜索
     androidx.compose.runtime.LaunchedEffect(initialKeyword) {
@@ -82,6 +87,15 @@ fun VideoSearchScreen(
                 text = "搜索视频",
                 style = MaterialTheme.typography.titleMedium,
             )
+            Spacer(Modifier.weight(1f))
+            // 宫格 / 列表切换（v1.8.6.0 待办 #26）
+            IconButton(onClick = { viewModel.setSearchGrid(!searchGrid) }) {
+                Icon(
+                    imageVector = if (searchGrid) Icons.AutoMirrored.Filled.ViewList
+                    else Icons.Filled.GridView,
+                    contentDescription = if (searchGrid) "切换为列表" else "切换为宫格",
+                )
+            }
         }
 
         SearchBar(
@@ -131,6 +145,7 @@ fun VideoSearchScreen(
                     type = SourceType.VIDEO,
                     unitLabel = "播放源",
                     longPressEnabled = longPressShelfEnabled,
+                    grid = searchGrid,
                 )
             }
             state.error != null -> {
@@ -160,6 +175,7 @@ fun VideoSearchScreen(
                     type = SourceType.VIDEO,
                     unitLabel = "播放源",
                     longPressEnabled = longPressShelfEnabled,
+                    grid = searchGrid,
                 )
             }
         }

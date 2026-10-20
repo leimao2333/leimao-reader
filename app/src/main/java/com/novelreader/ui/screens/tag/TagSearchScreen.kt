@@ -43,6 +43,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -74,6 +76,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImagePainter
@@ -116,6 +119,8 @@ fun TagSearchScreen(
     val tagsByCoverage by viewModel.tagsByCoverage.collectAsState() // v1.6.5.0：「更多」面板= 全部标签
     val collecting by viewModel.collecting.collectAsState()
     val query by viewModel.query.collectAsState()
+    // v1.8.6.0 待办 #27：输入提示词（本地标签池，前缀优先）
+    val suggestions by viewModel.suggestions.collectAsState()
     val results by viewModel.results.collectAsState()
     val searching by viewModel.searching.collectAsState()
     val progress by viewModel.progress.collectAsState()
@@ -338,32 +343,58 @@ fun TagSearchScreen(
         HorizontalDivider()
 
         // ===== 手动搜索（v1.6.1.0）：输入框 + IME 搜索 / 回车触发 =====
-        OutlinedTextField(
-            value = query,
-            onValueChange = viewModel::setQuery,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            placeholder = { Text("标签（空格=同时满足 · -排除 · 题材:标签 · 魔法* 通配）") },
-            singleLine = true,
-            textStyle = MaterialTheme.typography.bodyMedium,
-            trailingIcon = {
-                if (searching) {
-                    CircularProgressIndicator(
-                        Modifier
-                            .size(20.dp)
-                            .padding(end = 12.dp),
-                        strokeWidth = 2.dp,
-                    )
-                } else {
-                    IconButton(onClick = viewModel::search) {
-                        Icon(Icons.Filled.Search, contentDescription = "搜索")
+        // v1.8.6.0 待办 #27：输入时给出本地标签提示。用 DropdownMenu 做成**浮动层** ——
+        // 直接插进 Column 会让结果区随每次按键上下跳动，输入体验反而更差。
+        Box(modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = viewModel::setQuery,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                placeholder = { Text("标签（空格=同时满足 · -排除 · 题材:标签 · 魔法* 通配）") },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium,
+                trailingIcon = {
+                    if (searching) {
+                        CircularProgressIndicator(
+                            Modifier
+                                .size(20.dp)
+                                .padding(end = 12.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        IconButton(onClick = viewModel::search) {
+                            Icon(Icons.Filled.Search, contentDescription = "搜索")
+                        }
                     }
+                },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { viewModel.search() }),
+            )
+            DropdownMenu(
+                expanded = suggestions.isNotEmpty(),
+                onDismissRequest = viewModel::clearSuggestions,
+                modifier = Modifier
+                    .fillMaxWidth(0.92f)
+                    .heightIn(max = 264.dp),
+                offset = DpOffset(x = 12.dp, y = 0.dp),
+            ) {
+                suggestions.forEach { tag ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = tag,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        },
+                        onClick = { viewModel.applySuggestion(tag) },
+                    )
                 }
-            },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { viewModel.search() }),
-        )
+            }
+        }
 
         // 「按源搜索」（v1.8.1.2）：标签池是跨源收集的，只搜某一个源能省掉几十个源一起等的长尾
         // 「按源搜索」多选下拉 + 本地标签索引入口（v1.8.1.2）

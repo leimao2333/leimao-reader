@@ -11,7 +11,9 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -49,6 +51,8 @@ fun NovelSearchScreen(
     val longPressShelfEnabled by viewModel.longPressShelfEnabled.collectAsState()
     val sources by viewModel.sources.collectAsState()
     val selectedSourceIds by viewModel.selectedSourceIds.collectAsState()
+    /** 结果展示：true = 宫格，false = 列表（v1.8.6.0 待办 #26，与设置页同一 key） */
+    val searchGrid by viewModel.searchGrid.collectAsState()
 
     // enableEdgeToEdge 下自绘顶栏必须自行避让系统栏
     Column(
@@ -86,6 +90,17 @@ fun NovelSearchScreen(
                 onRemoveHistory = viewModel::removeHistory,
                 modifier = Modifier.weight(1f),
             )
+            // 宫格 / 列表切换（v1.8.6.0 待办 #26）：小图标常驻搜索框右侧
+            IconButton(
+                onClick = { viewModel.setSearchGrid(!searchGrid) },
+                modifier = Modifier.padding(top = 8.dp),
+            ) {
+                Icon(
+                    imageVector = if (searchGrid) Icons.AutoMirrored.Filled.ViewList
+                    else Icons.Filled.GridView,
+                    contentDescription = if (searchGrid) "切换为列表" else "切换为宫格",
+                )
+            }
         }
 
         // 「按源搜索」（v1.8.1.1）：挑一个源就只搜它，其余源一个请求都不发 ——
@@ -121,6 +136,7 @@ fun NovelSearchScreen(
                     onToggleShelf = viewModel::toggleShelf,
                     shelfKeys = shelfKeys,
                     longPressEnabled = longPressShelfEnabled,
+                    grid = searchGrid,
                 )
             }
             // 搜索完成但有错误
@@ -152,6 +168,7 @@ fun NovelSearchScreen(
                     onToggleShelf = viewModel::toggleShelf,
                     shelfKeys = shelfKeys,
                     longPressEnabled = longPressShelfEnabled,
+                    grid = searchGrid,
                 )
             }
         }

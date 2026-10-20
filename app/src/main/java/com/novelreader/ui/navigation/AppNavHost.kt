@@ -409,7 +409,7 @@ fun AppNavHost(
         composable(Routes.RSS) {
             val viewModel: com.novelreader.ui.screens.rss.RssViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
-                    com.novelreader.ui.screens.rss.RssViewModel(it.rssRepository)
+                    com.novelreader.ui.screens.rss.RssViewModel(it.rssRepository, it.rssPdfStore, it.preferencesManager)
                 }
             )
             com.novelreader.ui.screens.rss.RssScreen(
@@ -418,6 +418,10 @@ fun AppNavHost(
                     navController.navigate(Routes.rssReader(articleId))
                 },
                 onBack = { navController.popBackStack() },
+                // 本地导入的 PDF 与期刊 PDF 直链共用应用内阅读页（v1.8.6.0 待办 #29）
+                onOpenPdf = { url, title ->
+                    if (url.isNotBlank()) navController.navigate(Routes.pdfViewer(url, title))
+                },
             )
         }
 
@@ -429,7 +433,9 @@ fun AppNavHost(
             val articleId = backStackEntry.arguments?.getLong("articleId") ?: 0L
             val viewModel: com.novelreader.ui.screens.rss.RssReaderViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
-                    com.novelreader.ui.screens.rss.RssReaderViewModel(it.rssRepository, articleId)
+                    com.novelreader.ui.screens.rss.RssReaderViewModel(
+                        it.rssRepository, articleId, it.preferencesManager,
+                    )
                 }
             )
             com.novelreader.ui.screens.rss.RssReaderScreen(

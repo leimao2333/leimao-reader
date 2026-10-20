@@ -67,6 +67,10 @@ class NovelSearchViewModel(
     private val _fuzzyEnabled = MutableStateFlow(PreferencesManager.DEFAULT_FUZZY_SEARCH)
     val fuzzyEnabled: StateFlow<Boolean> = _fuzzyEnabled.asStateFlow()
 
+    /** 搜索结果展示：true = 宫格，false = 列表（v1.8.6.0 待办 #26） */
+    private val _searchGrid = MutableStateFlow(false)
+    val searchGrid: StateFlow<Boolean> = _searchGrid.asStateFlow()
+
     /** 搜索历史 */
     private val _history = MutableStateFlow<List<String>>(emptyList())
     val history: StateFlow<List<String>> = _history.asStateFlow()
@@ -93,6 +97,10 @@ class NovelSearchViewModel(
         viewModelScope.launch {
             preferencesManager.searchLongPressShelfFlow.collect { _longPressShelfEnabled.value = it }
         }
+        // 搜索结果展示（v1.8.6.0 待办 #26）：与设置页共用同一个 key，改哪边都即时生效
+        viewModelScope.launch {
+            preferencesManager.searchGridNovelFlow.collect { _searchGrid.value = it }
+        }
         // 按源搜索：载入已启用的源列表
         viewModelScope.launch {
             _sources.value = runCatching {
@@ -118,6 +126,12 @@ class NovelSearchViewModel(
 
     fun setFuzzyEnabled(value: Boolean) {
         viewModelScope.launch { preferencesManager.setFuzzySearch(value) }
+    }
+
+    /** 切换搜索结果展示（v1.8.6.0 待办 #26）：立即生效并写回偏好 */
+    fun setSearchGrid(value: Boolean) {
+        _searchGrid.value = value
+        viewModelScope.launch { preferencesManager.setSearchGridNovel(value) }
     }
 
     fun clearHistory() {

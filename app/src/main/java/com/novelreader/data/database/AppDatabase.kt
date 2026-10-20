@@ -12,13 +12,15 @@ import com.novelreader.data.model.ChapterCacheEntity
 import com.novelreader.data.model.ProgressEntity
 import com.novelreader.data.model.RssArticleEntity
 import com.novelreader.data.model.RssFeedEntity
+import com.novelreader.data.model.RssPdfEntity
 import com.novelreader.data.model.SourceEntity
 
 /**
  * 应用数据库。
  *
- * 七张表：源（sources）、书架（books）、进度（progress）、章节缓存（chapter_cache）、
- * 书签（bookmarks）、RSS 订阅（rss_feeds）、RSS 文章（rss_articles）。
+ * 八张表：源（sources）、书架（books）、进度（progress）、章节缓存（chapter_cache）、
+ * 书签（bookmarks）、RSS 订阅（rss_feeds）、RSS 文章（rss_articles）、
+ * 订阅书架里的本地 PDF（rss_pdfs，v1.8.6.0 待办 #29）。
  */
 @Database(
     entities = [
@@ -29,10 +31,11 @@ import com.novelreader.data.model.SourceEntity
         BookmarkEntity::class,
         RssFeedEntity::class,
         RssArticleEntity::class,
+        RssPdfEntity::class,
         LocalTagEntity::class,
         TagInstanceEntity::class,
     ],
-    version = 16,
+    version = 17,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -42,6 +45,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun chapterCacheDao(): ChapterCacheDao
     abstract fun bookmarkDao(): BookmarkDao
     abstract fun rssDao(): RssDao
+    abstract fun rssPdfDao(): RssPdfDao
     abstract fun localTagDao(): LocalTagDao
     abstract fun tagInstanceDao(): TagInstanceDao
 
@@ -368,6 +372,29 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE rss_articles ADD COLUMN doi TEXT NOT NULL DEFAULT ''")
                 db.execSQL("ALTER TABLE rss_articles ADD COLUMN paperMetaJson TEXT NOT NULL DEFAULT ''")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_rss_articles_doi ON rss_articles (doi)")
+            }
+        }
+
+        /**
+         * v16 -> v17：订阅书架新增本地 PDF 表（v1.8.6.0 待办 #29）。
+         *
+         * 新建表而非复用 `books`：PDF 是「导入即读」的静态文档，不参与
+         * 章节缓存 / 阅读进度 / 分组那一套书架逻辑。
+         * 文件本体在 `filesDir/rss_pdf/`，删除时由上层同步清理。
+         */
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `rss_pdfs` (
+                      `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                      `name` TEXT NOT NULL,
+                      `fileName` TEXT NOT NULL,
+                      `size` INTEGER NOT NULL,
+                      `addedAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent(),
+                )
             }
         }
 

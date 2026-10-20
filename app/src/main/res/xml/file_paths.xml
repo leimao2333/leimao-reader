@@ -5,4 +5,6 @@
     <files-path name="update_files" path="update/" />
     <!-- v1.8.5.1：论文 PDF 缓存。「用其它应用打开」要把本地这份交给外部阅读器 -->
     <files-path name="pdf" path="pdf_cache/" />
+    <!-- v1.8.6.0：订阅书架导入的本地 PDF（待办 #29） -->
+    <files-path name="rss_pdf" path="rss_pdf/" />
 </paths>

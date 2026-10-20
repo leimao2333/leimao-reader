@@ -241,6 +241,28 @@ class PreferencesManager(private val context: Context) {
         /** 并行搜索线程数（并发搜索的源数量） */
         val KEY_SEARCH_CONCURRENCY = intPreferencesKey("search_concurrency")
 
+        // ===== 搜索结果展示（v1.8.6.0 待办 #26） =====
+        // 四个模块各自独立记忆：同一个用户可能想「小说看列表（要看清作者/字数）、
+        // 漫画看宫格（认封面）」，共用一个开关会互相打架。
+        // true = 宫格，false = 列表（默认，保持原有观感）。
+        val KEY_SEARCH_LAYOUT_NOVEL = booleanPreferencesKey("search_layout_novel")
+        val KEY_SEARCH_LAYOUT_COMIC = booleanPreferencesKey("search_layout_comic")
+        val KEY_SEARCH_LAYOUT_VIDEO = booleanPreferencesKey("search_layout_video")
+        /** 订阅（RSS 期刊检索结果面板） */
+        val KEY_SEARCH_LAYOUT_RSS = booleanPreferencesKey("search_layout_rss")
+
+        // ===== RSS 订阅（v1.8.6.0 待办 #24 / #29） =====
+        /**
+         * RSS 订阅入口位置（v1.8.6.0 待办 #24，默认**关闭** = 保持在首页顶栏）。
+         *
+         * 关闭：RSS 入口是顶栏的 RssFeed 图标（v1.3.1.0 起的老位置）；
+         * 开启：顶栏图标隐藏，入口搬到首页「小说 / 漫画 / 视频」导航区下方常驻一行。
+         */
+        val KEY_RSS_ENTRY_BELOW = booleanPreferencesKey("rss_entry_below")
+
+        /** RSS 阅读页正文字号（sp，12~24，默认 16；v1.8.6.0 待办 #24 阅读体验完善） */
+        val KEY_RSS_FONT_SIZE = intPreferencesKey("rss_font_size")
+
         // ===== 书架（v1.2.0.0 对标 legado 书架布局） =====
         /** 书架展现形式：0=封面墙 1=紧凑网格 2=列表 */
         val KEY_BOOKSHELF_VIEW_MODE = intPreferencesKey("bookshelf_view_mode")
@@ -313,6 +335,10 @@ class PreferencesManager(private val context: Context) {
         const val DEFAULT_VIDEO_PREFETCH_WIFI_ONLY = true
         /** 默认视频 Tab 频道栏目：0=首页 */
         const val DEFAULT_VIDEO_CHANNEL_INDEX = 0
+        /** 默认 RSS 订阅入口在顶栏（不搬到导航栏下方） */
+        const val DEFAULT_RSS_ENTRY_BELOW = false
+        /** 默认 RSS 阅读正文字号（sp） */
+        const val DEFAULT_RSS_FONT_SIZE = 16
         /** 搜索历史分隔符（历史记录用单个字符串存储，分隔符分隔） */
         private const val HISTORY_SEPARATOR = "\u001F"
     }
@@ -852,6 +878,39 @@ class PreferencesManager(private val context: Context) {
     val searchConcurrencyFlow: Flow<Int> = context.dataStore.data
         .map { it[KEY_SEARCH_CONCURRENCY] ?: DEFAULT_SEARCH_CONCURRENCY }
 
+    // ===== 搜索结果展示（v1.8.6.0 待办 #26） =====
+    /** 小说搜索结果是否宫格（false = 列表，默认） */
+    val searchGridNovelFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_SEARCH_LAYOUT_NOVEL] ?: false }
+
+    suspend fun setSearchGridNovel(value: Boolean) {
+        context.dataStore.edit { it[KEY_SEARCH_LAYOUT_NOVEL] = value }
+    }
+
+    /** 漫画搜索结果是否宫格 */
+    val searchGridComicFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_SEARCH_LAYOUT_COMIC] ?: false }
+
+    suspend fun setSearchGridComic(value: Boolean) {
+        context.dataStore.edit { it[KEY_SEARCH_LAYOUT_COMIC] = value }
+    }
+
+    /** 视频搜索结果是否宫格 */
+    val searchGridVideoFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_SEARCH_LAYOUT_VIDEO] ?: false }
+
+    suspend fun setSearchGridVideo(value: Boolean) {
+        context.dataStore.edit { it[KEY_SEARCH_LAYOUT_VIDEO] = value }
+    }
+
+    /** 订阅（期刊检索结果）是否宫格 */
+    val searchGridRssFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_SEARCH_LAYOUT_RSS] ?: false }
+
+    suspend fun setSearchGridRss(value: Boolean) {
+        context.dataStore.edit { it[KEY_SEARCH_LAYOUT_RSS] = value }
+    }
+
     // ===== 书架（v1.2.0.0） =====
     /** 书架展现形式：0=封面墙 1=紧凑网格 2=列表 */
     val bookshelfViewModeFlow: Flow<Int> = context.dataStore.data
@@ -941,5 +1000,22 @@ class PreferencesManager(private val context: Context) {
             prefs[key] = current.filter { it != keyword }
                 .joinToString(HISTORY_SEPARATOR)
         }
+    }
+
+    // ===== RSS 订阅（v1.8.6.0 待办 #24） =====
+    /** RSS 订阅入口是否搬到首页导航栏下方（默认关 = 顶栏图标） */
+    val rssEntryBelowFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_RSS_ENTRY_BELOW] ?: DEFAULT_RSS_ENTRY_BELOW }
+
+    suspend fun setRssEntryBelow(value: Boolean) {
+        context.dataStore.edit { it[KEY_RSS_ENTRY_BELOW] = value }
+    }
+
+    /** RSS 阅读页正文字号（sp，12~24，默认 16） */
+    val rssFontSizeFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_RSS_FONT_SIZE] ?: DEFAULT_RSS_FONT_SIZE }
+
+    suspend fun setRssFontSize(value: Int) {
+        context.dataStore.edit { it[KEY_RSS_FONT_SIZE] = value.coerceIn(12, 24) }
     }
 }

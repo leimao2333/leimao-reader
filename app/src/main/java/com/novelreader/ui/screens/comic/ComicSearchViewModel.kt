@@ -56,6 +56,10 @@ class ComicSearchViewModel(
     private val _fuzzyEnabled = MutableStateFlow(PreferencesManager.DEFAULT_FUZZY_SEARCH)
     val fuzzyEnabled: StateFlow<Boolean> = _fuzzyEnabled.asStateFlow()
 
+    /** 搜索结果展示：true = 宫格，false = 列表（v1.8.6.0 待办 #26） */
+    private val _searchGrid = MutableStateFlow(false)
+    val searchGrid: StateFlow<Boolean> = _searchGrid.asStateFlow()
+
     private val _history = MutableStateFlow<List<String>>(emptyList())
     val history: StateFlow<List<String>> = _history.asStateFlow()
 
@@ -85,6 +89,10 @@ class ComicSearchViewModel(
         viewModelScope.launch {
             preferencesManager.searchLongPressShelfFlow.collect { _longPressShelfEnabled.value = it }
         }
+        // 搜索结果展示（v1.8.6.0 待办 #26）
+        viewModelScope.launch {
+            preferencesManager.searchGridComicFlow.collect { _searchGrid.value = it }
+        }
     }
 
     /** 加入 / 移出书架（搜索结果卡片直接操作，v1.8.3.0 待办 #15） */
@@ -102,6 +110,12 @@ class ComicSearchViewModel(
 
     fun setFuzzyEnabled(value: Boolean) {
         viewModelScope.launch { preferencesManager.setFuzzySearch(value) }
+    }
+
+    /** 切换搜索结果展示（v1.8.6.0 待办 #26） */
+    fun setSearchGrid(value: Boolean) {
+        _searchGrid.value = value
+        viewModelScope.launch { preferencesManager.setSearchGridComic(value) }
     }
 
     fun clearHistory() {

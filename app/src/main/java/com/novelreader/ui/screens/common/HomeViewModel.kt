@@ -71,10 +71,21 @@ class HomeViewModel(
     @Volatile
     private var hideAdult: Boolean = true
 
+    /**
+     * RSS 订阅入口是否搬到首页分类导航下方（v1.8.6.0 待办 #24，默认关 = 顶栏图标）。
+     * 由 [com.novelreader.core.preferences.PreferencesManager.rssEntryBelowFlow] 驱动，
+     * 设置里改开关后首页立即跟随，无需重启。
+     */
+    private val _rssEntryBelow = MutableStateFlow(false)
+    val rssEntryBelow: StateFlow<Boolean> = _rssEntryBelow.asStateFlow()
+
     init {
         preferencesManager?.let { pm ->
             viewModelScope.launch {
                 pm.hideAdultFlow.collect { hideAdult = it }
+            }
+            viewModelScope.launch {
+                pm.rssEntryBelowFlow.collect { _rssEntryBelow.value = it }
             }
         }
     }

@@ -2,9 +2,37 @@
 
 本项目的所有版本更新记录。初始版本为 `1.0.0.1`。
 
-> 版本号规范（四段式 `顶端版本.大版本.小版本.修订`，小版本每版 +1、满十进大版本）见 README「版本规范」。**2026-10-13 已全量重排**：早期条目按新规范补全 / 归位 —— `1.0.x` 原样保留，`1.1.x` / `1.2.x` / `1.3.0` 补全第四段（`1.2.11 → 1.2.11.0`），原 `v1.4.0 → v1.3.1.0`、`v1.5.0 → v1.3.2.0`；GitHub 上的 tag / Release / APK 已同步改名。当前版本 `1.8.5.2`（v1.4.0 ~ v1.6.1.0 的 Release APK 因上传脚本误用 multipart 而损坏，需升级到 v1.6.2.0 以上）。
+> 版本号规范（四段式 `顶端版本.大版本.小版本.修订`，小版本每版 +1、满十进大版本）见 README「版本规范」。**2026-10-13 已全量重排**：早期条目按新规范补全 / 归位 —— `1.0.x` 原样保留，`1.1.x` / `1.2.x` / `1.3.0` 补全第四段（`1.2.11 → 1.2.11.0`），原 `v1.4.0 → v1.3.1.0`、`v1.5.0 → v1.3.2.0`；GitHub 上的 tag / Release / APK 已同步改名。当前版本 `1.8.6.0`（v1.4.0 ~ v1.6.1.0 的 Release APK 因上传脚本误用 multipart 而损坏，需升级到 v1.6.2.0 以上）。
 >
 > 撰写约定：说明里出现 legado 规则语法（`@put` / `@get` / `@js` 等）时**必须用反引号包裹** —— 否则 GitHub 会把它们当成用户提及，Release 页面的 Contributors 会凭空多出同名用户。
+
+## v1.8.6.0（2026-10-20）
+
+> RSS 功能补全（待办 #24 / #29）+ 搜索结果宫格（#26）+ 标签输入提示（#27）。
+
+### 新增
+
+- **RSS 订阅入口可搬位置（#24）**：设置新增「订阅（RSS）」分区与「订阅入口移到导航栏下方」开关（**默认关**）。关闭时入口保持首页顶栏的 RSS 图标；开启后顶栏图标隐藏，入口常驻在「小说 / 漫画 / 视频」导航下方的首行（图标 + 「订阅」+ 副标题）。偏好键 `rss_entry_below`，首页通过 `HomeViewModel` 实时订阅，改开关立即生效。
+- **RSS 阅读页支持调字号（#24 阅读体验完善）**：阅读页顶栏新增 **A- / A+** 按钮（12~24sp），即时写回偏好（`rss_font_size`）；正文段落、空态提示同步缩放，行距按 1.6 倍字号跟随。换文章、退出重进都保留选择。
+- **本地 PDF 导入订阅书架（#29）**：订阅页顶栏新增 PDF 图标，从系统文件选择器（仅 `application/pdf`）导入本地 PDF —— 复制进 `filesDir/rss_pdf/<uuid>.pdf`（UUID 防重名覆盖），元数据落 `rss_pdfs` 表。导入后直接在订阅页顶部「本地 PDF」分区展示（名称 + 体积 + 导入时间），点击走应用内 PDF 阅读页；长按删除（库记录与本地文件一起清，不留孤儿）。没有订阅源时 PDF 分区照常可见，导入提示走页面 Toast。
+- **PDF 阅读页支持本地文件（#29 配套）**：`PdfViewerViewModel` 识别 `file://` 地址，跳过下载缓存直接渲染，打开前先验 PDF 魔数 —— 选错文件时提示「这份文件不是有效的 PDF」而不是 `PdfRenderer` 的「文件损坏」崩溃。本地 PDF 也能走「用其它应用打开」分享（`file_paths.xml` 补 `rss_pdf/`）。
+- **搜索结果可切宫格 / 列表（#26）**：小说 / 漫画 / 视频三个搜索页顶栏新增宫格↔列表切换图标，订阅页的期刊检索面板同样支持，设置页「搜索」区给四个模块各留一个开关。偏好按模块独立记忆（`search_layout_novel` / `comic` / `video` / `rss`，默认列表）。宫格态是两列封面墙：每格一个聚合组，单源点击直接进，多源点击弹「选择来源」面板换源（格子撑不开就地展开），封面右上角常驻收藏角标，长按仍是同一套操作菜单。
+- **标签输入提示词（#27）**：标签搜索输入框在打字时弹出本地已有标签的补全列表（`DropdownMenu` 浮层，最高 264dp），点选**原地替换**正在输入的那一段 —— 不会追加成「无 无码」这种必然空集的条件。`-` 排除前缀与 `题材:` 大类前缀原样保留；多标签空格组合时只提示最后一段。
+  - 排序：前缀命中优先于包含命中 → 补全量更短的先出 → 覆盖源数多的先出（池子按覆盖源数倒序喂入）。
+  - 过滤：已写进查询的条件、以及正在输入但本身已是完整标签的词，按同义组规范名整族屏蔽 —— 打完「无码」不会还跟着「无码漫画」占满一屏。
+  - 逻辑抽成纯函数 `core/util/TagSuggestions.kt`，配 15 条单元测试覆盖排序 / 过滤 / 前后缀保留。
+
+### 改进
+
+- **订阅页顶栏收拢**：图标从六个减到四个（刷新 / 添加订阅 / 更多 / 管理），「导入本地 PDF」「订阅期刊」「全部标为已读」移进右上角「更多」菜单 —— 原来图标挤满顶栏，标题「订阅」会被压成竖排两行。
+
+### 数据库
+
+- v16 → v17：新增 `rss_pdfs` 表（id / name / fileName / size / addedAt）。不进 `books` 表 —— PDF 是「导入即读」的静态文档，不参与章节缓存 / 阅读进度 / 分组那一套书架逻辑。
+
+### 涉及
+
+- `core/preferences/PreferencesManager.kt`（`rss_entry_below` / `rss_font_size` / `search_layout_*`）、`ui/screens/settings/`（开关与说明）、`ui/screens/common/HomeScreen.kt`（`RssEntryRow` 与顶栏条件渲染）、`core/rss/RssPdfStore.kt`（新建，导入 / 删除 / 文件管理）、`data/model/RssPdfEntity.kt` + `data/database/RssPdfDao.kt`（新建）、`AppDatabase.kt`（v17 + MIGRATION_16_17）、`di/AppContainer.kt`、`ui/screens/rss/RssScreen.kt`（PDF 分区与 `PdfRow`、顶栏溢出菜单）、`ui/screens/rss/JournalDialogs.kt`（宫格 / 列表切换）、`ui/screens/pdf/PdfViewerViewModel.kt`（本地分支）、`res/xml/file_paths.xml`、`ui/components/GroupedSearchResults.kt`（`GridResults` / `GridResultCell` / `GridSourceSheet`）、`ui/screens/{novel,comic,video}/*SearchScreen.kt`（切换图标）、`core/util/TagSuggestions.kt`（新建）+ `TagSuggestionsTest`、`ui/screens/tag/TagSearchScreen.kt` / `TagSearchViewModel.kt`（提示浮层）。
 
 ## v1.8.5.2（2026-10-20）
 

@@ -4,18 +4,24 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -27,6 +33,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -37,6 +44,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImagePainter
@@ -63,6 +71,8 @@ import com.novelreader.source.search.VideoTitleKey
  * @param onToggleShelf 收藏（加入/移出书架）回调；为 null 时不显示收藏按钮
  * @param shelfKeys 已在书架的条目 key 集合（`"sourceId|itemId"`）
  * @param longPressEnabled 长按是否弹操作菜单（v1.8.3.0 待办 #14，设置里可关）
+ * @param grid 结果展示方式（v1.8.6.0 待办 #26）：false = 列表（默认），true = 宫格。
+ *   宫格里格子撑不开，多源组改为**点击弹换源面板**，语义与列表态的「就地展开」一致。
  */
 @Composable
 fun GroupedSearchResults(
@@ -77,6 +87,7 @@ fun GroupedSearchResults(
     metaLine: ((MediaItem) -> String)? = null,
     keyOf: ((MediaItem) -> String)? = null,
     longPressEnabled: Boolean = true,
+    grid: Boolean = false,
 ) {
     if (results.isEmpty()) {
         if (isEmptyHint.isNotBlank()) {
@@ -118,12 +129,34 @@ fun GroupedSearchResults(
     var actionGroupSize by remember { mutableStateOf(1) }
     var actionGroupKey by remember { mutableStateOf<String?>(null) }
 
+    // 网格态换源的组（v1.8.6.0 待办 #26）：格子里没法就地展开，改成弹层
+    var sheetGroup by remember { mutableStateOf<List<MediaItem>?>(null) }
+
     /** 统一的收藏动作：先关菜单再执行，避免列表即时刷新时菜单还压在上面 */
     val toggleShelfAndDismiss: ((MediaItem) -> Unit)? = onToggleShelf?.let { fn ->
         { item -> actionTarget = null; fn(item) }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
+        if (grid) {
+            GridResults(
+                groups = groups,
+                groupKeyOf = groupKeyOf,
+                metaOf = metaOf,
+                shelfKeys = shelfKeys,
+                longPressEnabled = longPressEnabled,
+                onItemClick = onItemClick,
+                onRead = onRead,
+                onToggleShelf = onToggleShelf,
+                onLongClickTarget = { member, size, key ->
+                    actionTarget = member
+                    actionGroupSize = size
+                    actionGroupKey = key
+                },
+                onExpandGroup = { sheetGroup = it },
+                unitLabel = unitLabel,
+            )
+        } else {
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
@@ -216,6 +249,27 @@ fun GroupedSearchResults(
                 .align(Alignment.CenterEnd)
                 .padding(end = 2.dp),
         )
+        }
+
+        // ===== 网格态换源面板（v1.8.6.0 待办 #26）=====
+        val sheet = sheetGroup
+        if (sheet != null) {
+            GridSourceSheet(
+                group = sheet,
+                shelfKeys = shelfKeys,
+                onItemClick = { member -> sheetGroup = null; onItemClick(member) },
+                onRead = onRead?.let { fn -> { member -> sheetGroup = null; fn(member) } },
+                onToggleShelf = onToggleShelf,
+                onLongClick = if (longPressEnabled) {
+                    { member ->
+                        actionTarget = member
+                        actionGroupSize = sheet.size
+                        actionGroupKey = groupKeyOf(member)
+                    }
+                } else null,
+                onDismiss = { sheetGroup = null },
+            )
+        }
 
         // ===== 长按操作菜单（v1.8.3.0 待办 #14）=====
         val target = actionTarget
@@ -363,6 +417,276 @@ private fun GroupCard(
                 contentDescription = "展开",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+/**
+ * 宫格态搜索结果（v1.8.6.0 待办 #26）。
+ *
+ * 两列网格，每个格子 = 一个聚合组（与列表态的折叠卡片一一对应）：
+ * - 单源组：点击直接进（阅读 / 播放 / 详情，与列表态一致）；
+ * - 多源组：点击弹换源面板 [GridSourceSheet] —— 格子里没有就地展开的空间；
+ * - 长按：与列表态同一套操作菜单（由调用方挂 [SearchResultActionSheet]）；
+ * - 封面右上角常驻收藏入口（折叠态聚合卡也有，见 GroupCard）。
+ */
+@Composable
+private fun GridResults(
+    groups: List<List<MediaItem>>,
+    groupKeyOf: (MediaItem) -> String,
+    metaOf: (MediaItem) -> String,
+    shelfKeys: Set<String>,
+    longPressEnabled: Boolean,
+    onItemClick: (MediaItem) -> Unit,
+    onRead: ((MediaItem) -> Unit)?,
+    onToggleShelf: ((MediaItem) -> Unit)?,
+    onLongClickTarget: (MediaItem, Int, String) -> Unit,
+    onExpandGroup: (List<MediaItem>) -> Unit,
+    unitLabel: String,
+) {
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(2),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        items(
+            groups,
+            key = { group -> "grid_${groupKeyOf(group.first())}" },
+        ) { group ->
+            GridResultCell(
+                head = group.first(),
+                sourceCount = group.size,
+                unitLabel = unitLabel,
+                metaOf = metaOf,
+                inShelf = "${group.first().sourceId}|${group.first().id}" in shelfKeys,
+                longPressEnabled = longPressEnabled,
+                onClick = {
+                    if (group.size > 1) onExpandGroup(group) else onItemClick(group.first())
+                },
+                onLongClick = if (longPressEnabled) {
+                    {
+                        onLongClickTarget(
+                            group.first(),
+                            group.size,
+                            groupKeyOf(group.first()),
+                        )
+                    }
+                } else null,
+                onToggleShelf = onToggleShelf?.let { fn -> { fn(group.first()) } },
+            )
+        }
+    }
+}
+
+/** 宫格里的一个格子：封面（多源徽标 + 收藏角标）+ 标题 + 来源行 */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun GridResultCell(
+    head: MediaItem,
+    sourceCount: Int,
+    unitLabel: String,
+    metaOf: (MediaItem) -> String,
+    inShelf: Boolean,
+    longPressEnabled: Boolean,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)?,
+    onToggleShelf: (() -> Unit)?,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(0.72f)
+                .clip(RoundedCornerShape(6.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+        ) {
+            if (head.cover.isNullOrBlank()) {
+                CoverPlaceholderLetter(Modifier.fillMaxSize(), head.title)
+            } else {
+                coil.compose.SubcomposeAsyncImage(
+                    model = head.cover,
+                    contentDescription = head.title,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    when (painter.state) {
+                        is coil.compose.AsyncImagePainter.State.Error ->
+                            CoverPlaceholderLetter(Modifier.fillMaxSize(), head.title)
+                        is coil.compose.AsyncImagePainter.State.Loading ->
+                            CoverPlaceholderLetter(Modifier.fillMaxSize(), head.title)
+                        else -> SubcomposeAsyncImageContent()
+                    }
+                }
+            }
+            // 多源徽标：盖在封面左下，带半透明底保证白底封面也看得清
+            if (sourceCount > 1) {
+                Text(
+                    text = "$sourceCount $unitLabel",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = androidx.compose.ui.graphics.Color.White,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f))
+                        .padding(horizontal = 5.dp, vertical = 2.dp),
+                )
+            }
+            // 收藏角标：列表态折叠卡也有同样入口，格子不能少
+            if (onToggleShelf != null) {
+                Icon(
+                    imageVector = if (inShelf) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                    contentDescription = if (inShelf) "已收藏" else "收藏",
+                    tint = if (inShelf) MaterialTheme.colorScheme.primary
+                    else androidx.compose.ui.graphics.Color.White,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .clickable(onClick = onToggleShelf)
+                        .padding(6.dp)
+                        .size(20.dp),
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = head.title,
+            style = MaterialTheme.typography.titleSmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        // 来源 / 元信息一行：单源时有用（认得出是哪个站），多源时徽标已经说了
+        if (sourceCount <= 1) {
+            val line = head.sourceName.takeIf { it.isNotBlank() } ?: metaOf(head)
+            if (line.isNotBlank()) {
+                Text(
+                    text = line,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 宫格态换源面板（v1.8.6.0 待办 #26）。
+ *
+ * 格子里没法「就地展开」，把组内全部源列进底部面板：点成员直接进（阅读 / 播放），
+ * 可收藏、可长按（长按菜单由调用方挂到列表态同一套 [SearchResultActionSheet]）。
+ */
+@OptIn(
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+    androidx.compose.foundation.ExperimentalFoundationApi::class,
+)
+@Composable
+private fun GridSourceSheet(
+    group: List<MediaItem>,
+    shelfKeys: Set<String>,
+    onItemClick: (MediaItem) -> Unit,
+    onRead: ((MediaItem) -> Unit)?,
+    onToggleShelf: ((MediaItem) -> Unit)?,
+    onLongClick: ((MediaItem) -> Unit)?,
+    onDismiss: () -> Unit,
+) {
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp),
+        ) {
+            Text(
+                text = "选择来源 · ${group.size} 个",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+            )
+            androidx.compose.material3.HorizontalDivider(
+                thickness = 0.5.dp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+            )
+            group.forEach { member ->
+                val inShelf = "${member.sourceId}|${member.id}" in shelfKeys
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .combinedClickable(
+                            onClick = { onItemClick(member) },
+                            onLongClick = onLongClick?.let { fn -> { fn(member) } },
+                        )
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(width = 44.dp, height = 60.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (member.cover.isNullOrBlank()) {
+                            CoverPlaceholderLetter(Modifier.fillMaxSize(), member.title)
+                        } else {
+                            coil.compose.SubcomposeAsyncImage(
+                                model = member.cover,
+                                contentDescription = member.title,
+                                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize(),
+                            ) {
+                                when (painter.state) {
+                                    is coil.compose.AsyncImagePainter.State.Error ->
+                                        CoverPlaceholderLetter(Modifier.fillMaxSize(), member.title)
+                                    is coil.compose.AsyncImagePainter.State.Loading ->
+                                        CoverPlaceholderLetter(Modifier.fillMaxSize(), member.title)
+                                    else -> SubcomposeAsyncImageContent()
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = member.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = member.sourceName,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (onToggleShelf != null) {
+                        IconButton(onClick = { onToggleShelf(member) }) {
+                            Icon(
+                                imageVector = if (inShelf) Icons.Filled.Bookmark
+                                else Icons.Filled.BookmarkBorder,
+                                contentDescription = if (inShelf) "已收藏" else "收藏",
+                                tint = if (inShelf) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (onRead != null) {
+                        IconButton(onClick = { onRead(member) }) {
+                            Icon(
+                                imageVector = Icons.Filled.MenuBook,
+                                contentDescription = "阅读",
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }

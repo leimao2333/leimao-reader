@@ -120,15 +120,28 @@ data class JournalUiState(
  *
  * 支持同源内「上一篇 / 下一篇」：切换时只换文章 id，不重开页面
  * （避免连读时把返回栈堆满）。
+ *
+ * @param prefs 阅读偏好（正文字号，v1.8.6.0 待办 #24；null = 用默认字号，
+ *   测试构造时可省）
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class RssReaderViewModel(
     private val repository: RssRepository,
     startArticleId: Long,
+    private val prefs: com.novelreader.core.preferences.PreferencesManager? = null,
 ) : ViewModel() {
 
     /** 当前文章 id（切换上下篇时更新） */
     private val currentId = MutableStateFlow(startArticleId)
+
+    /** 阅读正文字号（sp，12~24；默认 [PreferencesManager.DEFAULT_RSS_FONT_SIZE]） */
+    val fontSize: StateFlow<Int> = prefs?.rssFontSizeFlow
+        ?.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), com.novelreader.core.preferences.PreferencesManager.DEFAULT_RSS_FONT_SIZE)
+        ?: MutableStateFlow(com.novelreader.core.preferences.PreferencesManager.DEFAULT_RSS_FONT_SIZE)
+
+    fun setFontSize(value: Int) {
+        viewModelScope.launch { prefs?.setRssFontSize(value) }
+    }
 
     private val _siblings = MutableStateFlow<List<RssArticle>>(emptyList())
 
@@ -382,6 +395,10 @@ fun RssReaderScreen(
     val siblings by viewModel.siblings.collectAsState()
     val paperMeta by viewModel.paperMeta.collectAsState()
     val journalState by viewModel.journal.collectAsState()
+    /** 阅读正文字号（sp，v1.8.6.0 待办 #24） */
+    val fontSize by viewModel.fontSize.collectAsState()
+    val bodySp = fontSize.sp
+    val bodyLineSp = (fontSize * 1.6f).sp
     val context = LocalContext.current
 
     // 打开即标记已读（用户手动标未读后不会重复触发：articleId 未变）
@@ -434,6 +451,15 @@ fun RssReaderScreen(
                 },
                 actions = {
                     article?.let { a ->
+                        // 正文字号调节（v1.8.6.0 待办 #24）：A-/A+ 即时生效并写回偏好
+                        TextButton(
+                            onClick = { viewModel.setFontSize(fontSize - 1) },
+                            enabled = fontSize > 12,
+                        ) { Text("A-") }
+                        TextButton(
+                            onClick = { viewModel.setFontSize(fontSize + 1) },
+                            enabled = fontSize < 24,
+                        ) { Text("A+") }
                         IconButton(onClick = { viewModel.toggleStar() }) {
                             Icon(
                                 imageVector = if (a.starred) Icons.Filled.Star else Icons.Filled.StarBorder,
@@ -566,13 +592,15 @@ fun RssReaderScreen(
                             text = "这篇还没有正文。可点上方「获取全文」抓原文页，" +
                                 "或点右上角用浏览器打开原文。",
                             style = MaterialTheme.typography.bodyLarge,
-                            lineHeight = 26.sp,
+                            fontSize = bodySp,
+                            lineHeight = bodyLineSp,
                         )
                     } else {
                         Text(
                             text = a.summary.ifBlank { "该订阅源没有提供正文，可点右上角在浏览器中查看原文。" },
                             style = MaterialTheme.typography.bodyLarge,
-                            lineHeight = 26.sp,
+                            fontSize = bodySp,
+                            lineHeight = bodyLineSp,
                         )
                     }
                 }
@@ -584,7 +612,8 @@ fun RssReaderScreen(
                         Text(
                             text = block.text,
                             style = MaterialTheme.typography.bodyLarge,
-                            lineHeight = 26.sp,
+                            fontSize = bodySp,
+                            lineHeight = bodyLineSp,
                             modifier = Modifier.padding(bottom = 14.dp),
                         )
                     }

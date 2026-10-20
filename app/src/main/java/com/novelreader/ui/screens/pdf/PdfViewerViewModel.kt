@@ -110,6 +110,18 @@ class PdfViewerViewModel(
             }
             _state.value = PdfUiState(stage = PdfStage.Preparing)
 
+            // 本地文件（v1.8.6.0 待办 #29：订阅书架导入的 PDF）：
+            // 不走缓存与下载，直接开；先验魔数，选错文件时给「不是 PDF」而不是渲染崩溃
+            val local = localFile()
+            if (local != null) {
+                if (!PdfSource.looksLikePdf(PdfSource.head(local))) {
+                    fail("这份文件不是有效的 PDF")
+                    return@launch
+                }
+                open(local, fromCache = true)
+                return@launch
+            }
+
             val target = cache.fileFor(url)
             val cached = target.isFile && target.length() > 0L &&
                 PdfSource.looksLikePdf(PdfSource.head(target))
@@ -238,7 +250,17 @@ class PdfViewerViewModel(
     }
 
     /** 已下载/已缓存的文件（「用浏览器打开」优先给本地文件，避免出版方二次拦截） */
+    /**
+     * 本地 PDF 文件（分享 / 本地导入共用）。
+     *
+     * `file://` 前缀 = 订阅书架导入的本地 PDF（v1.8.6.0 待办 #29），
+     * 直接映射到 `filesDir/rss_pdf/`；否则按 url 查下载缓存。
+     */
     fun localFile(): File? {
+        if (url.startsWith("file://")) {
+            val f = File(url.removePrefix("file://"))
+            return f.takeIf { it.isFile && it.length() > 0L }
+        }
         val f = cache.fileFor(url)
         return f.takeIf { it.isFile && it.length() > 0L }
     }

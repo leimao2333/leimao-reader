@@ -2,6 +2,7 @@ package com.novelreader.ui.screens.common
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LibraryAdd
@@ -66,6 +68,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.novelreader.domain.model.ChapterItem
@@ -180,6 +183,9 @@ fun HomeScreen(
     // rememberSaveable 跨 tab 切回保留用户选择
     var searchMode by rememberSaveable { mutableStateOf(SearchMode.SEARCH) }
 
+    // RSS 订阅入口位置（v1.8.6.0 待办 #24）：false = 顶栏图标（默认），true = 内容区顶部常驻
+    val rssEntryBelow by viewModel.rssEntryBelow.collectAsState()
+
     // 每次回到前台时刷新（进度可能已变化）
     // key 里带上 selectedTab：观察者闭包会捕获它，只用 lifecycleOwner 作 key 会读到旧值
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
@@ -233,8 +239,11 @@ fun HomeScreen(
             TopAppBar(
                 title = { Text(tabs[selectedTab].label) },
                 actions = {
-                    IconButton(onClick = onOpenRss) {
-                        Icon(Icons.Filled.RssFeed, contentDescription = "订阅")
+                    // RSS 订阅入口（v1.8.6.0 待办 #24）：开关打开时下移到内容区顶部，顶栏让位
+                    if (!rssEntryBelow) {
+                        IconButton(onClick = onOpenRss) {
+                            Icon(Icons.Filled.RssFeed, contentDescription = "订阅")
+                        }
                     }
                     IconButton(onClick = onOpenHistory) {
                         Icon(Icons.Filled.History, contentDescription = "阅读历史")
@@ -274,6 +283,11 @@ fun HomeScreen(
             }
 
             Column(modifier = Modifier.fillMaxSize()) {
+                // RSS 订阅入口（v1.8.6.0 待办 #24）：开关开启时常驻在分类导航下方的首行
+                if (rssEntryBelow) {
+                    RssEntryRow(onClick = onOpenRss)
+                }
+
                 // 搜索栏（点击进入对应页面）+ 左侧「搜索 / 标签」模式切换（v1.6.1.0）
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -731,6 +745,51 @@ fun HomeScreen(
                 }
             }
         }
+    }
+}
+
+/**
+ * RSS 订阅入口行（v1.8.6.0 待办 #24）。
+ *
+ * 设置里打开「RSS 入口移到导航栏下方」后，入口从顶栏图标改成内容区顶部常驻一行 ——
+ * 顶栏让位给历史 / 源 / 设置，订阅入口不必再「记得右上角有个图标」。
+ */
+@Composable
+private fun RssEntryRow(onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.RssFeed,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text("订阅", style = MaterialTheme.typography.titleSmall)
+            Text(
+                text = "RSS / 期刊订阅 · 本地 PDF",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Icon(
+            imageVector = Icons.Filled.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

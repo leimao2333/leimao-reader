@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novelreader.core.util.SearchResultMerge
 import com.novelreader.core.util.TagAlias
+import com.novelreader.core.util.TagSuggestions
 import com.novelreader.core.util.TagEntryUrl
 import com.novelreader.core.util.TagProvenance
 import com.novelreader.core.util.TagQuery
@@ -267,6 +268,17 @@ class TagSearchViewModel(
     private val _query = MutableStateFlow(initialTag.trim())
     val query: StateFlow<String> = _query.asStateFlow()
 
+    /**
+     * 输入提示词（v1.8.6.0 待办 #27）。
+     *
+     * 输入框只是一个纯字符串，标签池上百个时用户只能凭记忆盲打，打错一个字就搜不到。
+     * 这里基于**本地标签池**（[tagsByCoverage] / [allTags]，不引任何网络请求）给出候选：
+     * 前缀优先、同分按覆盖源数排（[tagsByCoverage] 本身就是覆盖源数倒序）。
+     * 多标签空格组合时只提示**正在输入的那一个词**，已写进查询的标签不再重复出现。
+     */
+    private val _suggestions = MutableStateFlow<List<String>>(emptyList())
+    val suggestions: StateFlow<List<String>> = _suggestions.asStateFlow()
+
     /** 搜索结果 */
     private val _results = MutableStateFlow<List<MediaItem>>(emptyList())
     val results: StateFlow<List<MediaItem>> = _results.asStateFlow()
@@ -387,6 +399,8 @@ class TagSearchViewModel(
             _hotTags.value = tagPlan.hotTags(HOT_TAG_LIMIT)
             _tagsByCoverage.value = tagPlan.hotTags(0)
             _collecting.value = false
+            // 标签池刚到位时补算一次提示：用户可能在池子到之前就输入了一半
+            _suggestions.value = computeSuggestions(_query.value)
             if (thenSearch && _results.value.isEmpty()) search()
         }
     }
@@ -400,12 +414,49 @@ class TagSearchViewModel(
             _hotTags.value = tagPlan.hotTags(HOT_TAG_LIMIT)
             _tagsByCoverage.value = tagPlan.hotTags(0)
             _collecting.value = false
+            // 标签池刚到位时补算一次提示：用户可能在池子到之前就输入了一半
+            _suggestions.value = computeSuggestions(_query.value)
         }
     }
 
     fun setQuery(value: String) {
         _query.value = value
         _activeTags.value = emptyList()
+        _suggestions.value = computeSuggestions(value)
+    }
+
+    /** 收起提示词（点选之后 / 点菜单外区域 / 开始搜索时） */
+    fun clearSuggestions() {
+        if (_suggestions.value.isNotEmpty()) _suggestions.value = emptyList()
+    }
+
+    /**
+     * 点选提示词：把**正在输入的那一段**原地替换成完整标签，再触发搜索。
+     *
+     * 不能直接走 [addTag] —— 用户输入「无」时点「无码」，追加会得到「无 无码」这种
+     * 半截词与新词并存的查询，两个大集求交后必然为空。所以按最后一个 token 替换；
+     * `-` 排除前缀与 `题材:` 大类前缀原样保留（提示只在同一个语法位置内补全）。
+     */
+    /**
+     * 点选提示词：把**正在输入的那一段**原地替换成完整标签，再触发搜索。
+     * 拼接逻辑见 [TagSuggestions.applyToQuery]（不重复实现，避免 VM 与核心层各写一份）。
+     */
+    fun applySuggestion(tag: String) {
+        val name = tag.trim()
+        if (name.isEmpty()) return
+        _query.value = TagSuggestions.applyToQuery(_query.value, name)
+        _activeTags.value = emptyList()
+        _suggestions.value = emptyList()
+        search()
+    }
+
+    /**
+     * 计算提示词：纯本地、前缀优先、同分按覆盖源数排、只提示当前正在输入的词。
+     * 排序规则全部在 [TagSuggestions.of]，这里只负责喂「按覆盖源数倒序的池子」。
+     */
+    private fun computeSuggestions(raw: String): List<String> {
+        val pool = _tagsByCoverage.value.ifEmpty { _allTags.value }
+        return TagSuggestions.of(pool, raw)
     }
 
     private fun logicalTagsInQuery(query: String): List<String> =
@@ -455,6 +506,7 @@ class TagSearchViewModel(
      */
     fun addTag(tag: String) {
         if (tag.isBlank()) return
+        _suggestions.value = emptyList()
         val current = TagAlias.dedupeAliases(logicalTagsInQuery(_query.value))
         val next = TagAlias.dedupeAliases(current + tag)
         if (next.size == current.size) {
@@ -468,6 +520,7 @@ class TagSearchViewModel(
 
     /** 从查询查询返回某标签（点已选 chip）。最后一个标签移除时同步清空结果 / 进度 */
     fun removeTag(tag: String) {
+        _suggestions.value = emptyList()
         val parsed = logicalTagsInQuery(_query.value)
         val aliases = TagAlias.aliasesOf(tag)
         val current = parsed.filterNot { candidate ->
@@ -679,6 +732,7 @@ class TagSearchViewModel(
     }
 
     fun search() {
+        _suggestions.value = emptyList()
         val firstParse = logicalTagsInQuery(_query.value)
         if (firstParse.isEmpty()) return
         val generation = ++searchGeneration
@@ -958,6 +1012,7 @@ class TagSearchViewModel(
         _allTags.value = tagPlan.tags
         _hotTags.value = tagPlan.hotTags(HOT_TAG_LIMIT)
         _tagsByCoverage.value = tagPlan.hotTags(0)
+        _suggestions.value = computeSuggestions(_query.value)
     }
 
     /**

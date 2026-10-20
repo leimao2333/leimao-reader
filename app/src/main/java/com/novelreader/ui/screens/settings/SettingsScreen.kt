@@ -105,6 +105,12 @@ fun SettingsScreen(
     val novelShelfPrompt by viewModel.novelShelfPrompt.collectAsState()
     val comicShelfPrompt by viewModel.comicShelfPrompt.collectAsState()
     val searchLongPressShelf by viewModel.searchLongPressShelf.collectAsState()
+    val rssEntryBelow by viewModel.rssEntryBelow.collectAsState()
+    // 搜索结果展示（v1.8.6.0 待办 #26）
+    val searchGridNovel by viewModel.searchGridNovel.collectAsState()
+    val searchGridComic by viewModel.searchGridComic.collectAsState()
+    val searchGridVideo by viewModel.searchGridVideo.collectAsState()
+    val searchGridRss by viewModel.searchGridRss.collectAsState()
 
     // 应用更新（v1.5.4.0）
     val updateBusy by viewModel.updateBusy.collectAsState()
@@ -322,6 +328,56 @@ fun SettingsScreen(
                 Switch(
                     checked = searchLongPressShelf,
                     onCheckedChange = { viewModel.setSearchLongPressShelf(it) },
+                )
+            }
+            Text(
+                text = "搜索结果展示方式（v1.8.6.0）：关闭 = 列表，开启 = 宫格；各模块独立记忆",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SettingRow(
+                title = "小说搜索默认宫格",
+                subtitle = "宫格看封面，列表看作者 / 字数等详情",
+            ) {
+                Switch(
+                    checked = searchGridNovel,
+                    onCheckedChange = { viewModel.setSearchGridNovel(it) },
+                )
+            }
+            SettingRow(title = "漫画搜索默认宫格") {
+                Switch(
+                    checked = searchGridComic,
+                    onCheckedChange = { viewModel.setSearchGridComic(it) },
+                )
+            }
+            SettingRow(title = "视频搜索默认宫格") {
+                Switch(
+                    checked = searchGridVideo,
+                    onCheckedChange = { viewModel.setSearchGridVideo(it) },
+                )
+            }
+            SettingRow(
+                title = "订阅期刊检索默认宫格",
+                subtitle = "期刊订阅面板里的检索结果布局",
+            ) {
+                Switch(
+                    checked = searchGridRss,
+                    onCheckedChange = { viewModel.setSearchGridRss(it) },
+                )
+            }
+
+            Spacer(Modifier.height(24.dp))
+
+            // ===== 订阅（RSS）（v1.8.6.0 待办 #24） =====
+            SectionTitle("订阅（RSS）")
+            SettingRow(
+                title = "订阅入口移到导航栏下方",
+                subtitle = "关闭：订阅入口在首页顶栏（RSS 图标）\n" +
+                    "开启：顶栏图标隐藏，入口常驻在「小说 / 漫画 / 视频」导航下方的首行",
+            ) {
+                Switch(
+                    checked = rssEntryBelow,
+                    onCheckedChange = { viewModel.setRssEntryBelow(it) },
                 )
             }
 

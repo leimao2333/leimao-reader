@@ -627,6 +627,14 @@ class SettingsViewModel(
     private val _videoPipEnabled = MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_PIP_ENABLED)
     val videoPipEnabled: StateFlow<Boolean> = _videoPipEnabled.asStateFlow()
 
+    /** 视频向后缓冲时长（秒，0 = 关闭；v1.8.4.0） */
+    private val _videoBufferSeconds = MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_BUFFER_SECONDS)
+    val videoBufferSeconds: StateFlow<Int> = _videoBufferSeconds.asStateFlow()
+
+    /** 默认清晰度偏好（0 = 自动；v1.8.4.0） */
+    private val _videoQuality = MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_QUALITY)
+    val videoQuality: StateFlow<Int> = _videoQuality.asStateFlow()
+
     init {
         observePrefs()
         observeWebDav()
@@ -694,6 +702,12 @@ class SettingsViewModel(
         }
         viewModelScope.launch {
             preferencesManager.videoPipEnabledFlow.collect { _videoPipEnabled.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.videoBufferSecondsFlow.collect { _videoBufferSeconds.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.videoQualityFlow.collect { _videoQuality.value = it }
         }
         viewModelScope.launch {
             preferencesManager.hideAdultFlow.collect { _hideAdult.value = it }
@@ -803,6 +817,16 @@ class SettingsViewModel(
 
     fun setVideoPipEnabled(value: Boolean) {
         viewModelScope.launch { preferencesManager.setVideoPipEnabled(value) }
+    }
+
+    /** 视频预缓存时长（秒，0 = 关闭；v1.8.4.0） */
+    fun setVideoBufferSeconds(value: Int) {
+        viewModelScope.launch { preferencesManager.setVideoBufferSeconds(value) }
+    }
+
+    /** 默认清晰度偏好（0 = 自动；v1.8.4.0） */
+    fun setVideoQuality(height: Int) {
+        viewModelScope.launch { preferencesManager.setVideoQuality(height) }
     }
 }
 

@@ -905,6 +905,19 @@ private fun LineList(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
+                        // 清晰度角标（v1.8.4.0）：线路名里带 4K / 1080P / BD / 高清 就标出来，
+                        // 用户不必自己从一堆「线路一 / 线路二」里猜哪条更清晰
+                        com.novelreader.core.util.VideoQualityTag.labelOf(line.name)?.let { tag ->
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = tag,
+                                color = colors.accent,
+                                fontSize = 10.sp,
+                                modifier = Modifier
+                                    .background(colors.tagBg, RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 5.dp, vertical = 1.dp),
+                            )
+                        }
                         if (remembered) {
                             Spacer(Modifier.width(6.dp))
                             Text(

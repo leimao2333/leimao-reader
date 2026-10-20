@@ -1,7 +1,7 @@
 # 待完成清单（Roadmap）
 
-> 基线版本：**v1.8.2.0**（commit `d76a7e2`）
-> 记录时间：2026-10-19
+> 基线版本：**v1.8.3.0**
+> 记录时间：2026-10-19（最后更新 2026-10-20）
 > 说明：本文件只记录待开工的需求，做完后把对应条目的 `- [ ]` 改成 `- [x]` 并在该行末尾补上落地版本号，随后从清单里移除或折叠进 CHANGELOG。
 
 图例：`- [ ]` 待做 / `- [x]` 已完成（末尾标注版本）
@@ -46,9 +46,17 @@
   - 设置项：「小说预加载章节数」→ 关 / 1 / 3 / 5 / 10 章，存进 `PreferencesManager`。
   - 涉及：`ui/screens/novel/NovelReaderViewModel.kt` 的预加载逻辑。
 
-- [ ] **8. 视频预加载秒数可在设置里调（边看边缓冲）**
-  - 设置项：「视频预缓存时长」→ 关 / 15s / 30s / 60s / 120s，控制当前播放视频向后缓冲的秒数。
-  - 涉及：`data/cache/VideoPrefetchCache.kt`、`ui/screens/video/VideoPlayerViewModel.kt`。
+- [x] **8. 视频预加载秒数可在设置里调（边看边缓冲）** ✅ v1.8.3.0
+  - 设置项「预缓存时长」：关 / 15s / 30s / 60s / 120s，控制 ExoPlayer 向后缓冲多久。
+  - 实现：新增 `core/media/VideoBufferControl.kt` —— `VideoBufferOptions` 负责档位换算
+    （关档仍保留 15s 最小缓冲，否则采集站慢分片会「每几秒卡一次」），
+    `VideoBufferControl` 是 `LoadControl` 的转发包装，`update()` 换掉内部 `DefaultLoadControl`
+    即生效（ExoPlayer 创建后没有 `setLoadControl`，不这么写就只能等下次进播放页）。
+    所有委托共用一个 `DefaultAllocator`，换档时体积阈值判断不失真。
+  - 播放页 `remember` 时按 `prefs.bufferSeconds` 建，偏好从 DataStore 读回后再 `update` 一次。
+  - 单测 `VideoBufferOptionsTest` 覆盖四个毫秒值的 `DefaultLoadControl` 约束（给错会崩在播放页）。
+  - 涉及：`core/media/VideoBufferControl.kt`（新建）、`PreferencesManager.kt`、
+    `VideoPlayerViewModel.kt`、`VideoPlayerScreen.kt`、`SettingsViewModel.kt`、`SettingsScreen.kt`。
 
 ---
 
@@ -78,14 +86,21 @@
   - 扩充视频的打标词表与规则，覆盖更多维度（类型、地区、年代、演员/主创、系列等），提高标签命中率与覆盖率。
   - 与第 11 条一起做：先扩词表，再归一化。
 
-- [ ] **13. 视频清晰度选项（设置里可调 + 多线路择优）**
-  - 现状（v1.3.9.0）：清晰度切换只认 HLS 多码率源；`collectQualityTracks()` 在 `formats.size <= 1` 时直接返回空列表，播放页就不显示清晰度入口。而大多数采集站只给单码率 1080p，等于这个入口平时用不上。
-  - 要加的是**在单码率源上也能起作用的清晰度选项**：
-    - 设置项「默认清晰度」：自动 / 省流(480P) / 标准(720P) / 高清(1080P) / 超清(4K)，播放时按偏好锁定轨道；源给不出对应档位时降到最接近的一档，不要直接失效。
-    - 记忆选择：至少全局记忆，最好按源分别记忆。
-    - **多线路择优**：「选集 / 换源」的多条线路名字里常带 `高清` / `4K` / `BD` / `1080P` 等标识，按清晰度偏好把匹配的线路排到前面，并在线路上显示清晰度角标。
-    - 可选项：移动网络下限制最高清晰度（省流，与第 8 条视频预缓存时长同段配置）。
-  - 实现位置：`ui/screens/video/VideoPlayerViewModel.kt` 的 `collectQualityTracks()`（379 行起）、`qualityLabel()`（423 行）、`selectQuality()`（435 行起）；多线路排序在选集/换源逻辑里；设置项照例进 `PreferencesManager`（参照 `KEY_VIDEO_LONG_PRESS_SPEED`）。
+- [x] **13. 视频清晰度选项（设置里可调 + 多线路择优）** ✅ v1.8.3.0
+  - 设置项「默认清晰度」：自动 / 480P / 720P / 1080P / 4K（`KEY_VIDEO_QUALITY`，默认自动）。
+  - **多码率源锁轨**：`collectQualityTracks()` 里按偏好取最接近的一档（等距取更高一档）；
+    每集只自动锁一次（`qualityAppliedForMedia`，换集 / 换源复位），手动改过的不再被覆盖。
+  - **记忆**：播放器里手动选清晰度写回同一设置当全局记忆（`setVideoQuality(height)`），
+    「自动」则清零 —— 下次播放直接按这档起播。按源分别记忆暂未做（需要额外的按 key 表，
+    和 `VideoLineMemory` 同构，等有人真觉得全局不够用再说）。
+  - **多线路择优**：新增 `core/util/VideoQualityTag.kt` —— 从线路名认 `4K` / `2160P` / `UHD` /
+    `1080P` / `FHD` / `BD` / `蓝光` / `超清` / `720P` / `高清` / `480P` / `标清` / `流畅`
+    （高档优先匹配，拉丁词带词边界，避免 `bd` 撞 `abd`）；`sortIndices()` 只给**下标顺序**，
+    不改原列表（线路下标牵着换源与记忆）。`loadLines()` 里按偏好稳定排序，
+    换源列表用 `VideoQualityTag.labelOf()` 画角标。
+  - 单测 `VideoQualityTagTest`：高档优先、词边界、自动档不排序、同档保序、等距取更高。
+  - 涉及：`core/util/VideoQualityTag.kt`（新建）、`PreferencesManager.kt`、
+    `VideoPlayerViewModel.kt`、`VideoControls.kt`、`SettingsViewModel.kt`、`SettingsScreen.kt`。
 
 ---
 

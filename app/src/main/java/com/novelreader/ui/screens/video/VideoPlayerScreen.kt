@@ -83,6 +83,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import com.novelreader.core.media.VideoBufferControl
 import com.novelreader.domain.model.ChapterItem
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -173,25 +174,22 @@ fun VideoPlayerScreen(
         }
     }
 
+    // 缓冲策略（v1.8.4.0）：时长可在设置里调（关 / 15s / 30s / 60s / 120s）。
+    // 播放器只在 Builder 上接受 LoadControl，所以这里用一个可热切换的包装
+    // （VideoBufferControl），偏好从 DataStore 异步读回来后再 update 一次。
+    val bufferControl = remember { VideoBufferControl(viewModel.prefs.value.bufferSeconds) }
+    LaunchedEffect(prefs.bufferSeconds) {
+        bufferControl.update(prefs.bufferSeconds)
+    }
+
     // 创建并绑定 ExoPlayer（生命周期由 Composable 管理）
     val player = remember {
         ExoPlayer.Builder(context)
-            // 缓冲策略（v1.7.7.0）：默认 min/max 都是 50s、起播只要 2.5s，
-            // 采集站分片一慢就频繁「缓冲中→卡一下」。改成：
-            // - 至少攒 30s 再开播（起播慢一点点，但换来中段不卡）
-            // - 最多缓 120s（网络好的时候一口气吃满，回退/快进都在本地）
+            // 缓冲策略（v1.7.7.0 定调，v1.8.4.0 改为可调）：
+            // - 至少攒 min 再停（默认 30s）→ 起播慢一点点，但换来中段不卡
+            // - 最多缓 max（默认 120s）→ 网络好的时候一口气吃满，回退/快进都在本地
             // - 卡顿后要攒到 4s 才重新播，避免「播 0.5s 又卡」的抖动
-            .setLoadControl(
-                androidx.media3.exoplayer.DefaultLoadControl.Builder()
-                    .setBufferDurationsMs(
-                        /* minBufferMs = */ 30_000,
-                        /* maxBufferMs = */ 120_000,
-                        /* bufferForPlaybackMs = */ 2_000,
-                        /* bufferForPlaybackAfterRebufferMs = */ 4_000,
-                    )
-                    .setPrioritizeTimeOverSizeThresholds(true)
-                    .build(),
-            )
+            .setLoadControl(bufferControl)
             // 拔耳机自动暂停（否则会突然外放）
             .setHandleAudioBecomingNoisy(true)
             .build()

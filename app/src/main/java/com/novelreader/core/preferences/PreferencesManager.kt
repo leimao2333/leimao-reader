@@ -190,6 +190,20 @@ class PreferencesManager(private val context: Context) {
          */
         val KEY_VIDEO_PREFETCH_AHEAD = intPreferencesKey("video_prefetch_ahead")
         /**
+         * 视频向后缓冲时长（秒，0 = 关闭；v1.8.4.0）。
+         *
+         * 控制 ExoPlayer `maxBufferMs`：数值越大越抗卡顿（网络抖动 / 快退重看都在本地），
+         * 但更占内存与流量。可选项见 [com.novelreader.core.media.VideoBufferOptions.CHOICES]。
+         */
+        val KEY_VIDEO_BUFFER_SECONDS = intPreferencesKey("video_buffer_seconds")
+        /**
+         * 默认清晰度偏好（v1.8.4.0）：0 = 自动，其余为期望高度（480 / 720 / 1080 / 2160）。
+         *
+         * 两处生效：① 多码率 HLS 源起播时自动锁到最接近的档位；
+         * ② 「换源」线路按名字里的清晰度标识排序（匹配的排前面）。手动选清晰度会写回这里当记忆。
+         */
+        val KEY_VIDEO_QUALITY = intPreferencesKey("video_quality")
+        /**
          * 播放页「记住上次用的源（线路）」（v1.6.9.0）。
          *
          * JSON 数组，元素 `{key, lineName, lineIndex, updatedAt}`，key = `sourceId\u0001itemId`。
@@ -282,6 +296,10 @@ class PreferencesManager(private val context: Context) {
         const val DEFAULT_VIDEO_PIP_ENABLED = false
         /** 默认开启「长按左侧快退」（v1.8.3.0） */
         const val DEFAULT_VIDEO_LONG_PRESS_REWIND = true
+        /** 默认视频向后缓冲 120s（沿用 v1.7.7.0 的抗卡顿策略；v1.8.4.0 起可调） */
+        const val DEFAULT_VIDEO_BUFFER_SECONDS = 120
+        /** 默认清晰度：自动（跟随源给的码率 / 线路顺序；v1.8.4.0） */
+        const val DEFAULT_VIDEO_QUALITY = 0
         /** 默认视频 Tab 频道栏目：0=首页 */
         const val DEFAULT_VIDEO_CHANNEL_INDEX = 0
         /** 搜索历史分隔符（历史记录用单个字符串存储，分隔符分隔） */
@@ -744,6 +762,27 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setVideoLineMemory(json: String) {
         context.dataStore.edit { it[KEY_VIDEO_LINE_MEMORY] = json }
+    }
+
+    /**
+     * 视频向后缓冲时长（秒，0 = 关闭；v1.8.4.0）。
+     *
+     * 只接受 [com.novelreader.core.media.VideoBufferOptions.CHOICES] 里的档位，
+     * 其余值向下取到最近的合法档位，避免脏数据把缓冲策略搞成不可预期。
+     */
+    val videoBufferSecondsFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_VIDEO_BUFFER_SECONDS] ?: DEFAULT_VIDEO_BUFFER_SECONDS }
+
+    suspend fun setVideoBufferSeconds(value: Int) {
+        context.dataStore.edit { it[KEY_VIDEO_BUFFER_SECONDS] = value.coerceIn(0, 120) }
+    }
+
+    /** 默认清晰度偏好（0 = 自动；v1.8.4.0） */
+    val videoQualityFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_VIDEO_QUALITY] ?: DEFAULT_VIDEO_QUALITY }
+
+    suspend fun setVideoQuality(height: Int) {
+        context.dataStore.edit { it[KEY_VIDEO_QUALITY] = height.coerceIn(0, 2160) }
     }
 
     // ----- v1.3.3.0 影视首页 -----

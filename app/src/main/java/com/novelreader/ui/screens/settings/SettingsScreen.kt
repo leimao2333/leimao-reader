@@ -98,6 +98,8 @@ fun SettingsScreen(
     val videoAutoNext by viewModel.videoAutoNext.collectAsState()
     val videoVerticalSwipeSwitch by viewModel.videoVerticalSwipeSwitch.collectAsState()
     val videoPipEnabled by viewModel.videoPipEnabled.collectAsState()
+    val videoBufferSeconds by viewModel.videoBufferSeconds.collectAsState()
+    val videoQuality by viewModel.videoQuality.collectAsState()
     val hideAdult by viewModel.hideAdult.collectAsState()
     val novelShelfPrompt by viewModel.novelShelfPrompt.collectAsState()
     val comicShelfPrompt by viewModel.comicShelfPrompt.collectAsState()
@@ -415,6 +417,51 @@ fun SettingsScreen(
                     checked = videoPipEnabled,
                     onCheckedChange = { viewModel.setVideoPipEnabled(it) },
                 )
+            }
+
+            // 预缓存时长（v1.8.4.0，待办 #8）：控制 ExoPlayer 向后缓冲多久
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = if (videoBufferSeconds == 0) "预缓存时长：关闭"
+                else "预缓存时长：${videoBufferSeconds} 秒",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = "播放时向后缓冲多久：越大越抗卡顿（回退、快进都读本地），但更占内存与流量；关闭后只留最小缓冲",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                com.novelreader.core.media.VideoBufferOptions.CHOICES.forEach { sec ->
+                    PageModeChip(
+                        label = if (sec == 0) "关" else "${sec}s",
+                        selected = videoBufferSeconds == sec,
+                        onClick = { viewModel.setVideoBufferSeconds(sec) },
+                    )
+                }
+            }
+
+            // 默认清晰度（v1.8.4.0，待办 #13）
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = "默认清晰度：${com.novelreader.core.util.VideoQualityTag.label(videoQuality)}",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = "多码率源起播时自动锁到最接近的档位；「换源」列表按此偏好排序并标出清晰度角标（播放器里手动选择会记成新的默认）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                com.novelreader.core.util.VideoQualityTag.CHOICES.forEach { height ->
+                    PageModeChip(
+                        label = com.novelreader.core.util.VideoQualityTag.label(height),
+                        selected = videoQuality == height,
+                        onClick = { viewModel.setVideoQuality(height) },
+                    )
+                }
             }
 
             Spacer(Modifier.height(24.dp))

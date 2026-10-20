@@ -20,6 +20,7 @@ import com.novelreader.core.network.HttpClient
 import com.novelreader.core.preferences.PreferencesManager
 import com.novelreader.core.util.LineSwitch
 import com.novelreader.core.util.VideoLineMemory
+import com.novelreader.core.util.VideoQualityTag
 import com.novelreader.data.cache.VideoPrefetchCache
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.ChapterLine
@@ -88,6 +89,10 @@ data class VideoPrefs(
     val prefetchAhead: Int = 3,
     /** 长按左侧是否快退（v1.8.3.0，默认开启；关闭后左右长按都变成快进） */
     val longPressRewind: Boolean = true,
+    /** 向后缓冲时长（秒，0 = 关闭；v1.8.4.0） */
+    val bufferSeconds: Int = 120,
+    /** 默认清晰度偏好（0 = 自动，其余为期望高度；v1.8.4.0） */
+    val qualityHeight: Int = 0,
     /** 是否已完成首次读取（UI 依据此判断能否应用"默认全屏"） */
     val loaded: Boolean = false,
 )
@@ -248,6 +253,14 @@ class VideoPlayerViewModel(
     /** 常规倍速（长按加速结束后恢复到此值） */
     private var normalSpeed: Float = 1f
 
+    /**
+     * 当前这一集是否已经按「默认清晰度」自动锁过轨（v1.8.4.0）。
+     *
+     * 换集 / 换源要复位：轨道覆盖绑定在具体的 TrackGroup 上，新一集是新的组，
+     * 旧的覆盖自然失效，得重新锁一次。
+     */
+    private var qualityAppliedForMedia: Boolean = false
+
     init {
         viewModelScope.launch {
             // 线路记忆（v1.6.9.0）：一次性读进内存，之后写穿回 DataStore。
@@ -267,6 +280,8 @@ class VideoPlayerViewModel(
                 pipEnabled = preferencesManager.videoPipEnabledFlow.first(),
                 prefetchAhead = preferencesManager.videoPrefetchAheadFlow.first(),
                 longPressRewind = preferencesManager.videoLongPressRewindFlow.first(),
+                bufferSeconds = preferencesManager.videoBufferSecondsFlow.first(),
+                qualityHeight = preferencesManager.videoQualityFlow.first(),
                 loaded = true,
             )
             _prefs.value = loaded
@@ -313,6 +328,20 @@ class VideoPlayerViewModel(
             launch {
                 preferencesManager.videoLongPressRewindFlow.collect { v ->
                     _prefs.update { it.copy(longPressRewind = v) }
+                }
+            }
+            launch {
+                // 缓冲时长：播放器由 UI 层按此值热切换（见 VideoBufferControl）
+                preferencesManager.videoBufferSecondsFlow.collect { v ->
+                    _prefs.update { it.copy(bufferSeconds = v) }
+                }
+            }
+            launch {
+                // 清晰度偏好变化：重新按偏好挑一档（播放中改设置也能立刻生效）
+                preferencesManager.videoQualityFlow.collect { v ->
+                    _prefs.update { it.copy(qualityHeight = v) }
+                    qualityAppliedForMedia = false
+                    collectQualityTracks()
                 }
             }
             launch {
@@ -425,6 +454,17 @@ class VideoPlayerViewModel(
             tracks.firstOrNull { it.height == height }
         }
         _selectedQuality.value = currentSelected
+
+        // 默认清晰度偏好（v1.8.4.0）：源给了多档、用户设了具体档位、且这一集还没锁过
+        // → 挑最接近的一档锁上去。每集只自动锁一次，之后用户手动改的不再被覆盖。
+        if (!qualityAppliedForMedia && currentSelected == null) {
+            val preferred = _prefs.value.qualityHeight
+            val target = VideoQualityTag.nearestHeight(tracks.map { it.height }, preferred)
+            if (target != null) {
+                qualityAppliedForMedia = true
+                tracks.firstOrNull { it.height == target }?.let { applyQuality(it) }
+            }
+        }
     }
 
     /** 清晰度标签：`1080P` / `720P` / `480P`（带码率可选，暂只显示分辨率） */
@@ -440,8 +480,22 @@ class VideoPlayerViewModel(
         return name
     }
 
-    /** 切换到指定清晰度（按分辨率高度锁定对应视频轨道） */
+    /**
+     * 切换到指定清晰度（按分辨率高度锁定对应视频轨道）。
+     *
+     * v1.8.4.0：手动选择会写回「默认清晰度」设置当记忆 —— 下次播放（包括别的片子）
+     * 直接按这一档起播，不用每次都重新点。想回到跟随源就点「自动」([resetQuality])。
+     */
     fun selectQuality(track: QualityTrack) {
+        applyQuality(track)
+        qualityAppliedForMedia = true
+        viewModelScope.launch {
+            runCatching { preferencesManager.setVideoQuality(track.height) }
+        }
+    }
+
+    /** 真正锁轨（不写设置），自动锁档与手动选择共用 */
+    private fun applyQuality(track: QualityTrack) {
         val p = player ?: return
         val selector = p.trackSelectionParameters as? DefaultTrackSelector.Parameters ?: return
         val group = p.currentTracks.groups.firstOrNull { it.type == C.TRACK_TYPE_VIDEO } ?: return
@@ -457,7 +511,7 @@ class VideoPlayerViewModel(
         _selectedQuality.value = track
     }
 
-    /** 恢复自动清晰度（清除轨道覆盖） */
+    /** 恢复自动清晰度（清除轨道覆盖，并把偏好改回「自动」） */
     fun resetQuality() {
         val p = player ?: return
         val selector = p.trackSelectionParameters as? DefaultTrackSelector.Parameters ?: return
@@ -465,6 +519,10 @@ class VideoPlayerViewModel(
             .clearOverrides()
             .build()
         _selectedQuality.value = null
+        qualityAppliedForMedia = true
+        viewModelScope.launch {
+            runCatching { preferencesManager.setVideoQuality(0) }
+        }
     }
 
     // ==================== 外挂字幕（v1.4.6.0） ====================
@@ -632,8 +690,11 @@ class VideoPlayerViewModel(
      * `loadLines` 只是补上「还有哪些线路可选」这一层信息。
      */
     private suspend fun loadLines(item: NovelMediaItem, episode: ChapterItem) {
-        val lines = runCatching { contentRepository.chapterLines(item) }.getOrDefault(emptyList())
-        if (lines.isEmpty()) return
+        val raw = runCatching { contentRepository.chapterLines(item) }.getOrDefault(emptyList())
+        if (raw.isEmpty()) return
+        // 多线路择优（v1.8.4.0）：设了默认清晰度时，把名字里带对应标识的线路排到前面
+        // （稳定排序，同档保持站方原顺序）。只是**展示顺序**，当前播放的线路仍按集定位。
+        val lines = orderLinesByQuality(raw)
         _lines.value = lines
         val index = lines.indexOfFirst { line -> line.chapters.any { it.url == episode.url } }
         if (index >= 0) {
@@ -645,6 +706,14 @@ class VideoPlayerViewModel(
         }
         // 线路表就绪后再纠一次线（v1.6.9.0）：能省掉「每次都要手动换源」的重复劳动
         applyRememberedLine()
+    }
+
+    /** 按清晰度偏好给线路排序（偏好为「自动」时原样返回） */
+    private fun orderLinesByQuality(lines: List<ChapterLine>): List<ChapterLine> {
+        val preferred = _prefs.value.qualityHeight
+        if (preferred <= VideoQualityTag.AUTO || lines.size <= 1) return lines
+        val order = VideoQualityTag.sortIndices(lines.map { it.name }, preferred)
+        return order.map { lines[it] }
     }
 
     // ==================== 记住上次的源 + 自动优先有效源（v1.6.9.0） ====================
@@ -780,6 +849,8 @@ class VideoPlayerViewModel(
         _episodeTitle.value = episode.title
         _currentEpisodeUrl.value = episode.url
         endSpeedBoost()
+        // 新一集：轨道组是新的，之前锁的清晰度已失效，允许再按偏好锁一次（v1.8.4.0）
+        qualityAppliedForMedia = false
         // 命中预缓存：直接用缓存地址起播，跳过解析（切下一集时秒起）
         prefetchCache[episode.url]?.let { (url, headers) ->
             _loading.value = false

@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.8.5.1"
+    const val CURRENT_VERSION = "1.8.5.2"
 
     /**
      * 更新日志。
@@ -25,6 +25,18 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.8.5.2",
+            date = "2026-10-20",
+            changes = listOf(
+                "**修 Cookie 容器：域级 Cookie 送不到兄弟域名**：模拟器实测 v1.8.5.1 打开 Nature 的 PDF 直链报 `Too many follow-up requests: 21`。追下去发现出版方的会话 Cookie 是 `Domain=.nature.com` 这种**域级** Cookie —— 由 `idp.nature.com` 种下、却要发给 `www.nature.com`。而容器按**请求 host** 分区存储，两边互相看不见，「设 Cookie → 跳回原地址校验」永远不成立，于是一路重定向到 OkHttp 的 20 次上限。现在改成平铺存储 + `Cookie.matches(url)` 匹配，域 / path / secure 全交给 OkHttp 自己的规则。",
+                "**修 Cookie 容器：每次响应整份替换**：`Set-Cookie` 每次只带本次新设的那几条，老实现 `cookieStore[host] = cookies.toList()` 会把上一条冲掉。现在按 name + path + domain 合并、同键后写覆盖，并按过期时间清理（过期的 `Set-Cookie` 当删除指令）。",
+                "**重定向环给人话原因**：真的跟满 20 次时不再把 `Too many follow-up requests: 21` 原样甩给用户，改成「出版方反复跳转（多半是 cookie 校验或人机验证），应用内取不到这份 PDF —— 请用浏览器打开」。",
+                "**PDF 单指横滑翻不动页**：缩放手势用的 `detectTransformGestures` 会把单指拖动一并消费，Pager 收不到横向滑动 —— 「横向翻页」实际只有底部按钮能用。改成按需消费：1 倍时单指留给 Pager，双指（缩放）或已放大（平移）时才接管。",
+                "**影响面不止 PDF**：登录态源、需要会话的采集站、RSS 站点跳转都共用这一份 Cookie 容器，此前跨子域 / 跨重定向丢 Cookie 会让它们随机性地「第一次能进、第二次又要重新登录」。",
+                "新增 `MemoryCookieJarTest` 7 条：idp 种下的域级 Cookie 会发给主站（本次核心回归）、跨响应合并不互相覆盖、同名后写覆盖、过期指令删除、host-only 隔离、path 不匹配不下发、空 `Set-Cookie` 不影响已有。",
+            ),
+        ),
         VersionEntry(
             version = "1.8.5.1",
             date = "2026-10-20",

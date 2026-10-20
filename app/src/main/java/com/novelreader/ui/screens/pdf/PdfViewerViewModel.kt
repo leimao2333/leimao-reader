@@ -267,6 +267,10 @@ class PdfViewerViewModel(
                 raw.contains("超时") -> "下载超时：网络较慢或出版方限速，可稍后重试"
             raw.contains("Unable to resolve host", ignoreCase = true) ||
                 raw.contains("UnknownHost", ignoreCase = true) -> "域名解析失败，请检查网络"
+            // OkHttp 跟满 20 次重定向后放弃。出版方的反爬 / 登录流程就是靠反复跳转
+            // 逼浏览器带 cookie，应用内拿不到文件时这条链路注定走不完
+            raw.contains("Too many follow-up requests", ignoreCase = true) ->
+                "出版方反复跳转（多半是 cookie 校验或人机验证），应用内取不到这份 PDF —— 请用浏览器打开"
             else -> {
                 // 兜底文案里不要把整条 URL 甩给用户（又长又没信息量）
                 val brief = raw.replace(Regex("""https?://\S+"""), "").trim().trimEnd(':', ' ')

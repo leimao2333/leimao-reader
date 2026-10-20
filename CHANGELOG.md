@@ -2,9 +2,26 @@
 
 本项目的所有版本更新记录。初始版本为 `1.0.0.1`。
 
-> 版本号规范（四段式 `顶端版本.大版本.小版本.修订`，小版本每版 +1、满十进大版本）见 README「版本规范」。**2026-10-13 已全量重排**：早期条目按新规范补全 / 归位 —— `1.0.x` 原样保留，`1.1.x` / `1.2.x` / `1.3.0` 补全第四段（`1.2.11 → 1.2.11.0`），原 `v1.4.0 → v1.3.1.0`、`v1.5.0 → v1.3.2.0`；GitHub 上的 tag / Release / APK 已同步改名。当前版本 `1.8.5.1`（v1.4.0 ~ v1.6.1.0 的 Release APK 因上传脚本误用 multipart 而损坏，需升级到 v1.6.2.0 以上）。
+> 版本号规范（四段式 `顶端版本.大版本.小版本.修订`，小版本每版 +1、满十进大版本）见 README「版本规范」。**2026-10-13 已全量重排**：早期条目按新规范补全 / 归位 —— `1.0.x` 原样保留，`1.1.x` / `1.2.x` / `1.3.0` 补全第四段（`1.2.11 → 1.2.11.0`），原 `v1.4.0 → v1.3.1.0`、`v1.5.0 → v1.3.2.0`；GitHub 上的 tag / Release / APK 已同步改名。当前版本 `1.8.5.2`（v1.4.0 ~ v1.6.1.0 的 Release APK 因上传脚本误用 multipart 而损坏，需升级到 v1.6.2.0 以上）。
 >
 > 撰写约定：说明里出现 legado 规则语法（`@put` / `@get` / `@js` 等）时**必须用反引号包裹** —— 否则 GitHub 会把它们当成用户提及，Release 页面的 Contributors 会凭空多出同名用户。
+
+## v1.8.5.2（2026-10-20）
+
+> v1.8.5.1 发版后的模拟器实测抓出一个真问题：打开 Nature 的 PDF 直链报 `Too many follow-up requests: 21`。根因不在 PDF，在 Cookie 容器。
+
+### 修复
+
+- **Cookie 容器按请求 host 分区，域级 Cookie 送不到兄弟域名**（主因）：出版方的会话 Cookie 是 `Domain=.nature.com` 这种**域级** Cookie，由 `idp.nature.com` 种下、却要发给 `www.nature.com`。老实现用 `cookieStore[url.host]` 分区存储，两边互相看不见 —— 「设 Cookie → 跳回原地址校验」永远不成立，于是一路重定向撞上 OkHttp 的 20 次上限。实测链路：`www.nature.com/articles/….pdf` → `idp.nature.com/authorize`（种 `idp_session`）→ `idp.nature.com/transit` → `www.nature.com/articles/….pdf` → 文章页。现在改成**平铺存储 + `Cookie.matches(url)` 匹配**，域 / path / secure 全部交给 OkHttp 自己的规则判断。
+- **每次响应整份替换**：`Set-Cookie` 每次只带**这一次响应**新设的那几条，老实现 `cookieStore[host] = cookies.toMutableList()` 会把上一次响应种的 Cookie 冲掉。现在按 `name + path + domain` 合并、同键后写覆盖，并按过期时间清理（过期的 `Set-Cookie` 就是服务端的删除指令），另加 512 条上限兜底。
+- **重定向环给人话原因**：真的跟满 20 次时，不再把 `Too many follow-up requests: 21` 原样甩在「打不开这份 PDF」下面，改成「出版方反复跳转（多半是 cookie 校验或人机验证），应用内取不到这份 PDF —— 请用浏览器打开」。
+- **PDF 单指横滑翻不动页**：缩放手势用的 `detectTransformGestures` 会把单指拖动一并消费掉，Pager 收不到横向滑动 —— 文档里写的「横向翻页」实际只有底部按钮能用。改成按需消费：1 倍时单指拖动留给 Pager，只有双指（缩放）或已放大（平移）时才接管。
+- **影响面不止 PDF**：登录态源、需要会话的采集站、RSS 站点跳转都共用这一份 Cookie 容器，此前跨子域 / 跨重定向丢 Cookie 会让它们随机性地「第一次能进、第二次又要重新登录」。
+
+### 测试
+
+- 新增 `MemoryCookieJarTest` 7 条：**idp 种下的域级 Cookie 会发给主站**（本次核心回归）、跨响应合并不互相覆盖、同名后写覆盖、过期指令删除、host-only 隔离、path 不匹配不下发、空 `Set-Cookie` 不影响已有。
+- 全量单测 **895 用例 / 6 跳过 / 0 失败**。
 
 ## v1.8.5.1（2026-10-20）
 

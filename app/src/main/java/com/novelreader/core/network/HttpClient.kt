@@ -1,8 +1,5 @@
 package com.novelreader.core.network
 
-import okhttp3.Cookie
-import okhttp3.CookieJar
-import okhttp3.HttpUrl
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
@@ -425,22 +422,6 @@ object HttpClient {
 
     /** 字节级字符集嗅探的扫描窗口：`<meta charset>` 必在 head 开头，4KB 足够 */
     private const val CHARSET_SNIFF_BYTES = 4096
-
-    /**
-     * 内存 Cookie 持久化（会话内跨请求共享）。
-     * 用于需要登录态或会话保持的源。
-     */
-    private class MemoryCookieJar : CookieJar {
-        private val cookieStore = ConcurrentHashMap<String, MutableList<Cookie>>()
-
-        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-            cookieStore[url.host] = cookies.toMutableList()
-        }
-
-        override fun loadForRequest(url: HttpUrl): List<Cookie> {
-            return cookieStore[url.host] ?: emptyList()
-        }
-    }
 
     /**
      * 重试拦截器。

@@ -3,7 +3,10 @@ package com.novelreader.ui.screens.pdf
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -53,6 +56,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
@@ -304,12 +308,29 @@ private fun ReadyPane(viewModel: PdfViewerViewModel, pageCount: Int) {
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(vertical = 4.dp)
+                        // 手势必须**按需消费**：1 倍时单指横向拖动留给 Pager 翻页，
+                        // 只有双指（缩放）或已放大（平移）时才接管。
+                        // 直接用 detectTransformGestures 会把单指 pan 一并 consume，
+                        // 结果是「文档里写的横向翻页」实际划不动 —— 模拟器实测抓到的。
                         .pointerInput(Unit) {
-                            detectTransformGestures { _, pan, zoom, _ ->
-                                val next = (scale * zoom).coerceIn(1f, 4f)
-                                scale = next
-                                offset = if (next <= 1.01f) Offset.Zero
-                                else clampOffset(offset + pan, next)
+                            awaitEachGesture {
+                                awaitFirstDown(requireUnconsumed = false)
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val pressed = event.changes.count { it.pressed }
+                                    if (pressed == 0) break
+                                    val zoomChange = event.calculateZoom()
+                                    val panChange = event.calculatePan()
+                                    if (pressed >= 2 || scale > 1.01f) {
+                                        val next = (scale * zoomChange).coerceIn(1f, 4f)
+                                        scale = next
+                                        offset = if (next <= 1.01f) Offset.Zero
+                                        else clampOffset(offset + panChange, next)
+                                        event.changes.forEach { change ->
+                                            if (change.positionChanged()) change.consume()
+                                        }
+                                    }
+                                }
                             }
                         },
                     contentAlignment = Alignment.Center,

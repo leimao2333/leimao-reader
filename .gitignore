@@ -46,3 +46,7 @@ leimao-tagger/
 
 # 打标工具已迁出到独立仓库（leimao-tagger），本地残留目录 / 模型 / 临时产物一律不入库
 tagger/
+
+# 根目录的临时取证产物（adb screencap 截图 / uiautomator 层级转储），随手生成、随时可重生成
+/*.png
+/*.xml

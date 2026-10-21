@@ -23,6 +23,10 @@ class SettingsViewModel(
     private val appContext: android.content.Context? = null,
     /** 本地标签索引（v1.8.1.6）：设置页直达「标签导入」，不必先找到标签搜索页的索引弹窗 */
     private val tagIndexRepository: com.novelreader.data.repository.TagIndexRepository? = null,
+    /** 本地模型（离线语音 / 字幕识别，v1.8.7.3）：下载、进度、删除 */
+    private val localModelStore: com.novelreader.core.model.LocalModelStore? = null,
+    /** 朗读控制器（v1.8.7.3）：设置页「试听」用，与阅读页共用同一个引擎实例 */
+    private val ttsController: com.novelreader.core.tts.TtsController? = null,
 ) : ViewModel() {
 
     /** 备份 / 恢复结果提示（UI 展示后自动消失） */
@@ -628,6 +632,175 @@ class SettingsViewModel(
     private val _visualTagging = MutableStateFlow(PreferencesManager.DEFAULT_VISUAL_TAGGING)
     val visualTagging: StateFlow<Boolean> = _visualTagging.asStateFlow()
 
+    // ===== 离线语音与字幕识别（v1.8.7.3） =====
+    /** 听书是否使用离线语音模型（默认关 = 用系统 TTS） */
+    private val _offlineTts = MutableStateFlow(PreferencesManager.DEFAULT_OFFLINE_TTS)
+    val offlineTts: StateFlow<Boolean> = _offlineTts.asStateFlow()
+
+    /** 是否允许离线语音识别生成字幕（默认关） */
+    private val _subtitleAsr = MutableStateFlow(PreferencesManager.DEFAULT_SUBTITLE_ASR)
+    val subtitleAsr: StateFlow<Boolean> = _subtitleAsr.asStateFlow()
+
+    /** 模型 id → 下载状态（设置页显示进度条 / 删除按钮） */
+    val modelStates: StateFlow<Map<String, com.novelreader.core.model.ModelState>> =
+        localModelStore?.states ?: MutableStateFlow(emptyMap())
+
+    /** 需要在移动网络下继续下载时，UI 弹确认框（非空即代表「等用户确认」） */
+    private val _meteredConfirm =
+        MutableStateFlow<com.novelreader.core.model.LocalModelSpec?>(null)
+    val meteredConfirm: StateFlow<com.novelreader.core.model.LocalModelSpec?> =
+        _meteredConfirm.asStateFlow()
+
+    /** 模型操作的提示消息（下载失败原因等），UI 展示后自动消失 */
+    private val _modelMessage = MutableStateFlow<String?>(null)
+    val modelMessage: StateFlow<String?> = _modelMessage.asStateFlow()
+
+    fun dismissModelMessage() {
+        _modelMessage.value = null
+    }
+
+    fun dismissMeteredConfirm() {
+        _meteredConfirm.value = null
+    }
+
+    fun setOfflineTts(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setOfflineTts(value) }
+    }
+
+    fun setSubtitleAsr(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setSubtitleAsr(value) }
+    }
+
+    /**
+     * 打开开关后自动准备模型（v1.8.7.3）。
+     *
+     * 只有「开关刚被打开」才触发：关开关不下载，已下载的也不会自动删
+     * （用户可能只是暂时不用，删模型是显式动作）。
+     */
+    fun ensureModelDownloaded(spec: com.novelreader.core.model.LocalModelSpec) {
+        val store = localModelStore ?: return
+        if (store.isInstalled(spec)) return
+        if (store.stateOf(spec) is com.novelreader.core.model.ModelState.Downloading) return
+        downloadModel(spec, allowMetered = false)
+    }
+
+    fun downloadModel(
+        spec: com.novelreader.core.model.LocalModelSpec,
+        allowMetered: Boolean,
+    ) {
+        val store = localModelStore ?: return
+        viewModelScope.launch {
+            val result = store.download(spec, allowMetered)
+            result.onFailure { e ->
+                val message = e.message ?: "下载失败"
+                // 非 Wi-Fi 时先问一句，别替用户决定花掉一百多兆流量
+                if (!allowMetered && message.contains("Wi-Fi")) {
+                    _meteredConfirm.value = spec
+                } else {
+                    _modelMessage.value = message
+                }
+            }
+        }
+    }
+
+    /** 用户在确认框里选了「仍然下载」 */
+    fun confirmMeteredDownload() {
+        val spec = _meteredConfirm.value ?: return
+        _meteredConfirm.value = null
+        downloadModel(spec, allowMetered = true)
+    }
+
+    fun deleteModel(spec: com.novelreader.core.model.LocalModelSpec) {
+        localModelStore?.delete(spec)
+    }
+
+    // ==================== 模型自选（v1.8.7.4） ====================
+
+    /** 每个用途下用户自己加的模型 */
+    val customModels: StateFlow<Map<com.novelreader.core.model.ModelKind, List<com.novelreader.core.model.InstalledModel>>> =
+        localModelStore?.customModels ?: MutableStateFlow(emptyMap())
+
+    /** 每个用途当前选中的模型 id */
+    val modelSelection: StateFlow<Map<com.novelreader.core.model.ModelKind, String>> =
+        localModelStore?.selection ?: MutableStateFlow(emptyMap())
+
+    /** 导入 / 下载自定义模型的进度提示 */
+    val libraryBusy: StateFlow<String?> =
+        localModelStore?.libraryBusy ?: MutableStateFlow(null)
+
+    /** 某用途下所有可选项（内置已下载 + 自定义） */
+    fun availableModels(kind: com.novelreader.core.model.ModelKind) =
+        localModelStore?.available(kind) ?: emptyList()
+
+    /** 当前生效的模型（设置页「当前使用：」那行）；null = 还没装 */
+    fun currentModel(kind: com.novelreader.core.model.ModelKind) =
+        localModelStore?.selectedModel(kind)
+
+    fun selectModel(kind: com.novelreader.core.model.ModelKind, id: String) {
+        localModelStore?.select(kind, id)
+        _modelMessage.value = "已切换模型，下一次朗读 / 生成字幕时生效"
+    }
+
+    /**
+     * 导入本地模型文件。
+     *
+     * 复制而不是记住 URI：SAF 的读权限在进程重启后就没了，
+     * 而模型是要长期用的东西 —— 只记 URI 的表现是「今天能用，明天就加载失败」。
+     */
+    fun importModel(
+        kind: com.novelreader.core.model.ModelKind,
+        title: String,
+        uris: List<android.net.Uri>,
+    ) {
+        val store = localModelStore ?: return
+        viewModelScope.launch {
+            store.importFiles(kind, title, uris)
+                .onSuccess { _modelMessage.value = "已导入并切换到「$title」" }
+                .onFailure { _modelMessage.value = "导入失败：${it.message ?: "文件读不出来"}" }
+        }
+    }
+
+    /** 从仓库地址添加（走 hf-mirror 镜像） */
+    fun addModelFromRepo(
+        kind: com.novelreader.core.model.ModelKind,
+        repo: String,
+        title: String,
+    ) {
+        val store = localModelStore ?: return
+        viewModelScope.launch {
+            store.addFromRepo(kind, repo, title)
+                .onSuccess { _modelMessage.value = "已下载并切换到「${title.ifBlank { repo }}」" }
+                // 网络异常时 message 可能是 null，别让用户看到「添加失败：null」
+                .onFailure {
+                    _modelMessage.value = "添加失败：" + (it.message ?: "仓库不存在或网络不通")
+                }
+        }
+    }
+
+    fun deleteCustomModel(model: com.novelreader.core.model.InstalledModel) {
+        localModelStore?.deleteCustom(model)
+        _modelMessage.value = "已删除「${model.title}」"
+    }
+
+    /**
+     * 试听离线语音（v1.8.7.3）。
+     *
+     * 下完 131MB 之后如果听不出区别，用户没法判断值不值 —— 给一句固定的试听文本，
+     * 走的是与阅读页完全相同的引擎与参数。
+     */
+    fun previewOfflineTts() {
+        val controller = ttsController
+        if (controller == null) {
+            _modelMessage.value = "朗读引擎不可用"
+            return
+        }
+        if (controller.speaking.value) {
+            controller.stop()
+            return
+        }
+        controller.speak(PREVIEW_TEXT)
+    }
+
     // ===== 视频播放（v1.3.2.0） =====
     /** 进入播放页默认全屏 */
     private val _videoFullscreenDefault = MutableStateFlow(false)
@@ -768,6 +941,13 @@ class SettingsViewModel(
         }
         viewModelScope.launch {
             preferencesManager.visualTaggingFlow.collect { _visualTagging.value = it }
+        }
+        // 离线语音 / 字幕识别（v1.8.7.3）
+        viewModelScope.launch {
+            preferencesManager.offlineTtsFlow.collect { _offlineTts.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.subtitleAsrFlow.collect { _subtitleAsr.value = it }
         }
         // 搜索结果展示（v1.8.6.0 待办 #26）：四个模块独立记忆
         viewModelScope.launch {
@@ -932,6 +1112,18 @@ class SettingsViewModel(
     /** 尾段预缓冲仅在 WiFi 下（v1.8.4.4） */
     fun setVideoPrefetchWifiOnly(value: Boolean) {
         viewModelScope.launch { preferencesManager.setVideoPrefetchWifiOnly(value) }
+    }
+
+    /** 试听是否正在播放（按钮文案在「试听」/「停止」之间切换） */
+    val ttsSpeaking: StateFlow<Boolean> =
+        ttsController?.speaking ?: MutableStateFlow(false)
+
+    private companion object {
+        /**
+         * 试听文本刻意包含数字与多音字：这两类读法最考验模型的文本前端
+         * （规则 fst 没生效时「2024」会念成「二零二四」）。
+         */
+        const val PREVIEW_TEXT = "离线语音试听，二〇二四年十月二十一日，天气不错。"
     }
 }
 

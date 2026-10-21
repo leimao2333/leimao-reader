@@ -40,6 +40,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -121,6 +122,15 @@ class VideoPlayerViewModel(
      * 不会因为漏注入就悄悄把功能关掉。
      */
     private val wifiProbe: () -> Boolean = { true },
+    /**
+     * AI 字幕生成器（v1.8.7.3，待办 #10）。
+     *
+     * 不注入时「AI 生成字幕」入口完全不出现 —— 与「设置里关掉」表现一致，
+     * 不会因为漏注入而露出一个点了没反应的按钮。
+     */
+    private val aiSubtitleGenerator: com.novelreader.core.asr.AiSubtitleGenerator? = null,
+    /** 本地模型状态（v1.8.7.3）：判断字幕模型是否已下载 */
+    private val localModelStore: com.novelreader.core.model.LocalModelStore? = null,
 ) : ViewModel() {
 
     /** ExoPlayer 实例（由 UI 层绑定到 PlayerView） */
@@ -240,6 +250,32 @@ class VideoPlayerViewModel(
     private val _subtitleName = MutableStateFlow<String?>(null)
     val subtitleName: StateFlow<String?> = _subtitleName.asStateFlow()
 
+    // ==================== AI 字幕（v1.8.7.3，待办 #10） ====================
+
+    /**
+     * 「AI 生成字幕」入口是否出现。
+     *
+     * 三个条件缺一不可：设置里开了字幕识别、模型已下载、生成器已注入。
+     * 由 [init] 里的 combine 持续维护 —— 用户在设置页下完模型再回来，
+     * 不用重进播放页入口就会自己出现。
+     */
+    private val _aiSubtitleAvailable = MutableStateFlow(false)
+    val aiSubtitleAvailable: StateFlow<Boolean> = _aiSubtitleAvailable.asStateFlow()
+
+    /** 是否正在生成（菜单里换成「取消生成」） */
+    private val _aiSubtitleBusy = MutableStateFlow(false)
+    val aiSubtitleBusy: StateFlow<Boolean> = _aiSubtitleBusy.asStateFlow()
+
+    /** 生成进度 0f~1f（总时长未知时恒为 0，靠文案给反馈） */
+    private val _aiSubtitleProgress = MutableStateFlow(0f)
+    val aiSubtitleProgress: StateFlow<Float> = _aiSubtitleProgress.asStateFlow()
+
+    /** 进度文案（「正在识别… 42%」/「音轨 45分3秒，开始识别…」） */
+    private val _aiSubtitleStatus = MutableStateFlow("")
+    val aiSubtitleStatus: StateFlow<String> = _aiSubtitleStatus.asStateFlow()
+
+    private var aiSubtitleJob: Job? = null
+
     private var currentItem: NovelMediaItem? = null
     private var currentEpisode: ChapterItem? = null
     private var tickerJob: Job? = null
@@ -285,6 +321,25 @@ class VideoPlayerViewModel(
     private var qualityAppliedForMedia: Boolean = false
 
     init {
+        // AI 字幕入口可见性（v1.8.7.3）：设置开关 + 模型已下载，两个都要满足
+        viewModelScope.launch {
+            val store = localModelStore
+            if (aiSubtitleGenerator == null || store == null) {
+                _aiSubtitleAvailable.value = false
+                return@launch
+            }
+            combine(
+                preferencesManager.subtitleAsrFlow,
+                store.selection,
+                store.customModels,
+                store.states,
+            ) { enabled, _, _, _ ->
+                // 只要「设置开着」且「当前选中的模型可用」就露出入口 ——
+                // 选中项可能是内置模型，也可能是用户自己导入的
+                enabled && store.activeDir(com.novelreader.core.model.ModelKind.ASR) != null
+            }.collect { _aiSubtitleAvailable.value = it }
+        }
+
         viewModelScope.launch {
             // 线路记忆（v1.6.9.0）：一次性读进内存，之后写穿回 DataStore。
             // 读失败当作「没有记忆」——这是体验优化，绝不该拖累播放。
@@ -664,6 +719,79 @@ class VideoPlayerViewModel(
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !enabled)
             .build()
         p.trackSelectionParameters = params
+    }
+
+    // ==================== AI 字幕生成（v1.8.7.3，待办 #10） ====================
+
+    /**
+     * 用离线模型给当前这一集生成字幕。
+     *
+     * 流程：解出音轨 → 分块识别 → 切成字幕条 → 落 SRT → 走已有的外挂字幕链路加载。
+     * 复用外挂字幕链路意味着生成出来的字幕和用户手工加载的 srt 行为完全一致
+     * （位置、开关、与播放进度同步都由 Media3 负责）。
+     *
+     * 再次调用 = 取消。整片识别很慢（约与片长相当），必须给用户一个中途退出的出口。
+     */
+    fun generateAiSubtitle() {
+        val generator = aiSubtitleGenerator ?: return
+
+        if (_aiSubtitleBusy.value) {
+            aiSubtitleJob?.cancel()
+            _aiSubtitleBusy.value = false
+            _aiSubtitleStatus.value = ""
+            _message.value = "已取消字幕生成"
+            return
+        }
+
+        val url = lastVideoUrl ?: run {
+            _message.value = "请先播放视频"
+            return
+        }
+        val headers = lastVideoHeaders
+
+        aiSubtitleJob = viewModelScope.launch {
+            val self = this
+            _aiSubtitleBusy.value = true
+            _aiSubtitleProgress.value = 0f
+            _aiSubtitleStatus.value = "正在解码音轨…"
+            _message.value = "开始生成字幕：全程离线，耗时约与片长相当，可随时取消"
+
+            val outcome = withContext(Dispatchers.Default) {
+                generator.generate(
+                    url = url,
+                    headers = headers,
+                    onProgress = { fraction, text ->
+                        _aiSubtitleProgress.value = fraction
+                        _aiSubtitleStatus.value = text
+                    },
+                    isCancelled = { !self.isActive },
+                )
+            }
+
+            _aiSubtitleBusy.value = false
+            _aiSubtitleProgress.value = 0f
+            _aiSubtitleStatus.value = ""
+
+            when (outcome) {
+                is com.novelreader.core.asr.AiSubtitleGenerator.Outcome.Success -> {
+                    // 生成完直接挂上，用户不用再去菜单里手动加载一次
+                    loadSubtitle(Uri.fromFile(outcome.srt), "AI 字幕")
+                    _message.value = "已生成 ${outcome.cues.size} 条字幕"
+                }
+
+                com.novelreader.core.asr.AiSubtitleGenerator.Outcome.Cancelled ->
+                    _message.value = "已取消字幕生成"
+
+                com.novelreader.core.asr.AiSubtitleGenerator.Outcome.NoModel ->
+                    _message.value = "字幕模型未下载，请到「设置 → 离线语音与字幕」里下载"
+
+                com.novelreader.core.asr.AiSubtitleGenerator.Outcome.ModelLoadFailed ->
+                    _message.value = "字幕模型加载失败，可在设置里删掉模型后重新下载"
+
+                is com.novelreader.core.asr.AiSubtitleGenerator.Outcome.Unsupported ->
+                    _message.value = outcome.reason
+            }
+        }
     }
 
     fun init(item: NovelMediaItem, episodes: List<ChapterItem>, episode: ChapterItem) {

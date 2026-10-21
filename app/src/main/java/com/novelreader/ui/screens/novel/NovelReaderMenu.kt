@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -27,8 +28,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -115,6 +121,8 @@ internal fun BoxScope.ReaderTopBar(
             .align(Alignment.TopStart)
             .fillMaxWidth()
             .background(backgroundColor.copy(alpha = 0.97f))
+            // 阅读页是 edge-to-edge：不避让状态栏的话，书名会和系统时间 / 信号图标叠在一起
+            .statusBarsPadding()
             .padding(horizontal = 4.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -147,11 +155,16 @@ internal fun BoxScope.ReaderTopBar(
             Icon(Icons.Filled.Search, contentDescription = "正文搜索", tint = textColor)
         }
         IconButton(onClick = onAddBookmark) {
-            Icon(Icons.Filled.BookmarkBorder, contentDescription = "添加书签", tint = textColor)
+            // 加书签用「书签 + 加号」，与右边的「加入书架」区分开：
+            // 此前两个按钮都画 Bookmark / BookmarkBorder，并排放在一起
+            // 用户根本分不出哪个是收藏、哪个是加书签。
+            Icon(Icons.Filled.BookmarkAdd, contentDescription = "添加书签", tint = textColor)
         }
         IconButton(onClick = onToggleCollect) {
             Icon(
-                imageVector = if (collected) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                // 收藏 = 加入书架，用星标而不是书签：书签的语义在阅读场景里
+                // 天然指「记住这一页」，两者共用一个图标必然有歧义。
+                imageVector = if (collected) Icons.Filled.Star else Icons.Filled.StarBorder,
                 contentDescription = if (collected) "移出书架" else "加入书架",
                 tint = if (collected) AccentColor else textColor,
             )
@@ -201,6 +214,9 @@ internal fun BoxScope.ReaderChapterStatusBar(
         modifier = Modifier
             .align(Alignment.TopCenter)
             .fillMaxWidth()
+            // 这里**不要**加 statusBarsPadding：正文区域本身已经避开了状态栏，
+            // 这条常驻状态条正好落在「状态栏下沿」与「正文首行」之间的空隙里。
+            // 加了 inset 反而把它往下推进正文标题上，两行字叠在一起。
             .padding(horizontal = 16.dp, vertical = 6.dp),
     )
 }
@@ -361,7 +377,7 @@ internal fun BoxScope.ReaderBottomMenu(
 
             Spacer(Modifier.height(6.dp))
 
-            // ===== 工具行：目录 / 界面 / 设置 / 换源 / 书签 / 缓存 =====
+            // ===== 工具行：目录 / 界面 / 设置 / 换源 / 书签 / 缓存 / 听书 =====
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly,
@@ -372,6 +388,16 @@ internal fun BoxScope.ReaderBottomMenu(
                 ToolButton("换源", Icons.Filled.SwapHoriz, false, textColor) { viewModel.openChangeSource() }
                 ToolButton("书签", Icons.Filled.BookmarkBorder, false, textColor) { viewModel.setMenuTab(3) }
                 ToolButton("缓存", Icons.Filled.Download, false, textColor) { viewModel.cacheCurrentChapter() }
+                // 听书（v1.8.7.4）：朗读原先只藏在「设置」页签里，得先展开菜单再切页签才能找到。
+                // 这是阅读时的高频动作，提到工具行做成一键开关；正在朗读时图标变方块、高亮显示。
+                ToolButton(
+                    label = if (speaking) "停止" else "听书",
+                    icon = if (speaking) Icons.Filled.Stop else Icons.Filled.Headphones,
+                    selected = speaking,
+                    textColor = textColor,
+                ) {
+                    if (speaking) viewModel.stopSpeaking() else viewModel.speakCurrentChapter()
+                }
             }
             Spacer(Modifier.height(4.dp))
         }

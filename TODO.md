@@ -72,15 +72,42 @@
     - 提示文案：`VideoPlayerScreen.kt:646` 的「快进中 / 快退中」需跟着方向走。
   - 设置项放哪：与已有的「长按快进倍速」（`PreferencesManager.KEY_VIDEO_LONG_PRESS_SPEED`，设置页 `SettingsScreen.kt:295`）放同一段，命名如「长按左侧快退」，默认开启。
 
-- [ ] **10. CC 字幕之外增加 AI 字幕**
+- [x] **10. CC 字幕之外增加 AI 字幕** ✅ v1.8.7.3（HLS 线路与模型自选补齐于 v1.8.7.4）
   - 现有外挂字幕能力在 `ui/screens/video/VideoPlayerScreen.kt` / `VideoControls.kt` / `VideoPlayerViewModel.kt`。
   - **方案已定（2026-10-20）**：本地 ASR 模型，不走云端接口（免密钥、免计费、离线可用）。
-  - 设置项「字幕识别」开关：`SettingsScreen.kt` 新增开关，`PreferencesManager.kt` 新增 key，**默认关闭**。
-  - 模型按需下载：参考 `core/visual/Wd14Tagger.kt` / `Wd14Inference.kt` 的模式（hf-mirror 镜像，国内可达）。
-    开关打开 → 开始下载模型，并在开关下方显示下载进度条（可参考 `ui/components/SearchProgressBar.kt`）；
-    开关关闭 → 不下载模型；已下载的模型要给删除入口。
-  - 识别结果以字幕轨道形式接回播放器（`VideoControls.kt` 已有 CC 字幕轨概念），
-    并确定与 CC 字幕并存时的优先级。
+  - **已完成（2026-10-21）**：
+    - 设置项「字幕识别」开关：`PreferencesManager.KEY_SUBTITLE_ASR`，默认关闭。
+    - 模型按需下载：`core/model/LocalModel.kt` + `LocalModelStore.kt`，hf-mirror 直链、
+      逐文件精确字节数校验、`.part` 断点续传、非 Wi-Fi 流量确认、已下载可删除。
+      模型为 `csukuangfj/sherpa-onnx-paraformer-zh-small-2024-03-09`（78 MB int8）。
+    - 取音：`core/asr/AudioPcmExtractor.kt`，MediaExtractor + MediaCodec 边解边吐，
+      按 20 秒一块回调，内存不随片长增长；重采样在块级别做，避免逐 buffer 的相位跳变。
+    - 识别：`core/asr/OfflineAsrEngine.kt`（sherpa-onnx Paraformer 非流式，native 句柄加锁串行）。
+    - 切条：`core/asr/SubtitleBuilder.kt`，按标点切句 + 按字数比例分时间轴，末条对齐块尾。
+    - 接回播放器：生成结果落 SRT（缓存目录），走**已有外挂字幕链路**
+      （`VideoPlayerViewModel.loadSubtitle` → Media3 `SubtitleConfiguration`）加载，
+      与手工加载的 srt 行为完全一致，也顺带让用户能把字幕存下来。
+    - 入口可见性：设置开关 **且** 模型已下载才出现（`aiSubtitleAvailable`），条件不满足时菜单里没有这一项。
+    - 生成中可取消，菜单项内嵌进度条与百分比。
+  - **与 CC 字幕并存**：不并存 —— 生成后覆盖当前字幕轨。手工加载的外挂字幕仍可通过
+    「加载字幕」覆盖 AI 字幕，反之亦然（同一时刻只有一条文本轨）。
+  - **HLS 线路已支持（v1.8.7.4）**：采集站多数是 m3u8 分片清单，`MediaExtractor` 不认分片列表
+    （`UnrecognizedInputFormatException`），此前只能提示「换 mp4 线路」—— 而站里大半内容没有
+    mp4 直链，等于功能对多数视频不可用。现在的做法：直链能解就直接解；判定为 m3u8 就
+    **挑 BANDWIDTH 最低的变体**下载分片拼成本地文件再解（字幕只要音轨，清晰度对识别没有意义，
+    挑最低码率能把下载量压到最小）。分片支持 AES-128（IV 优先取 `#EXT-X-KEY:IV=0x…`，
+    缺省按 `#EXT-MEDIA-SEQUENCE` 转 16 字节大端）；`SAMPLE-AES` 直接失败，解不对出来就是噪声。
+    下载阶段占进度前 40%，之后才进识别。实现在 `core/media/HlsPlaylist.kt` + `HlsDownloader.kt`。
+  - **模型可自选（v1.8.7.4）**：设置页每行都有「当前使用 / 更换模型」，可切内置模型、
+    从手机文件导入（多选 onnx + tokens.txt + lexicon.txt，复制进私有目录 —— SAF 的临时授权
+    重启就失效，只记 URI 的表现是「今天能用、明天加载失败」）、或填仓库地址从镜像拉。
+    选择持久化到 `files/models/selection.json`，引擎侧改为按 `activeDir(kind)` 取目录、
+    挑体积最大的 `.onnx` 当主模型（不再写死 `model.int8.onnx`），换目录时释放旧句柄重载。
+  - **静音不再凭空编内容（v1.8.7.4）**：设备上抓到的真问题 —— 1 秒全零采样被识别成「我的知道」。
+    非流式 ASR 对静音输入会输出高频幻觉词，现在按 RMS 门限短路（阈值取低，避免误杀小声对白）。
+  - **未做**：字幕翻译（中→日 / 中→英），需再接一个翻译模型；本版不做。
+  - **未验证**：从真实 HuggingFace 仓库完整下载一个模型（要几百兆流量），目前只验到
+    「文件清单解析 + 非法地址快速失败」；导入与删除路径已在设备上跑通。
 
 - [x] **11. 视频标签整合（消除「输 A 搜 B」）** ✅ v1.8.4.0
   - 根因：采集站的 `vod_type_name` 写「动作片 / 爱情片 / 科幻片」，受控词表的规范名是

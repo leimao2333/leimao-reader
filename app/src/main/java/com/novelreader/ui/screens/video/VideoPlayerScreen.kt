@@ -149,6 +149,11 @@ fun VideoPlayerScreen(
     val subtitleUri by viewModel.subtitleUri.collectAsState()
     val subtitleEnabled by viewModel.subtitleEnabled.collectAsState()
     val subtitleName by viewModel.subtitleName.collectAsState()
+    // AI 字幕（v1.8.7.3）
+    val aiSubtitleAvailable by viewModel.aiSubtitleAvailable.collectAsState()
+    val aiSubtitleBusy by viewModel.aiSubtitleBusy.collectAsState()
+    val aiSubtitleProgress by viewModel.aiSubtitleProgress.collectAsState()
+    val aiSubtitleStatus by viewModel.aiSubtitleStatus.collectAsState()
 
     // 外挂字幕文件选择器（v1.4.6.0）：SAF 选 srt/vtt/ass/ssa
     val subtitlePicker = rememberLauncherForActivityResult(
@@ -836,6 +841,11 @@ fun VideoPlayerScreen(
                 onLoadSubtitle = { subtitlePicker.launch(arrayOf("*/*")) },
                 onToggleSubtitle = { viewModel.toggleSubtitle() },
                 onClearSubtitle = { viewModel.clearSubtitle() },
+                aiSubtitleAvailable = aiSubtitleAvailable,
+                aiSubtitleBusy = aiSubtitleBusy,
+                aiSubtitleProgress = aiSubtitleProgress,
+                aiSubtitleStatus = aiSubtitleStatus,
+                onGenerateAiSubtitle = { viewModel.generateAiSubtitle() },
                 // v1.6.0.0：短剧把更多菜单合并到底部面板；长视频保留 MoreVert（含亮度 / 音量滑块）
                 hideMoreMenu = isShortDrama,
                 // v1.6.3.0：短剧顶部「List」图标与底部红果式常驻栏的「选集」按钮重复，

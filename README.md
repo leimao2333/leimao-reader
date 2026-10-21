@@ -129,6 +129,11 @@ NovelReader/
 3. 运行到设备或模拟器（minSdk 24，即 Android 7.0+）
 
 > 注意：首次构建需联网下载依赖，Rhino 来自 jitpack 仓库。
+>
+> 离线语音 / 字幕识别依赖 `app/libs/sherpa-onnx-static-1.13.8.aar`（37 MB，已入库）。
+> 这个 AAR 没有公开的 Maven 坐标，只能以本地文件方式依赖 —— 不入库的话 `git clone` 后直接构建会失败。
+> 升级它时注意：静态版把 onnxruntime 编进了 `libsherpa-onnx-jni.so`，与视觉打标用的
+> `libonnxruntime.so` 是两套独立运行时，两者可以共存。
 
 ## 发版与签名（务必遵守）
 

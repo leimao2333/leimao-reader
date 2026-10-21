@@ -287,6 +287,21 @@ class PreferencesManager(private val context: Context) {
          */
         val KEY_VISUAL_TAGGING = booleanPreferencesKey("visual_tagging")
 
+        /**
+         * 离线语音（听书）开关（v1.8.7.3，默认关）。
+         *
+         * 关着时朗读走系统 TTS（手机自带语音引擎）；打开后改用内置的离线语音模型，
+         * 首次需要下载约 131MB。**不打开就不会去下载/加载模型** —— 与视觉打标同一个口径。
+         */
+        val KEY_OFFLINE_TTS = booleanPreferencesKey("offline_tts")
+
+        /**
+         * 字幕识别（离线 ASR）开关（v1.8.7.3，默认关）。
+         *
+         * 关闭时不下载模型、播放器里也不出现「生成字幕」入口。
+         */
+        val KEY_SUBTITLE_ASR = booleanPreferencesKey("subtitle_asr")
+
         // ===== 书架（v1.2.0.0 对标 legado 书架布局） =====
         /** 书架展现形式：0=封面墙 1=紧凑网格 2=列表 */
         val KEY_BOOKSHELF_VIEW_MODE = intPreferencesKey("bookshelf_view_mode")
@@ -378,6 +393,21 @@ class PreferencesManager(private val context: Context) {
          * 打开后也只是「允许使用」，真正的推理仍由标签页里的按钮显式触发。
          */
         const val DEFAULT_VISUAL_TAGGING = false
+
+        /**
+         * 离线语音（听书）默认**关**（v1.8.7.3）。
+         *
+         * 关着时听书用系统 TTS：零下载、零内存占用，开口就能读。
+         * 打开后才会下载 131MB 的离线语音模型，音质更好但要多占一份存储。
+         */
+        const val DEFAULT_OFFLINE_TTS = false
+
+        /**
+         * 字幕识别默认**关**（v1.8.7.3）。
+         *
+         * 关闭时整条 ASR 链路不启动：不下模型、不扫音轨、播放器里也不显示入口。
+         */
+        const val DEFAULT_SUBTITLE_ASR = false
         /** 搜索历史分隔符（历史记录用单个字符串存储，分隔符分隔） */
         private const val HISTORY_SEPARATOR = "\u001F"
     }
@@ -1087,5 +1117,22 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setVisualTagging(value: Boolean) {
         context.dataStore.edit { it[KEY_VISUAL_TAGGING] = value }
+    }
+
+    // ===== 离线语音与字幕识别（v1.8.7.3） =====
+    /** 听书是否使用内置离线语音模型（默认关：关着时用系统 TTS） */
+    val offlineTtsFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_OFFLINE_TTS] ?: DEFAULT_OFFLINE_TTS }
+
+    suspend fun setOfflineTts(value: Boolean) {
+        context.dataStore.edit { it[KEY_OFFLINE_TTS] = value }
+    }
+
+    /** 是否允许使用离线语音识别给视频生成字幕（默认关） */
+    val subtitleAsrFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_SUBTITLE_ASR] ?: DEFAULT_SUBTITLE_ASR }
+
+    suspend fun setSubtitleAsr(value: Boolean) {
+        context.dataStore.edit { it[KEY_SUBTITLE_ASR] = value }
     }
 }

@@ -221,6 +221,30 @@ class AppContainer(context: Context) {
      * 懒加载——只有真正进入阅读页发起朗读时才初始化 TTS 引擎。
      */
     val ttsController: com.novelreader.core.tts.TtsController by lazy {
-        com.novelreader.core.tts.TtsController(appContext)
+        com.novelreader.core.tts.TtsController(appContext, localModelStore, preferencesManager)
+    }
+
+    /**
+     * 本地模型（离线语音 / 字幕识别，v1.8.7.3）。
+     *
+     * 只负责下载与校验，不加载推理引擎——引擎由各自的使用方懒加载，
+     * 避免「打开设置页就把几百兆模型读进内存」。
+     */
+    val localModelStore: com.novelreader.core.model.LocalModelStore by lazy {
+        com.novelreader.core.model.LocalModelStore(appContext)
+    }
+
+    /** 离线语音识别（字幕）引擎（v1.8.7.3，懒加载） */
+    val offlineAsrEngine: com.novelreader.core.asr.OfflineAsrEngine by lazy {
+        com.novelreader.core.asr.OfflineAsrEngine(appContext, localModelStore)
+    }
+
+    /**
+     * AI 字幕生成器（v1.8.7.3，待办 #10）。
+     *
+     * 与识别引擎共用同一个实例：模型只有一份句柄，重复 new 会白占几十兆内存。
+     */
+    val aiSubtitleGenerator: com.novelreader.core.asr.AiSubtitleGenerator by lazy {
+        com.novelreader.core.asr.AiSubtitleGenerator(appContext, offlineAsrEngine)
     }
 }

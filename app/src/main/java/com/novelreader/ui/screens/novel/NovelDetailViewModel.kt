@@ -91,13 +91,18 @@ class NovelDetailViewModel(
             // 详情与章节的收藏/进度状态并行取，但**目录必须在详情之后**：
             // 详情规则可能写入 legado 变量（`@put:{cid:$.comic_id}` 等），
             // 目录地址里的 `@get:{cid}` 依赖它；并行会导致目录拿到空 ID → 目录空白。
-            val metaDeferred = launch { loadCollected(item) }
-            val progressDeferred = launch { loadProgressFlag(item) }
-            val detailed = loadDetail(item)
-            loadChapters(detailed)
-            metaDeferred.join()
-            progressDeferred.join()
-            _loading.value = false
+            try {
+                val metaDeferred = launch { loadCollected(item) }
+                val progressDeferred = launch { loadProgressFlag(item) }
+                val detailed = loadDetail(item)
+                loadChapters(detailed)
+                metaDeferred.join()
+                progressDeferred.join()
+            } finally {
+                // 任何一步抛异常都不能让页面永远停在加载态：
+                // 那表现就是「整页空白 + 一个转圈」，用户只能退出重进。
+                _loading.value = false
+            }
         }
     }
 
@@ -133,7 +138,8 @@ class NovelDetailViewModel(
     }
 
     private suspend fun loadCollected(item: MediaItem) {
-        _collected.value = bookRepository.isCollected(item)
+        // 收藏状态读失败不该影响详情页本身，更不该把 loading 卡死
+        _collected.value = runCatching { bookRepository.isCollected(item) }.getOrDefault(false)
     }
 
     /** 切换收藏 */

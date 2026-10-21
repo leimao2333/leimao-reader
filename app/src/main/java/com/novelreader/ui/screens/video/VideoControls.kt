@@ -51,6 +51,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -146,6 +147,18 @@ fun BoxScope.VideoControlsOverlay(
     onLoadSubtitle: () -> Unit = {},
     onToggleSubtitle: () -> Unit = {},
     onClearSubtitle: () -> Unit = {},
+    /**
+     * AI 字幕（v1.8.7.3，待办 #10）。
+     *
+     * 只有在「设置里开了字幕识别」且「模型已下载」时才为 true —— 条件不满足时
+     * 菜单里根本不出现这一项，避免用户点了没反应还得自己猜原因。
+     */
+    aiSubtitleAvailable: Boolean = false,
+    /** 正在生成字幕（此时菜单项变为「取消」并显示进度） */
+    aiSubtitleBusy: Boolean = false,
+    aiSubtitleProgress: Float = 0f,
+    aiSubtitleStatus: String = "",
+    onGenerateAiSubtitle: () -> Unit = {},
     /**
      * 隐藏 MoreVert 按钮（v1.6.0.0）。短剧模式下整个画面相关的菜单已经合并到底部
      * 面板（[ShortDramaEpisodeOverlay]），顶部不再保留 ⋮ 入口以免与底部「选集」按钮
@@ -449,6 +462,40 @@ fun BoxScope.VideoControlsOverlay(
                                 subtitleMenuOpen = false
                             },
                         )
+                        // AI 字幕（v1.8.7.3）：离线识别当前这一集的音轨并生成字幕。
+                        // 生成中不关闭菜单 —— 进度条就画在这一项里，关掉菜单等于把反馈藏了。
+                        if (aiSubtitleAvailable) {
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(
+                                            text = if (aiSubtitleBusy) "取消字幕生成" else "AI 生成字幕（离线）",
+                                            color = if (aiSubtitleBusy) Color(0xFFFF6B6B) else Color.Unspecified,
+                                        )
+                                        if (aiSubtitleBusy) {
+                                            Spacer(Modifier.height(4.dp))
+                                            if (aiSubtitleProgress > 0f) {
+                                                LinearProgressIndicator(
+                                                    progress = { aiSubtitleProgress },
+                                                    modifier = Modifier.width(160.dp),
+                                                )
+                                            } else {
+                                                // 总时长未知（容器没写 duration）时给不确定进度条，
+                                                // 否则用户会以为卡住了
+                                                LinearProgressIndicator(modifier = Modifier.width(160.dp))
+                                            }
+                                            Spacer(Modifier.height(2.dp))
+                                            Text(
+                                                text = aiSubtitleStatus,
+                                                fontSize = 11.sp,
+                                                color = Color.Gray,
+                                            )
+                                        }
+                                    }
+                                },
+                                onClick = { onGenerateAiSubtitle() },
+                            )
+                        }
                         if (subtitleName != null) {
                             DropdownMenuItem(
                                 text = {

@@ -183,13 +183,10 @@ fun NovelDetailScreen(
                 )
             }
 
-            if (loading && chapters.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-                return@Column
-            }
-
+            // 注意：这里**不能**在加载时整页 return 一个转圈。
+            // 进详情页时手上已经有列表页传过来的 item（封面、书名、作者都在），
+            // 整页不渲染的结果是「一片空白 + 一个转圈」，慢网下能停十几秒，
+            // 看起来跟卡死没区别。头部照常画，只有「章节数」这一处等接口。
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 24.dp),
@@ -236,8 +233,26 @@ fun NovelDetailScreen(
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Button(onClick = { showChapters = !showChapters }) {
-                            Text(if (showChapters) "收起目录" else "目录（${chapters.size}章）")
+                        // 目录还没回来时按钮禁用并说明状态，避免「目录（0章）」误导用户以为这书没章节
+                        val chaptersPending = loading && chapters.isEmpty()
+                        Button(
+                            onClick = { showChapters = !showChapters },
+                            enabled = !chaptersPending,
+                        ) {
+                            Text(
+                                when {
+                                    chaptersPending -> "目录加载中…"
+                                    showChapters -> "收起目录"
+                                    else -> "目录（${chapters.size}章）"
+                                }
+                            )
+                        }
+                        if (chaptersPending) {
+                            Spacer(Modifier.width(10.dp))
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                            )
                         }
                         if (showChapters && chapters.size > 1) {
                             Spacer(Modifier.width(8.dp))

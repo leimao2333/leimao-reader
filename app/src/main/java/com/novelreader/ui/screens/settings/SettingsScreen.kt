@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -18,11 +19,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -108,6 +113,19 @@ fun SettingsScreen(
     val rssEntryBelow by viewModel.rssEntryBelow.collectAsState()
     // 视觉模型打标（v1.8.7.2，默认关）
     val visualTagging by viewModel.visualTagging.collectAsState()
+    // 离线语音 / 字幕识别（v1.8.7.3，默认关）
+    val offlineTts by viewModel.offlineTts.collectAsState()
+    val subtitleAsr by viewModel.subtitleAsr.collectAsState()
+    val modelStates by viewModel.modelStates.collectAsState()
+    val meteredConfirm by viewModel.meteredConfirm.collectAsState()
+    val modelMessage by viewModel.modelMessage.collectAsState()
+    // 离线试听是否正在朗读（决定按钮显示「试听」还是「停止」）
+    val ttsSpeaking by viewModel.ttsSpeaking.collectAsState()
+    // 模型自选（v1.8.7.4）：可选项会随「下载完成 / 导入 / 删除」变化，
+    // 所以这里订阅 customModels 与 modelStates 两个 flow，变化时重算列表。
+    val customModels by viewModel.customModels.collectAsState()
+    val modelSelection by viewModel.modelSelection.collectAsState()
+    val libraryBusy by viewModel.libraryBusy.collectAsState()
     // 搜索结果展示（v1.8.6.0 待办 #26）
     val searchGridNovel by viewModel.searchGridNovel.collectAsState()
     val searchGridComic by viewModel.searchGridComic.collectAsState()
@@ -133,6 +151,38 @@ fun SettingsScreen(
             androidx.core.content.ContextCompat.checkSelfPermission(context, permission) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
         if (granted) viewModel.downloadUpdate() else notifyPermissionLauncher.launch(permission)
+    }
+
+    // ===== 模型自选（v1.8.7.4）=====
+    // 当前打开的模型选择框（null = 关闭）。存 kind 而不是布尔值：
+    // 两个用途共用一个对话框，标题和列表按 kind 走。
+    var pickerKind by remember { mutableStateOf<com.novelreader.core.model.ModelKind?>(null) }
+    // 导入的目标用途。SAF 回调是异步的，回来时对话框的上下文已经没了，
+    // 只能先把「给谁导入」记下来。
+    var importKind by remember { mutableStateOf(com.novelreader.core.model.ModelKind.TTS) }
+    // 「填仓库地址添加」输入框（非空 = 打开）；与选择框叠着显示，下载进度还在下面看得到
+    var repoKind by remember { mutableStateOf<com.novelreader.core.model.ModelKind?>(null) }
+    // 待确认删除的自定义模型。删除是不可逆的（自定义模型删了只能重新导入），
+    // 而「删除」就挨着单选框，手指一滑就点上，所以必须二次确认
+    var pendingDelete by remember {
+        mutableStateOf<com.novelreader.core.model.InstalledModel?>(null)
+    }
+    val modelImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isNullOrEmpty()) return@rememberLauncherForActivityResult
+        // 标题默认取第一个文件名去掉扩展名：用户不改也能认出是哪个模型
+        val first = uris.first().lastPathSegment.orEmpty()
+        val title = first.substringAfterLast('/').substringBeforeLast('.')
+            .takeIf { it.isNotBlank() } ?: "自定义模型"
+        viewModel.importModel(importKind, title, uris)
+    }
+    // 可选项列表依赖「内置是否已下载」与「自定义模型清单」，两者都是 flow
+    val ttsModels = remember(modelStates, customModels) {
+        viewModel.availableModels(com.novelreader.core.model.ModelKind.TTS)
+    }
+    val asrModels = remember(modelStates, customModels) {
+        viewModel.availableModels(com.novelreader.core.model.ModelKind.ASR)
     }
 
     Scaffold(
@@ -783,6 +833,142 @@ fun SettingsScreen(
 
             Spacer(Modifier.height(24.dp))
 
+            // ===== 离线语音与字幕（v1.8.7.3）=====
+            // 两个功能共用一套「模型按需下载」：开关默认关，打开才下载，
+            // 关掉不会自动删模型（删是显式动作，见每行下面的「删除模型」）。
+            SectionTitle("离线语音与字幕")
+            ModelSettingRow(
+                title = "听书（离线语音）",
+                subtitle = "朗读改用内置离线语音模型，音色统一、断网也能读。\n" +
+                    "关闭时用手机自带的语音引擎，无需下载",
+                checked = offlineTts,
+                onCheckedChange = { on ->
+                    viewModel.setOfflineTts(on)
+                    if (on) viewModel.ensureModelDownloaded(com.novelreader.core.model.LocalModels.OFFLINE_TTS)
+                },
+                spec = com.novelreader.core.model.LocalModels.OFFLINE_TTS,
+                state = modelStates[com.novelreader.core.model.LocalModels.OFFLINE_TTS.id],
+                onDownload = {
+                    viewModel.downloadModel(com.novelreader.core.model.LocalModels.OFFLINE_TTS, false)
+                },
+                onDelete = { viewModel.deleteModel(com.novelreader.core.model.LocalModels.OFFLINE_TTS) },
+                previewLabel = if (ttsSpeaking) "停止" else "试听",
+                onPreview = { viewModel.previewOfflineTts() },
+                currentModel = viewModel.currentModel(com.novelreader.core.model.ModelKind.TTS),
+                optionCount = ttsModels.size,
+                onPickModel = { pickerKind = com.novelreader.core.model.ModelKind.TTS },
+            )
+            ModelSettingRow(
+                title = "字幕识别（离线）",
+                subtitle = "为没有字幕的视频自动生成中文字幕。\n" +
+                    "关闭时不会下载模型，播放器里也不出现「生成字幕」入口",
+                checked = subtitleAsr,
+                onCheckedChange = { on ->
+                    viewModel.setSubtitleAsr(on)
+                    if (on) viewModel.ensureModelDownloaded(com.novelreader.core.model.LocalModels.SUBTITLE_ASR)
+                },
+                spec = com.novelreader.core.model.LocalModels.SUBTITLE_ASR,
+                state = modelStates[com.novelreader.core.model.LocalModels.SUBTITLE_ASR.id],
+                onDownload = {
+                    viewModel.downloadModel(com.novelreader.core.model.LocalModels.SUBTITLE_ASR, false)
+                },
+                onDelete = { viewModel.deleteModel(com.novelreader.core.model.LocalModels.SUBTITLE_ASR) },
+                currentModel = viewModel.currentModel(com.novelreader.core.model.ModelKind.ASR),
+                optionCount = asrModels.size,
+                onPickModel = { pickerKind = com.novelreader.core.model.ModelKind.ASR },
+            )
+
+            // 下载失败的提示（对话框不影响布局，放在这里只为就近）
+            LaunchedEffect(modelMessage) {
+                val msg = modelMessage ?: return@LaunchedEffect
+                android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                viewModel.dismissModelMessage()
+            }
+            meteredConfirm?.let { spec ->
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { viewModel.dismissMeteredConfirm() },
+                    title = { Text("当前不是 Wi-Fi") },
+                    text = {
+                        Text(
+                            "下载「${spec.title}」需要约 " +
+                                com.novelreader.core.model.formatModelSize(spec.totalBytes) +
+                                " 流量，确认继续？",
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { viewModel.confirmMeteredDownload() }) { Text("继续下载") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { viewModel.dismissMeteredConfirm() }) { Text("稍后") }
+                    },
+                )
+            }
+
+            // 模型选择框（v1.8.7.4）：两个用途共用，选项按 kind 取
+            pickerKind?.let { kind ->
+                val options = when (kind) {
+                    com.novelreader.core.model.ModelKind.TTS -> ttsModels
+                    com.novelreader.core.model.ModelKind.ASR -> asrModels
+                }
+                // 选择表里存空串表示「用内置默认」，这里要把它翻译成具体的内置模型 id，
+                // 否则列表里一个都不打勾 —— 用户看到的是「当前使用：离线语音（听书）」，
+                // 打开对话框却像什么都没选
+                val checked = modelSelection[kind].orEmpty().ifBlank {
+                    (options.firstOrNull { !it.isCustom } ?: options.firstOrNull())?.id.orEmpty()
+                }
+                ModelPickerDialog(
+                    kind = kind,
+                    options = options,
+                    selectedId = checked,
+                    busy = libraryBusy,
+                    onSelect = { viewModel.selectModel(kind, it) },
+                    onImport = {
+                        importKind = kind
+                        // 模型的 MIME 多半是 application/octet-stream，
+                        // 按扩展名过滤会让 onnx 直接选不中，只能放开成 */*
+                        modelImportLauncher.launch(arrayOf("*/*"))
+                    },
+                    onAddRepo = { repoKind = kind },
+                    onDeleteCustom = { pendingDelete = it },
+                    onDismiss = { pickerKind = null },
+                )
+            }
+            pendingDelete?.let { model ->
+                AlertDialog(
+                    onDismissRequest = { pendingDelete = null },
+                    title = { Text("删除模型") },
+                    text = {
+                        Text(
+                            "「${model.title}」占 " +
+                                com.novelreader.core.model.formatModelSize(model.sizeBytes()) +
+                                "，删除后需要重新导入才能再用。确定删除？",
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                pendingDelete = null
+                                viewModel.deleteCustomModel(model)
+                            },
+                        ) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+                    },
+                )
+            }
+            repoKind?.let { kind ->
+                RepoInputDialog(
+                    onDismiss = { repoKind = null },
+                    onConfirm = { repo, title ->
+                        repoKind = null
+                        viewModel.addModelFromRepo(kind, repo, title)
+                    },
+                )
+            }
+
+            Spacer(Modifier.height(24.dp))
+
             // ===== 存储 =====
             SectionTitle("存储")
             SettingRow(
@@ -1032,6 +1218,118 @@ private fun SectionTitle(text: String) {
     Spacer(Modifier.height(12.dp))
 }
 
+/**
+ * 带「模型下载状态」的设置行（v1.8.7.3）。
+ *
+ * 开关只管「要不要用」，下载是独立动作：打开开关会自动触发一次下载，
+ * 但下载中关掉开关不会中断（关掉只影响使用，不打断已经跑起来的下载）——
+ * 半路中断反而留下 `.part` 残骸，下次还得重来。
+ *
+ * 四种状态各有对应 UI：
+ * - 未安装：只显示开关；
+ * - 下载中：进度条 + 已下载 / 总量；
+ * - 已安装：显示体积 + 「删除模型」；
+ * - 失败：错误原因 + 「重试」。
+ */
+@Composable
+private fun ModelSettingRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    spec: com.novelreader.core.model.LocalModelSpec,
+    state: com.novelreader.core.model.ModelState?,
+    onDownload: () -> Unit,
+    onDelete: () -> Unit,
+    /** 已安装后额外的操作按钮（目前只有离线语音的「试听」用） */
+    previewLabel: String? = null,
+    onPreview: (() -> Unit)? = null,
+    /** 当前生效的模型（v1.8.7.4）；null = 一个都没装 */
+    currentModel: com.novelreader.core.model.InstalledModel? = null,
+    /** 可选模型数量，决定按钮写「更换模型」还是「添加模型」 */
+    optionCount: Int = 0,
+    onPickModel: (() -> Unit)? = null,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        SettingRow(title = title, subtitle = subtitle) {
+            Switch(checked = checked, onCheckedChange = onCheckedChange)
+        }
+        // 模型自选（v1.8.7.4）：内置只有一个，但用户可能导入自己的模型，
+        // 所以这一行始终在 —— 一个模型都没有时它就是「添加」的入口。
+        if (onPickModel != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "当前使用：" + (currentModel?.title ?: "未选择"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onPickModel) {
+                    Text(if (optionCount > 1) "更换模型" else "添加模型")
+                }
+            }
+        }
+        when (state) {
+            is com.novelreader.core.model.ModelState.Downloading -> {
+                val percent = (state.progress * 100).toInt()
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.LinearProgressIndicator(
+                        progress = { state.progress },
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 10.dp),
+                    )
+                    Text(
+                        text = "$percent%",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    text = "下载中 " +
+                        com.novelreader.core.model.formatModelSize(state.downloaded) + " / " +
+                        com.novelreader.core.model.formatModelSize(state.total),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+
+            com.novelreader.core.model.ModelState.Installed -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "已下载 · " +
+                            com.novelreader.core.model.formatModelSize(spec.totalBytes),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (previewLabel != null && onPreview != null) {
+                        TextButton(onClick = onPreview) { Text(previewLabel) }
+                    }
+                    TextButton(onClick = onDelete) { Text("删除模型") }
+                }
+                Spacer(Modifier.height(4.dp))
+            }
+
+            is com.novelreader.core.model.ModelState.Failed -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "下载失败：${state.message}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onDownload) { Text("重试") }
+                }
+                Spacer(Modifier.height(4.dp))
+            }
+
+            else -> Unit
+        }
+    }
+}
+
 @Composable
 private fun SettingRow(
     title: String,
@@ -1193,3 +1491,170 @@ private fun TagImportProgressDialog(
 /** 字节 → MB 文本（更新下载进度用） */
 private fun formatMb(bytes: Long): String =
     String.format(java.util.Locale.US, "%.1f", bytes / 1024f / 1024f)
+
+/**
+ * 模型选择框（v1.8.7.4）。
+ *
+ * **单选**：一个用途同时只能用一份模型 —— 朗读不可能同时两个音色，
+ * 字幕识别也不可能两份模型投票，所以这里没有「启用 / 停用」，点中就是换。
+ *
+ * 内置与自定义在列表里混排：对引擎来说它们没有区别，都是一堆文件。
+ * 只有「删」不同 —— 内置删了能重下，自定义删了就没了，所以只有自定义给删除按钮。
+ */
+@Composable
+private fun ModelPickerDialog(
+    kind: com.novelreader.core.model.ModelKind,
+    options: List<com.novelreader.core.model.InstalledModel>,
+    selectedId: String,
+    busy: String?,
+    onSelect: (String) -> Unit,
+    onImport: () -> Unit,
+    onAddRepo: () -> Unit,
+    onDeleteCustom: (com.novelreader.core.model.InstalledModel) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("选择模型") },
+        text = {
+            Column {
+                // 用途写成小标题而不是塞进对话框标题：标题一长就折行，
+                // 「选择模型 · 听书（离线语音）」在窄屏上会被切成两行
+                Text(
+                    text = "用途：${kind.label}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(6.dp))
+                if (options.isEmpty()) {
+                    Text(
+                        text = "还没有可用的模型。先在设置页下载内置模型，或用下面的方式导入自己的模型。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        options.forEach { model ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(enabled = busy == null) { onSelect(model.id) }
+                                    .padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                RadioButton(
+                                    selected = model.id == selectedId,
+                                    onClick = { onSelect(model.id) },
+                                    enabled = busy == null,
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(model.title, style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        text = modelOriginLabel(model) + " · " +
+                                            com.novelreader.core.model.formatModelSize(model.sizeBytes()),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                if (model.isCustom) {
+                                    TextButton(
+                                        onClick = { onDeleteCustom(model) },
+                                        enabled = busy == null,
+                                    ) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (busy != null) {
+                    Spacer(Modifier.height(10.dp))
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = busy,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                Row {
+                    TextButton(onClick = onImport, enabled = busy == null) { Text("从文件导入") }
+                    TextButton(onClick = onAddRepo, enabled = busy == null) { Text("填仓库地址添加") }
+                }
+                Text(
+                    text = modelImportHint(kind),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } },
+    )
+}
+
+/** 「填仓库地址添加」输入框（v1.8.7.4） */
+@Composable
+private fun RepoInputDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (repo: String, title: String) -> Unit,
+) {
+    var repo by remember { mutableStateOf("") }
+    var title by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("从仓库地址添加") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = repo,
+                    onValueChange = { repo = it },
+                    label = { Text("仓库地址") },
+                    placeholder = { Text("owner/repo 或完整链接") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("显示名称（可留空）") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "只下载 onnx / tokens.txt / lexicon.txt / *.fst 与 dict 目录，" +
+                        "走 hf-mirror 镜像。仓库需要是引擎能直接加载的结构。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(repo.trim(), title.trim()) },
+                enabled = repo.isNotBlank(),
+            ) { Text("下载") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+private fun modelOriginLabel(model: com.novelreader.core.model.InstalledModel): String =
+    when (model.origin) {
+        com.novelreader.core.model.ModelOrigin.BUILTIN -> "内置"
+        com.novelreader.core.model.ModelOrigin.IMPORTED -> "本地导入"
+        com.novelreader.core.model.ModelOrigin.DOWNLOADED -> "仓库下载"
+    }
+
+/** 导入提示：两个用途要的文件不一样，写清楚省得用户来回试 */
+private fun modelImportHint(kind: com.novelreader.core.model.ModelKind): String = when (kind) {
+    com.novelreader.core.model.ModelKind.TTS ->
+        "导入需同时选中 onnx 与 tokens.txt；中文 VITS 模型建议连 lexicon.txt 一起选（多音字与数字读法靠它）。"
+    com.novelreader.core.model.ModelKind.ASR ->
+        "导入需同时选中 onnx 与 tokens.txt，结构要与 sherpa-onnx 的 Paraformer 一致。"
+}

@@ -379,6 +379,10 @@ fun AppNavHost(
                         it.preferencesManager, it.backupManager, container.context,
                         // v1.8.1.6：设置页直达「标签导入」
                         it.tagIndexRepository,
+                        // v1.8.7.3：离线语音 / 字幕识别的模型下载
+                        it.localModelStore,
+                        // v1.8.7.3：设置页「试听」直接驱动朗读引擎
+                        it.ttsController,
                     )
                 }
             )
@@ -815,6 +819,9 @@ fun AppNavHost(
                         it.videoPrefetchCache,
                         // 尾段预缓冲的「仅 WiFi」判定要问系统网络状态，ViewModel 里没有 Context（v1.8.4.4）
                         wifiProbe = { com.novelreader.core.util.NetworkStatus.isWifi(it.context) },
+                        // AI 字幕（v1.8.7.3，待办 #10）：离线识别音轨生成字幕
+                        aiSubtitleGenerator = it.aiSubtitleGenerator,
+                        localModelStore = it.localModelStore,
                     )
                 }
             )

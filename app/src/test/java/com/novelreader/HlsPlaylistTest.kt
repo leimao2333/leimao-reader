@@ -126,4 +126,113 @@ class HlsPlaylistTest {
         // 不带后缀的采集地址按直链处理
         assertFalse(NextEpisodePrefetcher.looksLikeHls("https://a.com/play?id=1"))
     }
+
+    // ===== AI 字幕：整集取音（v1.8.7.4）=====
+    //
+    // 这组解析错了的后果比预缓冲严重得多：预缓冲挑错变体只是多花几 MB，
+    // 而字幕挑错变体会让「一集 500 MB 下 20 分钟」变成常态；
+    // 密钥 / 序号解错则会得到一堆噪声，识别出一屏乱码字幕。
+
+    @Test
+    fun `主清单挑码率最低的变体`() {
+        val master = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+            high/index.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360
+            low/index.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
+            mid/index.m3u8
+        """.trimIndent()
+        // 字幕只要音轨，画质越低文件越小
+        assertEquals(
+            "https://a.com/vod/low/index.m3u8",
+            HlsPlaylist.lowestBandwidthVariant(master, "https://a.com/vod/index.m3u8"),
+        )
+    }
+
+    @Test
+    fun `变体属性顺序不影响挑选`() {
+        val master = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:RESOLUTION=1920x1080,BANDWIDTH=5000000
+            high.m3u8
+            #EXT-X-STREAM-INF:RESOLUTION=640x360,BANDWIDTH=800000
+            low.m3u8
+        """.trimIndent()
+        assertEquals(
+            "https://a.com/vod/low.m3u8",
+            HlsPlaylist.lowestBandwidthVariant(master, "https://a.com/vod/index.m3u8"),
+        )
+    }
+
+    @Test
+    fun `没有 BANDWIDTH 时退回第一个变体`() {
+        val master = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:RESOLUTION=1280x720
+            only.m3u8
+        """.trimIndent()
+        assertEquals(
+            "https://a.com/only.m3u8",
+            HlsPlaylist.lowestBandwidthVariant(master, "https://a.com/index.m3u8"),
+        )
+    }
+
+    @Test
+    fun `解析 AES-128 密钥信息`() {
+        val media = """
+            #EXTM3U
+            #EXT-X-MEDIA-SEQUENCE:7
+            #EXT-X-KEY:METHOD=AES-128,URI="key.bin",IV=0x0123456789ABCDEF0123456789ABCDEF
+            #EXTINF:9.0,
+            seg0.ts
+        """.trimIndent()
+        val key = HlsPlaylist.keyInfo(media, "https://a.com/vod/index.m3u8")
+        assertEquals("AES-128", key?.method)
+        assertEquals("https://a.com/vod/key.bin", key?.uri)
+        assertEquals("0123456789ABCDEF0123456789ABCDEF", key?.ivHex)
+        assertEquals(7L, HlsPlaylist.mediaSequence(media))
+    }
+
+    @Test
+    fun `METHOD 为 NONE 表示不加密`() {
+        val media = """
+            #EXTM3U
+            #EXT-X-KEY:METHOD=NONE
+            #EXTINF:9.0,
+            seg0.ts
+        """.trimIndent()
+        val key = HlsPlaylist.keyInfo(media, "https://a.com/index.m3u8")
+        assertEquals("NONE", key?.method)
+        assertNull(key?.uri)
+        // 没有 KEY 标签时返回 null（区别于「显式声明不加密」）
+        assertNull(HlsPlaylist.keyInfo("#EXTM3U\nseg.ts", "https://a.com/index.m3u8"))
+    }
+
+    @Test
+    fun `累加清单总时长`() {
+        val media = """
+            #EXTM3U
+            #EXTINF:9.009,
+            a.ts
+            #EXTINF:9.009,标题里带逗号也不能影响
+            b.ts
+            #EXTINF:1.5,
+            c.ts
+        """.trimIndent()
+        // 9.009 + 9.009 + 1.5 = 19.518s
+        assertEquals(19_518L, HlsPlaylist.totalDurationMs(media))
+        assertEquals(0L, HlsPlaylist.totalDurationMs("#EXTM3U"))
+    }
+
+    @Test
+    fun `字幕用的 HLS 地址判定`() {
+        assertTrue(HlsPlaylist.looksLikeHls("https://a.com/v/index.m3u8"))
+        assertTrue(HlsPlaylist.looksLikeHls("https://a.com/v/index.m3u8?sign=x"))
+        assertTrue(HlsPlaylist.looksLikeHls("https://a.com/v/index.m3u"))
+        assertFalse(HlsPlaylist.looksLikeHls("https://a.com/v/movie.mp4"))
+        // 查询串里带 m3u8 不算（只看路径）
+        assertFalse(HlsPlaylist.looksLikeHls("https://a.com/play?id=index.m3u8"))
+    }
 }

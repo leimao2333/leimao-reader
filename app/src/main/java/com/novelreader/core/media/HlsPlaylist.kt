@@ -56,15 +56,133 @@ object HlsPlaylist {
         return out
     }
 
-    /** 取标签里 `KEY="value"` 形式的属性值（属性顺序不固定，不能按位置切） */
+    /**
+     * 取标签里 `KEY=value` 形式的属性值（属性顺序不固定，不能按位置切）。
+     *
+     * 两种写法都要认：
+     * - `URI="key.bin"` —— 地址类属性一律带引号；
+     * - `BANDWIDTH=800000` / `METHOD=AES-128` —— 数值与枚举**不带引号**。
+     *
+     * 早先只实现了带引号那种，结果挑码率变体时 BANDWIDTH 一律取不到、
+     * 加密方式一律判成「没写」，两个功能同时静默失效（单测里一眼可见）。
+     */
     private fun attribute(line: String, key: String): String? {
-        val marker = "$key=\""
-        val start = line.indexOf(marker, ignoreCase = true)
-        if (start < 0) return null
-        val from = start + marker.length
-        val end = line.indexOf('"', from)
-        if (end <= from) return null
-        return line.substring(from, end).trim().ifEmpty { null }
+        var searchFrom = 0
+        while (true) {
+            val found = line.indexOf(key, searchFrom, ignoreCase = true)
+            if (found < 0) return null
+            // 左边必须是分隔符，否则 `BANDWIDTH` 会命中 `AVERAGE-BANDWIDTH` 的后半段
+            val leftOk = found == 0 ||
+                line[found - 1].let { it == ',' || it == ':' || it.isWhitespace() }
+            var i = found + key.length
+            while (i < line.length && line[i].isWhitespace()) i++
+            if (leftOk && i < line.length && line[i] == '=') {
+                i++
+                while (i < line.length && line[i].isWhitespace()) i++
+                if (i < line.length && line[i] == '"') {
+                    val end = line.indexOf('"', i + 1)
+                    if (end < 0) return null
+                    return line.substring(i + 1, end).trim().ifEmpty { null }
+                }
+                val end = line.indexOf(',', i).let { if (it < 0) line.length else it }
+                return line.substring(i, end).trim().ifEmpty { null }
+            }
+            searchFrom = found + key.length
+        }
+    }
+
+    // ===== AI 字幕用（v1.8.7.4）=====
+    //
+    // 预缓冲只需要「前几个分片」，所以上面那套够用。但要把整集音轨拿下来做离线识别，
+    // 就得挑对变体、认得出加密、算得出时长 —— 下面这几个是为此补的。
+
+    /**
+     * 主清单里**码率最低**的变体地址。
+     *
+     * 字幕只要音轨，画质高低对识别没有任何帮助，但文件体积差好几倍：
+     * 同一集 1080p 变体可能 500 MB，360p 只有几十 MB。挑最低码率是纯粹的省钱省时间。
+     */
+    fun lowestBandwidthVariant(text: String, baseUrl: String): String? {
+        var bestBandwidth = Long.MAX_VALUE
+        var best: String? = null
+        var pendingBandwidth: Long? = null
+        text.lineSequence().forEach { line ->
+            val t = line.trim()
+            if (t.startsWith("#EXT-X-STREAM-INF", ignoreCase = true)) {
+                pendingBandwidth = attribute(t, "BANDWIDTH")?.toLongOrNull()
+                return@forEach
+            }
+            if (t.isEmpty() || t.startsWith("#")) return@forEach
+            val bw = pendingBandwidth
+            pendingBandwidth = null
+            // 没写 BANDWIDTH 的变体按「未知」处理，只有它是唯一选择时才用
+            if (bw == null) {
+                if (best == null) best = resolve(baseUrl, t)
+                return@forEach
+            }
+            if (bw < bestBandwidth) {
+                bestBandwidth = bw
+                best = resolve(baseUrl, t)
+            }
+        }
+        return best
+    }
+
+    /** 加密信息（`#EXT-X-KEY`） */
+    data class KeyInfo(
+        /** `NONE` 表示不加密 */
+        val method: String,
+        /** 取密钥的地址（已补全）；`NONE` 时为 null */
+        val uri: String?,
+        /** 显式 IV（十六进制，不含 `0x`）；为 null 时按媒体序号推导 */
+        val ivHex: String?,
+    )
+
+    /**
+     * 媒体清单的加密信息。
+     *
+     * 只取第一条 `#EXT-X-KEY`：VOD 场景下密钥一般写在清单开头、整集共用一个。
+     * 中途换密钥（`EXT-X-KEY` 出现在分片之间）属于直播/防盗链的高级用法，这里不处理 ——
+     * 遇到就按「解不开」失败，而不是解出一堆噪声喂给识别模型。
+     */
+    fun keyInfo(text: String, baseUrl: String): KeyInfo? {
+        text.lineSequence().forEach { line ->
+            val t = line.trim()
+            if (!t.startsWith("#EXT-X-KEY", ignoreCase = true)) return@forEach
+            val method = attribute(t, "METHOD")?.uppercase() ?: return@forEach
+            if (method == "NONE") return KeyInfo("NONE", null, null)
+            val uri = attribute(t, "URI")?.let { resolve(baseUrl, it) }
+            val iv = attribute(t, "IV")?.removePrefix("0x")?.removePrefix("0X")
+            return KeyInfo(method, uri, iv)
+        }
+        return null
+    }
+
+    /** 媒体序号（`#EXT-X-MEDIA-SEQUENCE`，缺省 0）—— 没显式 IV 时用它推导 */
+    fun mediaSequence(text: String): Long =
+        text.lineSequence().firstOrNull { it.trim().startsWith("#EXT-X-MEDIA-SEQUENCE", true) }
+            ?.substringAfter(':', "")
+            ?.trim()
+            ?.toLongOrNull()
+            ?: 0L
+
+    /** 清单声明的总时长（毫秒），各 `#EXTINF` 之和；一条都没有时返回 0 */
+    fun totalDurationMs(text: String): Long {
+        var seconds = 0.0
+        text.lineSequence().forEach { line ->
+            val t = line.trim()
+            if (!t.startsWith("#EXTINF:", ignoreCase = true)) return@forEach
+            // 形如 `#EXTINF:9.009,` 或 `#EXTINF:9.009,title`
+            val value = t.substringAfter(':').substringBefore(',').trim()
+            seconds += value.toDoubleOrNull() ?: 0.0
+        }
+        return (seconds * 1000).toLong()
+    }
+
+    /** 是否 HLS 地址（按扩展名粗判；真正的判定还要看响应内容是否 `#EXTM3U`） */
+    fun looksLikeHls(url: String): Boolean {
+        val path = url.substringBefore('?').substringBefore('#').lowercase()
+        return path.endsWith(".m3u8") || path.endsWith(".m3u")
     }
 
     /**

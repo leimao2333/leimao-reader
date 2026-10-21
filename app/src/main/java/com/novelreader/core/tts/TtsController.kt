@@ -3,34 +3,72 @@ package com.novelreader.core.tts
 import android.content.Context
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import com.novelreader.core.model.LocalModelStore
+import com.novelreader.core.model.LocalModels
+import com.novelreader.core.preferences.PreferencesManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 /**
  * 朗读控制器（对标开源阅读 ReadAloud）。
  *
- * 封装 Android 系统 TTS：初始化、开始/暂停/停止、语速调节、进度回调。
+ * v1.8.7.3 起是**双引擎**：
+ * - **系统 TTS**（默认）：封装 Android `TextToSpeech`，零下载、开口即读；
+ * - **离线语音模型**（设置里「听书（离线语音）」打开后）：本地 VITS 合成，
+ *   音色统一、断网可用，代价是首次要多下载 131MB、加载模型要几秒。
  *
- * 设计要点：
- * - 使用 **applicationContext**，避免持有 Activity 导致泄漏；
- * - TTS 初始化是异步的（[TextToSpeech.OnInitListener]），未就绪前的 speak 会被丢弃，
- *   因此内部缓存 pendingText，初始化完成后自动补播；
- * - 所有公开方法都可在主线程调用，内部已做线程安全的最小化保护（TTS 自身线程安全）；
- * - 释放（[shutdown]）由调用方在生命周期结束时调用。
+ * 路由规则写在 [speak] 里：开关打开**且**模型确实已下载完，才走离线引擎；
+ * 任何一步不满足都静默回退系统 TTS —— 用户点「朗读」的期望是「听到声音」，
+ * 不是「看到一句报错」。
+ *
+ * 线程模型：TTS 初始化是异步的（[TextToSpeech.OnInitListener]），未就绪前的
+ * speak 会缓存为 pending，初始化完成后自动补播；离线引擎的模型加载同样在后台线程，
+ * 期间 [preparing] 为 true，UI 可以据此给一句「正在加载语音模型」。
  */
-class TtsController(context: Context) : TextToSpeech.OnInitListener {
+class TtsController(
+    context: Context,
+    private val modelStore: LocalModelStore,
+    private val preferences: PreferencesManager,
+) : TextToSpeech.OnInitListener {
 
     private val appContext = context.applicationContext
     private var tts: TextToSpeech? = null
 
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    private val offline = OfflineTtsEngine(appContext, modelStore)
+
+    /** 离线语音开关（设置页那份偏好，启动时同步一次、之后跟着变） */
+    @Volatile
+    private var offlineEnabled = false
+
+    /** 离线模型是否已加载进内存 */
+    @Volatile
+    private var offlineReady = false
+
+    private val _preparing = MutableStateFlow(false)
+
+    /** 是否正在加载离线语音模型（首次朗读前会有几秒） */
+    val preparing: StateFlow<Boolean> = _preparing.asStateFlow()
+
     private val _initialized = MutableStateFlow(false)
-    /** TTS 引擎是否就绪 */
+
+    /** 系统 TTS 引擎是否就绪 */
     val initialized: StateFlow<Boolean> = _initialized.asStateFlow()
 
+    /** 系统 TTS 是否在朗读 */
+    private val _systemSpeaking = MutableStateFlow(false)
+
     private val _speaking = MutableStateFlow(false)
-    /** 是否正在朗读 */
+
+    /** 是否正在朗读（两个引擎取或） */
     val speaking: StateFlow<Boolean> = _speaking.asStateFlow()
 
     /** 当前朗读的文本（进度回调用） */
@@ -48,6 +86,21 @@ class TtsController(context: Context) : TextToSpeech.OnInitListener {
         }.onFailure {
             _initialized.value = false
         }
+        scope.launch {
+            preferences.offlineTtsFlow.collect { enabled ->
+                offlineEnabled = enabled
+                // 关掉开关时立刻停掉正在读的离线语音，并释放模型内存（131MB 不小）
+                if (!enabled && offlineReady) {
+                    offline.stop()
+                    withContext(Dispatchers.Default) { offline.release() }
+                    offlineReady = false
+                }
+                refreshSpeaking()
+            }
+        }
+        scope.launch {
+            offline.speaking.collect { refreshSpeaking() }
+        }
     }
 
     override fun onInit(status: Int) {
@@ -62,20 +115,24 @@ class TtsController(context: Context) : TextToSpeech.OnInitListener {
             engine.setSpeechRate(speechRate)
             engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
-                    _speaking.value = true
+                    _systemSpeaking.value = true
+                    refreshSpeaking()
                 }
 
                 override fun onDone(utteranceId: String?) {
-                    _speaking.value = false
+                    _systemSpeaking.value = false
+                    refreshSpeaking()
                 }
 
                 @Deprecated("旧版回调，保留空实现以兼容")
                 override fun onError(utteranceId: String?) {
-                    _speaking.value = false
+                    _systemSpeaking.value = false
+                    refreshSpeaking()
                 }
 
                 override fun onError(utteranceId: String?, errorCode: Int) {
-                    _speaking.value = false
+                    _systemSpeaking.value = false
+                    refreshSpeaking()
                 }
             })
             _initialized.value = true
@@ -97,6 +154,37 @@ class TtsController(context: Context) : TextToSpeech.OnInitListener {
     fun speak(text: String): Boolean {
         if (text.isBlank()) return false
         currentText = text
+        if (offlineEnabled && modelStore.isInstalled(LocalModels.OFFLINE_TTS)) {
+            return speakOffline(text)
+        }
+        return speakSystem(text)
+    }
+
+    /** 离线引擎：首次调用要先把模型读进内存（几秒），加载完再播 */
+    private fun speakOffline(text: String): Boolean {
+        if (offlineReady) {
+            offline.setSpeechRate(speechRate)
+            offline.speak(text, speechRate)
+            return true
+        }
+        if (_preparing.value) return true
+        _preparing.value = true
+        scope.launch {
+            val ok = withContext(Dispatchers.Default) { offline.prepare() }
+            _preparing.value = false
+            offlineReady = ok
+            if (ok) {
+                offline.speak(text, speechRate)
+            } else {
+                // 模型缺失 / 加载失败：回退系统引擎，别让「朗读」变成哑巴
+                offlineEnabled = false
+                speakSystem(text)
+            }
+        }
+        return true
+    }
+
+    private fun speakSystem(text: String): Boolean {
         val engine = tts
         if (engine == null || !_initialized.value) {
             pendingText = text
@@ -115,14 +203,15 @@ class TtsController(context: Context) : TextToSpeech.OnInitListener {
 
     /** 暂停（等价于停止，TTS 不保证可续播） */
     fun pause() {
-        runCatching { tts?.stop() }
-        _speaking.value = false
+        stop()
     }
 
-    /** 停止朗读 */
+    /** 停止朗读（两个引擎一起停） */
     fun stop() {
         runCatching { tts?.stop() }
-        _speaking.value = false
+        offline.stop()
+        _systemSpeaking.value = false
+        refreshSpeaking()
         currentText = ""
         pendingText = null
     }
@@ -131,6 +220,7 @@ class TtsController(context: Context) : TextToSpeech.OnInitListener {
     fun setSpeechRate(rate: Float) {
         speechRate = rate.coerceIn(0.5f, 2.0f)
         runCatching { tts?.setSpeechRate(speechRate) }
+        offline.setSpeechRate(speechRate)
     }
 
     /** 当前语速 */
@@ -143,7 +233,14 @@ class TtsController(context: Context) : TextToSpeech.OnInitListener {
             tts?.shutdown()
         }
         tts = null
+        offline.release()
+        offlineReady = false
         _initialized.value = false
-        _speaking.value = false
+        _systemSpeaking.value = false
+        refreshSpeaking()
+    }
+
+    private fun refreshSpeaking() {
+        _speaking.value = _systemSpeaking.value || offline.speaking.value
     }
 }

@@ -39,8 +39,8 @@ android {
         // 版本规范：四段式 顶端版本.大版本.小版本.修订
         // 小版本每版 +1；小版本满 10 进大版本；大版本满 10 进顶端版本
         // versionCode = 顶端版本 * 1000000 + 大版本 * 10000 + 小版本 * 100 + 修订
-        versionCode = 1080702
-        versionName = "1.8.7.2"
+        versionCode = 1080704
+        versionName = "1.8.7.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -90,6 +90,13 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+        jniLibs {
+            // x86 不参与打包（见上面的 splits：只出 v7a / arm64 / x86_64）。
+            // sherpa-onnx 的静态链接版在 x86 上仍带一份 libonnxruntime.so，
+            // 与 onnxruntime-android 同名，mergeNativeLibs 会直接报冲突；
+            // 反正 x86 不进包，这里连目录一起排掉最省事。
+            excludes += "lib/x86/**"
         }
     }
 
@@ -148,6 +155,16 @@ dependencies {
 
     // ---- 端侧推理（v1.8.1.4 封面视觉打标：WD14 tagger ONNX）----
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
+
+    // ---- 端侧语音（v1.8.7.3）：离线语音合成（听书）+ 离线语音识别（字幕）----
+    // 官方预编译 AAR，含 arm64-v8a / armeabi-v7a / x86 / x86_64 四个 ABI。
+    // 没上 Maven Central（只能从 GitHub Release 下），所以以本地文件依赖引入；
+    // 升级时替换 app/libs 下的 aar 并同步版本号即可。
+    //
+    // 用 **static-link-onnxruntime** 版本：普通版自带 libonnxruntime.so，
+    // 会和封面视觉打标用的 onnxruntime-android 撞同名 so（mergeNativeLibs 直接失败）；
+    // 静态链接版把 onnxruntime 编进 libsherpa-onnx-jni.so，两套推理互不干扰。
+    implementation(files("libs/sherpa-onnx-static-1.13.8.aar"))
 
     // ---- 视频播放 ----
     implementation("androidx.media3:media3-exoplayer:1.4.1")

@@ -95,7 +95,7 @@ NovelReader/
 | 追加 | 应用内 PDF 阅读（缩放 / 翻页 / 缓存管理）＋ 出版方拦截原因识别（v1.8.5.1） | ✅ 完成 |
 | 修复 | Cookie 容器跨重定向「整份替换」导致丢 Cookie（Nature PDF 21 跳死循环）（v1.8.5.2） | ✅ 完成 |
 
-详细进度见 `docs/进度总结/`，应用版本更新日志见 `CHANGELOG.md`。当前版本以 `AppVersion.CURRENT_VERSION` 为准（现为 `1.8.5.2`）。
+详细进度见 `docs/进度总结/`，应用版本更新日志见 `CHANGELOG.md`。当前版本以 `AppVersion.CURRENT_VERSION` 为准。
 
 ## 版本规范
 

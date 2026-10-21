@@ -106,6 +106,8 @@ fun SettingsScreen(
     val comicShelfPrompt by viewModel.comicShelfPrompt.collectAsState()
     val searchLongPressShelf by viewModel.searchLongPressShelf.collectAsState()
     val rssEntryBelow by viewModel.rssEntryBelow.collectAsState()
+    // 视觉模型打标（v1.8.7.2，默认关）
+    val visualTagging by viewModel.visualTagging.collectAsState()
     // 搜索结果展示（v1.8.6.0 待办 #26）
     val searchGridNovel by viewModel.searchGridNovel.collectAsState()
     val searchGridComic by viewModel.searchGridComic.collectAsState()
@@ -568,6 +570,18 @@ fun SettingsScreen(
             // 打标表导入原先只在标签搜索页的索引弹窗里，入口太深 —— 设置页补一个直达入口，
             // 与 PC 打标工具共用同一份 tag_table.json（同名标签取更高置信度，幂等合并）。
             SectionTitle("标签")
+            // v1.8.7.2：视觉模型（WD14）总开关，默认关 —— 关着的时候标签页
+            // 的「封面视觉打标」是禁用的，也不会去检查/下载那 356MB 模型
+            SettingRow(
+                title = "启用视觉模型打标",
+                subtitle = "允许对已收录封面跑 WD14 模型（Danbooru 体系）补标签。\n" +
+                    "关闭时不会加载模型、也不会下载（模型约 356MB，仅 Wi-Fi 按需下载）",
+            ) {
+                Switch(
+                    checked = visualTagging,
+                    onCheckedChange = { viewModel.setVisualTagging(it) },
+                )
+            }
             val tagImportBusy by viewModel.tagImportBusy.collectAsState()
             val tagImportProgress by viewModel.tagImportProgress.collectAsState()
             val tagExportProgress by viewModel.tagExportProgress.collectAsState()

@@ -276,7 +276,7 @@
     点击走 `Routes.PDF_VIEWER` 的 `file://` 地址；`PdfViewerViewModel.load()` 加本地分支（同样验魔数后直接 open），
     `res/xml/file_paths.xml` 补 `files-path rss_pdf`（分享用）。长按删除带二次确认。
 
-- [ ] **23. PDF 阅读增强：夜间反色 / 跳页 / 文字层**
+- [x] **23. PDF 阅读增强：夜间反色 / 跳页 / 文字层** ✅ v1.8.7.2
   - 现状（v1.8.5.1）：应用内只做「整页适配 + 缩放 + 翻页」，够读完一篇，但有三处明显的欠账。
   - **夜间反色**：页面是白底位图，深色主题下全屏白得刺眼。可加一个渲染开关，
     用 `ColorMatrix` 反色后再把亮度压回去（别直接 invert —— 图表和照片会变成负片），
@@ -286,6 +286,31 @@
   - **文字选择 / 全文搜索**：`PdfRenderer` 只出位图，拿不到文字层，这两件事做不到。
     要做得换 PDFium 类库（每个 ABI +8~15MB，项目已经有 ONNX 的 18MB/ABI），
     先看有没有真实需求再决定。
+  - 实现（v1.8.7.2）：
+    - **夜间反色**：新增 `core/pdf/PdfNightFilter.kt` —— 合成矩阵 `dim ∘ invert`（`DIM = 0.82f`，
+      白纸 255→0、黑字 0→209），走 `ColorMatrixColorFilter` + `Canvas` 重绘。滤镜放在**渲染管线最后一环**
+      （缓存里存的就是套完滤镜的位图），翻转开关时 `pageCache.evictAll()` 强制重渲；
+      阅读页顶栏 `InvertColors` 图标与设置页同一个偏好 `KEY_PDF_NIGHT_INVERT`（默认关），
+      页面底色在夜间模式下由白改黑（否则 `ContentScale.Fit` 的留白仍是一片亮）。
+    - **跳页**：新增 `core/pdf/PdfPageJump.kt`（纯函数解析 1~pageCount，非法返回 null），
+      底部页码改 `TextButton` → `AlertDialog` + `OutlinedTextField`（只收数字、边输边校验、
+      自动聚焦弹数字键盘、回车即跳）。
+    - **文字层**：确认不做。`PdfRenderer` 只输出位图，取文字层必须换 PDFium / MuPDF 类库
+      （每 ABI +8~15MB）；当前「复制一段正文」的真实需求接近零，先记账不动。
+    - 单测：`PdfNightFilterTest`（白底变黑 / 黑字压暗不到纯白 / 灰度单调 / alpha 透传 / 逐通道反色）、
+      `PdfPageJumpTest`（越界、单位后缀、小数、未打开文档等 7 组）。
+
+- [x] **30. PDF 接管外部「用其他软件打开」** ✅ v1.8.7.2
+  - 现状：应用只是 PDF 消费者（订阅里拿链接自己下），系统选择器里看不到本应用 ——
+    微信/QQ 收到、文件管理器点开、浏览器下完点通知，都得先另存再进来找。
+  - 实现：`MainActivity` 加两条 `intent-filter`（`VIEW` + `SEND`，`mimeType=application/pdf`，
+    带 `android:label` 让选择器显示应用名）；新增 `core/pdf/PdfIntentImport.kt` 负责
+    「临时授权的 `content://` → `filesDir/pdf_inbox/<清洗后的文件名>.pdf`」的复制（同名同大小复用、
+    先验 `%PDF` 魔数），复制完推给 `AppNavHost` 直接跳 `Routes.pdfViewer(file://…)`。
+  - 未改 `launchMode="singleTop"`：改了会让 `novelreader://search` 深链在应用已前台时走进 `onNewIntent`
+    而 `setContent` 里那段深链解析不会重跑，等于把深链弄坏；多开一个实例的代价只是返回键多退一层。
+  - 只声明 `content://`：Android 7.0 起 `file://` 共享会被 `FileUriExposedException` 拦掉，
+    声明了也匹配不到。
 
 - [x] **24. RSS 订阅入口增加设置开关（默认关）+ 入口下移 + 阅读体验完善** ✅ v1.8.6.0
   - 设置项「RSS 订阅入口」：`SettingsScreen.kt` 加开关，`PreferencesManager.kt` 新增 key，**默认关闭**。

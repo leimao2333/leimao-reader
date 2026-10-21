@@ -18,7 +18,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -29,7 +28,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.launch
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.channels.Channel
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -40,19 +41,40 @@ import kotlin.math.roundToInt
  * 这里按「列表状态 → 拇指位置/长度」自己画一个：
  * - 拇指长度按「可见高度 / 估算内容高度」算，内容不满一屏时**不显示**；
  * - 位置按首个可见项的比例算，拖动时用相反比例换算成列表滚动距离；
- * - 手指落在右侧 14dp 的触控带内即可拖（拇指本身只有 4dp，太细抓不住）；
+ * - 手指落在右侧 22dp 的触控带内即可拖（拇指 6dp，单手也抓得住）；
  * - 静止时半透明、滚动或拖动时加深，尽量不挡内容。
  *
  * 估算用的是可见项的平均高度，所以用 `items` 铺平列表时最准；分组卡片高低不一时
  * 拇指长度只是近似，但拖动方向和落点比例是对的，够用。
+ *
+ * ## v1.8.7.2：拖动改成「合并位移、单协程串行消费」（修 ANR）
+ *
+ * v1.8.7.1 在视频模块（3 列海报网格 + 长标题）拖滚动条会把主线程堵死 5s 以上，
+ * bugreport 的 ANR 主线程栈是：
+ *
+ * ```
+ * VerticalScrollbarKt$VerticalScrollbar$7$1.invokeSuspend(VerticalScrollbar.kt:96)
+ *   → ScrollbarBox$2$1$4$1(VerticalScrollbar.kt:175)
+ *   → AndroidComposeView.measureAndLayout → LazyGridMeasure
+ *   → TextStringSimpleNode.measure → LineBreaker.nComputeLineBreaks
+ * ```
+ *
+ * 原因是拖动回调里 `scope.launch { onScrollBy(...) }`：每个 MotionEvent 都新起一个
+ * 协程，每个协程各自 `scrollBy` → 各自触发一次整张 LazyGrid 的重新测量。触摸采样
+ * 率高于帧率时，一帧能塞进十几个 `scrollBy`，文字换行测量（最贵的一步）被反复重跑，
+ * 主线程排不上输入事件，于是 Input dispatching timed out。
+ *
+ * 现在改成：拖动只往 `pendingDelta` 里累加位移，再用一个 conflated 信号唤醒**唯一**
+ * 一个消费协程；该协程一次性取走累计位移、`scrollBy` 一次。`scrollBy` 本身会挂起到
+ * 下一帧，所以天然做到「每帧最多重测一次」，多余位移被合并而不是排队。
  */
 @Composable
 fun VerticalScrollbar(
     listState: LazyListState,
     modifier: Modifier = Modifier,
-    thumbWidth: Dp = 4.dp,
-    touchWidth: Dp = 14.dp,
-    minThumbHeight: Dp = 28.dp,
+    thumbWidth: Dp = 6.dp,
+    touchWidth: Dp = 22.dp,
+    minThumbHeight: Dp = 36.dp,
     color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
 ) {
     ScrollbarBox(
@@ -78,9 +100,9 @@ fun VerticalScrollbar(
 fun VerticalScrollbar(
     gridState: LazyGridState,
     modifier: Modifier = Modifier,
-    thumbWidth: Dp = 4.dp,
-    touchWidth: Dp = 14.dp,
-    minThumbHeight: Dp = 28.dp,
+    thumbWidth: Dp = 6.dp,
+    touchWidth: Dp = 22.dp,
+    minThumbHeight: Dp = 36.dp,
     color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
 ) {
     val first = gridState.layoutInfo.visibleItemsInfo.minByOrNull { it.offset.y }
@@ -124,8 +146,18 @@ private fun ScrollbarBox(
     if (totalItems <= 0 || visibleSizes.isEmpty()) return
 
     val density = LocalDensity.current
-    val scope = rememberCoroutineScope()
     var dragging by remember { mutableStateOf(false) }
+
+    // 拖动位移先攒这里，由下面唯一一个协程逐帧取走；conflated 信号保证「一帧只唤醒一次」
+    val pendingDelta = remember { AtomicReference(0f) }
+    val scrollSignal = remember { Channel<Unit>(Channel.CONFLATED) }
+    val currentOnScrollBy = rememberUpdatedState(onScrollBy)
+    LaunchedEffect(scrollSignal) {
+        for (signal in scrollSignal) {
+            val delta = pendingDelta.getAndSet(0f)
+            if (delta != 0f) currentOnScrollBy.value(delta)
+        }
+    }
 
     BoxWithConstraints(
         modifier = modifier
@@ -172,7 +204,9 @@ private fun ScrollbarBox(
                         onDragCancel = { dragging = false },
                     ) { change, dragAmount ->
                         change.consume()
-                        scope.launch { onScrollBy(dragAmount * ratioState.value) }
+                        // 只累加、不启协程：真正滚动由上面的消费协程合并执行
+                        pendingDelta.updateAndGet { it + dragAmount * ratioState.value }
+                        scrollSignal.trySend(Unit)
                     }
                 },
         ) {

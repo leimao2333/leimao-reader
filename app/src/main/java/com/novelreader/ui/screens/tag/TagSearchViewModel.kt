@@ -76,6 +76,15 @@ class TagSearchViewModel(
     private val _indexCount = MutableStateFlow(0)
     val indexCount: StateFlow<Int> = _indexCount.asStateFlow()
 
+    /**
+     * 视觉模型总开关（v1.8.7.2，默认关）：关着时视觉打标按钮禁用。
+     *
+     * 必须声明在 `init` 之前 —— Kotlin 的属性初始化与 init 块按书写顺序执行，
+     * 写在 init 后面的话，init 里那个 collect 闭包读到的还是 null。
+     */
+    private val _visualTaggingEnabled = MutableStateFlow(false)
+    val visualTaggingEnabled: StateFlow<Boolean> = _visualTaggingEnabled.asStateFlow()
+
     init {
         // 索引任务跑在 repository 层（离开页面也继续，v1.8.1.9），
         // 这里只负责把任务状态映射到 UI：重建 ViewModel 后回来还能看到进度。
@@ -95,6 +104,10 @@ class TagSearchViewModel(
                 prefs.searchGridTagFlow.collect { stored ->
                     if (stored != null) _searchGrid.value = stored
                 }
+            }
+            // 视觉模型总开关（v1.8.7.2，默认关）：关着时按钮禁用、也不会碰模型
+            viewModelScope.launch {
+                prefs.visualTaggingFlow.collect { _visualTaggingEnabled.value = it }
             }
         }
     }
@@ -135,8 +148,14 @@ class TagSearchViewModel(
      * 输出的 Danbooru 标签映射进受控词表后以 `origin = 视觉` 入库。
      *
      * 模型约 356MB，仅在 Wi-Fi 下按需下载（[TagIndexRepository.runVisualTagging] 负责）。
+     * v1.8.7.2 起受设置页「启用视觉模型打标」总开关约束（默认关）：
+     * 关着的时候这里直接拒绝，模型文件连检查都不检查。
      */
     fun runVisualTagging() {
+        if (!_visualTaggingEnabled.value) {
+            _indexMessage.value = "视觉打标已在「设置 → 标签」里关闭 —— 打开后可用"
+            return
+        }
         val repo = tagIndexRepository ?: run {
             _indexMessage.value = "当前环境不支持视觉打标"
             return

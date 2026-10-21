@@ -623,6 +623,11 @@ class SettingsViewModel(
     private val _rssEntryBelow = MutableStateFlow(PreferencesManager.DEFAULT_RSS_ENTRY_BELOW)
     val rssEntryBelow: StateFlow<Boolean> = _rssEntryBelow.asStateFlow()
 
+    // ===== 视觉模型打标（v1.8.7.2） =====
+    /** 是否允许使用视觉模型（WD14）打标（默认关） */
+    private val _visualTagging = MutableStateFlow(PreferencesManager.DEFAULT_VISUAL_TAGGING)
+    val visualTagging: StateFlow<Boolean> = _visualTagging.asStateFlow()
+
     // ===== 视频播放（v1.3.2.0） =====
     /** 进入播放页默认全屏 */
     private val _videoFullscreenDefault = MutableStateFlow(false)
@@ -761,6 +766,9 @@ class SettingsViewModel(
         viewModelScope.launch {
             preferencesManager.rssEntryBelowFlow.collect { _rssEntryBelow.value = it }
         }
+        viewModelScope.launch {
+            preferencesManager.visualTaggingFlow.collect { _visualTagging.value = it }
+        }
         // 搜索结果展示（v1.8.6.0 待办 #26）：四个模块独立记忆
         viewModelScope.launch {
             preferencesManager.searchGridNovelFlow.collect { _searchGridNovel.value = it }
@@ -788,6 +796,11 @@ class SettingsViewModel(
     /** 切换 RSS 订阅入口位置（v1.8.6.0 待办 #24） */
     fun setRssEntryBelow(value: Boolean) {
         viewModelScope.launch { preferencesManager.setRssEntryBelow(value) }
+    }
+
+    /** 开关视觉模型（WD14）打标（v1.8.7.2，默认关） */
+    fun setVisualTagging(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setVisualTagging(value) }
     }
 
     /** 切换小说搜索结果宫格展示（v1.8.6.0 待办 #26） */

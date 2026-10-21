@@ -133,6 +133,8 @@ fun TagSearchScreen(
     val selectedSourceIds by viewModel.selectedSourceIds.collectAsState()
     val indexCount by viewModel.indexCount.collectAsState()
     val indexing by viewModel.indexing.collectAsState()
+    // 视觉模型总开关（v1.8.7.2，默认关）：关着时「封面视觉打标」按钮禁用
+    val visualTaggingEnabled by viewModel.visualTaggingEnabled.collectAsState()
     val indexPaused by viewModel.indexPaused.collectAsState()
     val indexMessage by viewModel.indexMessage.collectAsState()
     val hasMore by viewModel.hasMore.collectAsState()
@@ -170,6 +172,14 @@ fun TagSearchScreen(
                     Text("索引会遍历已启用的源，逐部读源站题材并打标签存到本地。建好后标签搜索先命中本地，再补网络，复合筛选不受源站有没有分类页限制。")
                     Spacer(Modifier.height(8.dp))
                     Text("封面视觉打标会对已收录封面跑 WD14 模型（Danbooru 体系），映射进受控词表后以「视觉」来源入库；模型约 356MB，仅 Wi-Fi 下按需下载一次。")
+                    if (!visualTaggingEnabled) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "视觉模型打标当前关闭 —— 在「设置 → 标签」里打开「启用视觉模型打标」后可用",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
                     Text(
                         "已收录 $indexCount 部" + if (indexing) " · 正在处理…" else "",
@@ -224,7 +234,10 @@ fun TagSearchScreen(
                     TextButton(onClick = viewModel::buildIndex, enabled = !indexing) {
                         Text(if (indexing) "建立中…" else "遍历建索引")
                     }
-                    TextButton(onClick = viewModel::runVisualTagging, enabled = !indexing) {
+                    TextButton(
+                        onClick = viewModel::runVisualTagging,
+                        enabled = !indexing && visualTaggingEnabled,
+                    ) {
                         Text("封面视觉打标")
                     }
                 }

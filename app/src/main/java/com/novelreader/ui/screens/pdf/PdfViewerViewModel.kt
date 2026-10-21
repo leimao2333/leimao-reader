@@ -7,8 +7,10 @@ import android.util.LruCache
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novelreader.core.network.HttpClient
+import com.novelreader.core.pdf.PdfNightFilter
 import com.novelreader.core.pdf.PdfRenderSizing
 import com.novelreader.core.pdf.PdfSource
+import com.novelreader.core.preferences.PreferencesManager
 import com.novelreader.data.cache.PdfFileCache
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,6 +52,8 @@ data class PdfUiState(
     val error: String = "",
     /** 本次是否直接命中了本地缓存（UI 上省掉「下载」文案） */
     val fromCache: Boolean = false,
+    /** 夜间反色是否开启（v1.8.7.2 待办 #23）：白底页面反色 + 压暗亮度 */
+    val nightInvert: Boolean = false,
 )
 
 /**
@@ -75,6 +79,8 @@ class PdfViewerViewModel(
     val url: String,
     /** 标题（顶栏显示；通常是论文标题） */
     val title: String,
+    /** 偏好（夜间反色开关，v1.8.7.2 待办 #23） */
+    private val preferences: PreferencesManager,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(PdfUiState())
@@ -98,6 +104,36 @@ class PdfViewerViewModel(
 
     init {
         load()
+        // 夜间反色：设置页与阅读页都能改，两边都直接改同一份偏好，
+        // 这里用 Flow 订阅，任一处改动阅读页都会跟着变
+        viewModelScope.launch {
+            preferences.pdfNightInvertFlow.collect { on -> setNightInvert(on) }
+        }
+    }
+
+    /**
+     * 切换夜间反色（v1.8.7.2 待办 #23）。
+     *
+     * 位图是**渲染时**套滤镜的（缓存里存的就是套完之后的结果），
+     * 所以翻转开关必须把页缓存整体失效，否则当前页还显示旧效果 ——
+     * 只改状态位的话，用户看到的会是「图标变了、页面没变」。
+     */
+    fun setNightInvert(on: Boolean) {
+        if (_state.value.nightInvert == on) return
+        _state.value = _state.value.copy(nightInvert = on)
+        pageCache.evictAll()
+    }
+
+    /**
+     * 顶栏图标点击（v1.8.7.2 待办 #23）。
+     *
+     * 先改状态让页面立刻重渲染，再把值写回偏好 —— 反过来等 DataStore 落盘 + Flow
+     * 回流才变的话，点一下要过一拍才亮，手感上像「没点中」。
+     */
+    fun toggleNightInvert() {
+        val next = !_state.value.nightInvert
+        setNightInvert(next)
+        viewModelScope.launch { preferences.setPdfNightInvert(next) }
     }
 
     /** 首次进入 / 重试都走这里：命中缓存直接开，否则下载 */
@@ -242,8 +278,12 @@ class PdfViewerViewModel(
                     // PDF 页面默认透明：不铺白底的话，深色主题下会变成「黑纸黑字」
                     bitmap.eraseColor(android.graphics.Color.WHITE)
                     page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                    pageCache.put(index, bitmap)
-                    bitmap
+                    // 夜间反色在渲染管线的最后一环：拿到的就是最终要显示的位图，
+                    // 缓存与调用方都不用再关心有没有套滤镜
+                    val filtered = if (_state.value.nightInvert) PdfNightFilter.apply(bitmap) else bitmap
+                    if (filtered !== bitmap) bitmap.recycle()
+                    pageCache.put(index, filtered)
+                    filtered
                 }
             }.getOrNull()
         }

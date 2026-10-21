@@ -21,14 +21,18 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.InvertColors
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -36,6 +40,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -52,7 +57,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -62,10 +70,14 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import com.novelreader.core.pdf.PdfPageJump
 import com.novelreader.ui.screens.rss.openInBrowser
 import kotlinx.coroutines.launch
 
@@ -128,6 +140,19 @@ fun PdfViewerScreen(
                     }
                 },
                 actions = {
+                    // 夜间反色（待办 #23）：写的是全局偏好，退出再进来还保持，
+                    // 设置页里也有同一个开关，两边同源
+                    IconButton(onClick = { viewModel.toggleNightInvert() }) {
+                        Icon(
+                            imageVector = Icons.Filled.InvertColors,
+                            contentDescription = if (state.nightInvert) "关闭夜间反色" else "开启夜间反色",
+                            tint = if (state.nightInvert) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
                     if (viewModel.url.isNotBlank()) {
                         IconButton(onClick = openInBrowserAction) {
                             Icon(
@@ -157,7 +182,11 @@ fun PdfViewerScreen(
                     )
 
                 PdfStage.Ready ->
-                    ReadyPane(viewModel = viewModel, pageCount = state.pageCount)
+                    ReadyPane(
+                        viewModel = viewModel,
+                        pageCount = state.pageCount,
+                        nightInvert = state.nightInvert,
+                    )
             }
         }
     }
@@ -258,9 +287,16 @@ private fun FailedPane(
 
 /** 可翻页 + 可缩放的正文 */
 @Composable
-private fun ReadyPane(viewModel: PdfViewerViewModel, pageCount: Int) {
+private fun ReadyPane(
+    viewModel: PdfViewerViewModel,
+    pageCount: Int,
+    nightInvert: Boolean,
+) {
     val pagerState = rememberPagerState(pageCount = { pageCount })
     val scope = rememberCoroutineScope()
+
+    // 跳页对话框（待办 #23）：页码从只读文本变成可点按钮
+    var showJump by remember { mutableStateOf(false) }
 
     // 渲染分辨率：屏宽 1.5 倍。整页 Fit 显示时是缩小采样（字更锐），
     // 放大到 1.5 倍仍然清晰；再往上会略糊，但换来的是单页 12MB 的内存上限
@@ -341,6 +377,7 @@ private fun ReadyPane(viewModel: PdfViewerViewModel, pageCount: Int) {
                         renderWidth = renderWidth,
                         scale = scale,
                         offset = offset,
+                        nightInvert = nightInvert,
                     )
                 }
             }
@@ -368,12 +405,18 @@ private fun ReadyPane(viewModel: PdfViewerViewModel, pageCount: Int) {
                 Text("上一页")
             }
 
-            Text(
-                // 论文动辄十几页，页码常驻：翻页手势之外还得有个「读到哪了」
-                text = "${pagerState.currentPage + 1} / $pageCount",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            TextButton(
+                onClick = { showJump = true },
+                contentPadding = PaddingValues(horizontal = 10.dp),
+            ) {
+                // 论文动辄十几页，页码常驻：翻页手势之外还得有个「读到哪了」。
+                // 点一下可以跳页（待办 #23）—— 按页引用「见第 7 页」时不用划七下
+                Text(
+                    text = "${pagerState.currentPage + 1} / $pageCount",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(
@@ -403,6 +446,103 @@ private fun ReadyPane(viewModel: PdfViewerViewModel, pageCount: Int) {
             }
         }
     }
+
+    if (showJump) {
+        PageJumpDialog(
+            pageCount = pageCount,
+            currentPage = pagerState.currentPage,
+            onDismiss = { showJump = false },
+            onJump = { target ->
+                showJump = false
+                scope.launch { pagerState.animateScrollToPage(target) }
+            },
+        )
+    }
+}
+
+/**
+ * 跳页对话框（v1.8.7.2 待办 #23）。
+ *
+ * 输入框预填当前页、只放数字键、边输边校验：越界时按钮直接禁用并给一行红字，
+ * 而不是点了才弹「页码无效」。解析规则全在 [PdfPageJump.parse] 里，有单测覆盖。
+ */
+@Composable
+private fun PageJumpDialog(
+    pageCount: Int,
+    currentPage: Int,
+    onDismiss: () -> Unit,
+    onJump: (Int) -> Unit,
+) {
+    // 光标默认落在末尾：焦点一进来就在最前面的话，接着打「3」会变成「31」，
+    // 用户得先把预填的当前页删掉
+    val initialText = (currentPage + 1).toString()
+    var value by remember {
+        mutableStateOf(
+            androidx.compose.ui.text.input.TextFieldValue(
+                text = initialText,
+                selection = androidx.compose.ui.text.TextRange(initialText.length),
+            )
+        )
+    }
+    val focusRequester = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val target = PdfPageJump.parse(value.text, pageCount)
+
+    // 对话框一出来就聚焦 + 弹键盘：跳页是个「打完数字就回车」的动作，
+    // 多一步点输入框纯属浪费
+    LaunchedEffect(Unit) {
+        runCatching { focusRequester.requestFocus() }
+        keyboard?.show()
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("跳到指定页") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = value,
+                    // 只留数字：中文输入法在全角状态下能打出「７」，这里一并挡掉
+                    onValueChange = { input ->
+                        val digits = input.text.filter { it in '0'..'9' }.take(5)
+                        value = input.copy(
+                            text = digits,
+                            selection = androidx.compose.ui.text.TextRange(
+                                input.selection.end.coerceIn(0, digits.length),
+                            ),
+                        )
+                    },
+                    singleLine = true,
+                    label = { Text("页码（1 - $pageCount）") },
+                    isError = value.text.isNotEmpty() && target == null,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Go,
+                    ),
+                    keyboardActions = KeyboardActions(onGo = { target?.let(onJump) }),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester),
+                )
+                if (value.text.isNotEmpty() && target == null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "请输入 1 到 $pageCount 之间的页码",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = target != null, onClick = { target?.let(onJump) }) {
+                Text("跳转")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
 }
 
 /** 单页位图（按需渲染，失败时给一行提示而不是空白） */
@@ -413,11 +553,14 @@ private fun PdfPageImage(
     renderWidth: Int,
     scale: Float,
     offset: Offset,
+    nightInvert: Boolean,
 ) {
-    var bitmap by remember(index, renderWidth) { mutableStateOf<Bitmap?>(null) }
-    var failed by remember(index, renderWidth) { mutableStateOf(false) }
+    // nightInvert 要进 key：反色是在渲染时套的滤镜，开关翻转后必须重新渲染，
+    // 否则界面上只剩图标变了、纸还是白的
+    var bitmap by remember(index, renderWidth, nightInvert) { mutableStateOf<Bitmap?>(null) }
+    var failed by remember(index, renderWidth, nightInvert) { mutableStateOf(false) }
 
-    LaunchedEffect(index, renderWidth) {
+    LaunchedEffect(index, renderWidth, nightInvert) {
         bitmap = viewModel.renderPage(index, renderWidth)
         failed = bitmap == null
     }
@@ -438,7 +581,7 @@ private fun PdfPageImage(
                         translationX = offset.x,
                         translationY = offset.y,
                     )
-                    .background(androidx.compose.ui.graphics.Color.White),
+                    .background(if (nightInvert) Color.Black else Color.White),
             )
         }
         failed -> Text(

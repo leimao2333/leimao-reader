@@ -272,6 +272,21 @@ class PreferencesManager(private val context: Context) {
         /** RSS 阅读页正文字号（sp，12~24，默认 16；v1.8.6.0 待办 #24 阅读体验完善） */
         val KEY_RSS_FONT_SIZE = intPreferencesKey("rss_font_size")
 
+        /**
+         * PDF 阅读页夜间反色（v1.8.7.2 待办 #23，默认关）。
+         *
+         * 与上面几个 key 的差别：这是「渲染效果」开关，改完要立刻重渲染当前页，
+         * 所以放在 PdfViewerViewModel 里监听（翻转时把页位图缓存整体失效）。
+         */
+        val KEY_PDF_NIGHT_INVERT = booleanPreferencesKey("pdf_night_invert")
+
+        /**
+         * 视觉模型（WD14）打标总开关（v1.8.7.2，默认关）。
+         *
+         * 关闭时标签页的「封面视觉打标」按钮禁用、也不会去准备那 356MB 模型。
+         */
+        val KEY_VISUAL_TAGGING = booleanPreferencesKey("visual_tagging")
+
         // ===== 书架（v1.2.0.0 对标 legado 书架布局） =====
         /** 书架展现形式：0=封面墙 1=紧凑网格 2=列表 */
         val KEY_BOOKSHELF_VIEW_MODE = intPreferencesKey("bookshelf_view_mode")
@@ -348,6 +363,21 @@ class PreferencesManager(private val context: Context) {
         const val DEFAULT_RSS_ENTRY_BELOW = false
         /** 默认 RSS 阅读正文字号（sp） */
         const val DEFAULT_RSS_FONT_SIZE = 16
+        /**
+         * PDF 夜间反色默认**关**（v1.8.7.2 待办 #23）。
+         *
+         * 关是必须的：反色对论文里的图表 / 照片近似负片，白天看就是纯负收益；
+         * 只有「深色环境下读白底论文」这一个场景需要它，所以交给用户按篇手动开。
+         */
+        const val DEFAULT_PDF_NIGHT_INVERT = false
+        /**
+         * 视觉模型（WD14）打标默认**关**（v1.8.7.2 用户要求）。
+         *
+         * 关着的时候整条视觉链路都不启动：不加载模型、不检查模型文件、
+         * 更不会去下那 356MB —— 用户不点开这个开关，视觉打标按钮就是禁用的。
+         * 打开后也只是「允许使用」，真正的推理仍由标签页里的按钮显式触发。
+         */
+        const val DEFAULT_VISUAL_TAGGING = false
         /** 搜索历史分隔符（历史记录用单个字符串存储，分隔符分隔） */
         private const val HISTORY_SEPARATOR = "\u001F"
     }
@@ -1039,5 +1069,23 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setRssFontSize(value: Int) {
         context.dataStore.edit { it[KEY_RSS_FONT_SIZE] = value.coerceIn(12, 24) }
+    }
+
+    // ===== PDF 阅读（v1.8.7.2 待办 #23） =====
+    /** PDF 夜间反色（默认关；开启时把白底页面反色并压暗亮度） */
+    val pdfNightInvertFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_PDF_NIGHT_INVERT] ?: DEFAULT_PDF_NIGHT_INVERT }
+
+    suspend fun setPdfNightInvert(value: Boolean) {
+        context.dataStore.edit { it[KEY_PDF_NIGHT_INVERT] = value }
+    }
+
+    // ===== 视觉模型打标（v1.8.7.2） =====
+    /** 是否允许使用视觉模型（WD14）打标（默认关；关着时整条视觉链路不启动） */
+    val visualTaggingFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_VISUAL_TAGGING] ?: DEFAULT_VISUAL_TAGGING }
+
+    suspend fun setVisualTagging(value: Boolean) {
+        context.dataStore.edit { it[KEY_VISUAL_TAGGING] = value }
     }
 }

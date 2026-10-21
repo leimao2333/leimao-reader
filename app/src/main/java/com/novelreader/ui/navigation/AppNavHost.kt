@@ -1,6 +1,8 @@
 package com.novelreader.ui.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -54,6 +56,10 @@ fun AppNavHost(
     initialNovelSearchKeyword: String? = null,
     /** 深链搜索类型：novel / comic / video（默认 novel） */
     initialSearchType: String = "novel",
+    /** 外部应用「用其他软件打开」推进来的 PDF（v1.8.7.2），null 表示本次没有 */
+    incomingPdf: kotlinx.coroutines.flow.StateFlow<com.novelreader.core.pdf.IncomingPdf?>? = null,
+    /** 消费完通知宿主清空，避免返回上一页时又被推一次 */
+    onIncomingPdfConsumed: () -> Unit = {},
 ) {
     val navController = rememberNavController()
 
@@ -65,6 +71,17 @@ fun AppNavHost(
                 "video" -> navController.navigate(Routes.videoSearch(initialNovelSearchKeyword))
                 else -> navController.navigate(Routes.novelSearch(initialKeyword = initialNovelSearchKeyword))
             }
+        }
+    }
+
+    // 外部 PDF：进来就跳阅读页。文件已在 MainActivity 复制进私有目录，
+    // 这里拿到的就是 `file://` 绝对路径，阅读页按本地文件路径直接开
+    if (incomingPdf != null) {
+        val pending by incomingPdf.collectAsState()
+        androidx.compose.runtime.LaunchedEffect(pending) {
+            val target = pending ?: return@LaunchedEffect
+            navController.navigate(Routes.pdfViewer(target.fileUri, target.title))
+            onIncomingPdfConsumed()
         }
     }
 
@@ -460,7 +477,9 @@ fun AppNavHost(
             val title = backStackEntry.arguments?.getString("title").orEmpty()
             val viewModel: com.novelreader.ui.screens.pdf.PdfViewerViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
-                    com.novelreader.ui.screens.pdf.PdfViewerViewModel(it.pdfCache, url, title)
+                    com.novelreader.ui.screens.pdf.PdfViewerViewModel(
+                        it.pdfCache, url, title, it.preferencesManager,
+                    )
                 }
             )
             com.novelreader.ui.screens.pdf.PdfViewerScreen(

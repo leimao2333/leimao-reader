@@ -40,6 +40,25 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="novelreader" android:host="search" />
             </intent-filter>
+
+            <!--
+              系统「用其他软件打开」里出现本应用（v1.8.7.2）。
+              content:// 是现在唯一可靠的通道：Android 7.0 起共享文件必须走
+              FileProvider，`file://` 会被 FileUriExposedException 拦掉，
+              所以这里只声明 content 与 SEND（微信/QQ/文件管理器都走这条）。
+              label 决定选择器里显示的名字，不写会显示成包名。
+            -->
+            <intent-filter android:label="@string/app_name">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" android:mimeType="application/pdf" />
+            </intent-filter>
+            <intent-filter android:label="@string/app_name">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/pdf" />
+            </intent-filter>
         </activity>
 
         <!-- 更新包下载前台 Service（v1.8.3.0 待办 #19） -->

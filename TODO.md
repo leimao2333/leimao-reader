@@ -382,7 +382,7 @@
 
 ## 八、PC 打标工具（leimao-tagger）
 
-- [ ] **25. PC 自动打标增加「标签搜索遍历」管道**
+- [x] **25. PC 自动打标增加「标签搜索遍历」管道**
   - 现状：`leimao-tagger/pc_tagger.py` / `pc_tagger_gui.py` 只走「收录清单 → 下封面 →
     WD14 ONNX 推理 → 词表映射」的视觉管道（v1.8.1.5）。
   - 需求：补上 App 已有的「用标签搜索遍历，将搜索结果自动打标」逻辑，参考：
@@ -394,6 +394,11 @@
     输出合并进 tag_table.json（与视觉管道结果合并时同名标签取更高置信度）。
   - GUI（`pc_tagger_gui.py`）暴露该模式的开关与进度展示；输出仍供 App 端「云端导入」消费
     （`publish_tags.py` 推送 GitHub 的链路不变）。
+  - **已完成（2026-10-21，leimao-tagger v1.1.2）**：`source_engine` 各源补 `search()` / `can_search()`
+    （legado `searchUrl`+`ruleSearch`、App JSON 源 `search.url` 含 `{{keyword}}`、MacCMS `ac=detail&wd=`）；
+    新增 `tag_search.py`（词表 groups → 同义写法挑选与 App `searchTermsForQuery` 同口径 →
+    全源轮转分配 → 逐标签搜索）；CLI 加 `--tag-search/--tags/--tag-limit/--tag-sources/--tag-terms/--tag-pages`；
+    GUI 加「标签搜索遍历」开关与进度。搜索结果**只用于发现条目**，不把搜索词写成标签（打标证据化）。
 
 ---
 

@@ -122,4 +122,44 @@ class TagSuggestionsTest {
         val out = TagSuggestions.of(pool, next)
         assertTrue(out.none { it.contains("无") })
     }
+
+    // ===== completeForContinue（v1.8.7.1：点选补全不提交） =====
+
+    @Test
+    fun `completeForContinue 补全后留一个空格 便于接着输下一个标签`() {
+        assertEquals("无码 ", TagSuggestions.completeForContinue("无", "无码"))
+        assertEquals("无码 全彩 ", TagSuggestions.completeForContinue("无码 全", "全彩"))
+    }
+
+    @Test
+    fun `completeForContinue 末尾只补一个空格 不会叠加`() {
+        assertEquals("无码 ", TagSuggestions.completeForContinue("无码 ", "无码"))
+        assertEquals("无码 ", TagSuggestions.completeForContinue("无码   ", "无码"))
+    }
+
+    @Test
+    fun `completeForContinue 保留 减号 与 题材冒号 前缀`() {
+        assertEquals("-无码 ", TagSuggestions.completeForContinue("-无", "无码"))
+        assertEquals("题材:无码 ", TagSuggestions.completeForContinue("题材:无", "无码"))
+    }
+
+    @Test
+    fun `completeForContinue 空 query 也能补全`() {
+        assertEquals("无码 ", TagSuggestions.completeForContinue("", "无码"))
+    }
+
+    @Test
+    fun `completeForContinue 之后提示自动收起`() {
+        // 补全后的词已是池内完整标签，末位空格让 currentWord 回到该词本身 → 整族屏蔽
+        val pool = listOf("无码", "无码漫画", "全彩")
+        val next = TagSuggestions.completeForContinue("无", "无码")
+        assertTrue(TagSuggestions.of(pool, next).isEmpty())
+    }
+
+    @Test
+    fun `completeForContinue 之后继续输入第二个标签 提示恢复`() {
+        val pool = listOf("无码", "无码漫画", "全彩")
+        val next = TagSuggestions.completeForContinue("无", "无码") + "全"
+        assertEquals(listOf("全彩"), TagSuggestions.of(pool, next))
+    }
 }

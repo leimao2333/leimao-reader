@@ -40,6 +40,23 @@ object ComicTagLexicon {
         "英语", "日语", "中文", "韩漫", "国产", "欧美",
     )
 
+    /** 视频里**保留**的「元信息」词（见 [VIDEO_META_TAGS]） */
+    private val VIDEO_EXTRA_KEEP: Set<String> =
+        setOf("全年龄", "成人", "无码", "有码", "高清", "超清", "中字", "生肉")
+
+    /**
+     * 视频口径的元信息排除集（v1.8.7.1）。
+     *
+     * 与漫画的唯一差别：**有无修饰 / 分级 / 字幕 / 画质这几类词要保留**。
+     * 漫画把它们当「元信息」是因为每本书都有（抽了等于每条都加同一个标签），
+     * 而影视这边它们恰恰是用户最常用来筛片的维度 —— 一部片标了「无码」还是「有码」，
+     * 是决定要不要看的信息，不该被当成噪声丢掉。
+     *
+     * 载体词（`漫画` `动画` `小说`）与连载状态仍然排除：视频的类型维度由
+     * [VideoTypeMap] 负责，重复抽一遍只会让标签栏多一行没用的「动画」。
+     */
+    val VIDEO_META_TAGS: Set<String> = META_TAGS - VIDEO_EXTRA_KEEP
+
     private fun norm(raw: String): String = raw.filterNot { it.isWhitespace() }.lowercase()
 
     /** 是否值得参与文本匹配（过短的词会大量误伤） */
@@ -60,8 +77,10 @@ object ComicTagLexicon {
         fun register(word: String, tag: String) {
             val w = word.trim()
             if (!usable(w)) return
+            // v1.8.7.1：元信息词**不再在建表时剔除**，改为 [match] 按调用方口径过滤。
+            // 漫画把「无码 / 有码」当元信息，视频却要把它们当正经标签 —— 建表时一刀切
+            // 就再也拿不回来了。
             val normalizedTag = TagAlias.canonicalOf(tag)
-            if (normalizedTag in META_TAGS || tag in META_TAGS) return
             val key = norm(w)
             if (key.isEmpty() || !seen.add(key)) return
             val ascii = w.all { it.code < 128 }
@@ -90,8 +109,14 @@ object ComicTagLexicon {
      * @param text 标题 + 简介（越靠前的词越容易被视为核心题材，但这里只做包含匹配）
      * @param limit 最多返回几个
      * @param exclude 已有标签（不重复添加）
+     * @param metaTags 元信息排除集；默认漫画口径，视频传 [VIDEO_META_TAGS]（v1.8.7.1）
      */
-    fun match(text: String, limit: Int = 6, exclude: Set<String> = emptySet()): List<String> {
+    fun match(
+        text: String,
+        limit: Int = 6,
+        exclude: Set<String> = emptySet(),
+        metaTags: Set<String> = META_TAGS,
+    ): List<String> {
         if (text.isBlank() || limit <= 0) return emptyList()
         val compact = norm(text)
         val lower = text.lowercase()
@@ -99,6 +124,7 @@ object ComicTagLexicon {
         val out = LinkedHashSet<String>()
         for (entry in entries) {
             if (out.size >= limit) break
+            if (entry.tag in metaTags) continue
             if (entry.tag in excluded || entry.tag in out) continue
             val hit = entry.pattern?.containsMatchIn(lower) ?: compact.contains(entry.key)
             if (hit) out.add(entry.tag)

@@ -89,6 +89,14 @@ class TagSearchViewModel(
                 }
             }
         }
+        // 结果布局偏好（v1.8.7.1）：读不到（从未设置）时保留构造时的类型兜底值
+        preferencesManager?.let { prefs ->
+            viewModelScope.launch {
+                prefs.searchGridTagFlow.collect { stored ->
+                    if (stored != null) _searchGrid.value = stored
+                }
+            }
+        }
     }
 
     /**
@@ -269,6 +277,27 @@ class TagSearchViewModel(
     val query: StateFlow<String> = _query.asStateFlow()
 
     /**
+     * 结果展示方式（v1.8.7.1）：true = 宫格，false = 列表。
+     *
+     * 标签搜索此前是按类型写死的（视频三列海报墙、小说 / 漫画列表），
+     * 想「看封面挑」或「看作者 / 字数挑」只能换页面。现在与其它搜索页统一：
+     * 顶栏一个图标随时切，偏好按**标签搜索**单独记（不与普通搜索共用，
+     * 因为同一个用户在「关键词搜索」和「标签筛选」时想要的形态经常不同）。
+     *
+     * 缺省值按类型兜底（视频宫格、其余列表），保证没动过开关的人观感不变。
+     */
+    private val _searchGrid = MutableStateFlow(type == SourceType.VIDEO)
+    val searchGrid: StateFlow<Boolean> = _searchGrid.asStateFlow()
+
+    /** 切换结果布局（v1.8.7.1）：立即生效并写回偏好 */
+    fun setSearchGrid(value: Boolean) {
+        _searchGrid.value = value
+        preferencesManager?.let { prefs ->
+            viewModelScope.launch { prefs.setSearchGridTag(value) }
+        }
+    }
+
+    /**
      * 输入提示词（v1.8.6.0 待办 #27）。
      *
      * 输入框只是一个纯字符串，标签池上百个时用户只能凭记忆盲打，打错一个字就搜不到。
@@ -425,29 +454,32 @@ class TagSearchViewModel(
         _suggestions.value = computeSuggestions(value)
     }
 
-    /** 收起提示词（点选之后 / 点菜单外区域 / 开始搜索时） */
+    /** 收起提示词（点面板右上角 × / 开始搜索时） */
     fun clearSuggestions() {
         if (_suggestions.value.isNotEmpty()) _suggestions.value = emptyList()
     }
 
     /**
-     * 点选提示词：把**正在输入的那一段**原地替换成完整标签，再触发搜索。
+     * 点选提示词（v1.8.7.1 改为「补全即止」）。
      *
-     * 不能直接走 [addTag] —— 用户输入「无」时点「无码」，追加会得到「无 无码」这种
-     * 半截词与新词并存的查询，两个大集求交后必然为空。所以按最后一个 token 替换；
-     * `-` 排除前缀与 `题材:` 大类前缀原样保留（提示只在同一个语法位置内补全）。
-     */
-    /**
-     * 点选提示词：把**正在输入的那一段**原地替换成完整标签，再触发搜索。
-     * 拼接逻辑见 [TagSuggestions.applyToQuery]（不重复实现，避免 VM 与核心层各写一份）。
+     * v1.8.6.0 的实现是「补全 + 立刻搜索」：点一个词就等于提交，想再输第二个标签
+     * 必须先等搜索跑完、再把手指挪回输入框 —— 而标签搜索的主场景恰恰是
+     * **多个标签组合**（「无码 全彩」），等于每输一个词被打断一次。
+     *
+     * 现在与搜索框补全的通行行为对齐：
+     * - 只把正在输入的那一段换成完整标签，末尾补空格（[TagSuggestions.completeForContinue]）；
+     * - **不触发搜索**，键盘与光标都留在原地，用户可以直接接着打下一个标签；
+     * - 补全后该词已是池内完整标签，提示会自动收起，不需要额外的「已关闭」状态。
+     *
+     * 想搜就按键盘搜索键或右下角搜索按钮 —— 提交动作只由用户显式发起。
      */
     fun applySuggestion(tag: String) {
         val name = tag.trim()
         if (name.isEmpty()) return
-        _query.value = TagSuggestions.applyToQuery(_query.value, name)
+        _query.value = TagSuggestions.completeForContinue(_query.value, name)
         _activeTags.value = emptyList()
+        // 兜底：词表外写法（补全后 currentWord 仍能命中候选）时也把面板收掉
         _suggestions.value = emptyList()
-        search()
     }
 
     /**

@@ -48,6 +48,14 @@ object TagTagger {
     /** 文本关键词命中：字面命中，语义只是相关 */
     private const val CONF_TEXT = 60
 
+    /**
+     * 影视标题里最多补几个文本标签（v1.8.7.1）。
+     *
+     * 比小说 / 漫画少得多：视频标题本来就短，抽太多会把「中字」「高清」这种
+     * 泛属性堆满标签栏，把真正的题材挤下去。
+     */
+    private const val MAX_VIDEO_TEXT_TAGS = 6
+
     /** 打标结果 */
     data class Tag(
         val name: String,
@@ -110,6 +118,25 @@ object TagTagger {
                 val name = TagAlias.canonicalOf(raw)
                 if (name.isBlank()) return@forEach
                 merge(out, Tag(name, categoryOf(name, video = false), CONF_TEXT, ORIGIN_TEXT))
+            }
+        } else if (video) {
+            // 影视标题（v1.8.7.1）：词表与漫画同一套（[ComicTagLexicon] 建表时已纳入
+            // 通用题材与全部同义组），差别只在元信息排除集 —— 换成
+            // [ComicTagLexicon.VIDEO_META_TAGS] 后，「无码 / 有码 / 中字 / 高清」这类
+            // 对筛片有价值、却被漫画口径当噪声丢掉的维度得以保留。
+            //
+            // **只抽标题，不抽简介**：采集站的 `vod_content` 基本是剧情复述，
+            // 「爱情」「家庭」出现在一部恐怖片的简介里很正常；而标题信息密度高、噪声低。
+            //
+            // 置信度仍是 [CONF_TEXT]：这是猜出来的，同名时会被站方 typeName 覆盖。
+            ComicTagLexicon.match(
+                text = item.title,
+                limit = MAX_VIDEO_TEXT_TAGS,
+                metaTags = ComicTagLexicon.VIDEO_META_TAGS,
+            ).forEach { raw ->
+                val name = TagAlias.canonicalOf(raw)
+                if (name.isBlank()) return@forEach
+                merge(out, Tag(name, categoryOf(name, video), CONF_TEXT, ORIGIN_TEXT))
             }
         }
         // 4) 分类页上下文（v1.8.1.9）：从「全彩」这类分类页命中的作品，补上该分类标签。

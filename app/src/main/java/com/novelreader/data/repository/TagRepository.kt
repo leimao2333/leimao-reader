@@ -5,6 +5,7 @@ import com.novelreader.core.util.FanworkTags
 import com.novelreader.core.util.NovelGenres
 import com.novelreader.core.util.TagAlias
 import com.novelreader.core.util.TagEntryUrl
+import com.novelreader.core.util.VideoGenres
 import com.novelreader.data.cache.TagPlan
 import com.novelreader.data.cache.TagStore
 import com.novelreader.domain.model.SourceType
@@ -136,7 +137,11 @@ class TagRepository(
             SourceType.COMIC ->
                 ComicGenres.ALL.map { it to it } + FanworkTags.searchTags + WIDE_COMIC_SEARCH_TAGS
             SourceType.NOVEL -> NovelGenres.ALL.map { it to it } + FanworkTags.searchTags
-            SourceType.VIDEO -> return
+            // 视频（v1.8.7.1）：此前这里直接 return，视频标签池完全由采集站分类名决定 ——
+            // 站方没建「无码」分类，标签池里就永远没有这个词，单搜只会「未找到标签」。
+            // 现在按 [VideoGenres.ALL] 把题材 / 属性词绑到源的搜索入口：
+            // 点「无码」= 按整组同义写法（無修正 / uncensored…）并发搜索，不再依赖分类页。
+            SourceType.VIDEO -> VideoGenres.ALL.map { it to it }
         }
         val pool = try {
             contentRepository.searchableSourceIds(type, 0)
@@ -154,10 +159,12 @@ class TagRepository(
             val canonicalQuery = TagAlias.canonicalOf(query)
             val entries = plan.getOrPut(label) { mutableListOf() }
             val already = entries.mapTo(HashSet()) { it.first }
-            val sourceLimit = if (type == SourceType.COMIC && label in WIDE_COMIC_TAG_NAMES) {
-                pool.size
-            } else {
-                ComicGenres.MAX_SOURCES_PER_GENRE
+            val sourceLimit = when {
+                type == SourceType.COMIC && label in WIDE_COMIC_TAG_NAMES -> pool.size
+                // 视频的属性标签（无码 / 有码 / 里番 / 成人）同样覆盖全部可搜索源：
+                // 这类词在不同站上写法差异极大，只绑 8 个源等于只看到一半结果
+                type == SourceType.VIDEO && label in WIDE_VIDEO_TAG_NAMES -> pool.size
+                else -> ComicGenres.MAX_SOURCES_PER_GENRE
             }
             // 该题材已有足够入口（通常是多个源的真分类）→ 不再补搜索入口
             if (already.size >= sourceLimit) continue
@@ -179,6 +186,11 @@ class TagRepository(
         private val WIDE_COMIC_TAG_NAMES = WIDE_COMIC_SEARCH_TAGS.mapTo(HashSet()) {
             TagAlias.canonicalOf(it.first)
         }
+
+        /** 视频里不限源的属性标签（v1.8.7.1），口径见 [VideoGenres.WIDE_SEARCH_TAGS] */
+        private val WIDE_VIDEO_TAG_NAMES = VideoGenres.WIDE_SEARCH_TAGS
+            .mapTo(HashSet()) { TagAlias.canonicalOf(it) }
+
         private const val DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000L
     }
 }

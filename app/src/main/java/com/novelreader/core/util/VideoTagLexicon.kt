@@ -352,15 +352,18 @@ object VideoTagLexicon {
     private val GENERIC_SUFFIXES: List<String> = listOf("剧", "劇", "片")
 
     /**
-     * 影视栏目里的**题材 / 属性词**（v1.8.7.0 待办 #28）。
+     * **只参与分词、不进标签池**的补充词（v1.8.7.1）。
      *
-     * 这些词在 `vod_type_name` 里经常两两粘在一起（`自拍偷拍`、`少女萝莉`、`巨乳美乳`），
-     * 单靠同义组认不出来，所以单列一张分词词表。已在 [TagAlias.GROUPS] 里的词不重复列。
+     * 这些词在采集站的分类名里经常两两粘连（`自拍偷拍`、`搭讪搭话`），拆分时必须认得，
+     * 但它们本身不适合作为标签池的入口词：要么是成人向细分类（点进去往往只有一两个源
+     * 有对应分类），要么是栏目修饰词（`独播` `枪战`）。
+     *
+     * 通用题材与属性词已统一收进 [VideoGenres.ALL]，这里只留分词必需的零碎词，
+     * 不再与那张表重复 —— 两处各写一份正是 v1.8.7.1 之前「词表乱七八糟」的根源。
      */
-    private val VIDEO_GENRES: List<String> = listOf(
-        "自拍", "偷拍", "素人", "搭讪", "探花", "网红", "主播", "福利姬", "重口",
-        "解说", "传媒", "激情", "少女", "强奸", "乱伦", "美乳", "三级", "诱惑",
-        "换脸", "网曝", "独播", "枪战", "文艺", "选秀", "演唱会", "微电影", "av",
+    private val SEGMENT_EXTRA: List<String> = listOf(
+        "少女", "搭讪", "福利姬", "重口", "激情", "强奸", "乱伦", "美乳", "三级", "诱惑",
+        "换脸", "网曝", "独播", "枪战", "av",
     )
 
     /** 分词时跳过的一级类型 / 元信息词（它们由 [VideoTypeMap] 归位，不参与题材分词） */
@@ -370,7 +373,7 @@ object VideoTagLexicon {
         "频道", "合集", "大全", "其他", "其它", "全部", "热门", "推荐", "最新", "更多", "综合",
     )
 
-    /** 分词词表：同义组全部写法 + [VIDEO_GENRES]，按长度倒序（贪心最长匹配） */
+    /** 分词词表：同义组全部写法 + [VideoGenres.ALL] + [SEGMENT_EXTRA]，按长度倒序（贪心最长匹配） */
     private val SEGMENT_WORDS: List<String> = buildList<String> {
         val seen = HashSet<String>()
         fun register(word: String, allowShortAscii: Boolean = false) {
@@ -385,7 +388,8 @@ object VideoTagLexicon {
             if (seen.add(key)) add(w)
         }
         TagAlias.GROUPS.forEach { group -> group.forEach { register(it) } }
-        VIDEO_GENRES.forEach { register(it, allowShortAscii = true) }
+        VideoGenres.ALL.forEach { register(it, allowShortAscii = true) }
+        SEGMENT_EXTRA.forEach { register(it, allowShortAscii = true) }
     }.sortedByDescending { it.length }
 
     /** 地区前缀表（只取双字以上的写法，按长度倒序，避免「中国」被「中」抢先） */

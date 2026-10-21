@@ -250,6 +250,15 @@ class PreferencesManager(private val context: Context) {
         val KEY_SEARCH_LAYOUT_VIDEO = booleanPreferencesKey("search_layout_video")
         /** 订阅（RSS 期刊检索结果面板） */
         val KEY_SEARCH_LAYOUT_RSS = booleanPreferencesKey("search_layout_rss")
+        /**
+         * 标签搜索结果布局（v1.8.7.1）。
+         *
+         * 与上面四个 key 的差别：这里**允许缺省**（读出来是 null），因为标签搜索页
+         * 是小说 / 漫画 / 视频共用的同一个页面，而它此前的观感是按类型分开的
+         * （视频 = 三列海报墙，小说 / 漫画 = 列表）。缺省时按 [SourceType] 兜底：
+         * 视频给宫格、其余给列表 —— 用户没动过开关就不该感觉「升级后界面变了」。
+         */
+        val KEY_SEARCH_LAYOUT_TAG = booleanPreferencesKey("search_layout_tag")
 
         // ===== RSS 订阅（v1.8.6.0 待办 #24 / #29） =====
         /**
@@ -909,6 +918,19 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setSearchGridRss(value: Boolean) {
         context.dataStore.edit { it[KEY_SEARCH_LAYOUT_RSS] = value }
+    }
+
+    /**
+     * 标签搜索结果是否宫格（v1.8.7.1）。
+     *
+     * **返回可空**：null = 用户从未设置过，调用方按内容类型给默认值
+     * （视频宫格、小说 / 漫画列表），保持 v1.8.7.0 及以前的观感。
+     */
+    val searchGridTagFlow: Flow<Boolean?> = context.dataStore.data
+        .map { it[KEY_SEARCH_LAYOUT_TAG] }
+
+    suspend fun setSearchGridTag(value: Boolean) {
+        context.dataStore.edit { it[KEY_SEARCH_LAYOUT_TAG] = value }
     }
 
     // ===== 书架（v1.2.0.0） =====

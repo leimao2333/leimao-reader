@@ -111,6 +111,8 @@ fun SettingsScreen(
     val searchGridComic by viewModel.searchGridComic.collectAsState()
     val searchGridVideo by viewModel.searchGridVideo.collectAsState()
     val searchGridRss by viewModel.searchGridRss.collectAsState()
+    // 标签搜索结果布局（v1.8.7.1）
+    val searchGridTag by viewModel.searchGridTag.collectAsState()
 
     // 应用更新（v1.5.4.0）
     val updateBusy by viewModel.updateBusy.collectAsState()
@@ -363,6 +365,15 @@ fun SettingsScreen(
                 Switch(
                     checked = searchGridRss,
                     onCheckedChange = { viewModel.setSearchGridRss(it) },
+                )
+            }
+            SettingRow(
+                title = "标签搜索默认宫格",
+                subtitle = "标签搜索页的结果布局，页面顶栏也能随时切换",
+            ) {
+                Switch(
+                    checked = searchGridTag,
+                    onCheckedChange = { viewModel.setSearchGridTag(it) },
                 )
             }
 

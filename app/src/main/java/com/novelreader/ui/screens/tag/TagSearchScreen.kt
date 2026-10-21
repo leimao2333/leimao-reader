@@ -34,7 +34,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
@@ -43,8 +45,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -54,6 +54,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.SuggestionChipDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -73,15 +74,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
+import com.novelreader.core.util.TagSuggestions
 import com.novelreader.data.repository.TagIndexRepository
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
@@ -134,6 +138,8 @@ fun TagSearchScreen(
     val hasMore by viewModel.hasMore.collectAsState()
     val loadingMore by viewModel.loadingMore.collectAsState()
     val activeTags by viewModel.activeTags.collectAsState()
+    /** 结果展示方式（v1.8.7.1）：true = 宫格，false = 列表 */
+    val searchGrid by viewModel.searchGrid.collectAsState()
 
     // v1.6.2.0：「更多热门」展开面板开关
     var showAllHotTags by remember { mutableStateOf(false) }
@@ -265,6 +271,14 @@ fun TagSearchScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            // 宫格 / 列表切换（v1.8.7.1）：与小说 / 漫画 / 视频搜索页同一个交互位置
+            IconButton(onClick = { viewModel.setSearchGrid(!searchGrid) }) {
+                Icon(
+                    imageVector = if (searchGrid) Icons.AutoMirrored.Filled.ViewList
+                    else Icons.Filled.GridView,
+                    contentDescription = if (searchGrid) "切换为列表" else "切换为宫格",
+                )
+            }
             IconButton(onClick = viewModel::refreshTags, enabled = !collecting) {
                 Icon(Icons.Filled.Refresh, contentDescription = "重新收集标签")
             }
@@ -343,57 +357,46 @@ fun TagSearchScreen(
         HorizontalDivider()
 
         // ===== 手动搜索（v1.6.1.0）：输入框 + IME 搜索 / 回车触发 =====
-        // v1.8.6.0 待办 #27：输入时给出本地标签提示。用 DropdownMenu 做成**浮动层** ——
-        // 直接插进 Column 会让结果区随每次按键上下跳动，输入体验反而更差。
-        Box(modifier = Modifier.fillMaxWidth()) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = viewModel::setQuery,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                placeholder = { Text("标签（空格=同时满足 · -排除 · 题材:标签 · 魔法* 通配）") },
-                singleLine = true,
-                textStyle = MaterialTheme.typography.bodyMedium,
-                trailingIcon = {
-                    if (searching) {
-                        CircularProgressIndicator(
-                            Modifier
-                                .size(20.dp)
-                                .padding(end = 12.dp),
-                            strokeWidth = 2.dp,
-                        )
-                    } else {
-                        IconButton(onClick = viewModel::search) {
-                            Icon(Icons.Filled.Search, contentDescription = "搜索")
-                        }
-                    }
-                },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { viewModel.search() }),
-            )
-            DropdownMenu(
-                expanded = suggestions.isNotEmpty(),
-                onDismissRequest = viewModel::clearSuggestions,
-                modifier = Modifier
-                    .fillMaxWidth(0.92f)
-                    .heightIn(max = 264.dp),
-                offset = DpOffset(x = 12.dp, y = 0.dp),
-            ) {
-                suggestions.forEach { tag ->
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                text = tag,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                        },
-                        onClick = { viewModel.applySuggestion(tag) },
+        // v1.8.7.1：提示词从「浮动下拉菜单」改成**输入框正下方的内联面板**。
+        // 老实现的两个硬伤：
+        // 1) 下拉菜单的 Popup 默认 focusable，一弹出就抢走输入焦点 —— 软键盘当场收起，
+        //    用户打完半个词要重新点输入框才能接着打，这是最要命的「不像人用的」；
+        // 2) 菜单从输入框左上角开始绘制（只给了 x 偏移），直接盖住正在输入的那行字。
+        // 内联面板贴在输入框下方：不抢焦点、键盘不动、位置天然对齐；代价是结果区会被
+        // 推下去不到一屏的高度 —— 比「键盘莫名消失」划算得多。
+        OutlinedTextField(
+            value = query,
+            onValueChange = viewModel::setQuery,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            placeholder = { Text("标签（空格=同时满足 · -排除 · 题材:标签 · 魔法* 通配）") },
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodyMedium,
+            trailingIcon = {
+                if (searching) {
+                    CircularProgressIndicator(
+                        Modifier
+                            .size(20.dp)
+                            .padding(end = 12.dp),
+                        strokeWidth = 2.dp,
                     )
+                } else {
+                    IconButton(onClick = viewModel::search) {
+                        Icon(Icons.Filled.Search, contentDescription = "搜索")
+                    }
                 }
-            }
+            },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { viewModel.search() }),
+        )
+        if (suggestions.isNotEmpty()) {
+            TagSuggestionPanel(
+                suggestions = suggestions,
+                word = TagSuggestions.currentWord(query),
+                onPick = viewModel::applySuggestion,
+                onDismiss = viewModel::clearSuggestions,
+            )
         }
 
         // 「按源搜索」（v1.8.1.2）：标签池是跨源收集的，只搜某一个源能省掉几十个源一起等的长尾
@@ -541,7 +544,10 @@ fun TagSearchScreen(
                 }
             }
 
-            viewModel.type == SourceType.VIDEO -> {
+            // 宫格态（v1.8.7.1 起由用户开关决定，不再按类型写死）：
+            // 视频保持三列海报墙，小说 / 漫画两列 —— 这两类封面本身比视频更方，
+            // 三列会把书名挤成一两个字。
+            searchGrid -> {
                 val gridState = rememberLazyGridState()
                 // 触底即加载下一页（v1.8.1.2）：首次搜索已后台预取 3 页，这里只兜住更深的滚动
                 LaunchedEffect(gridState, hasMore) {
@@ -554,7 +560,7 @@ fun TagSearchScreen(
                 }
                 Box(Modifier.fillMaxSize()) {
                     LazyVerticalGrid(
-                        columns = GridCells.Fixed(3),
+                        columns = GridCells.Fixed(if (viewModel.type == SourceType.VIDEO) 3 else 2),
                         modifier = Modifier.fillMaxSize(),
                         state = gridState,
                         contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 16.dp),
@@ -812,6 +818,101 @@ private fun MoreHotChip(remain: Int, onClick: () -> Unit) {
             labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
         ),
     )
+}
+
+/**
+ * 输入补全面板（v1.8.7.1）。
+ *
+ * 刻意**不用** `DropdownMenu`：它的 Popup 默认 focusable，一展开就抢走输入焦点，
+ * 软键盘当场收起 —— 用户打半个词就得重新点输入框，这是最影响手感的一处。
+ * 内联在输入框下方则完全不碰焦点，键盘与光标都留在原地。
+ *
+ * 交互口径也一并改成「补全即止」：点一项只把正在输入的那一段换成完整标签
+ * 并在末尾留一个空格，**不提交搜索**，想接着输第二个标签可以直接打字。
+ * 候选里把用户已输入的片段加粗高亮，避免「为什么推荐这个词」看不出来。
+ *
+ * 面板带一个收起按钮：用户看清候选后不想选，可以主动关掉，不必靠继续打字
+ * 把列表顶走。
+ */
+@Composable
+private fun TagSuggestionPanel(
+    suggestions: List<String>,
+    word: String,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 2.dp),
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+    ) {
+        Column(modifier = Modifier.padding(vertical = 2.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "补全建议 · 点选填入，可接着输入",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = onDismiss, modifier = Modifier.size(30.dp)) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "收起补全建议",
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            LazyColumn(modifier = Modifier.heightIn(max = 200.dp)) {
+                items(suggestions, key = { it }) { tag ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onPick(tag) }
+                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = highlightMatch(tag, word),
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "填入",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 把候选里用户已输入的那一段标成主题色加粗（找不到就原样返回） */
+@Composable
+private fun highlightMatch(tag: String, word: String): AnnotatedString {
+    if (word.isEmpty()) return AnnotatedString(tag)
+    val start = tag.indexOf(word, ignoreCase = true)
+    if (start < 0) return AnnotatedString(tag)
+    val accent = MaterialTheme.colorScheme.primary
+    return buildAnnotatedString {
+        append(tag)
+        addStyle(
+            SpanStyle(fontWeight = FontWeight.SemiBold, color = accent),
+            start,
+            start + word.length,
+        )
+    }
 }
 
 /** 标签搜索结果的海报卡（视频）：2:3 封面 + 标题 + 来源名 */

@@ -608,6 +608,16 @@ class SettingsViewModel(
     private val _searchGridRss = MutableStateFlow(false)
     val searchGridRss: StateFlow<Boolean> = _searchGridRss.asStateFlow()
 
+    /**
+     * 标签搜索结果布局（v1.8.7.1）：false = 列表，true = 宫格。
+     *
+     * 标签搜索页是小说 / 漫画 / 视频共用的，设置页这里只给「标签搜索」一个总开关，
+     * 初值按视频口径（宫格）展示；用户没设置过时保持宫格 —— 与标签页内
+     * 「视频默认宫格」的兜底一致，避免设置页显示「关」而实际是宫格。
+     */
+    private val _searchGridTag = MutableStateFlow(true)
+    val searchGridTag: StateFlow<Boolean> = _searchGridTag.asStateFlow()
+
     // ===== RSS 订阅（v1.8.6.0 待办 #24） =====
     /** RSS 订阅入口是否移到首页分类导航下方（默认关 = 顶栏图标） */
     private val _rssEntryBelow = MutableStateFlow(PreferencesManager.DEFAULT_RSS_ENTRY_BELOW)
@@ -764,6 +774,10 @@ class SettingsViewModel(
         viewModelScope.launch {
             preferencesManager.searchGridRssFlow.collect { _searchGridRss.value = it }
         }
+        // 标签搜索结果布局（v1.8.7.1）：没设置过时按视频口径显示宫格
+        viewModelScope.launch {
+            preferencesManager.searchGridTagFlow.collect { _searchGridTag.value = it ?: true }
+        }
     }
 
     /** 切换「隐藏成人内容」开关 */
@@ -794,6 +808,11 @@ class SettingsViewModel(
     /** 切换订阅（期刊检索）结果宫格展示（v1.8.6.0 待办 #26） */
     fun setSearchGridRss(value: Boolean) {
         viewModelScope.launch { preferencesManager.setSearchGridRss(value) }
+    }
+
+    /** 切换标签搜索结果宫格展示（v1.8.7.1） */
+    fun setSearchGridTag(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setSearchGridTag(value) }
     }
 
     fun setDarkTheme(value: Boolean) {

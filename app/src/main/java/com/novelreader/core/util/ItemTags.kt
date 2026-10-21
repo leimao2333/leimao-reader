@@ -100,6 +100,10 @@ object ItemTags {
         // 不少源只给 0~1 个标签，只靠 extras 时详情页标签栏几乎空白；
         // 标题（「转生成为史莱姆」「魔王与勇者的日常」）与简介本身就写着题材。
         // 只对小说 / 漫画做 —— 影视简介多是剧情复述，抽出来噪声更大。
+        //
+        // v1.8.7.1：影视的标题抽取**不放在这里**。本函数的结果在 [TagTagger] 里被当作
+        // 「站方声明」（置信度 100），把文本猜出来的词混进来会让标题里的「喜剧」
+        // 压过别处的站方分类。影视那条走 TagTagger 的文本管道，置信度 60。
         var requiredFanworkTags = emptyList<String>()
         if (item.type == SourceType.NOVEL || item.type == SourceType.COMIC) {
             val text = buildString {

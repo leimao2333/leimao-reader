@@ -6,7 +6,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -117,7 +116,7 @@ import kotlin.math.roundToInt
  *    （系统对单边可排除的高度有上限，超出部分照样被裁），已移除；现在的做法是
  *    把可拖区域整体向内加宽，让手指落在手势带之外，这是能稳定按中的那条路。
  *
- * 按下与拖动合在同一个 `pointerInput` 里（`awaitEachGesture` + `drag`）：拆成两个
+ * 按下与拖动合在同一个 `pointerInput` 里（`awaitEachGesture` + 自己跟事件流）：拆成两个
  * 实测会在边缘互相干扰，按下根本没反应。拖动的手势检测一旦被重组重启，正在进行的
  * 拖动会当场断掉，所以滚动比例、首项索引都用 `rememberUpdatedState` 读最新值。
  */
@@ -337,8 +336,16 @@ private fun ScrollbarBox(
                         pressed = true
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                         try {
-                            // drag() 直接跟这一根手指走：不设阈值，所以按下即跟手
-                            drag(down.id) { change ->
+                            // 不用 drag()，自己跟事件流（v1.8.7.6 真机定位）：
+                            // drag() 只对 Move 事件吐位移、会忽略 UP——而快速一甩时
+                            // （事件间隔小于一帧）管线可能一个 Move 都没派出来，
+                            // 最后那 900px 全压在 UP 上，drag() 直接返回 0，表现就是
+                            // 「甩得越快越不动」。自己跟流则 MOVE 与 UP 的位移都收。
+                            val pointerId = down.id
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == pointerId }
+                                    ?: break
                                 // 顺序不能反（v1.8.7.6 修）：positionChange() 在事件已被消费时
                                 // **恒返回 0**，先 consume() 再读位移，等于永远读到 0 ——
                                 // 表现就是「滚动条把触摸吃掉了，但列表一格不动」。
@@ -350,6 +357,7 @@ private fun ScrollbarBox(
                                     pendingDelta.updateAndGet { it + dy * ratioState.value }
                                     scrollSignal.trySend(Unit)
                                 }
+                                if (!change.pressed) break
                             }
                         } finally {
                             // 松手后**不丢弃**最后一段位移：那是用户拖到的位置，

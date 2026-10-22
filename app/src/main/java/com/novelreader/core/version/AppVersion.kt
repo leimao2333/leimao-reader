@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.8.7.6"
+    const val CURRENT_VERSION = "1.8.7.7"
 
     /**
      * 更新日志。
@@ -25,6 +25,13 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.8.7.7",
+            date = "2026-10-22",
+            changes = listOf(
+                "**修「快速一甩还是甩不动」的最后一段**：上一版把触控带改成固定宽度后，慢拖正常了，但极快的甩动仍可能一格不动。真机注入事件定位到根因：拖动用的框架接口只认「移动」事件、会忽略「抬起」——而甩得极快时（事件间隔小于一帧），移动事件可能一个都派不出来，那一段位移全压在抬起事件上，被接口直接扔掉。现在不再借框架的拖动检测，自己跟事件流：移动与抬起的位移都收，甩多快都能落到位置。同时保留上一版的全部修复（先读位移再消费、触控带固定宽度、消费协程不重启）。",
+            ),
+        ),
         VersionEntry(
             version = "1.8.7.6",
             date = "2026-10-22",

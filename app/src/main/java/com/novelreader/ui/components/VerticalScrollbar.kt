@@ -106,25 +106,31 @@ import kotlin.math.roundToInt
  * 手指一碰就被系统接管，而拇指本身又细，表现就是「按半天按不到，还老触发返回」。
  *
  * 现在两件事一起做：
- * 1. **按住就变大**：手指一落下（还没滑，也就没有触摸阈值的延迟）拇指 7dp → 13dp、
- *    触控带 30dp → 52dp，并伴随一次轻震动。放大的方向是**向内**扩，不去抢屏幕最外侧
- *    那一条 —— 越靠中间越不容易被系统手势截走。静止态的触控带也加宽到 30dp，
- *    这样手指落在离边缘 25~40dp 的位置（明确在系统手势带之外）也能抓住它。
- * 2. **整体让出系统手势区**：节点加了 `systemGestureExclusion()`（Android 10+ 生效，
- *    系统对单边能排除的高度有上限，超出部分会被裁掉，但足以覆盖常按的中间段）。
+ * 1. **按住就变大**：手指一落下（还没滑，也就没有触摸阈值的延迟）拇指 7dp → 13dp，
+ *    并伴随一次轻震动。放大的方向是**向内**扩，不去抢屏幕最外侧那一条 —— 越靠中间
+ *    越不容易被系统手势截走。
+ * 2. **触控带一直是宽的**（v1.8.7.6 起固定 52dp）：一开始想让触控带也跟着按下变宽，
+ *    结果按下瞬间节点重排，Compose 会取消正在进行的手势 —— 表现为「快速一甩完全不动，
+ *    只有慢慢拖才生效」，正是用户抱怨的那种「按半天按不到」。现在触控带固定宽、
+ *    只有拇指的绘制宽度做动画，手势节点不再重排。拇指本身仍是 7dp，视觉不吵。
+ * 3. **不跟系统手势硬抢**：一度加过 `systemGestureExclusion()`，实测没用又添乱
+ *    （系统对单边可排除的高度有上限，超出部分照样被裁），已移除；现在的做法是
+ *    把可拖区域整体向内加宽，让手指落在手势带之外，这是能稳定按中的那条路。
  *
- * 放大放在独立的 `pointerInput` 里做，**不动**拖动那一个 —— 拖动的手势检测一旦被重组
- * 重启，正在进行的拖动会当场断掉（这也是滚动比例用 `rememberUpdatedState` 读的原因）。
+ * 按下与拖动合在同一个 `pointerInput` 里（`awaitEachGesture` + `drag`）：拆成两个
+ * 实测会在边缘互相干扰，按下根本没反应。拖动的手势检测一旦被重组重启，正在进行的
+ * 拖动会当场断掉，所以滚动比例、首项索引都用 `rememberUpdatedState` 读最新值。
  */
 @Composable
 fun VerticalScrollbar(
     listState: LazyListState,
     modifier: Modifier = Modifier,
     thumbWidth: Dp = 7.dp,
+    /** 触控带宽度（v1.8.7.6 起固定生效） */
     touchWidth: Dp = 30.dp,
     /** 按住 / 拖动时的拇指宽度（v1.8.7.5）：比静止态粗近一倍，手指按上去才看得见、抓得住 */
     pressedThumbWidth: Dp = 13.dp,
-    /** 按住 / 拖动时的触控带宽度：向内扩，避开屏幕最外侧的系统返回手势带 */
+    /** 触控带宽度（向内扩，避开屏幕最外侧的系统返回手势带）；实际取它与 [touchWidth] 的较大者 */
     pressedTouchWidth: Dp = 52.dp,
     minThumbHeight: Dp = 36.dp,
     color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -156,10 +162,11 @@ fun VerticalScrollbar(
     gridState: LazyGridState,
     modifier: Modifier = Modifier,
     thumbWidth: Dp = 7.dp,
+    /** 触控带宽度（v1.8.7.6 起固定生效） */
     touchWidth: Dp = 30.dp,
     /** 按住 / 拖动时的拇指宽度（v1.8.7.5）：比静止态粗近一倍，手指按上去才看得见、抓得住 */
     pressedThumbWidth: Dp = 13.dp,
-    /** 按住 / 拖动时的触控带宽度：向内扩，避开屏幕最外侧的系统返回手势带 */
+    /** 触控带宽度（向内扩，避开屏幕最外侧的系统返回手势带）；实际取它与 [touchWidth] 的较大者 */
     pressedTouchWidth: Dp = 52.dp,
     minThumbHeight: Dp = 36.dp,
     color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -225,11 +232,11 @@ private fun ScrollbarBox(
         animationSpec = tween(durationMillis = 120),
         label = "scrollbarThumbWidth",
     )
-    val curTouchWidth by animateDpAsState(
-        targetValue = if (expanded) pressedTouchWidth else touchWidth,
-        animationSpec = tween(durationMillis = 120),
-        label = "scrollbarTouchWidth",
-    )
+    // 触控带宽度**固定**取放大后的值，不跟着按下动画（v1.8.7.6）：
+    // 一旦让这个宽度参与动画，按下瞬间节点就要重排，而重排会让 Compose 取消
+    // 正在进行的手势 —— 表现是「快速一甩（<120ms）完全不动，只有慢慢拖才生效」。
+    // 宁可一直用宽的那条：拇指仍然只有 7dp，视觉不吵，按中的容错还更大。
+    val fixedTouchWidth = pressedTouchWidth.coerceAtLeast(touchWidth)
 
     // 拖动位移先攒这里，由下面唯一一个协程串行取走；conflated 信号保证「一帧只唤醒一次」
     val pendingDelta = remember { AtomicReference(0f) }
@@ -240,11 +247,11 @@ private fun ScrollbarBox(
     val latestFirstIndex = rememberUpdatedState(firstIndex)
 
     BoxWithConstraints(
-        // 宽度跟着「按下与否」变：放大时向内长，右侧边缘位置不变，
-        // 于是越按越容易按中，而拇指不会跳来跳去
+        // 宽度固定（见 fixedTouchWidth 的说明）：放大只改拇指的绘制宽度，
+        // 右侧边缘位置不变，手势节点不重排，快速拖动才不会被打断
         modifier = modifier
             .fillMaxHeight()
-            .width(curTouchWidth),
+            .width(fixedTouchWidth),
     ) {
         val viewportPx = constraints.maxHeight.toFloat()
         if (viewportPx <= 0f) return@BoxWithConstraints
@@ -260,16 +267,24 @@ private fun ScrollbarBox(
         // 每滚 1px 大致前进多少项（网格里一行多项，但比例关系一致）
         val itemsPerPx = totalItems / contentPx
 
-        LaunchedEffect(scrollSignal, jumpThresholdPx, itemsPerPx) {
+        // 键**只能放 scrollSignal**（v1.8.7.6 修）：这两个换算值随 totalItems 变，
+        // 而结果是一边翻页一边往列表里加的 —— 键一变，下面这个消费协程就被重启，
+        // 攒着的位移跟着一起丢，表现是「数据还在涨的时候怎么甩都甩不动」。
+        // 要读最新值一律走 rememberUpdatedState，不要拿它们当 LaunchedEffect 的键。
+        val latestJumpThreshold = rememberUpdatedState(jumpThresholdPx)
+        val latestItemsPerPx = rememberUpdatedState(itemsPerPx)
+        val latestTotalItems = rememberUpdatedState(totalItems)
+
+        LaunchedEffect(scrollSignal) {
             for (signal in scrollSignal) {
                 val pending = pendingDelta.getAndSet(0f)
                 if (pending == 0f) continue
-                if (abs(pending) >= jumpThresholdPx) {
+                if (abs(pending) >= latestJumpThreshold.value) {
                     // 大位移：直接落到估算索引。LazyGrid 只组合可见行，
                     // 不会像 scrollBy 那样把中间经过的每一项都测一遍。
-                    val target = (latestFirstIndex.value + pending * itemsPerPx)
+                    val target = (latestFirstIndex.value + pending * latestItemsPerPx.value)
                         .roundToInt()
-                        .coerceIn(0, (totalItems - 1).coerceAtLeast(0))
+                        .coerceIn(0, (latestTotalItems.value - 1).coerceAtLeast(0))
                     runCatching { currentOnScrollToIndex.value(target) }
                         .onFailure {
                             android.util.Log.w("Scrollbar", "跳转失败，丢弃本次位移", it)
@@ -311,7 +326,7 @@ private fun ScrollbarBox(
         Box(
             modifier = Modifier
                 .fillMaxHeight()
-                .width(curTouchWidth)
+                .width(fixedTouchWidth)
                 // 一个手势处理器管两件事：按下 → 立刻放大 + 震动；同时开始跟手。
                 // 以前拆成两个 pointerInput（一个观察按下、一个检测拖动），实测在边缘
                 // 会互相干扰，按下根本没反应 —— 合成一个最稳。
@@ -324,8 +339,11 @@ private fun ScrollbarBox(
                         try {
                             // drag() 直接跟这一根手指走：不设阈值，所以按下即跟手
                             drag(down.id) { change ->
-                                change.consume()
+                                // 顺序不能反（v1.8.7.6 修）：positionChange() 在事件已被消费时
+                                // **恒返回 0**，先 consume() 再读位移，等于永远读到 0 ——
+                                // 表现就是「滚动条把触摸吃掉了，但列表一格不动」。
                                 val dy = change.positionChange().y
+                                change.consume()
                                 if (dy != 0f) {
                                     dragging = true
                                     // 只累加、不启协程：真正滚动由上面的消费协程合并执行

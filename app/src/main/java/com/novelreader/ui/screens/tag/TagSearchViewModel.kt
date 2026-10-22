@@ -361,6 +361,16 @@ class TagSearchViewModel(
     private val _progress = MutableStateFlow<Pair<Int, Int>?>(null)
     val progress: StateFlow<Pair<Int, Int>?> = _progress.asStateFlow()
 
+    /**
+     * 搜索进度计数器（v1.7.1.0）。
+     *
+     * **必须声明在 [init] 之前**：init 里的 [collectTags] 会同步调用 [search]，
+     * 而 search 的第一批语句就有 [resetProgress]。写在 init 之后的话，Kotlin 的
+     * 字段初始化顺序会让这里还是 null，直接 NPE 闪退（v1.8.7.5 漏到设备上的真实崩溃）。
+     */
+    private val progressDone = java.util.concurrent.atomic.AtomicInteger(0)
+    private val progressTotal = java.util.concurrent.atomic.AtomicInteger(0)
+
     /** 提示（标签未找到 / 搜索失败等，非致命） */
     private val _notice = MutableStateFlow<String?>(null)
     val notice: StateFlow<String?> = _notice.asStateFlow()
@@ -419,6 +429,16 @@ class TagSearchViewModel(
     /** 正在加载第几页（v1.8.7.5）：0 = 没在翻页。页脚拿它显示进度 */
     private val _loadingPage = MutableStateFlow(0)
     val loadingPage: StateFlow<Int> = _loadingPage.asStateFlow()
+
+    /**
+     * 最近一次翻到第几页（v1.8.7.6）：只用于顶部常驻显示，不参与「是否在忙」的判断。
+     *
+     * 用户要的是「页码一直在上面能看见」：而 [loadingPage] 每页跑完就归 0，
+     * 于是两页之间的空档里页码会消失一下，看起来像卡住又像丢状态。
+     * 这里留一份「翻到过第几页」，翻完仍保留，直到下一次搜索才归零。
+     */
+    private val _lastPage = MutableStateFlow(0)
+    val lastPage: StateFlow<Int> = _lastPage.asStateFlow()
 
     private val _loadingMore = MutableStateFlow(false)
 
@@ -635,9 +655,11 @@ class TagSearchViewModel(
         preloadJob?.cancel()
         _loadingMore.value = true
         _loadingPage.value = nextPage
-        // 翻页也走同一套进度条：否则界面只有页脚一个 22dp 的转圈，
-        // 几百个请求跑几十秒看起来就跟卡死一样
-        resetProgress()
+        // 页码常驻顶部（v1.8.7.6）：翻完也留着，不再归零后消失
+        _lastPage.value = nextPage
+        // 进度**不在这里清零**（v1.8.7.6）：翻页属于同一次搜索，按下页就把计数重置
+        // 会让顶部那条进度条每翻一页从头跑一遍，看着像「永远跑不完」。
+        // 现在整次搜索用一条累计进度：已完成的请求只增不减。
         viewModelScope.launch {
             try {
                 val page = nextPage
@@ -669,8 +691,9 @@ class TagSearchViewModel(
             } finally {
                 _loadingMore.value = false
                 _loadingPage.value = 0
-                // 翻页的请求计数用完就清：以前从不清零，顶部会一直停在「32/32」
-                _progress.value = null
+                // v1.8.7.6：进度改为整次搜索累计，翻完一页**不清零**（以前清零是为了
+                // 不让顶部停在最后一页的分母上，但代价是每页都从头跑一遍进度条）。
+                // 清零只在开一次新搜索时进行。
             }
         }
     }
@@ -689,6 +712,9 @@ class TagSearchViewModel(
             while (loaded < PRELOAD_PAGES && _hasMore.value) {
                 if (generation != searchGeneration) return@launch
                 val page = nextPage
+                // 预取的页也要让顶部页码跟着走（v1.8.7.6）：不然「第 N 页」只在
+                // 触底翻页时才动，预取这几页在界面上像是没发生过
+                _lastPage.value = page
                 val result = try {
                     fetchPage(ctx, page)
                 } catch (cancelled: CancellationException) {
@@ -714,8 +740,8 @@ class TagSearchViewModel(
                 indexProvenance(result.items, result.proven)
             }
             } finally {
-                // 预取也会累加请求计数，跑完必须清掉，否则顶部数字停在最后一页的分母上
-                if (generation == searchGeneration) _progress.value = null
+                // 预取的计数同样计入总进度（v1.8.7.6），不清零 ——
+                // 清零的话顶部那条总进度会被每页重置，看着永远跑不完
             }
         }
     }
@@ -830,8 +856,7 @@ class TagSearchViewModel(
      *    以前搜索也照着池子全打一遍，用户停用的源照样被请求、每个都要干等到超时。
      */
     // ===== 搜索进度（v1.7.1.0）：把「已完成请求数 / 当前已知请求总数」实时上屏 =====
-    private val progressDone = java.util.concurrent.atomic.AtomicInteger(0)
-    private val progressTotal = java.util.concurrent.atomic.AtomicInteger(0)
+    // 计数器本体声明在文件上方（_progress 旁边），因为 init 会同步跑到 resetProgress。
 
     private fun resetProgress() {
         progressDone.set(0)
@@ -867,6 +892,8 @@ class TagSearchViewModel(
             _searching.value = true
             _notice.value = null
             resetProgress()
+            // 新一次搜索：页码与总进度都从头算（翻页不清零，只有这里清）
+            _lastPage.value = 0
             _progress.value = null
 
             try {

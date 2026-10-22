@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -141,6 +142,8 @@ fun TagSearchScreen(
     val loadingMore by viewModel.loadingMore.collectAsState()
     /** 正在加载第几页（v1.8.7.5）：页脚要显示「正在加载第 N 页」，否则几百个请求跑着像卡死 */
     val loadingPage by viewModel.loadingPage.collectAsState()
+    /** 翻到过第几页（v1.8.7.6）：顶部常驻显示用，翻完不清零 */
+    val lastPage by viewModel.lastPage.collectAsState()
     /** 这次搜索用了多少个源（v1.8.7.5）：顶部与数量一起显示 */
     val sourceCount by viewModel.sourceCount.collectAsState()
     val activeTags by viewModel.activeTags.collectAsState()
@@ -525,25 +528,26 @@ fun TagSearchScreen(
             }
         }
 
-        // ===== 已找到多少 / 进度（v1.8.7.5 改口径）=====
-        // 以前这里只显示「正在搜索 32/32」，翻页时那个分母是**本页要发的请求数**，
-        // 跑完也不清零，看着就像永远卡在 32。用户要的是「搜出多少部」，先给数量，
-        // 请求进度降级成同一行的次要信息。
+        // ===== 已找到多少 / 总进度（v1.8.7.5 改口径，v1.8.7.6 再改）=====
+        // 以前这里只显示「正在搜索 32/32」，分母是**本页要发的请求数**，翻页跑完也不清零，
+        // 看着就像永远卡在 32。现在：
+        // 1. 先给结果数量（用户真正关心的），再给覆盖面（用多少源）；
+        // 2. 页码**常驻**：翻页时用它，翻完也留着，不再一清零就从界面上消失；
+        // 3. 进度是**整次搜索的总进度**，不是每页各算各的 —— 每次翻页都从头跑一遍
+        //    进度条，看着就像永远跑不完。
         val found = results.size
         val busy = searching || loadingPage > 0
-        if (found > 0 || busy) {
+        val shownPage = maxOf(loadingPage, lastPage)
+        if (found > 0 || busy || shownPage > 0) {
             Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                 Text(
                     text = buildString {
                         append(if (found > 0) "已找到 $found 部" else "正在搜索…")
                         // 「用多少源」也留着：这个数说明覆盖面，掉了用户会以为源被悄悄砍了
                         if (sourceCount > 0) append("　·　用 $sourceCount 个源")
+                        if (shownPage > 0) append("　·　第 $shownPage 页")
                         progress?.let { (done, total) ->
-                            if (total > 0) {
-                                append("　·　")
-                                append(if (loadingPage > 0) "第 $loadingPage 页 " else "")
-                                append("$done/$total")
-                            }
+                            if (total > 0) append("　·　总进度 $done/$total")
                         }
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -666,7 +670,9 @@ fun TagSearchScreen(
                             TagPosterCard(item = item, onClick = { onItemClick(item) })
                         }
                         if (loadingMore) {
-                            item(key = "loading-more") {
+                            // span 必须跨满整行（v1.8.7.6）：宫格态下不跨列就只占 1 个格子，
+                            // 5 列时宽度不到整屏的 1/5，页脚那行字被挤成一列竖排。
+                            item(key = "loading-more", span = { GridItemSpan(maxLineSpan) }) {
                                 LoadMoreFooter(
                                     loading = true,
                                     hasMore = true,
@@ -675,7 +681,9 @@ fun TagSearchScreen(
                                 ) {}
                             }
                         } else if (hasMore) {
-                            item(key = "load-more") { LoadMoreFooter(loading = false, hasMore = true) { viewModel.loadMore() } }
+                            item(key = "load-more", span = { GridItemSpan(maxLineSpan) }) {
+                                LoadMoreFooter(loading = false, hasMore = true) { viewModel.loadMore() }
+                            }
                         }
                     }
                     // 侧边滚动条（v1.8.2.0）：网格页翻到哪儿了看不出来
@@ -1095,13 +1103,10 @@ private fun LoadMoreFooter(
             loading -> Row(verticalAlignment = Alignment.CenterVertically) {
                 CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(8.dp))
+                // v1.8.7.6：这里的 x/y 去掉了 —— 进度已改成整次搜索的总进度并在顶部
+                // 常驻显示，页脚再挂一个同形的分数，只会让人以为「这一页又卡在某个数」
                 Text(
-                    text = buildString {
-                        append(if (page > 0) "正在加载第 $page 页" else "正在加载")
-                        if (progress != null && progress.second > 0) {
-                            append("　${progress.first}/${progress.second}")
-                        }
-                    },
+                    text = if (page > 0) "正在加载第 $page 页" else "正在加载",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

@@ -140,10 +140,10 @@ fun TagSearchScreen(
     val indexMessage by viewModel.indexMessage.collectAsState()
     val hasMore by viewModel.hasMore.collectAsState()
     val loadingMore by viewModel.loadingMore.collectAsState()
+    /** 自动翻是在第几页停下的（v1.8.7.8，0 = 还没停过）：页脚要说明「为什么到底」 */
+    val emptyPage by viewModel.emptyPage.collectAsState()
     /** 正在加载第几页（v1.8.7.5）：页脚要显示「正在加载第 N 页」，否则几百个请求跑着像卡死 */
     val loadingPage by viewModel.loadingPage.collectAsState()
-    /** 翻到过第几页（v1.8.7.6）：顶部常驻显示用，翻完不清零 */
-    val lastPage by viewModel.lastPage.collectAsState()
     /** 这次搜索用了多少个源（v1.8.7.5）：顶部与数量一起显示 */
     val sourceCount by viewModel.sourceCount.collectAsState()
     val activeTags by viewModel.activeTags.collectAsState()
@@ -532,20 +532,19 @@ fun TagSearchScreen(
         // 以前这里只显示「正在搜索 32/32」，分母是**本页要发的请求数**，翻页跑完也不清零，
         // 看着就像永远卡在 32。现在：
         // 1. 先给结果数量（用户真正关心的），再给覆盖面（用多少源）；
-        // 2. 页码**常驻**：翻页时用它，翻完也留着，不再一清零就从界面上消失；
-        // 3. 进度是**整次搜索的总进度**，不是每页各算各的 —— 每次翻页都从头跑一遍
+        // 2. 进度是**整次搜索的总进度**，不是每页各算各的 —— 每次翻页都从头跑一遍
         //    进度条，看着就像永远跑不完。
+        // v1.8.7.8：页码段去掉了 —— 它跟「总进度」是同一件事的两种说法，并排显示
+        // 反而让人以为是两个不同的进度，且行太长会折成两行（小屏尤其明显）。
         val found = results.size
         val busy = searching || loadingPage > 0
-        val shownPage = maxOf(loadingPage, lastPage)
-        if (found > 0 || busy || shownPage > 0) {
+        if (found > 0 || busy) {
             Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                 Text(
                     text = buildString {
                         append(if (found > 0) "已找到 $found 部" else "正在搜索…")
                         // 「用多少源」也留着：这个数说明覆盖面，掉了用户会以为源被悄悄砍了
                         if (sourceCount > 0) append("　·　用 $sourceCount 个源")
-                        if (shownPage > 0) append("　·　第 $shownPage 页")
                         progress?.let { (done, total) ->
                             if (total > 0) append("　·　总进度 $done/$total")
                         }
@@ -669,21 +668,18 @@ fun TagSearchScreen(
                         items(displayResults, key = { "${it.sourceId}:${it.id}" }) { item ->
                             TagPosterCard(item = item, onClick = { onItemClick(item) })
                         }
-                        if (loadingMore) {
-                            // span 必须跨满整行（v1.8.7.6）：宫格态下不跨列就只占 1 个格子，
-                            // 5 列时宽度不到整屏的 1/5，页脚那行字被挤成一列竖排。
-                            item(key = "loading-more", span = { GridItemSpan(maxLineSpan) }) {
-                                LoadMoreFooter(
-                                    loading = true,
-                                    hasMore = true,
-                                    page = loadingPage,
-                                    progress = progress,
-                                ) {}
-                            }
-                        } else if (hasMore) {
-                            item(key = "load-more", span = { GridItemSpan(maxLineSpan) }) {
-                                LoadMoreFooter(loading = false, hasMore = true) { viewModel.loadMore() }
-                            }
+                        // 页脚**始终**渲染（v1.8.7.8）：到底也得让用户看见为什么停了
+                        item(
+                            key = "load-more",
+                            span = { GridItemSpan(maxLineSpan) },
+                        ) {
+                            LoadMoreFooter(
+                                loading = loadingMore,
+                                hasMore = hasMore,
+                                emptyPage = emptyPage,
+                                onLoadMore = { viewModel.loadMore() },
+                                onContinue = { viewModel.loadMore(force = true) },
+                            )
                         }
                     }
                     // 侧边滚动条（v1.8.2.0）：网格页翻到哪儿了看不出来
@@ -719,17 +715,15 @@ fun TagSearchScreen(
                                 onRead = { onItemClick(item) },
                             )
                         }
-                        if (loadingMore) {
-                            item(key = "loading-more") {
-                                LoadMoreFooter(
-                                    loading = true,
-                                    hasMore = true,
-                                    page = loadingPage,
-                                    progress = progress,
-                                ) {}
-                            }
-                        } else if (hasMore) {
-                            item(key = "load-more") { LoadMoreFooter(loading = false, hasMore = true) { viewModel.loadMore() } }
+                        // 列表态同样**始终**渲染页脚（理由同宫格态）
+                        item(key = "load-more") {
+                            LoadMoreFooter(
+                                loading = loadingMore,
+                                hasMore = hasMore,
+                                emptyPage = emptyPage,
+                                onLoadMore = { viewModel.loadMore() },
+                                onContinue = { viewModel.loadMore(force = true) },
+                            )
                         }
                     }
                     com.novelreader.ui.components.VerticalScrollbar(
@@ -1087,9 +1081,9 @@ private fun TagPosterCard(item: MediaItem, onClick: () -> Unit) {
 private fun LoadMoreFooter(
     loading: Boolean,
     hasMore: Boolean,
-    page: Int = 0,
-    progress: Pair<Int, Int>? = null,
+    emptyPage: Int = 0,
     onLoadMore: () -> Unit,
+    onContinue: () -> Unit,
 ) {
     Box(
         modifier = Modifier
@@ -1106,17 +1100,22 @@ private fun LoadMoreFooter(
                 // v1.8.7.6：这里的 x/y 去掉了 —— 进度已改成整次搜索的总进度并在顶部
                 // 常驻显示，页脚再挂一个同形的分数，只会让人以为「这一页又卡在某个数」
                 Text(
-                    text = if (page > 0) "正在加载第 $page 页" else "正在加载",
+                    text = "正在加载…",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             hasMore -> TextButton(onClick = onLoadMore) { Text("加载更多") }
-            else -> Text(
-                text = "没有更多了",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            // v1.8.7.8：到底也要有东西可看、有路可走。以前这里整个页脚不渲染，
+            // 触底既不自动加载、也没按钮、也没说明 —— 用户看到的就是「到底后没反应」。
+            else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = if (emptyPage > 0) "第 $emptyPage 页全是已有内容（源站到底了）" else "没有更多了",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(onClick = onContinue) { Text("继续往下翻") }
+            }
         }
     }
 }

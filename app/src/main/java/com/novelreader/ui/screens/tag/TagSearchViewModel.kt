@@ -431,14 +431,13 @@ class TagSearchViewModel(
     val loadingPage: StateFlow<Int> = _loadingPage.asStateFlow()
 
     /**
-     * 最近一次翻到第几页（v1.8.7.6）：只用于顶部常驻显示，不参与「是否在忙」的判断。
+     * 最近一次「整页都没新内容」的页码（v1.8.7.8，0 = 没有过）。
      *
-     * 用户要的是「页码一直在上面能看见」：而 [loadingPage] 每页跑完就归 0，
-     * 于是两页之间的空档里页码会消失一下，看起来像卡住又像丢状态。
-     * 这里留一份「翻到过第几页」，翻完仍保留，直到下一次搜索才归零。
+     * 到这里自动翻会停下；如果不告诉用户是哪一页停的，底部就只剩一片空白，
+     * 看上去像坏了。页脚用这个数字说明「源站在第 N 页把上一页又返回了一次」。
      */
-    private val _lastPage = MutableStateFlow(0)
-    val lastPage: StateFlow<Int> = _lastPage.asStateFlow()
+    private val _emptyPage = MutableStateFlow(0)
+    val emptyPage: StateFlow<Int> = _emptyPage.asStateFlow()
 
     private val _loadingMore = MutableStateFlow(false)
 
@@ -646,17 +645,26 @@ class TagSearchViewModel(
      * 触底加载下一页（v1.8.1.2）。
      *
      * 只抓一页、增量追加，不重跑整次搜索 —— 用户往下滚多少就抓多少。
+     *
+     * @param force true = 用户点了「继续往下翻」，越过上一次的结束判定硬往前问一页
+     *   （v1.8.7.8）。聚合了几十个源一起翻，常常是「多数源到底了、少数源还有」：
+     *   自动翻到整页无新增就停是必要的（否则会无限问下去），但**不能顺手把向下的
+     *   路也堵死** —— 到底却什么都不显示、也没有往下的入口，用户只会觉得「坏了」。
      */
-    fun loadMore() {
-        if (_loadingMore.value || !_hasMore.value) return
+    fun loadMore(force: Boolean = false) {
+        if (_loadingMore.value) return
+        if (!_hasMore.value && !force) return
         val ctx = paging ?: return
         val generation = searchGeneration
+        if (force) {
+            // 手动继续：先恢复可翻标记，让下面能真正发出请求
+            _hasMore.value = true
+            _emptyPage.value = 0
+        }
         // 用户主动「加载更多」优先：预取还在跑的话先停掉，否则两边会翻到同一页
         preloadJob?.cancel()
         _loadingMore.value = true
         _loadingPage.value = nextPage
-        // 页码常驻顶部（v1.8.7.6）：翻完也留着，不再归零后消失
-        _lastPage.value = nextPage
         // 进度**不在这里清零**（v1.8.7.6）：翻页属于同一次搜索，按下页就把计数重置
         // 会让顶部那条进度条每翻一页从头跑一遍，看着像「永远跑不完」。
         // 现在整次搜索用一条累计进度：已完成的请求只增不减。
@@ -674,11 +682,15 @@ class TagSearchViewModel(
                     if (added > 0) {
                         // 翻页同样打标（v1.8.4.1）：以前只有第一页进索引，滚十页标签层不动
                         indexProvenance(result.items, result.proven)
+                        _emptyPage.value = 0
                     } else {
                         // 整页都是已有内容 —— 源站把最后一页反复返回，再问还是这些。
                         // 以前不管有没有新增都照样 hasMore=true、页码继续加，
                         // 于是「加载更多」永远转圈、列表一条不长。
+                        // 现在自动翻就此停下，但把停在哪一页交给页脚显示，
+                        // 用户还能点「继续往下翻」硬问下一页。
                         _hasMore.value = false
+                        _emptyPage.value = page
                         return@launch
                     }
                     android.util.Log.d("TagSearch", "第 $page 页取回 ${result.items.size} 条，新增 $added 条")
@@ -712,9 +724,6 @@ class TagSearchViewModel(
             while (loaded < PRELOAD_PAGES && _hasMore.value) {
                 if (generation != searchGeneration) return@launch
                 val page = nextPage
-                // 预取的页也要让顶部页码跟着走（v1.8.7.6）：不然「第 N 页」只在
-                // 触底翻页时才动，预取这几页在界面上像是没发生过
-                _lastPage.value = page
                 val result = try {
                     fetchPage(ctx, page)
                 } catch (cancelled: CancellationException) {
@@ -731,10 +740,13 @@ class TagSearchViewModel(
                 val added = appendResults(result.items)
                 nextPage = page + 1
                 if (added == 0) {
-                    // 这一页没有任何新内容：源站到底了，别再把页数往上加
+                    // 这一页没有任何新内容：源站到底了，别再把页数往上加。
+                    // 记下页码给页脚用（v1.8.7.8），用户可以点「继续往下翻」再试试。
                     _hasMore.value = false
+                    _emptyPage.value = page
                     return@launch
                 }
+                _emptyPage.value = 0
                 loaded++
                 // 预取的页同样进标签层：用户滚到底看到的这批，本来就已经抓回来了
                 indexProvenance(result.items, result.proven)
@@ -892,9 +904,9 @@ class TagSearchViewModel(
             _searching.value = true
             _notice.value = null
             resetProgress()
-            // 新一次搜索：页码与总进度都从头算（翻页不清零，只有这里清）
-            _lastPage.value = 0
+            // 新一次搜索：总进度与「空页」记录都从头算（翻页不清零，只有这里清）
             _progress.value = null
+            _emptyPage.value = 0
 
             try {
                 ensurePlan()

@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.8.7.7"
+    const val CURRENT_VERSION = "1.8.7.8"
 
     /**
      * 更新日志。
@@ -25,6 +25,14 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.8.7.8",
+            date = "2026-10-22",
+            changes = listOf(
+                "**滚到底不再是「一片空白」**：到底以后，以前页脚整个不渲染 —— 既不继续加载、也没有按钮、也不说为什么停，看着跟坏了一样。现在到底也会在列表末尾留一行说明：如果是「整页捞回来的都是已有内容」，就明说是**第几页**把它反复返回了；下面配一个「**继续往下翻**」的按钮，点了就硬往前问下一页。自动翻仍然会在整页无新增时停下（否则几十个源会无限问下去），但往下的路再也不会被悄悄堵死。",
+                "**顶部去掉页码**：「第 N 页」和「总进度」说的是同一件事的两种写法，并排显示反而让人以为是两条不同的进度，行太长还会折成两行。现在顶部只留「已找到 N 部 · 用 M 个源 · 总进度 a/b」，页脚的「正在加载第 N 页」也一并简化成「正在加载…」。",
+            ),
+        ),
         VersionEntry(
             version = "1.8.7.7",
             date = "2026-10-22",

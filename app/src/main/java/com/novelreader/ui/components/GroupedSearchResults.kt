@@ -88,6 +88,8 @@ fun GroupedSearchResults(
     keyOf: ((MediaItem) -> String)? = null,
     longPressEnabled: Boolean = true,
     grid: Boolean = false,
+    /** 宫格列数（v1.8.7.5）：0 = 自适应（视频 3 列、其余 2 列），2~5 = 固定 */
+    gridColumns: Int = 0,
 ) {
     if (results.isEmpty()) {
         if (isEmptyHint.isNotBlank()) {
@@ -155,6 +157,8 @@ fun GroupedSearchResults(
                 },
                 onExpandGroup = { sheetGroup = it },
                 unitLabel = unitLabel,
+                columns = gridColumns.takeIf { it >= 2 }
+                    ?: if (type == com.novelreader.domain.model.SourceType.VIDEO) 3 else 2,
             )
         } else {
         LazyColumn(
@@ -443,9 +447,10 @@ private fun GridResults(
     onLongClickTarget: (MediaItem, Int, String) -> Unit,
     onExpandGroup: (List<MediaItem>) -> Unit,
     unitLabel: String,
+    columns: Int = 2,
 ) {
     LazyVerticalGrid(
-        columns = GridCells.Fixed(2),
+        columns = GridCells.Fixed(columns),
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),

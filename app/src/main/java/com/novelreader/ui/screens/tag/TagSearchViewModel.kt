@@ -85,6 +85,15 @@ class TagSearchViewModel(
     private val _visualTaggingEnabled = MutableStateFlow(false)
     val visualTaggingEnabled: StateFlow<Boolean> = _visualTaggingEnabled.asStateFlow()
 
+    /**
+     * 宫格列数（v1.8.7.5）：0 = 自适应（视频 3 列、小说 / 漫画 2 列），2~5 = 固定。
+     *
+     * 这个值是**全局共用**的（与普通搜索结果同一个偏好）—— 列数取决于屏幕能看清
+     * 几张封面，属于设备属性，按页面各记一套只会让用户觉得设置没生效。
+     */
+    private val _gridColumns = MutableStateFlow(0)
+    val gridColumns: StateFlow<Int> = _gridColumns.asStateFlow()
+
     init {
         // 索引任务跑在 repository 层（离开页面也继续，v1.8.1.9），
         // 这里只负责把任务状态映射到 UI：重建 ViewModel 后回来还能看到进度。
@@ -108,6 +117,10 @@ class TagSearchViewModel(
             // 视觉模型总开关（v1.8.7.2，默认关）：关着时按钮禁用、也不会碰模型
             viewModelScope.launch {
                 prefs.visualTaggingFlow.collect { _visualTaggingEnabled.value = it }
+            }
+            // 宫格列数（v1.8.7.5）：与普通搜索结果共用一个偏好，改一处两处同时生效
+            viewModelScope.launch {
+                prefs.searchGridColumnsFlow.collect { _gridColumns.value = it }
             }
         }
     }
@@ -316,6 +329,15 @@ class TagSearchViewModel(
         }
     }
 
+    /** 设置宫格列数（0 = 自适应）：立即生效并写回偏好 */
+    fun setGridColumns(value: Int) {
+        val clamped = value.coerceIn(0, 5)
+        _gridColumns.value = clamped
+        preferencesManager?.let { prefs ->
+            viewModelScope.launch { prefs.setSearchGridColumns(clamped) }
+        }
+    }
+
     /**
      * 输入提示词（v1.8.6.0 待办 #27）。
      *
@@ -382,12 +404,21 @@ class TagSearchViewModel(
     private val indexedInSearch = mutableSetOf<String>()
 
     private var paging: PagingContext? = null
+
     private var nextPage = 2
     private var preloadJob: kotlinx.coroutines.Job? = null
     private val _hasMore = MutableStateFlow(false)
 
     /** 还有没有下一页（触底加载用） */
     val hasMore: StateFlow<Boolean> = _hasMore.asStateFlow()
+
+    /** 本次搜索动用了几成源（v1.8.7.5）：顶部要显示「用 N 个源」，用户想知道覆盖面 */
+    private val _sourceCount = MutableStateFlow(0)
+    val sourceCount: StateFlow<Int> = _sourceCount.asStateFlow()
+
+    /** 正在加载第几页（v1.8.7.5）：0 = 没在翻页。页脚拿它显示进度 */
+    private val _loadingPage = MutableStateFlow(0)
+    val loadingPage: StateFlow<Int> = _loadingPage.asStateFlow()
 
     private val _loadingMore = MutableStateFlow(false)
 
@@ -600,19 +631,35 @@ class TagSearchViewModel(
         if (_loadingMore.value || !_hasMore.value) return
         val ctx = paging ?: return
         val generation = searchGeneration
+        // 用户主动「加载更多」优先：预取还在跑的话先停掉，否则两边会翻到同一页
+        preloadJob?.cancel()
         _loadingMore.value = true
+        _loadingPage.value = nextPage
+        // 翻页也走同一套进度条：否则界面只有页脚一个 22dp 的转圈，
+        // 几百个请求跑几十秒看起来就跟卡死一样
+        resetProgress()
         viewModelScope.launch {
             try {
                 val page = nextPage
                 val result = fetchPage(ctx, page)
                 if (generation != searchGeneration) return@launch
                 if (result.items.isEmpty()) {
+                    // 一个源都没给内容：这批源确实到底了
                     _hasMore.value = false
                 } else {
-                    appendResults(result.items)
+                    val added = appendResults(result.items)
                     nextPage = page + 1
-                    // 翻页同样打标（v1.8.4.1）：以前只有第一页进索引，滚十页标签层不动
-                    indexProvenance(result.items, result.proven)
+                    if (added > 0) {
+                        // 翻页同样打标（v1.8.4.1）：以前只有第一页进索引，滚十页标签层不动
+                        indexProvenance(result.items, result.proven)
+                    } else {
+                        // 整页都是已有内容 —— 源站把最后一页反复返回，再问还是这些。
+                        // 以前不管有没有新增都照样 hasMore=true、页码继续加，
+                        // 于是「加载更多」永远转圈、列表一条不长。
+                        _hasMore.value = false
+                        return@launch
+                    }
+                    android.util.Log.d("TagSearch", "第 $page 页取回 ${result.items.size} 条，新增 $added 条")
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -621,6 +668,9 @@ class TagSearchViewModel(
                 _hasMore.value = false
             } finally {
                 _loadingMore.value = false
+                _loadingPage.value = 0
+                // 翻页的请求计数用完就清：以前从不清零，顶部会一直停在「32/32」
+                _progress.value = null
             }
         }
     }
@@ -634,8 +684,9 @@ class TagSearchViewModel(
         val ctx = paging ?: return
         preloadJob?.cancel()
         preloadJob = viewModelScope.launch {
+            try {
             var loaded = 0
-            while (loaded < PRELOAD_PAGES) {
+            while (loaded < PRELOAD_PAGES && _hasMore.value) {
                 if (generation != searchGeneration) return@launch
                 val page = nextPage
                 val result = try {
@@ -651,22 +702,39 @@ class TagSearchViewModel(
                     _hasMore.value = false
                     return@launch
                 }
-                appendResults(result.items)
+                val added = appendResults(result.items)
                 nextPage = page + 1
+                if (added == 0) {
+                    // 这一页没有任何新内容：源站到底了，别再把页数往上加
+                    _hasMore.value = false
+                    return@launch
+                }
                 loaded++
                 // 预取的页同样进标签层：用户滚到底看到的这批，本来就已经抓回来了
                 indexProvenance(result.items, result.proven)
+            }
+            } finally {
+                // 预取也会累加请求计数，跑完必须清掉，否则顶部数字停在最后一页的分母上
+                if (generation == searchGeneration) _progress.value = null
             }
         }
     }
 
     /** 抓某一页（单标签 / 复合严格求交 / 组合直搜三种形态），并带上打标证据 */
-    private suspend fun fetchPage(ctx: PagingContext, page: Int): PageResult = when {
-        ctx.single -> {
+    private suspend fun fetchPage(ctx: PagingContext, page: Int): PageResult =
+        fetchPage(ctx, page, ctx.entriesPerTag, ctx.sources)
+
+    private suspend fun fetchPage(
+        ctx: PagingContext,
+        page: Int,
+        entriesPerTag: List<List<Pair<String, String>>>,
+        sources: List<String>,
+    ): PageResult = when {
+        ctx.single && entriesPerTag[0].isNotEmpty() -> {
             val proven = mutableMapOf<String, MutableSet<String>>()
             val only = ctx.tags.firstOrNull()
             val items = searchOneTag(
-                ctx.entriesPerTag[0],
+                entriesPerTag[0],
                 page,
                 onCategoryHit = { item ->
                     if (only != null) proven.getOrPut(itemKey(item)) { mutableSetOf() }.add(only)
@@ -676,12 +744,12 @@ class TagSearchViewModel(
         }
         // 纯关键词搜索：结果只是「标题包含」，没有任何归属证据
         ctx.allSearchOnly -> PageResult(
-            searchCombinedKeyword(ctx.sources, ctx.keyword, Semaphore(WIDE_COMBINED_CONCURRENCY), page),
+            searchCombinedKeyword(sources, ctx.keyword, Semaphore(WIDE_COMBINED_CONCURRENCY), page),
         )
         else -> {
-            val bySrc = ctx.entriesPerTag.map { list -> list.groupBy({ it.first }, { it.second }) }
+            val bySrc = entriesPerTag.map { list -> list.groupBy({ it.first }, { it.second }) }
             val strict = strictIntersection(
-                bySrc, ctx.sources, page, Semaphore(TAG_SEARCH_CONCURRENCY), {}, ctx.union,
+                bySrc, sources, page, Semaphore(TAG_SEARCH_CONCURRENCY), {}, ctx.union,
             )
             PageResult(strict.matched, provenOf(strict, ctx.tags))
         }
@@ -733,10 +801,17 @@ class TagSearchViewModel(
         }
     }
 
-    /** 增量追加结果（先按 `sourceId:id` 再按标题去重，顺序保持） */
-    private fun appendResults(items: List<MediaItem>) {
-        if (items.isEmpty()) return
+    /**
+     * 增量追加结果（先按 `sourceId:id` 再按标题去重，顺序保持）。
+     *
+     * @return 真正**新增**了几条 —— 0 说明这一页全是已有内容（源站把最后一页反复返回），
+     *   调用方据此判断「这个源已经翻到底」，不再无限问下去。
+     */
+    private fun appendResults(items: List<MediaItem>): Int {
+        if (items.isEmpty()) return 0
+        val before = _results.value.size
         _results.value = resultsAcc.addAll(items)
+        return (_results.value.size - before).coerceAtLeast(0)
     }
 
     /** 结果累加器：翻页只处理新到的一页，不重算整个列表 */
@@ -1026,10 +1101,14 @@ class TagSearchViewModel(
                     )
                     nextPage = 2
                     _hasMore.value = true
+                    // 这次搜索一共动了多少个源（同一源多个入口只算一个）
+                    _sourceCount.value = knownEntries.flatMap { list -> list.map { it.first } }
+                        .distinct().size
                     preloadNextPages(generation)
                 } else {
                     paging = null
                     _hasMore.value = false
+                    _sourceCount.value = 0
                 }
                 val tail = when {
                     final.isNotEmpty() -> outcome.note

@@ -35,6 +35,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ViewList
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -45,6 +46,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -73,7 +76,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -82,14 +84,12 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImagePainter
-import coil.compose.SubcomposeAsyncImage
-import coil.compose.SubcomposeAsyncImageContent
 import com.novelreader.core.util.TagSuggestions
 import com.novelreader.data.repository.TagIndexRepository
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
 import com.novelreader.ui.components.CoverPlaceholderLetter
+import com.novelreader.ui.components.LazyCover
 import com.novelreader.ui.components.MediaItemCard
 import com.novelreader.ui.components.SourceFilterDropdown
 
@@ -139,9 +139,15 @@ fun TagSearchScreen(
     val indexMessage by viewModel.indexMessage.collectAsState()
     val hasMore by viewModel.hasMore.collectAsState()
     val loadingMore by viewModel.loadingMore.collectAsState()
+    /** 正在加载第几页（v1.8.7.5）：页脚要显示「正在加载第 N 页」，否则几百个请求跑着像卡死 */
+    val loadingPage by viewModel.loadingPage.collectAsState()
+    /** 这次搜索用了多少个源（v1.8.7.5）：顶部与数量一起显示 */
+    val sourceCount by viewModel.sourceCount.collectAsState()
     val activeTags by viewModel.activeTags.collectAsState()
     /** 结果展示方式（v1.8.7.1）：true = 宫格，false = 列表 */
     val searchGrid by viewModel.searchGrid.collectAsState()
+    /** 宫格列数（v1.8.7.5）：0 = 自适应（视频 3 列、其余 2 列），2~5 = 固定 */
+    val gridColumns by viewModel.gridColumns.collectAsState()
 
     // v1.6.2.0：「更多热门」展开面板开关
     var showAllHotTags by remember { mutableStateOf(false) }
@@ -291,6 +297,49 @@ fun TagSearchScreen(
                     else Icons.Filled.GridView,
                     contentDescription = if (searchGrid) "切换为列表" else "切换为宫格",
                 )
+            }
+            // 宫格列数（v1.8.7.5）：只在宫格态出现 —— 列表态没有「列」的概念，
+            // 常驻一个按钮只会占掉标题的位置，还会让人以为列表模式坏了。
+            if (searchGrid) {
+                var columnMenu by remember { mutableStateOf(false) }
+                Box {
+                    TextButton(onClick = { columnMenu = true }) {
+                        Text(
+                            text = if (gridColumns >= 2) "$gridColumns 列" else "自适应",
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = columnMenu,
+                        onDismissRequest = { columnMenu = false },
+                    ) {
+                        listOf(0, 2, 3, 4, 5).forEach { value ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        when (value) {
+                                            0 -> "自适应（视频 3 · 其余 2）"
+                                            else -> "$value 列"
+                                        },
+                                    )
+                                },
+                                onClick = {
+                                    viewModel.setGridColumns(value)
+                                    columnMenu = false
+                                },
+                                trailingIcon = {
+                                    if (gridColumns == value) {
+                                        Icon(
+                                            Icons.Filled.Check,
+                                            contentDescription = "当前",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
             }
             IconButton(onClick = viewModel::refreshTags, enabled = !collecting) {
                 Icon(Icons.Filled.Refresh, contentDescription = "重新收集标签")
@@ -476,19 +525,38 @@ fun TagSearchScreen(
             }
         }
 
-        // ===== 进度 / 提示 =====
-        progress?.let { (done, total) ->
+        // ===== 已找到多少 / 进度（v1.8.7.5 改口径）=====
+        // 以前这里只显示「正在搜索 32/32」，翻页时那个分母是**本页要发的请求数**，
+        // 跑完也不清零，看着就像永远卡在 32。用户要的是「搜出多少部」，先给数量，
+        // 请求进度降级成同一行的次要信息。
+        val found = results.size
+        val busy = searching || loadingPage > 0
+        if (found > 0 || busy) {
             Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                 Text(
-                    text = "正在搜索 $done/$total…",
+                    text = buildString {
+                        append(if (found > 0) "已找到 $found 部" else "正在搜索…")
+                        // 「用多少源」也留着：这个数说明覆盖面，掉了用户会以为源被悄悄砍了
+                        if (sourceCount > 0) append("　·　用 $sourceCount 个源")
+                        progress?.let { (done, total) ->
+                            if (total > 0) {
+                                append("　·　")
+                                append(if (loadingPage > 0) "第 $loadingPage 页 " else "")
+                                append("$done/$total")
+                            }
+                        }
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Spacer(Modifier.height(4.dp))
-                LinearProgressIndicator(
-                    progress = { if (total > 0) done.toFloat() / total else 0f },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                if (busy && progress != null) {
+                    Spacer(Modifier.height(4.dp))
+                    val (done, total) = progress!!
+                    LinearProgressIndicator(
+                        progress = { if (total > 0) done.toFloat() / total else 0f },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
         }
         notice?.let { message ->
@@ -538,14 +606,26 @@ fun TagSearchScreen(
         }
 
         // ===== 结果区 =====
+        // 列表 / 宫格的 key 是 `sourceId:id`（同一条作品的唯一身份）。结果来自
+        // 「本地索引 + 多源网络 + 翻页追加」三条路，任何一条漏了去重，这里就会撞出
+        // `Key "…" was already used` 直接闪退 —— 而且**只在滚到那一条时才崩**，
+        // 表面看就像「快速拖动滚动条导致闪退」（v1.8.7.5 加固：喂给列表前再收敛一次）。
+        val displayResults = remember(results) {
+            if (results.size < 2) {
+                results
+            } else {
+                val seen = HashSet<String>(results.size)
+                results.filter { seen.add("${it.sourceId}:${it.id}") }
+            }
+        }
         when {
-            searching && results.isEmpty() -> {
+            searching && displayResults.isEmpty() -> {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
             }
 
-            results.isEmpty() -> {
+            displayResults.isEmpty() -> {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
                         text = if (activeTags.isEmpty()) "点上面「热门推荐」或在搜索框输入标签\n多个标签用空格分开可组合筛选"
@@ -558,10 +638,12 @@ fun TagSearchScreen(
             }
 
             // 宫格态（v1.8.7.1 起由用户开关决定，不再按类型写死）：
-            // 视频保持三列海报墙，小说 / 漫画两列 —— 这两类封面本身比视频更方，
-            // 三列会把书名挤成一两个字。
+            // 列数由用户指定（v1.8.7.5），没指定时视频三列、小说 / 漫画两列 ——
+            // 这两类封面本身比视频更方，三列会把书名挤成一两个字。
             searchGrid -> {
                 val gridState = rememberLazyGridState()
+                val columns = gridColumns.takeIf { it >= 2 }
+                    ?: if (viewModel.type == SourceType.VIDEO) 3 else 2
                 // 触底即加载下一页（v1.8.1.2）：首次搜索已后台预取 3 页，这里只兜住更深的滚动
                 LaunchedEffect(gridState, hasMore) {
                     snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
@@ -573,18 +655,25 @@ fun TagSearchScreen(
                 }
                 Box(Modifier.fillMaxSize()) {
                     LazyVerticalGrid(
-                        columns = GridCells.Fixed(if (viewModel.type == SourceType.VIDEO) 3 else 2),
+                        columns = GridCells.Fixed(columns),
                         modifier = Modifier.fillMaxSize(),
                         state = gridState,
                         contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        items(results, key = { "${it.sourceId}:${it.id}" }) { item ->
+                        items(displayResults, key = { "${it.sourceId}:${it.id}" }) { item ->
                             TagPosterCard(item = item, onClick = { onItemClick(item) })
                         }
                         if (loadingMore) {
-                            item(key = "loading-more") { LoadMoreFooter(loading = true, hasMore = true) {} }
+                            item(key = "loading-more") {
+                                LoadMoreFooter(
+                                    loading = true,
+                                    hasMore = true,
+                                    page = loadingPage,
+                                    progress = progress,
+                                ) {}
+                            }
                         } else if (hasMore) {
                             item(key = "load-more") { LoadMoreFooter(loading = false, hasMore = true) { viewModel.loadMore() } }
                         }
@@ -615,7 +704,7 @@ fun TagSearchScreen(
                         state = listState,
                         contentPadding = PaddingValues(vertical = 8.dp),
                     ) {
-                        items(results, key = { "${it.sourceId}:${it.id}" }) { item ->
+                        items(displayResults, key = { "${it.sourceId}:${it.id}" }) { item ->
                             MediaItemCard(
                                 item = item,
                                 onClick = { onItemClick(item) },
@@ -623,7 +712,14 @@ fun TagSearchScreen(
                             )
                         }
                         if (loadingMore) {
-                            item(key = "loading-more") { LoadMoreFooter(loading = true, hasMore = true) {} }
+                            item(key = "loading-more") {
+                                LoadMoreFooter(
+                                    loading = true,
+                                    hasMore = true,
+                                    page = loadingPage,
+                                    progress = progress,
+                                ) {}
+                            }
                         } else if (hasMore) {
                             item(key = "load-more") { LoadMoreFooter(loading = false, hasMore = true) { viewModel.loadMore() } }
                         }
@@ -944,26 +1040,15 @@ private fun TagPosterCard(item: MediaItem, onClick: () -> Unit) {
                 .background(MaterialTheme.colorScheme.surfaceVariant),
         ) {
             val cover = item.cover
-            if (cover.isNullOrBlank()) {
-                CoverPlaceholderLetter(modifier = Modifier.fillMaxSize(), title = item.title)
-            } else {
-                SubcomposeAsyncImage(
-                    model = cover,
-                    contentDescription = item.title,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    when (painter.state) {
-                        is AsyncImagePainter.State.Error -> CoverPlaceholderLetter(
-                            Modifier.fillMaxSize(), item.title,
-                        )
-                        is AsyncImagePainter.State.Loading -> CoverPlaceholderLetter(
-                            Modifier.fillMaxSize(), item.title,
-                        )
-                        else -> SubcomposeAsyncImageContent()
-                    }
-                }
-            }
+            // v1.8.7.5：不再用 SubcomposeAsyncImage（见 LazyCover 注释）——
+            // 两层 SubcomposeLayout 叠在懒加载列表里，快速拖动滚动条时会崩在
+            // 「measure is called on a deactivated node」。
+            LazyCover(
+                model = cover,
+                contentDescription = item.title,
+                modifier = Modifier.fillMaxSize(),
+                fallback = { CoverPlaceholderLetter(Modifier.fillMaxSize(), item.title) },
+            )
         }
         Spacer(Modifier.height(4.dp))
         Text(
@@ -991,7 +1076,13 @@ private fun TagPosterCard(item: MediaItem, onClick: () -> Unit) {
  * 正常情况下预取已经把下一页准备好了，这里只在用户滚得比预取更快时兜底。
  */
 @Composable
-private fun LoadMoreFooter(loading: Boolean, hasMore: Boolean, onLoadMore: () -> Unit) {
+private fun LoadMoreFooter(
+    loading: Boolean,
+    hasMore: Boolean,
+    page: Int = 0,
+    progress: Pair<Int, Int>? = null,
+    onLoadMore: () -> Unit,
+) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -999,7 +1090,22 @@ private fun LoadMoreFooter(loading: Boolean, hasMore: Boolean, onLoadMore: () ->
         contentAlignment = Alignment.Center,
     ) {
         when {
-            loading -> CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+            // 翻页要再把上一页有货的源问一遍，几秒到几十秒都有可能：
+            // 只放一个小转圈，用户根本分不清「在加载」和「没反应」
+            loading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = buildString {
+                        append(if (page > 0) "正在加载第 $page 页" else "正在加载")
+                        if (progress != null && progress.second > 0) {
+                            append("　${progress.first}/${progress.second}")
+                        }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             hasMore -> TextButton(onClick = onLoadMore) { Text("加载更多") }
             else -> Text(
                 text = "没有更多了",

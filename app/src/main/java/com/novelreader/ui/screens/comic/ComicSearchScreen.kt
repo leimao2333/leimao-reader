@@ -59,6 +59,8 @@ fun ComicSearchScreen(
     val longPressShelfEnabled by viewModel.longPressShelfEnabled.collectAsState()
     /** 结果展示：true = 宫格，false = 列表（v1.8.6.0 待办 #26，与设置页同一 key） */
     val searchGrid by viewModel.searchGrid.collectAsState()
+    /** 宫格列数（v1.8.7.5）：0 = 自适应 */
+    val gridColumns by viewModel.gridColumns.collectAsState()
 
     // 深链关键词：进入即搜索（与小说 / 影视搜索页一致）
     androidx.compose.runtime.LaunchedEffect(initialKeyword) {
@@ -146,6 +148,7 @@ fun ComicSearchScreen(
                     unitLabel = "漫画源",
                     longPressEnabled = longPressShelfEnabled,
                     grid = searchGrid,
+                    gridColumns = gridColumns,
                 )
             }
             state.error != null -> {
@@ -176,6 +179,7 @@ fun ComicSearchScreen(
                     unitLabel = "漫画源",
                     longPressEnabled = longPressShelfEnabled,
                     grid = searchGrid,
+                    gridColumns = gridColumns,
                 )
             }
         }

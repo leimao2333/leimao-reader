@@ -60,6 +60,15 @@ class ComicSearchViewModel(
     private val _searchGrid = MutableStateFlow(false)
     val searchGrid: StateFlow<Boolean> = _searchGrid.asStateFlow()
 
+    /**
+     * 宫格列数（v1.8.7.5）：0 = 自适应（按内容类型），2~5 = 用户指定。
+     *
+     * 全局共用一份偏好（设置页可改），各搜索页只负责读 —— 列数取决于屏幕能看清
+     * 几张封面，属于设备属性，不该每个页面各记一套。
+     */
+    private val _gridColumns = MutableStateFlow(0)
+    val gridColumns: StateFlow<Int> = _gridColumns.asStateFlow()
+
     private val _history = MutableStateFlow<List<String>>(emptyList())
     val history: StateFlow<List<String>> = _history.asStateFlow()
 
@@ -92,6 +101,10 @@ class ComicSearchViewModel(
         // 搜索结果展示（v1.8.6.0 待办 #26）
         viewModelScope.launch {
             preferencesManager.searchGridComicFlow.collect { _searchGrid.value = it }
+        }
+        // 宫格列数（v1.8.7.5）：与标签搜索、其它搜索页共用同一个全局偏好
+        viewModelScope.launch {
+            preferencesManager.searchGridColumnsFlow.collect { _gridColumns.value = it }
         }
     }
 

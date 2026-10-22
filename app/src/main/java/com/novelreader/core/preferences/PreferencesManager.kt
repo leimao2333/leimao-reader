@@ -260,6 +260,19 @@ class PreferencesManager(private val context: Context) {
          */
         val KEY_SEARCH_LAYOUT_TAG = booleanPreferencesKey("search_layout_tag")
 
+        /**
+         * 搜索结果宫格的列数（v1.8.7.5）。
+         *
+         * **0 = 自适应**（缺省）：按内容类型给默认值 —— 视频 3 列、小说 / 漫画 2 列，
+         * 与 v1.8.7.4 及以前的观感完全一致；2~5 = 用户指定的固定列数。
+         *
+         * 为什么做成一个**全局**偏好而不是每页一个：宫格列数取决于「这块屏幕能看清
+         * 几张封面」，是设备属性而不是内容属性 —— 用户在标签搜索里调成 4 列，
+         * 到普通搜索结果里又变回 2 列只会觉得设置没生效。各页仍各自记忆「列表 / 宫格」，
+         * 只有列数是共用的。
+         */
+        val KEY_SEARCH_GRID_COLUMNS = intPreferencesKey("search_grid_columns")
+
         // ===== RSS 订阅（v1.8.6.0 待办 #24 / #29） =====
         /**
          * RSS 订阅入口位置（v1.8.6.0 待办 #24，默认**关闭** = 保持在首页顶栏）。
@@ -991,6 +1004,19 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setSearchGridTag(value: Boolean) {
         context.dataStore.edit { it[KEY_SEARCH_LAYOUT_TAG] = value }
+    }
+
+    /**
+     * 搜索结果宫格列数（v1.8.7.5）：0 = 自适应（按内容类型），2~5 = 固定列数。
+     *
+     * 全局共用：标签搜索与普通搜索（小说 / 漫画 / 视频）读的是同一个值 ——
+     * 「这块屏幕能看清几张封面」是设备属性，不该每页各记一套。
+     */
+    val searchGridColumnsFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_SEARCH_GRID_COLUMNS] ?: 0 }
+
+    suspend fun setSearchGridColumns(value: Int) {
+        context.dataStore.edit { it[KEY_SEARCH_GRID_COLUMNS] = value.coerceIn(0, 5) }
     }
 
     // ===== 书架（v1.2.0.0） =====

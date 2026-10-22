@@ -53,6 +53,8 @@ fun NovelSearchScreen(
     val selectedSourceIds by viewModel.selectedSourceIds.collectAsState()
     /** 结果展示：true = 宫格，false = 列表（v1.8.6.0 待办 #26，与设置页同一 key） */
     val searchGrid by viewModel.searchGrid.collectAsState()
+    /** 宫格列数（v1.8.7.5）：0 = 自适应 */
+    val gridColumns by viewModel.gridColumns.collectAsState()
 
     // enableEdgeToEdge 下自绘顶栏必须自行避让系统栏
     Column(
@@ -137,6 +139,7 @@ fun NovelSearchScreen(
                     shelfKeys = shelfKeys,
                     longPressEnabled = longPressShelfEnabled,
                     grid = searchGrid,
+                    gridColumns = gridColumns,
                 )
             }
             // 搜索完成但有错误
@@ -169,6 +172,7 @@ fun NovelSearchScreen(
                     shelfKeys = shelfKeys,
                     longPressEnabled = longPressShelfEnabled,
                     grid = searchGrid,
+                    gridColumns = gridColumns,
                 )
             }
         }

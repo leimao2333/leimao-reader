@@ -183,22 +183,14 @@ private fun CoverImage(item: MediaItem) {
             .background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center,
     ) {
-        if (cover.isNullOrBlank()) {
-            Placeholder(item.title)
-        } else {
-            SubcomposeAsyncImage(
-                model = cover,
-                contentDescription = item.title,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.matchParentSize(),
-            ) {
-                when (painter.state) {
-                    is AsyncImagePainter.State.Error -> Placeholder(item.title)
-                    is AsyncImagePainter.State.Loading -> Placeholder(item.title)
-                    else -> SubcomposeAsyncImageContent()
-                }
-            }
-        }
+        // v1.8.7.5：改用非 subcomposition 的 LazyCover —— SubcomposeAsyncImage 套在
+        // LazyList 里，快速滚动时会崩在「measure is called on a deactivated node」。
+        LazyCover(
+            model = cover,
+            contentDescription = item.title,
+            modifier = Modifier.matchParentSize(),
+            fallback = { Placeholder(item.title) },
+        )
     }
 }
 

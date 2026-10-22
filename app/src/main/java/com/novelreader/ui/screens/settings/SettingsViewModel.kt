@@ -622,6 +622,10 @@ class SettingsViewModel(
     private val _searchGridTag = MutableStateFlow(true)
     val searchGridTag: StateFlow<Boolean> = _searchGridTag.asStateFlow()
 
+    /** 搜索结果宫格列数（v1.8.7.5）：0 = 自适应（视频 3、其余 2），2~5 = 固定 */
+    private val _gridColumns = MutableStateFlow(0)
+    val gridColumns: StateFlow<Int> = _gridColumns.asStateFlow()
+
     // ===== RSS 订阅（v1.8.6.0 待办 #24） =====
     /** RSS 订阅入口是否移到首页分类导航下方（默认关 = 顶栏图标） */
     private val _rssEntryBelow = MutableStateFlow(PreferencesManager.DEFAULT_RSS_ENTRY_BELOW)
@@ -966,6 +970,10 @@ class SettingsViewModel(
         viewModelScope.launch {
             preferencesManager.searchGridTagFlow.collect { _searchGridTag.value = it ?: true }
         }
+        // 宫格列数（v1.8.7.5）：标签搜索与普通搜索共用
+        viewModelScope.launch {
+            preferencesManager.searchGridColumnsFlow.collect { _gridColumns.value = it }
+        }
     }
 
     /** 切换「隐藏成人内容」开关 */
@@ -1006,6 +1014,11 @@ class SettingsViewModel(
     /** 切换标签搜索结果宫格展示（v1.8.7.1） */
     fun setSearchGridTag(value: Boolean) {
         viewModelScope.launch { preferencesManager.setSearchGridTag(value) }
+    }
+
+    /** 设置宫格列数（v1.8.7.5）：0 = 自适应，2~5 = 固定 */
+    fun setGridColumns(value: Int) {
+        viewModelScope.launch { preferencesManager.setSearchGridColumns(value) }
     }
 
     fun setDarkTheme(value: Boolean) {

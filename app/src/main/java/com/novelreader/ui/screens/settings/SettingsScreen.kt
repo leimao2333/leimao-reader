@@ -133,6 +133,8 @@ fun SettingsScreen(
     val searchGridRss by viewModel.searchGridRss.collectAsState()
     // 标签搜索结果布局（v1.8.7.1）
     val searchGridTag by viewModel.searchGridTag.collectAsState()
+    // 宫格列数（v1.8.7.5）
+    val gridColumns by viewModel.gridColumns.collectAsState()
 
     // 应用更新（v1.5.4.0）
     val updateBusy by viewModel.updateBusy.collectAsState()
@@ -427,6 +429,33 @@ fun SettingsScreen(
                     checked = searchGridTag,
                     onCheckedChange = { viewModel.setSearchGridTag(it) },
                 )
+            }
+
+            // 宫格列数（v1.8.7.5）：一行放 2~5 列 + 自适应。做成一整块而不是 SettingRow，
+            // 是因为 5 个 chip 横排放不进 SettingRow 右侧那点宽度。
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+            ) {
+                Text(text = "宫格列数", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    text = "标签搜索与普通搜索共用；自适应 = 视频 3 列、小说 / 漫画 2 列",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier.padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    listOf(0, 2, 3, 4, 5).forEach { value ->
+                        FilterChip(
+                            selected = (if (value == 0) gridColumns < 2 else gridColumns == value),
+                            onClick = { viewModel.setGridColumns(value) },
+                            label = { Text(if (value == 0) "自适应" else "$value") },
+                        )
+                    }
+                }
             }
 
             Spacer(Modifier.height(24.dp))

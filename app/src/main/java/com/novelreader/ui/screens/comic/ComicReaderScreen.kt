@@ -70,6 +70,7 @@ import coil.request.ImageRequest
 import com.novelreader.core.image.ComicImageScramble
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
+import com.novelreader.ui.theme.SystemBarIconsOn
 import kotlinx.coroutines.launch
 
 /**
@@ -202,6 +203,10 @@ fun ComicReaderScreen(
     val navBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     // 底部章节条总占位 = 条高 + 手势条高度（滚动列表的 contentPadding 要用这个值）
     val barTotalHeight = CHAPTER_BAR_HEIGHT + navBottomInset
+
+    // 漫画阅读页整屏是纯黑，状态栏图标必须用白色（v1.8.8.2）。
+    // 此前不设，图标跟着主题走：浅色主题下是深色图标落在黑底上，状态栏等于看不见。
+    SystemBarIconsOn(Color.Black)
 
     Box(
         modifier = Modifier

@@ -85,6 +85,8 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.novelreader.core.media.VideoBufferControl
 import com.novelreader.domain.model.ChapterItem
+import com.novelreader.ui.theme.LocalAppDarkTheme
+import com.novelreader.ui.theme.applySystemBarIcons
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import com.novelreader.domain.model.MediaItem as NovelMediaItem
@@ -125,6 +127,8 @@ fun VideoPlayerScreen(
     val context = LocalContext.current
     val view = LocalView.current
     val activity = remember(context) { context.findActivity() }
+    // 应用主题的明暗（不是系统深色模式）：决定窗口态系统栏图标用深色还是白色
+    val appDarkTheme = LocalAppDarkTheme.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val audioManager = remember(context) {
         context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -293,14 +297,22 @@ fun VideoPlayerScreen(
     }
 
     // ===== 全屏：系统栏 =====
-    DisposableEffect(isFullscreen) {
+    // 图标的明暗必须跟着一起切（v1.8.8.2）：全屏时整屏是播放区（黑底）→ 白色图标；
+    // 窗口态上方是页面底色（跟随主题）→ 按主题给深色图标。此前只 hide/show 不改明暗，
+    // 于是窗口态残留白色图标，压在白色页面上等于整条状态栏消失（用户反馈的现象）。
+    DisposableEffect(isFullscreen, appDarkTheme) {
         val controller = activity?.window?.let { WindowCompat.getInsetsController(it, view) }
         if (isFullscreen) {
             controller?.hide(WindowInsetsCompat.Type.systemBars())
             controller?.systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller?.isAppearanceLightStatusBars = false
+            controller?.isAppearanceLightNavigationBars = false
         } else {
             controller?.show(WindowInsetsCompat.Type.systemBars())
+            val darkIcons = !appDarkTheme
+            controller?.isAppearanceLightStatusBars = darkIcons
+            controller?.isAppearanceLightNavigationBars = darkIcons
         }
         onDispose { }
     }
@@ -318,11 +330,14 @@ fun VideoPlayerScreen(
     }
 
     // ===== 离开播放页：恢复系统栏 / 方向 / 亮度 =====
+    val latestAppDarkTheme by rememberUpdatedState(appDarkTheme)
     DisposableEffect(Unit) {
         val window = activity?.window
         val originalBrightness = window?.attributes?.screenBrightness ?: -1f
         onDispose {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            // 图标明暗也要还原：从全屏播放退出时若不还原，白色图标会被带回上一页（浅色页面）
+            activity?.applySystemBarIcons(darkIcons = !latestAppDarkTheme)
             window?.let { w ->
                 WindowCompat.getInsetsController(w, view)
                     .show(WindowInsetsCompat.Type.systemBars())

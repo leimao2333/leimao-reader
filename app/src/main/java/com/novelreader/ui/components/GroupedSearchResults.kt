@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
@@ -37,11 +38,14 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -90,6 +94,16 @@ fun GroupedSearchResults(
     grid: Boolean = false,
     /** 宫格列数（v1.8.7.5）：0 = 自适应（视频 3 列、其余 2 列），2~5 = 固定 */
     gridColumns: Int = 0,
+    /**
+     * 滚到接近底部时回调（v1.8.8.0，待办 #37）。
+     *
+     * 关键词搜索以前每个源只取第 1 页、也没有「加载更多」入口 —— 视频这种
+     * 「几十个源各给一页」的场景，结果条数被死死钉在一页的量上。给列表加这个回调后，
+     * 视频搜索页可以在触底时继续问下一页。列表态与宫格态都支持。
+     */
+    onNearEnd: (() -> Unit)? = null,
+    /** 列表末尾的附加内容（「正在加载更多…」「已全部加载」之类），宫格态跨整行 */
+    footer: (@Composable () -> Unit)? = null,
 ) {
     if (results.isEmpty()) {
         if (isEmptyHint.isNotBlank()) {
@@ -126,6 +140,27 @@ fun GroupedSearchResults(
     // 侧边滚动条（v1.8.2.0）：搜索结果动辄上百条，没有位置指示很难知道自己翻到哪了
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
 
+    // 宫格态自己的滚动状态（v1.8.8.0）：要在这里持有才能监听「滚到接近底部」
+    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+
+    // 触底回调（v1.8.8.0，待办 #37）：列表态 / 宫格态各自判断「最后一个可见项接近末尾」
+    if (onNearEnd != null) {
+        val nearEnd by rememberUpdatedState(onNearEnd)
+        LaunchedEffect(grid) {
+            snapshotFlow {
+                if (grid) {
+                    val info = gridState.layoutInfo
+                    info.totalItemsCount > 0 &&
+                        (info.visibleItemsInfo.lastOrNull()?.index ?: 0) >= info.totalItemsCount - 3
+                } else {
+                    val info = listState.layoutInfo
+                    info.totalItemsCount > 0 &&
+                        (info.visibleItemsInfo.lastOrNull()?.index ?: 0) >= info.totalItemsCount - 3
+                }
+            }.collect { reached -> if (reached) nearEnd() }
+        }
+    }
+
     // 长按操作菜单的目标条目（v1.8.3.0 待办 #14）；groupSize 用于多源聚合卡片补「展开换源」
     var actionTarget by remember { mutableStateOf<MediaItem?>(null) }
     var actionGroupSize by remember { mutableStateOf(1) }
@@ -159,6 +194,8 @@ fun GroupedSearchResults(
                 unitLabel = unitLabel,
                 columns = gridColumns.takeIf { it >= 2 }
                     ?: if (type == com.novelreader.domain.model.SourceType.VIDEO) 3 else 2,
+                state = gridState,
+                footer = footer,
             )
         } else {
         LazyColumn(
@@ -244,6 +281,10 @@ fun GroupedSearchResults(
                     )
                 }
             }
+        }
+        // 列表末尾附加内容（v1.8.8.0，待办 #37）：视频关键词搜索的「正在加载更多 / 已全部加载」
+        if (footer != null) {
+            item(key = "list_footer") { footer() }
         }
         }
 
@@ -448,9 +489,15 @@ private fun GridResults(
     onExpandGroup: (List<MediaItem>) -> Unit,
     unitLabel: String,
     columns: Int = 2,
+    /** 由调用方持有，便于监听触底（v1.8.8.0） */
+    state: androidx.compose.foundation.lazy.grid.LazyGridState =
+        androidx.compose.foundation.lazy.grid.rememberLazyGridState(),
+    /** 末尾附加内容（跨整行） */
+    footer: (@Composable () -> Unit)? = null,
 ) {
     LazyVerticalGrid(
         columns = GridCells.Fixed(columns),
+        state = state,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -481,6 +528,11 @@ private fun GridResults(
                 } else null,
                 onToggleShelf = onToggleShelf?.let { fn -> { fn(group.first()) } },
             )
+        }
+        if (footer != null) {
+            item(key = "grid_footer", span = { GridItemSpan(maxLineSpan) }) {
+                footer()
+            }
         }
     }
 }

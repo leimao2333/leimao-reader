@@ -46,6 +46,14 @@ object SearchResultMerge {
 
         private val byId = LinkedHashMap<String, MediaItem>()
 
+        /**
+         * 已经收进来的**唯一条目数**（`sourceId:id` 口径，v1.8.8.0）。
+         *
+         * 与「列表行数」不是一回事：跨源同名作品会被折叠成一行，行数不变但唯一条目数在涨。
+         * 翻页判定要用这个数 —— 只按行数判断会把「同一部作品又多了一个源」误判成「没有新内容」。
+         */
+        val uniqueCount: Int get() = byId.size
+
         /** 标题身份键 → 作品 id（跨源同名只留第一条） */
         private val titleOwner = HashMap<String, String>()
 

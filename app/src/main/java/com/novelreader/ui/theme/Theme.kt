@@ -5,7 +5,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+
+/**
+ * 当前生效的**应用**主题是否为深色（不是系统深色模式）。
+ *
+ * 系统深色 + 应用浅色这种组合是合法的（主题是用户设置项），此时任何按「系统深色」
+ * 推断外观的代码都会错 —— 典型就是状态栏图标：白图标落在白色页面上，整条状态栏看不见。
+ * 需要判断明暗的地方一律读这个，别读 `isSystemInDarkTheme()`。
+ */
+val LocalAppDarkTheme = staticCompositionLocalOf { false }
 
 /**
  * 主题配置。
@@ -89,8 +100,10 @@ fun NovelReaderTheme(
 ) {
     val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        content = content,
-    )
+    CompositionLocalProvider(LocalAppDarkTheme provides darkTheme) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            content = content,
+        )
+    }
 }

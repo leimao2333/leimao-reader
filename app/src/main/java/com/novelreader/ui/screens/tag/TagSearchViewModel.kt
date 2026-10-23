@@ -416,6 +416,17 @@ class TagSearchViewModel(
     private var paging: PagingContext? = null
 
     private var nextPage = 2
+
+    /**
+     * 连续「整页都没有新内容」的次数（v1.8.8.0，待办 #35）。
+     *
+     * 以前只要一页没新增就直接判定「到底了」，而视频场景下这件事非常常见：
+     * 几十个采集站上架的是同一批作品，第 2 页按标题去重后往往一条都不剩，
+     * 于是「翻到第二页就没了」。现在要连续 [REPEAT_PAGE_TOLERANCE] 页都没新增才停，
+     * 中间继续往后问 —— 真正的到底（整页 0 条）仍然立刻停。
+     */
+    private var repeatPages = 0
+
     private var preloadJob: kotlinx.coroutines.Job? = null
     private val _hasMore = MutableStateFlow(false)
 
@@ -660,6 +671,9 @@ class TagSearchViewModel(
             // 手动继续：先恢复可翻标记，让下面能真正发出请求
             _hasMore.value = true
             _emptyPage.value = 0
+            // 手动「继续往下翻」是用户的明确意图，空页计数也归零，
+            // 否则点一次只多问一页就又停下（v1.8.8.0）
+            repeatPages = 0
         }
         // 用户主动「加载更多」优先：预取还在跑的话先停掉，否则两边会翻到同一页
         preloadJob?.cancel()
@@ -677,23 +691,29 @@ class TagSearchViewModel(
                     // 一个源都没给内容：这批源确实到底了
                     _hasMore.value = false
                 } else {
-                    val added = appendResults(result.items)
+                    val (added, newIds) = appendResultsCounted(result.items)
                     nextPage = page + 1
-                    if (added > 0) {
+                    if (added > 0 || newIds > 0) {
                         // 翻页同样打标（v1.8.4.1）：以前只有第一页进索引，滚十页标签层不动
-                        indexProvenance(result.items, result.proven)
+                        if (added > 0) indexProvenance(result.items, result.proven)
                         _emptyPage.value = 0
+                        repeatPages = 0
                     } else {
-                        // 整页都是已有内容 —— 源站把最后一页反复返回，再问还是这些。
-                        // 以前不管有没有新增都照样 hasMore=true、页码继续加，
-                        // 于是「加载更多」永远转圈、列表一条不长。
-                        // 现在自动翻就此停下，但把停在哪一页交给页脚显示，
-                        // 用户还能点「继续往下翻」硬问下一页。
-                        _hasMore.value = false
-                        _emptyPage.value = page
-                        return@launch
+                        // 整页都是「同一个源的同一条」——源站把最后一页反复返回（v1.8.8.0，待办 #35）。
+                        // 注意判据是**唯一条目数**：只要多出新的 `sourceId:id`（哪怕同名被折叠、
+                        // 行数没涨），就说明还有新东西，不能算空页。
+                        repeatPages++
+                        if (repeatPages >= REPEAT_PAGE_TOLERANCE) {
+                            _hasMore.value = false
+                            _emptyPage.value = page
+                            return@launch
+                        }
                     }
-                    android.util.Log.d("TagSearch", "第 $page 页取回 ${result.items.size} 条，新增 $added 条")
+                    android.util.Log.d(
+                        "TagSearch",
+                        "第 $page 页取回 ${result.items.size} 条，新增 $added 行 / $newIds 条" +
+                            "（连续空页 $repeatPages）",
+                    )
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -721,7 +741,14 @@ class TagSearchViewModel(
         preloadJob = viewModelScope.launch {
             try {
             var loaded = 0
-            while (loaded < PRELOAD_PAGES && _hasMore.value) {
+            // v1.8.8.0（待办 #35）：整页没新增不再直接收工，容忍连续空页；
+            // attempts 兜住「一直没新增」的情况，避免无限往后问。
+            var emptyStreak = 0
+            var attempts = 0
+            while (loaded < PRELOAD_PAGES && _hasMore.value &&
+                attempts < PRELOAD_PAGES + REPEAT_PAGE_TOLERANCE
+            ) {
+                attempts++
                 if (generation != searchGeneration) return@launch
                 val page = nextPage
                 val result = try {
@@ -737,15 +764,20 @@ class TagSearchViewModel(
                     _hasMore.value = false
                     return@launch
                 }
-                val added = appendResults(result.items)
+                val (added, newIds) = appendResultsCounted(result.items)
                 nextPage = page + 1
-                if (added == 0) {
-                    // 这一页没有任何新内容：源站到底了，别再把页数往上加。
-                    // 记下页码给页脚用（v1.8.7.8），用户可以点「继续往下翻」再试试。
-                    _hasMore.value = false
-                    _emptyPage.value = page
-                    return@launch
+                if (added == 0 && newIds == 0) {
+                    emptyStreak++
+                    if (emptyStreak >= REPEAT_PAGE_TOLERANCE) {
+                        // 连续几页都是同一个源的同一条：这才是真的到底，记下页码给页脚用（v1.8.7.8）
+                        _hasMore.value = false
+                        _emptyPage.value = page
+                        return@launch
+                    }
+                    continue
                 }
+                emptyStreak = 0
+                repeatPages = 0
                 _emptyPage.value = 0
                 loaded++
                 // 预取的页同样进标签层：用户滚到底看到的这批，本来就已经抓回来了
@@ -777,6 +809,9 @@ class TagSearchViewModel(
                 onCategoryHit = { item ->
                     if (only != null) proven.getOrPut(itemKey(item)) { mutableSetOf() }.add(only)
                 },
+                // 翻页同样要过相关性过滤（v1.8.8.0，待办 #36）：
+                // 以前只有第一页过滤，第 2 页起是原样追加的，用户一往下滚就是一堆无关内容
+                titleFilterTags = ctx.tags,
             )
             PageResult(items, proven)
         }
@@ -852,6 +887,22 @@ class TagSearchViewModel(
         return (_results.value.size - before).coerceAtLeast(0)
     }
 
+    /**
+     * 同 [appendResults]，但同时报告「唯一条目数」的增量（v1.8.8.0，待办 #35）。
+     *
+     * 翻页到底的判定必须看这个：视频源上架同一批作品，第 2 页常常**行数不涨**
+     * （同名作品被折叠进已有卡片），但唯一条目数是涨的 —— 那说明这一页确实带来了新东西
+     * （同一部片又多了一个播放源），不该被当成「没有新内容」而停下。
+     */
+    private fun appendResultsCounted(items: List<MediaItem>): Pair<Int, Int> {
+        if (items.isEmpty()) return 0 to 0
+        val idsBefore = resultsAcc.uniqueCount
+        val rowsBefore = _results.value.size
+        _results.value = resultsAcc.addAll(items)
+        return (_results.value.size - rowsBefore).coerceAtLeast(0) to
+            (resultsAcc.uniqueCount - idsBefore).coerceAtLeast(0)
+    }
+
     /** 结果累加器：翻页只处理新到的一页，不重算整个列表 */
     private val resultsAcc = SearchResultMerge.Accumulator()
 
@@ -907,6 +958,7 @@ class TagSearchViewModel(
             // 新一次搜索：总进度与「空页」记录都从头算（翻页不清零，只有这里清）
             _progress.value = null
             _emptyPage.value = 0
+            repeatPages = 0
 
             try {
                 ensurePlan()
@@ -1091,6 +1143,8 @@ class TagSearchViewModel(
                                 singleProven.getOrPut(itemKey(item)) { mutableSetOf() }.add(only)
                             }
                         },
+                        // v1.8.8.0（待办 #36）：关键词入口按标题校验，分类页入口照旧全收
+                        titleFilterTags = known,
                     )
                     CompoundOutcome(items, proven = singleProven)
                 } else {
@@ -1218,6 +1272,18 @@ class TagSearchViewModel(
          * 关键词入口的结果只是「标题包含该词」，不能当归属证据。
          */
         onCategoryHit: (MediaItem) -> Unit = {},
+        /**
+         * 纯关键词入口的标题相关性过滤标签（v1.8.8.0，待办 #36）。
+         *
+         * 以前这件事是在整次搜索结束后统一做的，判据是「**全部**入口都是关键词入口」
+         * （`searchOnlyResult`）—— 只要这个标签在任意一个源上有真分类页，过滤就整个关掉，
+         * 于是同一批关键词入口捞回来的《哆啦A梦》这类标题完全不相关的条目也一起上屏了。
+         * 现在改成**按入口**判定：来自 `search::` 的条目必须标题命中别名写法才留下，
+         * 来自真分类页的条目照旧全收（那是站方归类，不该拿标题去否它）。
+         *
+         * 空列表 = 不过滤（老调用点行为不变）。
+         */
+        titleFilterTags: List<String> = emptyList(),
     ): List<MediaItem> =
         coroutineScope {
             val accumulated = mutableListOf<MediaItem>()
@@ -1226,12 +1292,18 @@ class TagSearchViewModel(
             entries.map { entry ->
                 val (srcId, url) = entry
                 async {
-                    val items = semaphore.withPermit {
+                    val raw = semaphore.withPermit {
                         try {
                             exploreTagEntry(srcId, url, page)
                         } finally {
                             stepProgress()
                         }
+                    }
+                    // v1.8.8.0（待办 #36）：关键词入口的结果必须标题命中写法
+                    val items = if (titleFilterTags.isNotEmpty() && isSearchEntry(entry)) {
+                        filterByGroupKeywords(raw, titleFilterTags)
+                    } else {
+                        raw
                     }
                     if (items.isNotEmpty() && !isSearchEntry(entry)) {
                         items.forEach(onCategoryHit)
@@ -1293,7 +1365,7 @@ class TagSearchViewModel(
             // 而不是拿源站宽松匹配的结果冒充交集。
             val union = coroutineScope {
                 entriesPerTag.map { entries ->
-                    async { searchOneTag(entries, 1, semaphore) }
+                    async { searchOneTag(entries, 1, semaphore, titleFilterTags = tags) }
                 }.awaitAll().flatten()
             }.distinctBy { "${it.sourceId}:${it.id}" }
             val visible = filterByGroupKeywords(union, tags)
@@ -1351,7 +1423,35 @@ class TagSearchViewModel(
             LinkedHashMap<String, MediaItem>()
         }
         val provenKeys = MutableList(bySrcPerTag.size) { mutableSetOf<String>() }
-        val fetched = fetchGrid(bySrcPerTag, sources, page, semaphore)
+        // v1.8.8.0（待办 #34）：**边收边求交**。以前要等 fetchGrid 全部 awaitAll 回来
+        // 才第一次算交集，宽标签（几十个源 × 多个写法）等于让用户盯着空列表等最慢的源。
+        // 现在每回来一批就并入并集，并按 [STREAM_EMIT_INTERVAL_MS] 节流重算一次交集推给 UI。
+        val emitLock = Any()
+        var lastEmitMs = 0L
+        val fetched = fetchGrid(bySrcPerTag, sources, page, semaphore) { tagIndex, sourceId, items ->
+            var snapshot: List<List<MediaItem>>? = null
+            synchronized(emitLock) {
+                items.forEach { item ->
+                    val key = TagQuery.identityKey(item.title)
+                        .ifEmpty { "${item.sourceId}:${item.id}" }
+                    unionPerTag[tagIndex].putIfAbsent(key, item)
+                    TagProvenance.proofKey(sourceId, item.title)?.let { provenKeys[tagIndex].add(it) }
+                }
+                val now = android.os.SystemClock.uptimeMillis()
+                if (items.isNotEmpty() && now - lastEmitMs >= STREAM_EMIT_INTERVAL_MS) {
+                    lastEmitMs = now
+                    // 锁内只做一次浅拷贝（引用数组，很便宜）；求交本身很贵，挪到 Default 线程，
+                    // 免得几十个响应连续到达时把主线程占住（本项目有过 ANR 前科）
+                    snapshot = unionPerTag.map { ArrayList(it.values) }
+                }
+            }
+            snapshot?.let { snap ->
+                val matched = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                    TagQuery.intersect(snap)
+                }
+                onPartial(matched)
+            }
+        }
         fetched.forEachIndexed { tagIndex, perSource ->
             perSource.forEach { (sourceId, items) ->
                 items.forEach { item ->
@@ -1462,6 +1562,14 @@ class TagSearchViewModel(
         sources: List<String>,
         page: Int,
         semaphore: Semaphore,
+        /**
+         * 每回来一个响应就回调一次（v1.8.8.0，待办 #34）。
+         *
+         * 组合搜索（宽标签）必须先把两个标签的并集攒齐才能求交，等最慢的源就是
+         * 「搜一个词干等十几秒」。有了这个回调，调用方可以边收边增量求交、边推 UI。
+         * 回调在协程上下文里执行，实现方自己保证线程安全。
+         */
+        onResponse: (suspend (tagIndex: Int, sourceId: String, items: List<MediaItem>) -> Unit)? = null,
     ): List<Map<String, List<MediaItem>>> = coroutineScope {
         val requests = bySrcPerTag.flatMapIndexed { tagIndex, bySource ->
             sources.flatMap { sourceId ->
@@ -1480,6 +1588,7 @@ class TagSearchViewModel(
                         stepProgress()
                     }
                 }
+                onResponse?.invoke(request.tagIndex, request.sourceId, items)
                 TagSearchResponse(request.tagIndex, request.sourceId, items)
             }
         }.awaitAll()
@@ -1563,6 +1672,27 @@ class TagSearchViewModel(
 
         /** 首次搜索完成后后台预取几页（v1.8.1.2） */
         private const val PRELOAD_PAGES = 3
+
+        /**
+         * 连续多少页「整页没有任何新东西」才判定到底（v1.8.8.0，待办 #35）。
+         *
+         * 判据是**唯一条目数**（`sourceId:id`），不是列表行数 —— 同名作品被折叠时行数不涨，
+         * 但多出一个播放源同样算「有新内容」。
+         *
+         * 设成 2 而不是 1：单页为空可能是某个源偶发超时，再问一页更稳。
+         * 也不宜更大 —— 实测视频源对「关键词搜索」普遍忽略页码参数，
+         * 第 2 页原样返回第 1 页那批 id，继续问只是让页脚一直转圈、用户等不到东西。
+         */
+        private const val REPEAT_PAGE_TOLERANCE = 2
+
+        /**
+         * 组合搜索流式上屏的最小间隔（v1.8.8.0，待办 #34）。
+         *
+         * 增量求交要遍历全部并集、每条都算标题身份键（正则 + 繁简），
+         * 每来一个响应就算一次会把主线程占死。400ms 一次既能让用户「一边出东西」，
+         * 又把重算次数压在个位数。
+         */
+        private const val STREAM_EMIT_INTERVAL_MS = 400L
 
         /**
          * 单个标签请求的硬超时（v1.8.1.1）。

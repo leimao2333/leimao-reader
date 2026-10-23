@@ -74,6 +74,22 @@ class VideoSearchViewModel(
 
     private var searchJob: Job? = null
 
+    // ===== 关键词搜索翻页（v1.8.8.0，待办 #37）=====
+    // 以前 `search()` 固定 `page = 1`，全链路没有「加载更多」，每个源只贡献第 1 页
+    // 那 20~40 条 —— 视频有几十个源，看着不少，但同一关键词再往下就永远问不到了，
+    // 这就是「1.8.1.0 还能搜很多、现在搜得少」的其中一半原因。
+    private var searchPage = 1
+
+    /** 是否还有下一页（触底时继续问） */
+    private val _hasMore = MutableStateFlow(false)
+    val hasMore: StateFlow<Boolean> = _hasMore.asStateFlow()
+
+    private val _loadingMore = MutableStateFlow(false)
+    val loadingMore: StateFlow<Boolean> = _loadingMore.asStateFlow()
+
+    /** 翻页去重累加器：翻页只处理新到的一页，不重算整个列表（同标签搜索 v1.8.4.1 的做法） */
+    private val resultsAcc = com.novelreader.core.util.SearchResultMerge.Accumulator()
+
     init {
         viewModelScope.launch {
             preferencesManager.fuzzySearchFlow.collect { _fuzzyEnabled.value = it }
@@ -147,6 +163,9 @@ class VideoSearchViewModel(
         viewModelScope.launch { preferencesManager.addSearchHistory(SourceType.VIDEO, keyword) }
 
         searchJob?.cancel()
+        searchPage = 1
+        _hasMore.value = false
+        _loadingMore.value = false
 
         searchJob = viewModelScope.launch {
             val concurrency = preferencesManager.searchConcurrencyFlow.first()
@@ -164,7 +183,77 @@ class VideoSearchViewModel(
                 }
                 .collect { s ->
                     _state.value = s
+                    // 第一页收完：接管累加器，并开放翻页（v1.8.8.0）
+                    if (!s.isSearching) {
+                        resultsAcc.reset(s.results)
+                        searchPage = 1
+                        _hasMore.value = s.results.isNotEmpty() && s.error == null
+                    }
                 }
         }
+    }
+
+    /**
+     * 加载下一页（v1.8.8.0，待办 #37）：同一关键词、同一批源，只把页码 +1。
+     *
+     * 每个源各自的第 N 页合并进来；整页都没有新作品时判定到底。
+     * 与标签搜索一致：**一页没新增不等于到底**（同一批作品在多个源上重复），
+     * 连续 [REPEAT_PAGE_TOLERANCE] 页没新增才停。
+     */
+    fun loadMore() {
+        if (_loadingMore.value || !_hasMore.value) return
+        val keyword = _query.value.trim()
+        if (keyword.isEmpty()) return
+        val next = searchPage + 1
+        _loadingMore.value = true
+        viewModelScope.launch {
+            try {
+                val concurrency = preferencesManager.searchConcurrencyFlow.first()
+                val fuzzy = preferencesManager.fuzzySearchFlow.first()
+                var pageResults: List<com.novelreader.domain.model.MediaItem> = emptyList()
+                contentRepository.searchWithProgress(
+                    SourceType.VIDEO, keyword, next, concurrency, fuzzy,
+                    sourceIds = _selectedSourceIds.value.takeIf { it.isNotEmpty() },
+                ).catch { /* 单页失败就当这页没有 */ }
+                    .collect { s -> if (!s.isSearching) pageResults = s.results }
+                if (pageResults.isEmpty()) {
+                    _hasMore.value = false
+                    return@launch
+                }
+                val idsBefore = resultsAcc.uniqueCount
+                val merged = resultsAcc.addAll(pageResults)
+                _state.value = _state.value.copy(results = merged)
+                // 判据用唯一条目数而不是行数（v1.8.8.0）：同名作品被折叠时行数不涨，
+                // 但多出一个播放源同样是新内容，不该算「这一页白问」。
+                val newIds = resultsAcc.uniqueCount - idsBefore
+                if (newIds > 0) {
+                    repeatPages = 0
+                    searchPage = next
+                } else {
+                    repeatPages++
+                    if (repeatPages >= REPEAT_PAGE_TOLERANCE) {
+                        _hasMore.value = false
+                    } else {
+                        // 这一页全是已见过的条目，但还不能判定到底：页码照样往前推
+                        searchPage = next
+                    }
+                }
+            } finally {
+                _loadingMore.value = false
+            }
+        }
+    }
+
+    /** 连续「整页没新增」的页数（v1.8.8.0） */
+    private var repeatPages = 0
+
+    companion object {
+        /**
+         * 连续多少页「整页没有任何新东西」才判定到底（v1.8.8.0，待办 #37）。
+         *
+         * 与标签搜索同一口径：视频源上架的是同一批作品，第 2 页按标题去重后
+         * 常常一条不剩，一页就停会让用户以为「只有一页」。
+         */
+        private const val REPEAT_PAGE_TOLERANCE = 5
     }
 }

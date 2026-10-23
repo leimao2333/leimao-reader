@@ -88,12 +88,22 @@ object VideoBufferOptions {
  * 做法：所有回调都转发给一个可替换的 [DefaultLoadControl] 委托，`update()` 时新建
  * 一个委托换上去，正在播的播放器下一批分片就按新策略加载。
  *
+ * **换委托时必须重放生命周期状态**（v1.8.8.2 血的教训）：[DefaultLoadControl] 是有状态的，
+ * 在收到 `onPrepared` / `onTracksSelected` 之前内部 `trackGroups` 仍是 null，此时
+ * `shouldContinueLoading` 会撞 media3 的非空断言 → `NullPointerException` 一路抛到
+ * `ExoPlayerImplInternal` → 用户看到「播放出错（Unexpected runtime error）」+ 反复重试。
+ * 而 `update()` 恰恰发生在播放器**已经 prepared 之后**（预缓存时长是异步从 DataStore 读回来的），
+ * 不重放就等于把一个未初始化的 LoadControl 塞给正在播的播放器，下一帧加载判定必崩 ——
+ * 这就是「改成 10 分钟缓冲后经常性加载失败」的真正原因（长档位更容易撞上只是因为它让
+ * 加载器长时间停在「继续加载」分支，判定被调用的次数多得多）。
+ *
  * 两个细节：
  * 1. **共用同一个 [DefaultAllocator]** —— 加载器在创建时抓走了 allocator 实例，
  *    换委托后若 allocator 也换新的，新委托看到的是「已分配 0 字节」，
  *    体积阈值判断会失真（本项目开了 time-first，影响不大，但没必要留隐患）。
- * 2. **不重放 `onTracksSelected`** —— 体积阈值同上（`setPrioritizeTimeOverSizeThresholds(true)`
- *    让时间阈值优先），重放反而要缓存 6 个参数，不值得。
+ * 2. **判定类回调再包一层 `runCatching`** —— 重放已经能覆盖正常路径，但源站的异常轨道、
+ *    换线路时的瞬时状态都可能让委托内部再次踩空。缓冲策略算错最多是「多下一段 / 早停一点」，
+ *    绝不该让整集播不了，所以兜底按本类自己的档位算一个答案出来。
  */
 @OptIn(UnstableApi::class)
 @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
@@ -110,13 +120,30 @@ class VideoBufferControl(seconds: Int) : LoadControl {
     var seconds: Int = VideoBufferOptions.normalize(seconds)
         private set
 
+    /**
+     * 换委托时要重放的「已发生过的生命周期回调」。
+     *
+     * 存成 lambda 而不是缓存一堆参数：两个 `onTracksSelected` 重载参数不同，
+     * 记住「当时是怎么调的」比记住「所有参数」更省事，也不会漏字段。
+     */
+    @Volatile
+    private var preparedReplay: ((LoadControl) -> Unit)? = null
+
+    @Volatile
+    private var tracksReplay: ((LoadControl) -> Unit)? = null
+
     /** 切换缓冲时长；与当前值相同则什么都不做（避免无谓地丢弃委托的加载状态） */
     fun update(newSeconds: Int) {
         val normalized = VideoBufferOptions.normalize(newSeconds)
         synchronized(this) {
             if (normalized == seconds) return
             seconds = normalized
-            delegate = build(normalized)
+            val fresh = build(normalized)
+            // 先把新委托补到「和播放器同一进度」，再让它对外生效。
+            // 顺序不能反：onPrepared 必须在 onTracksSelected 之前。
+            runCatching { preparedReplay?.invoke(fresh) }
+            runCatching { tracksReplay?.invoke(fresh) }
+            delegate = fresh
         }
     }
 
@@ -134,10 +161,12 @@ class VideoBufferControl(seconds: Int) : LoadControl {
     override fun getAllocator(): Allocator = allocator
 
     override fun onPrepared() {
+        preparedReplay = { it.onPrepared() }
         delegate.onPrepared()
     }
 
     override fun onPrepared(playerId: PlayerId) {
+        preparedReplay = { it.onPrepared(playerId) }
         delegate.onPrepared(playerId)
     }
 
@@ -146,7 +175,9 @@ class VideoBufferControl(seconds: Int) : LoadControl {
         trackGroups: TrackGroupArray,
         trackSelections: Array<ExoTrackSelection>,
     ) {
-        delegate.onTracksSelected(renderers, trackGroups, trackSelections)
+        val groups = trackGroups ?: TrackGroupArray.EMPTY
+        tracksReplay = { it.onTracksSelected(renderers, groups, trackSelections) }
+        safeForward { delegate.onTracksSelected(renderers, groups, trackSelections) }
     }
 
     override fun onTracksSelected(
@@ -157,7 +188,30 @@ class VideoBufferControl(seconds: Int) : LoadControl {
         trackGroups: TrackGroupArray,
         trackSelections: Array<ExoTrackSelection>,
     ) {
-        delegate.onTracksSelected(playerId, timeline, mediaPeriodId, renderers, trackGroups, trackSelections)
+        val groups = trackGroups ?: TrackGroupArray.EMPTY
+        tracksReplay = {
+            it.onTracksSelected(playerId, timeline, mediaPeriodId, renderers, groups, trackSelections)
+        }
+        safeForward {
+            delegate.onTracksSelected(
+                playerId, timeline, mediaPeriodId, renderers, groups, trackSelections,
+            )
+        }
+    }
+
+    /**
+     * 转发 `onTracksSelected` 并吞掉异常。
+     *
+     * 个别源在期初还没有任何轨道时，播放内核会把空值传下来；异常一旦抛回
+     * `ExoPlayerImplInternal` 就是整集播不了。拿不到轨道信息最多让体积阈值判断失真
+     * （本项目开了 time-first，影响可忽略），不影响能不能播。
+     */
+    private fun safeForward(call: () -> Unit) {
+        runCatching { call() }
+            .recoverCatching { call() }
+            .onFailure {
+                android.util.Log.w("VideoBuffer", "onTracksSelected 转发失败（忽略，不影响播放）", it)
+            }
     }
 
     override fun onStopped() {
@@ -187,17 +241,39 @@ class VideoBufferControl(seconds: Int) : LoadControl {
         delegate.retainBackBufferFromKeyframe(playerId)
 
     override fun shouldContinueLoading(parameters: LoadControl.Parameters): Boolean =
-        delegate.shouldContinueLoading(parameters)
+        runCatching { delegate.shouldContinueLoading(parameters) }
+            .getOrElse {
+                android.util.Log.w("VideoBuffer", "shouldContinueLoading 兜底（按档位自行判定）", it)
+                fallbackContinueLoading(parameters)
+            }
 
     override fun shouldStartPlayback(parameters: LoadControl.Parameters): Boolean =
-        delegate.shouldStartPlayback(parameters)
+        runCatching { delegate.shouldStartPlayback(parameters) }
+            .getOrElse {
+                android.util.Log.w("VideoBuffer", "shouldStartPlayback 兜底（按档位自行判定）", it)
+                fallbackStartPlayback(parameters)
+            }
 
     override fun shouldStartPlayback(
         playbackPositionUs: Long,
         playbackSpeed: Float,
         rebuffering: Boolean,
         targetLiveOffsetUs: Long,
-    ): Boolean = delegate.shouldStartPlayback(
-        playbackPositionUs, playbackSpeed, rebuffering, targetLiveOffsetUs,
-    )
+    ): Boolean = runCatching {
+        delegate.shouldStartPlayback(
+            playbackPositionUs, playbackSpeed, rebuffering, targetLiveOffsetUs,
+        )
+    }.getOrElse { true }
+
+    /** 兜底：缓冲量没到上限就继续加载 */
+    private fun fallbackContinueLoading(parameters: LoadControl.Parameters): Boolean {
+        val maxBufferMs = VideoBufferOptions.durationsMs(seconds)[1]
+        return parameters.bufferedDurationUs / 1000 < maxBufferMs
+    }
+
+    /** 兜底：攒够起播量就开播 */
+    private fun fallbackStartPlayback(parameters: LoadControl.Parameters): Boolean {
+        val bufferForPlaybackMs = VideoBufferOptions.durationsMs(seconds)[2]
+        return parameters.bufferedDurationUs / 1000 >= bufferForPlaybackMs
+    }
 }

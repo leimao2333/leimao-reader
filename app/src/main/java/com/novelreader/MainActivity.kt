@@ -7,6 +7,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
@@ -15,6 +16,7 @@ import com.novelreader.core.pdf.IncomingPdf
 import com.novelreader.core.pdf.PdfIntentImport
 import com.novelreader.ui.navigation.AppNavHost
 import com.novelreader.ui.theme.NovelReaderTheme
+import com.novelreader.ui.theme.applySystemBarIcons
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -64,6 +66,16 @@ class MainActivity : ComponentActivity() {
                 else -> false
             }
             NovelReaderTheme(darkTheme = darkTheme) {
+                // 系统栏图标明暗跟随**应用**主题（v1.8.8.2）。
+                //
+                // enableEdgeToEdge() 在 onCreate 里按**系统**深色模式设过一次图标颜色，而本应用
+                // 的主题是用户设置项：系统深色 + 应用浅色时，白色图标就落在白色页面上 ——
+                // 整条状态栏看着像被顶栏盖住了（用户反馈原话）。这里在每次主题确定后覆盖一次，
+                // 后续各页若整屏是黑底（播放器全屏 / 漫画阅读）再由页面自己改成白色图标。
+                LaunchedEffect(darkTheme) {
+                    applySystemBarIcons(darkIcons = !darkTheme)
+                }
+
                 // 深链支持：novelreader://search?keyword=xxx&type=novel|comic|video
                 // 直达对应类型搜索（自动化测试/外部调用；缺省 type=novel）
                 val deepLink = remember(intent?.data) {

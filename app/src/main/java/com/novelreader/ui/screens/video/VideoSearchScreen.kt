@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ViewList
@@ -59,6 +60,9 @@ fun VideoSearchScreen(
     val longPressShelfEnabled by viewModel.longPressShelfEnabled.collectAsState()
     /** 结果展示：true = 宫格，false = 列表（v1.8.6.0 待办 #26，与设置页同一 key） */
     val searchGrid by viewModel.searchGrid.collectAsState()
+    // 翻页状态（v1.8.8.0，待办 #37）：触底继续问下一页，页脚显示加载 / 到底
+    val hasMore by viewModel.hasMore.collectAsState()
+    val loadingMore by viewModel.loadingMore.collectAsState()
     /** 宫格列数（v1.8.7.5）：0 = 自适应 */
     val gridColumns by viewModel.gridColumns.collectAsState()
 
@@ -180,8 +184,66 @@ fun VideoSearchScreen(
                     longPressEnabled = longPressShelfEnabled,
                     grid = searchGrid,
                     gridColumns = gridColumns,
+                    // 触底继续问下一页（v1.8.8.0，待办 #37）
+                    onNearEnd = { viewModel.loadMore() },
+                    footer = {
+                        SearchLoadMoreFooter(
+                            hasMore = hasMore,
+                            loading = loadingMore,
+                            total = state.results.size,
+                            onLoadMore = { viewModel.loadMore() },
+                        )
+                    },
                 )
             }
+        }
+    }
+}
+
+/**
+ * 搜索结果页脚（v1.8.8.0，待办 #37）。
+ *
+ * 关键词搜索以前只有一页、也没有任何「还能往下」的提示，用户看到列表停在半空
+ * 会以为搜索就这些。现在触底会自动问下一页，页脚负责说明当前在做什么：
+ * 正在加载 / 已全部加载 / 还有更多（继续往下滑即可）。
+ */
+@Composable
+private fun SearchLoadMoreFooter(
+    hasMore: Boolean,
+    loading: Boolean,
+    total: Int,
+    onLoadMore: () -> Unit = {},
+) {
+    // 页脚即「触底哨兵」（v1.8.8.0）：它一出现在屏幕上就自动接着问下一页，
+    // 不再依赖「可见项下标变化」那种会卡死的事件源（不增长就再也不触发）。
+    androidx.compose.runtime.LaunchedEffect(loading, hasMore) {
+        if (!loading && hasMore) onLoadMore()
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 16.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (loading) {
+            androidx.compose.material3.CircularProgressIndicator(
+                modifier = Modifier
+                    .padding(end = 8.dp)
+                    .size(16.dp),
+                strokeWidth = 2.dp,
+            )
+            Text(
+                text = "正在加载更多…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text(
+                text = if (hasMore) "共 $total 部 · 继续下滑加载更多" else "共 $total 部 · 已全部加载",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

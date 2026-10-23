@@ -1085,6 +1085,18 @@ private fun LoadMoreFooter(
     onLoadMore: () -> Unit,
     onContinue: () -> Unit,
 ) {
+    // v1.8.8.0（待办 #35）：页脚就是「触底哨兵」。
+    //
+    // 以前只靠上面那个 snapshotFlow 监听「最后一个可见项的下标变化」触发翻页 ——
+    // 一旦某一页没有新增条目（视频源上架同一批作品时很常见），下标不变、流不再发射，
+    // 用户在底部怎么滑都没反应，就是「到底部了刷不出东西」。
+    // 现在只要页脚被组合出来（= 它出现在屏幕里）且还有下一页，就自动接着问；
+    // 加载完若仍停在底部，loading 变回 false 会再次触发，一页页自动补下去，
+    // 直到到底（hasMore=false）或用户把页脚滑出屏幕（页脚被回收，effect 结束）。
+    LaunchedEffect(loading, hasMore, emptyPage) {
+        if (!loading && hasMore) onLoadMore()
+    }
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -1110,7 +1122,12 @@ private fun LoadMoreFooter(
             // 触底既不自动加载、也没按钮、也没说明 —— 用户看到的就是「到底后没反应」。
             else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = if (emptyPage > 0) "第 $emptyPage 页全是已有内容（源站到底了）" else "没有更多了",
+                    text = if (emptyPage > 0) {
+                        // v1.8.8.0：说清到底的原因 —— 不是「没加载」，是源站把同一批内容又返回了一遍
+                        "第 $emptyPage 页返回的还是同一批内容（源站没有更多了）"
+                    } else {
+                        "没有更多了"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

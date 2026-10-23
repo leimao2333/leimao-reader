@@ -219,6 +219,27 @@
   - **别顺手改竖屏**：竖屏 / 窗口态上下滑切集是 v1.6.0.0 的既定行为（竖屏短剧靠它），本次只动横屏全屏。
   - 涉及：`VideoPlayerScreen.kt`（`detectDragGestures` 的 `onDrag`）、`PreferencesManager.videoVerticalSwipeSwitchFlow`（855 行）、`SettingsScreen.kt` 该项文案。
 
+- [x] **39. 修：预缓存调到较长档位后「经常性加载失败」** ✅ v1.8.8.2
+  - 现象：把视频预缓存时长改到 10 分钟档后，播放频繁报「播放出错」并反复重试，同一集有时重进能放、有时一直不行；短档位（关闭 / 15s / 30s）几乎不出现。
+  - **根因已定位（两次真机栈指向同一处）**：`VideoBufferControl.update()` 会在播放器**已经 prepared 之后**换上一个全新的 `DefaultLoadControl` —— 预缓存时长是异步从 DataStore 读回来的，`LaunchedEffect(prefs.bufferSeconds)` 必然晚于建播放器。而 `DefaultLoadControl` 是**有状态**的：没收到 `onPrepared` / `onTracksSelected` 之前内部 `trackGroups` 仍是 null，`shouldContinueLoading` 会撞 media3 的非空断言 → `NullPointerException` 抛到 `ExoPlayerImplInternal` → 用户侧只有 `ExoPlaybackException: Unexpected runtime error` + 反复重试。栈：`Assertions.checkNotNull` → `DefaultLoadControl.shouldContinueLoading:383` → `VideoBufferControl.shouldContinueLoading`（另一条栈落在 `onTracksSelected:346`，同一根因）。
+    长档位更容易撞上：`minBufferMs` 抬到 90s 后加载器长时间停在「继续加载」分支，判定被调用次数多得多。
+  - 期望：缓冲策略这一层**绝不能把异常抛回播放内核**；换委托时必须把播放器已经发生的生命周期事件补到新委托上。
+  - 改法（三层）：① `onPrepared` / `onTracksSelected` 各存一个 `replay` lambda，`update()` 里先在新委托上重放（`onPrepared` 在前）再让 `delegate = fresh` 生效；② `shouldContinueLoading` / `shouldStartPlayback` 包 `runCatching`，失败时按本类自己的档位算兜底答案（缓冲量没到上限就继续加载 / 攒够起播量就开播），只记 W 日志；③ `onTracksSelected` 入参空值退化 `TrackGroupArray.EMPTY` 并吞异常。
+  - 涉及：`core/media/VideoBufferControl.kt`。
+  - 验证：`logcat` 里应只出现 `VideoBuffer … 兜底` / `… 忽略` 的 W 日志，不再有 `Playback error` / `Unexpected runtime error`；10min 档连续播放 / 切集不再报错。
+
+- [x] **41. 修：顶栏「纯白」把状态栏整条盖住看不清（全局）** ✅ v1.8.8.2
+  - 现象：视频播放页（窗口态）顶部一条纯白，状态栏的时钟 / 电量完全看不见；其他页面在不同主题组合下也有类似情况。
+  - **根因已定位**：`MainActivity` 的 `enableEdgeToEdge()` 是按**系统**深色模式决定状态栏图标黑白的（`ui_night_mode=2` 时给白色图标），而本应用的主题是用户设置项（默认浅色）。「系统深色 + 应用浅色」→ 白色图标压在白色页面上 = 整条状态栏消失。播放页更明显：全屏时 `hide(systemBars)`、退出只 `show()` 不还原图标明暗，白色图标会被带回窗口态。
+  - 判据改成**按背景色的感知明度**，而不是按系统设置或主题：`Color.luminance() > 0.5` → 深色图标。
+  - 落地：新增 `ui/theme/SystemBars.kt`（`applySystemBarIcons` / `Color.prefersDarkSystemBarIcons` / `SystemBarIconsOn`），并在四处接入 ——
+    ① `MainActivity`：`LaunchedEffect(darkTheme)` 里按应用主题设一次，覆盖 `enableEdgeToEdge()` 的默认；
+    ② `VideoPlayerScreen`：全屏 → 白色图标，窗口态 → 按 `LocalAppDarkTheme`；`onDispose` 还原，避免带出到上一页；
+    ③ `NovelReaderScreen`：跟随纸张色（白天模式也能选「藏蓝」这类深底配色，只按主题判断会错）；
+    ④ `ComicReaderScreen`：整屏纯黑 → 白色图标。
+  - `Theme.kt` 新增 `LocalAppDarkTheme`：主题是用户设置项，任何「判断当前是不是深色」的代码都该读它，不要读 `isSystemInDarkTheme()`。
+  - 涉及：`ui/theme/SystemBars.kt`（新增）、`ui/theme/Theme.kt`、`MainActivity.kt`、`ui/screens/video/VideoPlayerScreen.kt`、`ui/screens/novel/NovelReaderScreen.kt`、`ui/screens/comic/ComicReaderScreen.kt`。
+
 ---
 
 ## 四、搜索
@@ -265,7 +286,7 @@
     过滤：空格分段里已写进查询的条件整族屏蔽；正在输入的词本身是完整标签时也屏蔽同根词
     （避免打完「热血」还满屏「热血漫画」）。
 
-- [ ] **34. 漫画标签搜索加载巨慢（宽标签），改成真正的流式上屏**
+- [x] **34. 漫画标签搜索加载巨慢（宽标签），改成真正的流式上屏** ✅ v1.8.8.0
   - 现象：漫画里搜 `WIDE_COMIC_SEARCH_TAGS` 那两个宽标签（`TagSearchViewModel.kt:1540`）要等几乎全部源返回才出东西，用户只能干等。
   - 现状链路：这两个标签命中后走 `searchCompound()`（1266 行起）—— 它必须先把两个标签**各自所有源、所有入口的并集**取完，再按标题求交，交集本质上是「等最慢的那个源」。`strictIntersection()` 虽然接了 `onPartial`，但求交前的并集没攒齐就没有可上屏的内容。
   - 拖慢的量化点：单请求硬超时 `SEARCH_REQUEST_TIMEOUT_MS = 8_000`（1573 行）、并发 `WIDE_COMPOUND_CONCURRENCY = 32`（1553 行）、每源入口上限 `MAX_URLS_PER_SOURCE = 2`（1585 行）。源一多，整轮就是「一批 8 秒」叠加。
@@ -276,7 +297,7 @@
   - 验收：首屏结果 2~3 秒内出现，最终条数不少于现在的全量结果。
   - 涉及：`TagSearchViewModel.kt`（`searchCompound` / `strictIntersection` / `searchOneTag` 的 `onPartial`）、`TagSearchScreen.kt` 的 loading 态（「正在搜索」不要盖住已经出来的结果）。
 
-- [ ] **35. 修：视频标签搜索翻到第二页就没了**
+- [x] **35. 修：视频标签搜索翻到第二页就没了** ✅ v1.8.8.0
   - 现象：第一页有结果，触底加载第二页后 `hasMore` 直接变 false，再也翻不动。
   - 现状链路：`loadMore()`（`TagSearchViewModel.kt:654`）在「整页新增 0 条」时把 `_hasMore` 置 false（686-695 行）；`preloadNextPages()`（718 行）同样（742-748 行）。也就是**只要第二页返回的全是已有条目，就判定为到底**。
   - 为什么视频特别容易踩：视频源站分类页翻页常有两种毛病 —— ① 页码参数名不对（有的吃 `pg` / `pageNo`），传 2 等于又要了一次第 1 页；② 部分源忽略页码直接回全站列表，第二页与第一页高度重合。两种都会「整页 0 新增」→ 立即停。
@@ -288,7 +309,7 @@
   - 附注：`SINGLE_TAG_PAGES` / `COMBINED_SEARCH_PAGES`（1559 / 1562 行）在改成按需翻页后已成**死代码**，顺手清掉或复用。
   - 涉及：`TagSearchViewModel.kt`、`ContentRepositoryImpl.explore()`、视频源 adapter 的 `explore` 实现。
 
-- [ ] **36. 修：视频标签搜索出一堆完全不相关的视频**
+- [x] **36. 修：视频标签搜索出一堆完全不相关的视频** ✅ v1.8.8.0
   - 现象：搜一个成人向题材标签（`TagAlias.isExplicitAdultIntent` 判定为成人意图的那类），回来一堆儿童动画和无关电影。
   - 根因方向：视频源站对不认识的分类**不报错，直接回全站或近义分类**，所以「该源有这个分类页」本身不可信；而当前只有「纯关键词入口」才过相关性过滤（`search()` 的 `searchOnlyResult` 判断 + `filterByGroupKeywords`，1010 行附近 / 1419 行），**真分类入口的结果一律直接上屏、不做任何校验**。
   - 另一种可能：`TagAlias.searchTermsFor(tag)` 的别名组里混进了过宽的词，或 `TagQuery.normalizeTitle` 归一化后按标题求交把同名不同作并了进来。
@@ -299,7 +320,7 @@
   - **不要一刀切回退成标题过滤**：这类题材标签本来就不写进标题，纯标题过滤会把正确结果也删光（1.8.1.2 之前的坑）。
   - 涉及：`TagSearchViewModel.kt`（`searchOnlyResult` / `filterByGroupKeywords`）、`core/util/TagAlias.kt`（`searchTermsFor` / `isExplicitAdultIntent`）、`VideoTagLexicon.kt`、`source/moontv/MacCmsParser.kt`（`vod_class` 写入）。
 
-- [ ] **37. 重点排查：视频搜索结果太少（1.8.1.0 时能搜很多）**
+- [x] **37. 重点排查：视频搜索结果太少（1.8.1.0 时能搜很多）** ✅ v1.8.8.0
   - 现象：同一关键词，现在视频搜索出来的条数明显比 1.8.1.0 少。
   - **第一步先分清对象**：是「关键词搜索」变少，还是「标签搜索」变少（本次提的两条都涉及，需实测 + 日志确认后再动代码）。
   - 已知的硬性收缩点（按嫌疑排序）：
@@ -311,6 +332,13 @@
   - 排查方法：同一关键词在同一台机器上对比 v1.8.1.0 与当前版本的日志 —— 每源请求数、返回条数、超时数、被成人开关跳过的源数、被去重/相关性过滤删掉的条数，先定位是哪一层在丢量，再改。
   - 期望：视频关键词搜索支持翻页 / 加载更多；隐藏成人时至少给一句「因设置跳过 N 个源」，别让用户以为是搜不到。
   - 涉及：`ui/screens/video/VideoSearchViewModel.kt`、`VideoSearchScreen.kt`、`data/repository/ContentRepositoryImpl.kt`（`search` / `searchWithProgress`）、`PreferencesManager.hideAdultFlow`；若确认是标签侧，则回到 #35 / #36 的链路。
+
+- [x] **40. 扩充成人向动画题材标签的别名写法** ✅ v1.8.8.2
+  - 需求：这类题材在各站的写法极不统一（简繁差异、带不带「动漫 / 动画 / 漫画」后缀、站方简称），用户按其中一种写法搜索时，只能打到恰好收录了那一种写法的源，其余源明明有同类内容却整个不参与。
+  - 改法：把用户反馈的一批站方常用写法（简繁双语 + 常见简称）补进 `TagAlias.GROUPS` 的对应分组，任选一种写法搜索都能覆盖到全部相关源。分组本身已由 `searchTermsFor` 按语系挑代表（`MAX_SEARCH_TERMS_PER_SOURCE = 3`），不会因为词条变多而把请求数打上去。
+  - 注意：**词表是功能所需，不受对外文案红线约束**（红线只约束 CHANGELOG / 应用内更新日志 / Release 说明这类给人看的文字）。
+  - 涉及：`core/util/TagAlias.kt`（`GROUPS` 中该题材分组）。
+  - 后续：若实测仍覆盖不全，按「用户反馈一批 → 补一批」迭代，不必一次穷举。
 
 ---
 

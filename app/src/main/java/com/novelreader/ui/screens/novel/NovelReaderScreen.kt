@@ -78,6 +78,7 @@ import com.novelreader.core.text.ChineseConverter
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.ui.theme.ReaderBackgrounds
+import com.novelreader.ui.theme.SystemBarIconsOn
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -320,6 +321,11 @@ fun NovelReaderScreen(
     val bgIndexSafe = bgIndex.coerceIn(backgroundColors.indices)
     val backgroundColor = backgroundColors[bgIndexSafe].background
     val textColor = backgroundColors[bgIndexSafe].text
+
+    // 状态栏图标跟着纸张色走（v1.8.8.2）：纸张色独立于全局主题 —— 白天模式也可能选「藏蓝」这类
+    // 深底配色，此时必须用白色图标，否则状态栏在深色纸上一片模糊。全屏时系统栏是隐藏的，
+    // 这里设的值只影响下滑临时唤出系统栏时的观感。
+    SystemBarIconsOn(backgroundColor)
 
     val resolvedFontFamily = when (fontFamilyIndex) {
         PreferencesManager.FONT_FAMILY_SERIF -> FontFamily.Serif

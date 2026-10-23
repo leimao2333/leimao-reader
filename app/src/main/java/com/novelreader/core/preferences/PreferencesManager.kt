@@ -893,7 +893,10 @@ class PreferencesManager(private val context: Context) {
         .map { it[KEY_VIDEO_BUFFER_SECONDS] ?: DEFAULT_VIDEO_BUFFER_SECONDS }
 
     suspend fun setVideoBufferSeconds(value: Int) {
-        context.dataStore.edit { it[KEY_VIDEO_BUFFER_SECONDS] = value.coerceIn(0, 120) }
+        // v1.8.7.9（待办 #32）：上界跟着档位表走，别再写死 120 —— 写死会把新加的长档位
+        // 静默钳回 120，用户以为设置生效了、其实没生效。
+        val max = com.novelreader.core.media.VideoBufferOptions.MAX_SECONDS
+        context.dataStore.edit { it[KEY_VIDEO_BUFFER_SECONDS] = value.coerceIn(0, max) }
     }
 
     /** 默认清晰度偏好（0 = 自动；v1.8.4.0） */

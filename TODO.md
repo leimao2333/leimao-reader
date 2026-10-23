@@ -1,7 +1,7 @@
 # 待完成清单（Roadmap）
 
-> 基线版本：**v1.8.5.1**
-> 记录时间：2026-10-19（最后更新 2026-10-20）
+> 基线版本：**v1.8.7.8**
+> 记录时间：2026-10-19（最后更新 2026-10-23）
 > 说明：本文件只记录待开工的需求，做完后把对应条目的 `- [ ]` 改成 `- [x]` 并在该行末尾补上落地版本号，随后从清单里移除或折叠进 CHANGELOG。
 
 图例：`- [ ]` 待做 / `- [x]` 已完成（末尾标注版本）
@@ -37,6 +37,13 @@
   - 改法：`observeGroupNames` / `setGroup` / `renameGroup` / `clearGroup` 全部带 `type` 参数（或改成分组独立表 + `type` 列）。
   - 涉及：`data/database/BookDao.kt`、`ui/screens/bookshelf/BookShelfViewModel.kt` 与 `BookShelfScreen.kt` 的分组 UI。
 
+- [x] **31. 设置里新增「小说翻页方式」** ✅ v1.8.7.9
+  - 现状：小说翻页方式**只能**在阅读页菜单里改 —— `ui/screens/novel/NovelReaderMenu.kt:693-705` 六个 chip 调 `viewModel.setPageType(...)`。设置页只有「漫画阅读 → 翻页方式」（`SettingsScreen.kt:297`，仅「上下滚动 / 左右翻页」两项），小说这边没有入口。
+  - 需求：设置页「小说阅读」区块补一项，六档与阅读菜单完全一致：覆盖 / 仿真 / 滑动 / 滚动 / 上下 / 无动画（常量 `PreferencesManager.PAGE_TYPE_COVER` ~ `PAGE_TYPE_NO_ANIM`，默认 `DEFAULT_PAGE_TYPE` = 滑动）。
+  - **单一数据源**：读写都走 `PreferencesManager.novelPageTypeFlow` / `setNovelPageType()`（`PreferencesManager.kt:571` / `585`），设置页与阅读菜单双向实时同步，**不要**在设置页另存一份偏好。
+  - 注意：`PAGE_TYPE_SCROLL`（滚动）与 `PAGE_TYPE_VERTICAL`（上下）走的是不同渲染分支（`NovelReaderScreen.kt:351-352` 的 `isScroll` / `isVertical`），改完设置回到阅读页要按新值重建，别只在菜单里生效。
+  - 涉及：`ui/screens/settings/SettingsScreen.kt`、`SettingsViewModel.kt`（新增 `novelPageType` StateFlow + setter）、`core/preferences/PreferencesManager.kt`、`ui/screens/novel/NovelReaderViewModel.kt`。
+
 ---
 
 ## 二、预加载（设置可调）
@@ -57,6 +64,17 @@
   - 单测 `VideoBufferOptionsTest` 覆盖四个毫秒值的 `DefaultLoadControl` 约束（给错会崩在播放页）。
   - 涉及：`core/media/VideoBufferControl.kt`（新建）、`PreferencesManager.kt`、
     `VideoPlayerViewModel.kt`、`VideoPlayerScreen.kt`、`SettingsViewModel.kt`、`SettingsScreen.kt`。
+
+- [x] **32. 视频预缓存时长增加更多、更长的档位** ✅ v1.8.7.9
+  - 现状：档位写死在 `core/media/VideoBufferControl.kt` 的 `VideoBufferOptions.CHOICES = listOf(0, 15, 30, 60, 120)`，最长 120s；设置页 `SettingsScreen.kt:585` 直接遍历它渲染，加档位会自动出现。
+  - 需求：增加更长选项（建议 180 / 300 / 600，具体档位待定），并保证「更长」真的落到 ExoPlayer 上。
+  - **三处必须同时改，漏一处会静默失效**：
+    ① `CHOICES`（渲染来源）；
+    ② `durationsMs()` 的 `when` 分支 —— 现在是 `else -> 30_000 to 120_000`，120s 以上的档位会全部按 120s 处理，等于加了个假档位；
+    ③ `normalize()` 用「最近档位」兜底，新档位要能被选中，别把存量值又吸回 120。
+  - 单测 `VideoBufferOptionsTest` 补新档位的四个毫秒值（`DefaultLoadControl` 对 `bufferForPlaybackMs` / `minBufferMs` 有大小约束，给错会崩在播放页）。
+  - 文案要写清代价：`maxBufferMs` 直接决定往后吃多少，600s 高清一路能吃掉几百 MB 内存与流量。
+  - 涉及：`core/media/VideoBufferControl.kt`、`SettingsScreen.kt`、`core/media/NextPrefetchPolicy.kt`（`bufferSeconds` 参与预取判定，0 = 关闭）、`VideoPlayerViewModel.kt:361`。
 
 ---
 
@@ -189,6 +207,18 @@
     已知遗留：VIDEO 的「作者」大类被片号 / 厂牌名污染、「作品」大类
     被标题污染，需单独提待办。
 
+- [x] **33. 修：关闭「横屏上下滑切集」后，横屏竖滑调不了亮度 / 音量** ✅ v1.8.7.9
+  - 现象：设置里关掉「横屏上下滑切集」，横屏全屏时竖滑既没切集、也没调亮度 / 音量，整条竖向手势像废了。
+  - **根因已定位**：`ui/screens/video/VideoPlayerScreen.kt:489` 的判断是
+    `if (currentIsLandscapeFullscreen && currentVerticalSwipeSwitch)`。开关一关就走 `else`（535-556 行），
+    而那个 `else` 是 v1.6.0.0「竖屏也上下滑切集」的逻辑，**无条件把竖滑吃掉去切上下集，完全不处理亮度 / 音量**。
+    所以手势没丢，是被另一套切集逻辑顶掉了。
+  - 反证：设置项自己的副标题写着「关闭后恢复亮度 / 音量手势」（`SettingsScreen.kt:554`），实际代码没有这条路径。
+  - 期望：横屏全屏 + 开关关闭时，竖滑按起始位置三分区 —— 左 1/3 亮度、右 1/3 音量，中间 1/3 不切集（保持不动作）。
+  - 改法：把第 489 行的复合条件拆成两层 —— ① 是否横屏全屏（决定走三分区）；② 开关是否开启（只决定中间 1/3 是切集还是什么都不做）。分区内亮度 / 音量那段（492-512 行）与开关无关，应无条件生效。
+  - **别顺手改竖屏**：竖屏 / 窗口态上下滑切集是 v1.6.0.0 的既定行为（竖屏短剧靠它），本次只动横屏全屏。
+  - 涉及：`VideoPlayerScreen.kt`（`detectDragGestures` 的 `onDrag`）、`PreferencesManager.videoVerticalSwipeSwitchFlow`（855 行）、`SettingsScreen.kt` 该项文案。
+
 ---
 
 ## 四、搜索
@@ -234,6 +264,53 @@
     排序：匹配类型（前缀 < 包含）→ 补全量更短 → 池内顺序（覆盖源数）。
     过滤：空格分段里已写进查询的条件整族屏蔽；正在输入的词本身是完整标签时也屏蔽同根词
     （避免打完「热血」还满屏「热血漫画」）。
+
+- [ ] **34. 漫画标签搜索加载巨慢（宽标签），改成真正的流式上屏**
+  - 现象：漫画里搜 `WIDE_COMIC_SEARCH_TAGS` 那两个宽标签（`TagSearchViewModel.kt:1540`）要等几乎全部源返回才出东西，用户只能干等。
+  - 现状链路：这两个标签命中后走 `searchCompound()`（1266 行起）—— 它必须先把两个标签**各自所有源、所有入口的并集**取完，再按标题求交，交集本质上是「等最慢的那个源」。`strictIntersection()` 虽然接了 `onPartial`，但求交前的并集没攒齐就没有可上屏的内容。
+  - 拖慢的量化点：单请求硬超时 `SEARCH_REQUEST_TIMEOUT_MS = 8_000`（1573 行）、并发 `WIDE_COMPOUND_CONCURRENCY = 32`（1553 行）、每源入口上限 `MAX_URLS_PER_SOURCE = 2`（1585 行）。源一多，整轮就是「一批 8 秒」叠加。
+  - 需求：像单标签搜索那样**一边出东西一边加载**。可选做法（按性价比排序）：
+    ① 并集阶段就流式 —— 某个源返回就立刻把它与另一标签**当前已有集合**求交，有交集马上上屏，后续源回来再增量补（结果单调增加）；
+    ② 首屏优先 —— 先只打「真分类入口」的源（`isSearchEntry` 为 false 的那批），拿到一定量先显示，纯关键词入口后补；
+    ③ 首轮超时收紧（如首轮 4s 先上屏，慢源放后台补），别让首屏等满 8s。
+  - 验收：首屏结果 2~3 秒内出现，最终条数不少于现在的全量结果。
+  - 涉及：`TagSearchViewModel.kt`（`searchCompound` / `strictIntersection` / `searchOneTag` 的 `onPartial`）、`TagSearchScreen.kt` 的 loading 态（「正在搜索」不要盖住已经出来的结果）。
+
+- [ ] **35. 修：视频标签搜索翻到第二页就没了**
+  - 现象：第一页有结果，触底加载第二页后 `hasMore` 直接变 false，再也翻不动。
+  - 现状链路：`loadMore()`（`TagSearchViewModel.kt:654`）在「整页新增 0 条」时把 `_hasMore` 置 false（686-695 行）；`preloadNextPages()`（718 行）同样（742-748 行）。也就是**只要第二页返回的全是已有条目，就判定为到底**。
+  - 为什么视频特别容易踩：视频源站分类页翻页常有两种毛病 —— ① 页码参数名不对（有的吃 `pg` / `pageNo`），传 2 等于又要了一次第 1 页；② 部分源忽略页码直接回全站列表，第二页与第一页高度重合。两种都会「整页 0 新增」→ 立即停。
+  - 排查顺序：
+    ① 打开 `TagSearch` 日志（`第 $page 页取回 N 条，新增 M 条`，696 行），先分清第二页是「取回 0 条」还是「取回 N 条但新增 0」；
+    ② 若「取回 0 条」→ 源侧翻页参数没生效，查 `ContentRepositoryImpl.explore(sourceId, url, page)`（593 行）→ `SourceAdapter.explore(url, page)`（`domain/model/SourceAdapter.kt:104`）→ 各视频源实现；
+    ③ 若「新增 0」→ 源在重复返回，别直接当成「到底」：同一源连续空页计数到 N 次才停，或者干脆允许继续硬翻（配合 v1.8.7.8 已加的「继续往下翻」）。
+  - 期望：第二、第三页能正常出内容；确实到底时页脚仍按 v1.8.7.8 的方式说明停在第几页。
+  - 附注：`SINGLE_TAG_PAGES` / `COMBINED_SEARCH_PAGES`（1559 / 1562 行）在改成按需翻页后已成**死代码**，顺手清掉或复用。
+  - 涉及：`TagSearchViewModel.kt`、`ContentRepositoryImpl.explore()`、视频源 adapter 的 `explore` 实现。
+
+- [ ] **36. 修：视频标签搜索出一堆完全不相关的视频**
+  - 现象：搜一个成人向题材标签（`TagAlias.isExplicitAdultIntent` 判定为成人意图的那类），回来一堆儿童动画和无关电影。
+  - 根因方向：视频源站对不认识的分类**不报错，直接回全站或近义分类**，所以「该源有这个分类页」本身不可信；而当前只有「纯关键词入口」才过相关性过滤（`search()` 的 `searchOnlyResult` 判断 + `filterByGroupKeywords`，1010 行附近 / 1419 行），**真分类入口的结果一律直接上屏、不做任何校验**。
+  - 另一种可能：`TagAlias.searchTermsFor(tag)` 的别名组里混进了过宽的词，或 `TagQuery.normalizeTitle` 归一化后按标题求交把同名不同作并了进来。
+  - 排查顺序：
+    ① 打日志记录每条结果的来源入口 URL + 该源分类名，先确认是「分类页本身回全站」还是「别名组太宽」；
+    ② 对分类入口结果也加一层**弱相关性校验**：分类名 / `vod_class` / 标题 至少命中一个别名写法，或该源分类名与查询标签归一化后一致；不命中就丢弃并计数（日志里给出「源 X 的分类页 Y 与标签不相关」）；
+    ③ 给视频标签搜索引入「分类页置信度」—— 分类名与标签完全一致才算强命中，模糊匹配降权或单列，别混在正结果里。
+  - **不要一刀切回退成标题过滤**：这类题材标签本来就不写进标题，纯标题过滤会把正确结果也删光（1.8.1.2 之前的坑）。
+  - 涉及：`TagSearchViewModel.kt`（`searchOnlyResult` / `filterByGroupKeywords`）、`core/util/TagAlias.kt`（`searchTermsFor` / `isExplicitAdultIntent`）、`VideoTagLexicon.kt`、`source/moontv/MacCmsParser.kt`（`vod_class` 写入）。
+
+- [ ] **37. 重点排查：视频搜索结果太少（1.8.1.0 时能搜很多）**
+  - 现象：同一关键词，现在视频搜索出来的条数明显比 1.8.1.0 少。
+  - **第一步先分清对象**：是「关键词搜索」变少，还是「标签搜索」变少（本次提的两条都涉及，需实测 + 日志确认后再动代码）。
+  - 已知的硬性收缩点（按嫌疑排序）：
+    ① **关键词搜索只发一页**：`VideoSearchViewModel.search()` → `contentRepository.searchWithProgress(type, keyword, page = 1, ...)`，全链路没有「加载更多」也没有翻页入口，每个源只贡献第 1 页那 20~40 条。对比标签搜索有 `loadMore` + 预取 3 页。
+    ② **成人源默认根本不搜**：`ContentRepositoryImpl.searchWithProgress()` 在 `hideAdult = true` 时**连请求都不发**给成人源（`effectiveAdapters`，117-125 行），而视频站里成人源占比很高。若 1.8.1.0 时该开关只是「沉底」不「跳过」，条数就会断崖式下跌。
+    ③ **按源筛选残留**：`sourceIds = _selectedSourceIds.value.takeIf { it.isNotEmpty() }`，筛选器里若残留上次选中的少数源，搜索范围会一直很小且界面看不出原因。
+    ④ **聚合折叠**：`GroupedSearchResults.kt` 会把同名作品折叠成一条（「N 个源」），看起来条数变少 —— 要区分「折叠」与「真的没搜到」。
+    ⑤ 标签侧保守参数：`MAX_URLS_PER_SOURCE = 2`、`PRELOAD_PAGES = 3`、单请求 8s 超时，任一项都比 1.8.1.0 更保守，慢源会被直接判空。
+  - 排查方法：同一关键词在同一台机器上对比 v1.8.1.0 与当前版本的日志 —— 每源请求数、返回条数、超时数、被成人开关跳过的源数、被去重/相关性过滤删掉的条数，先定位是哪一层在丢量，再改。
+  - 期望：视频关键词搜索支持翻页 / 加载更多；隐藏成人时至少给一句「因设置跳过 N 个源」，别让用户以为是搜不到。
+  - 涉及：`ui/screens/video/VideoSearchViewModel.kt`、`VideoSearchScreen.kt`、`data/repository/ContentRepositoryImpl.kt`（`search` / `searchWithProgress`）、`PreferencesManager.hideAdultFlow`；若确认是标签侧，则回到 #35 / #36 的链路。
 
 ---
 
@@ -367,6 +444,16 @@
     `downloadFile` 补 `timeoutMs`（大文件 20s 读超时不够用；注意该参数必须放在最后一个 lambda 参数之前，否则尾随 lambda 会绑到它）。
   - 统一入口 `startTagImport(TagImportSource.Cloud/Url/Local)`，云端 / URL / 本地三个导入共用同一套进度与取消。
   - 涉及：`SettingsViewModel.kt`、`SettingsScreen.kt`、`TagIndexRepository.kt`、`HttpClient.kt`。
+
+- [ ] **38. 修：标签导入大型文件直接报错（导入不了）**
+  - 现象：设置页「标签导入」选本地大型 tag_table.json（十几 MB 起）后立即失败，只弹「标签导入失败：…」；云端 / URL 导入是同一条链路，小表能过、大表必挂。
+  - 根因方向（待复现实锤）：整条链路把全表在内存里复制了 3~4 份 ——
+    ① `SettingsViewModel.loadTableText` 本地分支 `stream.readBytes().toString(UTF_8)`（`SettingsViewModel.kt:332-337`），byte[] 与 String 各一份；
+    ② `TagTable.parse` 先 `JsonParser.parseString(text)` 建完整 JsonObject 树（`core/util/TagTable.kt:86`），再 `gson.fromJson` 建模型（`Payload.items`），峰值 ≈ 3 倍文件体积以上，低内存机型直接 OOM。
+  - 报错误导性：`TagTable.parse` 用 `runCatching { … }.getOrNull()` 把 OOM / JsonParseException 一并吞掉返回 null，用户看到的是「打标表解析失败（不是有效的 tag_table.json）」—— 文件明明是好的，只是太大。
+  - 可照搬前案：#21「源导入文件太大」的三处修法（IO 线程分块读、不进输入框、流式解析带进度）；导出侧 #20 已用 `JsonWriter` 流式写，导入侧应对称地流式读。
+  - 可选方向（按性价比）：① 本地分支改流式读 + `JsonReader` 逐条解析 `items`，边解析边按类型合并写库，别等全表 parse 完；② parse 失败时带出真实异常（至少打日志 + 文案区分「格式不对」与「文件过大 / 内存不足」）；③ 导入前给体积提示 / 上限（参考 `RssPdfStore` 的 128MB 上限与魔数校验先例）。
+  - 涉及：`ui/screens/settings/SettingsViewModel.kt`（`loadTableText` / `startTagImport`）、`core/util/TagTable.kt`（`parse`）、`data/repository/TagIndexRepository.kt`（`importTagTable` / `downloadCloudTable`）、`core/network/HttpClient.kt`（`getTextWithProgress`）、`ui/screens/tag/TagSearchViewModel.kt:237`（另一个导入入口，同样要扛大文件）。
 
 ---
 

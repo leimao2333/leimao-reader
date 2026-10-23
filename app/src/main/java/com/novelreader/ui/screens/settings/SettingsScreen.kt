@@ -5,6 +5,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -56,7 +58,7 @@ import com.novelreader.ui.theme.ReaderBackgrounds
  *
  * 集中管理全局设置：日夜间模式、小说字体/背景、漫画翻页方式。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel,
@@ -90,6 +92,7 @@ fun SettingsScreen(
     val darkThemeMode by viewModel.darkThemeMode.collectAsState()
     val novelFontSize by viewModel.novelFontSize.collectAsState()
     val novelBgIndex by viewModel.novelBgIndex.collectAsState()
+    val novelPageType by viewModel.novelPageType.collectAsState()
     val comicPageMode by viewModel.comicPageMode.collectAsState()
     val comicPreloadCount by viewModel.comicPreloadCount.collectAsState()
     val comicPreloadWifiOnly by viewModel.comicPreloadWifiOnly.collectAsState()
@@ -234,6 +237,39 @@ fun SettingsScreen(
 
             // ===== 小说 =====
             SectionTitle("小说阅读")
+            // 翻页方式（v1.8.7.9，待办 #31）：以前只能在阅读页菜单里改，设置页没有入口。
+            // 六档与 `NovelReaderMenu` 完全一致，读写同一个偏好键，改哪边都同步。
+            Text(
+                text = "翻页方式",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = "与阅读页菜单里的「翻页方式」是同一个设置；「滚动 / 上下」是连续滚动，其余四种是左右分页",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                listOf(
+                    "覆盖" to PreferencesManager.PAGE_TYPE_COVER,
+                    "仿真" to PreferencesManager.PAGE_TYPE_SIMULATE,
+                    "滑动" to PreferencesManager.PAGE_TYPE_SLIDE,
+                    "滚动" to PreferencesManager.PAGE_TYPE_SCROLL,
+                    "上下" to PreferencesManager.PAGE_TYPE_VERTICAL,
+                    "无动画" to PreferencesManager.PAGE_TYPE_NO_ANIM,
+                ).forEach { (label, type) ->
+                    PageModeChip(
+                        label = label,
+                        selected = novelPageType == type,
+                        onClick = { viewModel.setNovelPageType(type) },
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
             Text(
                 text = "字体大小：${novelFontSize.toInt()}",
                 style = MaterialTheme.typography.bodyMedium,
@@ -569,22 +605,26 @@ fun SettingsScreen(
             }
 
             // 预缓存时长（v1.8.4.0，待办 #8）：控制 ExoPlayer 向后缓冲多久
+            // v1.8.7.9（待办 #32）：档位补到 10 分钟，8 个 chip 一行放不下，改 FlowRow 自动换行
             Spacer(Modifier.height(16.dp))
             Text(
-                text = if (videoBufferSeconds == 0) "预缓存时长：关闭"
-                else "预缓存时长：${videoBufferSeconds} 秒",
+                text = "预缓存时长：${com.novelreader.core.media.VideoBufferOptions.label(videoBufferSeconds)}",
                 style = MaterialTheme.typography.bodyMedium,
             )
             Text(
-                text = "播放时向后缓冲多久：越大越抗卡顿（回退、快进都读本地），但更占内存与流量；关闭后只留最小缓冲",
+                text = "播放时向后缓冲多久：越大越抗卡顿（回退、快进都读本地），但更占内存与流量；" +
+                    "5 分钟以上只建议 WiFi 下使用，10 分钟档一路能吃掉数百 MB；关闭后只留最小缓冲",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 com.novelreader.core.media.VideoBufferOptions.CHOICES.forEach { sec ->
                     PageModeChip(
-                        label = if (sec == 0) "关" else "${sec}s",
+                        label = if (sec == 0) "关" else com.novelreader.core.media.VideoBufferOptions.label(sec),
                         selected = videoBufferSeconds == sec,
                         onClick = { viewModel.setVideoBufferSeconds(sec) },
                     )

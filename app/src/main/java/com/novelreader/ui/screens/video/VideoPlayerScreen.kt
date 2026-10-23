@@ -486,58 +486,46 @@ fun VideoPlayerScreen(
                                         }
                                     }
                                     2 -> {
-                                        if (currentIsLandscapeFullscreen && currentVerticalSwipeSwitch) {
-                                            // v1.5.4.0：横屏全屏竖滑按起始位置三分区
-                                            // 左 1/3 调亮度、右 1/3 调音量、中间 1/3 切上下集
-                                            val leftZone = dragStartX < size.width / 3f
-                                            val rightZone = dragStartX >= size.width * 2f / 3f
-                                            if (leftZone || rightZone) {
-                                                val fraction = -totalDy / size.height
-                                                if (leftZone) {
-                                                    val v = (startBrightness + fraction).coerceIn(0.02f, 1f)
-                                                    applyBrightness(v)
-                                                    verticalIndicator = VerticalIndicator(true, v)
-                                                } else {
-                                                    val max = audioManager
-                                                        .getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                                                        .coerceAtLeast(1)
-                                                    val v = (startVolume + fraction * max).roundToInt()
-                                                        .coerceIn(0, max)
-                                                    audioManager.setStreamVolume(
-                                                        AudioManager.STREAM_MUSIC, v, 0
-                                                    )
-                                                    verticalIndicator =
-                                                        VerticalIndicator(false, v / max.toFloat())
-                                                }
-                                                controlsVisible = false
+                                        // 横屏全屏竖滑按起始位置三分区（v1.5.4.0）：
+                                        // 左 1/3 调亮度、右 1/3 调音量、中间 1/3 切上下集。
+                                        //
+                                        // v1.8.7.9（待办 #33）修正：分区判定与「上下滑切集」开关**解耦**。
+                                        // 以前条件写成 `横屏 && 开关`，开关一关整条竖滑就落进下面的
+                                        // 竖屏分支（无条件切集），亮度 / 音量手势被顶掉 —— 与设置项
+                                        // 副标题「关闭后恢复亮度 / 音量手势」不符。现在亮度 / 音量
+                                        // 无条件生效，开关只决定中间 1/3 是否切集。
+                                        val leftZone = dragStartX < size.width / 3f
+                                        val rightZone = dragStartX >= size.width * 2f / 3f
+                                        // 竖屏 / 窗口态（含短剧竖屏）始终上下滑切集（v1.6.0.0）；
+                                        // 横屏只在开关开启时切集。
+                                        val switchByVertical =
+                                            !currentIsLandscapeFullscreen || currentVerticalSwipeSwitch
+                                        if (currentIsLandscapeFullscreen && (leftZone || rightZone)) {
+                                            val fraction = -totalDy / size.height
+                                            if (leftZone) {
+                                                val v = (startBrightness + fraction).coerceIn(0.02f, 1f)
+                                                applyBrightness(v)
+                                                verticalIndicator = VerticalIndicator(true, v)
                                             } else {
-                                                val threshold = size.height * 0.22f
-                                                if (!switchTriggered && totalDy < -threshold) {
-                                                    // 上滑 → 下一集
-                                                    switchTriggered = true
-                                                    val next = viewModel.peekNext()
-                                                    if (next != null) {
-                                                        viewModel.playNext()
-                                                        switchEpisodeHint = SwitchEpisodeHint(true, next.title)
-                                                    }
-                                                    controlsVisible = false
-                                                } else if (!switchTriggered && totalDy > threshold) {
-                                                    // 下滑 → 上一集
-                                                    switchTriggered = true
-                                                    val prev = viewModel.peekPrev()
-                                                    if (prev != null) {
-                                                        viewModel.playPrev()
-                                                        switchEpisodeHint = SwitchEpisodeHint(false, prev.title)
-                                                    }
-                                                    controlsVisible = false
-                                                }
+                                                val max = audioManager
+                                                    .getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                                                    .coerceAtLeast(1)
+                                                val v = (startVolume + fraction * max).roundToInt()
+                                                    .coerceIn(0, max)
+                                                audioManager.setStreamVolume(
+                                                    AudioManager.STREAM_MUSIC, v, 0
+                                                )
+                                                verticalIndicator =
+                                                    VerticalIndicator(false, v / max.toFloat())
                                             }
-                                        } else {
-                                            // 竖屏 / 窗口态（含短剧竖屏、横屏未开启切集手势）：
-                                            // v1.6.0.0 取消左右边竖滑调亮度 / 音量手势（短剧容易误触），
-                                            // 改为上下滑切上下集；亮度 / 音量改走 MoreVert 菜单式调节。
+                                            controlsVisible = false
+                                        } else if (switchByVertical) {
+                                            // 横屏中间 1/3（开关开启）/ 竖屏与窗口态：上下滑切上下集。
+                                            // v1.6.0.0 起竖屏不再用左右边竖滑调亮度 / 音量（短剧容易误触），
+                                            // 亮度 / 音量改走 MoreVert 菜单式调节。
                                             val threshold = size.height * 0.22f
                                             if (!switchTriggered && totalDy < -threshold) {
+                                                // 上滑 → 下一集
                                                 switchTriggered = true
                                                 val next = viewModel.peekNext()
                                                 if (next != null) {
@@ -546,6 +534,7 @@ fun VideoPlayerScreen(
                                                 }
                                                 controlsVisible = false
                                             } else if (!switchTriggered && totalDy > threshold) {
+                                                // 下滑 → 上一集
                                                 switchTriggered = true
                                                 val prev = viewModel.peekPrev()
                                                 if (prev != null) {
@@ -555,6 +544,7 @@ fun VideoPlayerScreen(
                                                 controlsVisible = false
                                             }
                                         }
+                                        // 剩下的一种组合：横屏 + 中间 1/3 + 开关关闭 → 明确不动作
                                     }
                                 }
                             },

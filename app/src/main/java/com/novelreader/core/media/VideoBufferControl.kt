@@ -28,21 +28,40 @@ import androidx.media3.exoplayer.upstream.DefaultAllocator
  */
 object VideoBufferOptions {
 
-    /** 关闭档（仍有 15s 的最小缓冲，只是不再往后吃到 120s） */
+    /** 关闭档（仍有 15s 的最小缓冲，只是不再往后吃到最长档位） */
     const val OFF = 0
 
-    /** 可选档位（秒），与设置页顺序一致 */
-    val CHOICES = listOf(0, 15, 30, 60, 120)
+    /**
+     * 可选档位（秒），与设置页顺序一致。
+     *
+     * v1.8.7.9（待办 #32）：原来最长 120s，网络好的源想看 4K 长片时回退 / 快进仍要重新拉流，
+     * 因此往上补 180 / 300 / 600 三档。**加档位时三处必须一起改**：
+     * ① 这里的 [CHOICES]；② [durationsMs] 的 `when` 分支（写死在 else 里会静默按 120s 处理）；
+     * ③ `PreferencesManager.setVideoBufferSeconds` 的 `coerceIn` 上界（否则写不进去）。
+     */
+    val CHOICES = listOf(0, 15, 30, 60, 120, 180, 300, 600)
+
+    /** 最长档位（秒），供偏好层做上界钳制 */
+    val MAX_SECONDS: Int = CHOICES.max()
 
     /** 设置页 / 播放页展示用文案 */
-    fun label(seconds: Int): String = if (seconds <= 0) "关闭" else "${seconds}s"
+    fun label(seconds: Int): String = when {
+        seconds <= 0 -> "关闭"
+        // 5 分钟以上用「分」表示，避免 600s 这类读起来要在脑子里换算
+        seconds >= 300 && seconds % 60 == 0 -> "${seconds / 60}min"
+        else -> "${seconds}s"
+    }
 
     /** 把任意存量值对齐到最近的合法档位（脏数据兜底） */
-    fun normalize(seconds: Int): Int = CHOICES.minByOrNull { kotlin.math.abs(it - seconds) } ?: 120
+    fun normalize(seconds: Int): Int = CHOICES.minByOrNull { kotlin.math.abs(it - seconds) } ?: MAX_SECONDS
 
     /**
      * 换算成 `DefaultLoadControl` 需要的四个毫秒值：
      * `[minBufferMs, maxBufferMs, bufferForPlaybackMs, bufferForPlaybackAfterRebufferMs]`。
+     *
+     * `minBufferMs` 随档位一起抬高：max 拉得很长而 min 仍停在 30s 时，加载器会在「刚过 min」
+     * 就松劲，实际吃不到 max（长缓冲档形同虚设）。四个值仍需满足
+     * `forPlaybackMs <= minBufferMs <= maxBufferMs`。
      */
     fun durationsMs(seconds: Int): IntArray {
         val (min, max) = when {
@@ -50,7 +69,10 @@ object VideoBufferOptions {
             seconds <= 15 -> 8_000 to 15_000
             seconds <= 30 -> 15_000 to 30_000
             seconds <= 60 -> 20_000 to 60_000
-            else -> 30_000 to 120_000
+            seconds <= 120 -> 30_000 to 120_000
+            seconds <= 180 -> 45_000 to 180_000
+            seconds <= 300 -> 60_000 to 300_000
+            else -> 90_000 to 600_000
         }
         return intArrayOf(min, max, 2_000, 4_000)
     }

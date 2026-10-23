@@ -562,6 +562,16 @@ class SettingsViewModel(
     private val _novelBgIndex = MutableStateFlow(PreferencesManager.DEFAULT_BG_INDEX)
     val novelBgIndex: StateFlow<Int> = _novelBgIndex.asStateFlow()
 
+    /**
+     * 小说翻页方式（v1.8.7.9，待办 #31）：0=覆盖 1=仿真 2=滑动 3=滚动 4=上下 5=无动画。
+     *
+     * 与阅读页菜单（`NovelReaderMenu` 的「翻页方式」chip）**共用同一个偏好键**
+     * `PreferencesManager.KEY_NOVEL_PAGE_TYPE`，两边任何一处改动都会实时同步到另一边，
+     * 这里不另存一份。
+     */
+    private val _novelPageType = MutableStateFlow(PreferencesManager.DEFAULT_PAGE_TYPE)
+    val novelPageType: StateFlow<Int> = _novelPageType.asStateFlow()
+
     /** 漫画翻页方式：0=上下滚动，1=左右翻页 */
     private val _comicPageMode = MutableStateFlow(0)
     val comicPageMode: StateFlow<Int> = _comicPageMode.asStateFlow()
@@ -881,6 +891,9 @@ class SettingsViewModel(
             preferencesManager.novelBgIndexFlow.collect { _novelBgIndex.value = it }
         }
         viewModelScope.launch {
+            preferencesManager.novelPageTypeFlow.collect { _novelPageType.value = it }
+        }
+        viewModelScope.launch {
             preferencesManager.comicPageModeFlow.collect { _comicPageMode.value = it }
         }
         viewModelScope.launch {
@@ -1040,6 +1053,11 @@ class SettingsViewModel(
 
     fun setNovelBgIndex(value: Int) {
         viewModelScope.launch { preferencesManager.setNovelBgIndex(value) }
+    }
+
+    /** 小说翻页方式（v1.8.7.9，待办 #31）：写回统一偏好键，阅读页菜单同步生效 */
+    fun setNovelPageType(value: Int) {
+        viewModelScope.launch { preferencesManager.setNovelPageType(value) }
     }
 
     fun setComicPageMode(value: Int) {

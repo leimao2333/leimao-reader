@@ -3,6 +3,7 @@ package com.novelreader
 import com.novelreader.core.util.TagTable
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -69,4 +70,46 @@ class TagTableTest {
 
     private fun entry(confidence: Int, origin: String = "视觉") =
         TagTable.Entry(name = "全彩", category = "题材", confidence = confidence, origin = origin)
+
+    @Test
+    fun `流式解析与整表解析结果一致`() {
+        val payload = TagTable.parse(json)!!
+        val streamed = mutableListOf<TagTable.Item>()
+        var meta = Triple(0, 0L, "")
+        val count = kotlinx.coroutines.runBlocking {
+            TagTable.parseItems(
+                reader = json.reader(),
+                onMeta = { v, g, s -> meta = Triple(v, g, s) },
+                onItem = { streamed += it },
+            )
+        }
+        assertEquals(payload.items.size, count)
+        assertEquals(payload.items.size, streamed.size)
+        // 逐字段核对第一条
+        val a = payload.items.first()
+        val b = streamed.first()
+        assertEquals(a.sourceId, b.sourceId)
+        assertEquals(a.itemId, b.itemId)
+        assertEquals(a.itemType, b.itemType)
+        assertEquals(a.title, b.title)
+        assertEquals(a.tags.map { it.name }, b.tags.map { it.name })
+        assertEquals(a.tags.map { it.confidence }, b.tags.map { it.confidence })
+        // 元数据
+        assertEquals(payload.version, meta.first)
+        assertEquals(payload.generatedAt, meta.second)
+        assertEquals(payload.source, meta.third)
+    }
+
+    @Test
+    fun `流式解析坏输入抛异常`() {
+        kotlinx.coroutines.runBlocking {
+            var threw = false
+            try {
+                TagTable.parseItems("not json".reader(), { _, _, _ -> }, {})
+            } catch (e: Exception) {
+                threw = true
+            }
+            assertTrue(threw)
+        }
+    }
 }

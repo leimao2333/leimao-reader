@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.8.8.2"
+    const val CURRENT_VERSION = "1.8.8.3"
 
     /**
      * 更新日志。
@@ -25,6 +25,14 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.8.8.3",
+            date = "2026-10-24",
+            changes = listOf(
+                "**大标签文件不再因过大而导入失败**：本地文件导入打标表以前是先把整个文件读进内存（几十 MB 的表会同时驻留「原始字节 + 整段字符串 + 反序列化结果」三份，大了直接内存耗尽崩溃）。现在改成边读边解析、按类型分块落库 —— 内存占用跟文件大小解耦，上百 MB 的表也能一次导完；进度条实时显示「已写入 N 部」。云端地址导入维持原有条数校验不变。",
+                "**平板 / 大屏下搜索结果宫格自动加列**：以前「自适应」列数在手机上固定是视频 3 列、小说漫画 2 列，拿到 10 寸平板或横屏上同一套卡片会被拉成三四个超大格子，浪费横向空间。现在按屏幕宽度阶梯加列（每宽一档多加一列，最多 8 列），用户手动指定的列数仍优先。",
+            ),
+        ),
         VersionEntry(
             version = "1.8.8.2",
             date = "2026-10-23",

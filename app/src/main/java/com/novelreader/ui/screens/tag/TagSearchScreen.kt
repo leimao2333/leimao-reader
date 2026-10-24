@@ -71,6 +71,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
@@ -93,6 +94,7 @@ import com.novelreader.ui.components.CoverPlaceholderLetter
 import com.novelreader.ui.components.LazyCover
 import com.novelreader.ui.components.MediaItemCard
 import com.novelreader.ui.components.SourceFilterDropdown
+import com.novelreader.ui.components.adaptiveGridColumns
 
 /**
  * 标签搜索页（v1.6.1.0 重做）。
@@ -646,7 +648,7 @@ fun TagSearchScreen(
             searchGrid -> {
                 val gridState = rememberLazyGridState()
                 val columns = gridColumns.takeIf { it >= 2 }
-                    ?: if (viewModel.type == SourceType.VIDEO) 3 else 2
+                    ?: adaptiveGridColumns(LocalConfiguration.current.screenWidthDp, viewModel.type)
                 // 触底即加载下一页（v1.8.1.2）：首次搜索已后台预取 3 页，这里只兜住更深的滚动
                 LaunchedEffect(gridState, hasMore) {
                     snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }

@@ -143,6 +143,9 @@ fun GroupedSearchResults(
     // 宫格态自己的滚动状态（v1.8.8.0）：要在这里持有才能监听「滚到接近底部」
     val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
 
+    // 屏幕宽度（v1.8.8.3 平板适配）：自适应列数按屏幕宽度阶梯加列
+    val screenWidthDp = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
+
     // 触底回调（v1.8.8.0，待办 #37）：列表态 / 宫格态各自判断「最后一个可见项接近末尾」
     if (onNearEnd != null) {
         val nearEnd by rememberUpdatedState(onNearEnd)
@@ -193,7 +196,7 @@ fun GroupedSearchResults(
                 onExpandGroup = { sheetGroup = it },
                 unitLabel = unitLabel,
                 columns = gridColumns.takeIf { it >= 2 }
-                    ?: if (type == com.novelreader.domain.model.SourceType.VIDEO) 3 else 2,
+                    ?: adaptiveGridColumns(screenWidthDp, type),
                 state = gridState,
                 footer = footer,
             )

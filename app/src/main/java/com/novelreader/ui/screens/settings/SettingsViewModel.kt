@@ -274,43 +274,14 @@ class SettingsViewModel(
             _tagImportBusy.value = true
             _tagImportProgress.value = TagImportProgress(TagImportPhase.DOWNLOAD, 0f)
             val message = try {
-                val loaded = loadTableText(repo, source)
-                _tagImportProgress.value = TagImportProgress(
-                    TagImportPhase.PARSE, TAG_IMPORT_DOWNLOAD_WEIGHT, "解析中…",
-                )
-                val payload = com.novelreader.core.util.TagTable.parse(loaded.json)
-                    ?: error("打标表解析失败（不是有效的 tag_table.json）")
-                // 条数校验（v1.8.2.0）：CDN 可能还挂着上一版的文件（jsDelivr 实测缓存最长 7 天），
-                // 不校验的话会「导入成功 0 条」，用户以为导入过了其实没有。
-                if (loaded.expectedCount > 0 && payload.items.size != loaded.expectedCount) {
-                    error(
-                        "云端表条数与版本清单不符（清单 ${loaded.expectedCount} 条，实际下载到 ${payload.items.size} 条），" +
-                            "大概率是 CDN 缓存还没刷新，请稍后重试",
-                    )
+                // 本地大文件走流式（v1.8.8.3）：几十 MB 的标签表不能整表读进内存，
+                // 直接边读边解析、按类型分块落库。云端/URL 保留原整表解析（要拿 generatedAt 记云端版本）。
+                if (source is TagImportSource.Local) {
+                    val imported = importLocalTagTableStreaming(repo, source)
+                    "标签导入完成：$imported 部作品已合并进本地标签层"
+                } else {
+                    importRemoteTagTable(repo, source)
                 }
-                val rememberAsCloud = source !is TagImportSource.Local
-                val types = com.novelreader.domain.model.SourceType.entries
-                var imported = 0
-                types.forEachIndexed { index, type ->
-                    throwIfCancelled()
-                    val typeBase = index.toFloat() / types.size
-                    imported += repo.importTagTable(payload, type) { done, total ->
-                        val frac = if (total > 0) done.toFloat() / total else 1f
-                        _tagImportProgress.value = TagImportProgress(
-                            phase = TagImportPhase.WRITE,
-                            fraction = (TAG_IMPORT_WRITE_BASE +
-                                (typeBase + frac / types.size) * TAG_IMPORT_WRITE_WEIGHT)
-                                .coerceIn(0f, 1f),
-                            detail = "${typeLabel(type)} $done / $total",
-                            cancelable = false,
-                        )
-                    }
-                }
-                if (rememberAsCloud) {
-                    preferencesManager.setTagCloudImport(payload.generatedAt, payload.items.size)
-                    _cloudImported.value = payload.generatedAt to payload.items.size
-                }
-                "标签导入完成：$imported 部作品已合并进本地标签层（表内 ${payload.items.size} 条）"
             } catch (c: kotlinx.coroutines.CancellationException) {
                 "已取消导入（已写入的部分保留）"
             } catch (t: Throwable) {
@@ -321,6 +292,76 @@ class SettingsViewModel(
             }
             _backupMessage.value = message
         }
+    }
+
+    /**
+     * 本地大文件流式导入（v1.8.8.3）。
+     *
+     * 旧实现 `stream.readBytes().toString()` 把整个文件读进内存（ByteArrayOutputStream
+     * 累加 + 转 String 再复制一份），大文件直接 OOM。现在直接拿 SAF 输入流 → 包一层
+     * InputStreamReader → [TagIndexRepository.importTagTableStreaming] 逐条解析分流落库，
+     * 内存峰值与文件大小解耦。
+     */
+    private suspend fun importLocalTagTableStreaming(
+        repo: com.novelreader.data.repository.TagIndexRepository,
+        source: TagImportSource.Local,
+    ): Int = withContext(Dispatchers.IO) {
+        _tagImportProgress.value = TagImportProgress(TagImportPhase.PARSE, TAG_IMPORT_DOWNLOAD_WEIGHT, "解析并写入…")
+        val stream = source.context.contentResolver.openInputStream(source.uri)
+            ?: error("无法读取所选文件")
+        stream.use { raw ->
+            val reader = raw.reader(Charsets.UTF_8).buffered(64 * 1024)
+            repo.importTagTableStreaming(reader) { done, _ ->
+                if (tagImportCancelled) throw kotlinx.coroutines.CancellationException("已取消")
+                _tagImportProgress.value = TagImportProgress(
+                    phase = TagImportPhase.WRITE,
+                    fraction = (TAG_IMPORT_WRITE_BASE + TAG_IMPORT_WRITE_WEIGHT * 0.5f).coerceIn(0f, 1f),
+                    detail = "已写入 $done 部",
+                    cancelable = false,
+                )
+            }
+        }
+    }
+
+    /** 云端 / URL 导入（保留整表解析：需要拿 generatedAt 记云端版本 + 清单条数校验） */
+    private suspend fun importRemoteTagTable(
+        repo: com.novelreader.data.repository.TagIndexRepository,
+        source: TagImportSource,
+    ): String {
+        val loaded = loadTableText(repo, source)
+        _tagImportProgress.value = TagImportProgress(
+            TagImportPhase.PARSE, TAG_IMPORT_DOWNLOAD_WEIGHT, "解析中…",
+        )
+        val payload = com.novelreader.core.util.TagTable.parse(loaded.json)
+            ?: error("打标表解析失败（不是有效的 tag_table.json）")
+        // 条数校验（v1.8.2.0）：CDN 可能还挂着上一版的文件（jsDelivr 实测缓存最长 7 天），
+        // 不校验的话会「导入成功 0 条」，用户以为导入过了其实没有。
+        if (loaded.expectedCount > 0 && payload.items.size != loaded.expectedCount) {
+            error(
+                "云端表条数与版本清单不符（清单 ${loaded.expectedCount} 条，实际下载到 ${payload.items.size} 条），" +
+                    "大概率是 CDN 缓存还没刷新，请稍后重试",
+            )
+        }
+        val types = com.novelreader.domain.model.SourceType.entries
+        var imported = 0
+        types.forEachIndexed { index, type ->
+            throwIfCancelled()
+            val typeBase = index.toFloat() / types.size
+            imported += repo.importTagTable(payload, type) { done, total ->
+                val frac = if (total > 0) done.toFloat() / total else 1f
+                _tagImportProgress.value = TagImportProgress(
+                    phase = TagImportPhase.WRITE,
+                    fraction = (TAG_IMPORT_WRITE_BASE +
+                        (typeBase + frac / types.size) * TAG_IMPORT_WRITE_WEIGHT)
+                        .coerceIn(0f, 1f),
+                    detail = "${typeLabel(type)} $done / $total",
+                    cancelable = false,
+                )
+            }
+        }
+        preferencesManager.setTagCloudImport(payload.generatedAt, payload.items.size)
+        _cloudImported.value = payload.generatedAt to payload.items.size
+        return "标签导入完成：$imported 部作品已合并进本地标签层（表内 ${payload.items.size} 条）"
     }
 
     /** 取表文本：本地直接读，网络走带进度的下载 */

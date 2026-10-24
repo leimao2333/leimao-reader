@@ -848,6 +848,158 @@ class TagIndexRepository(
         return typeItems.size
     }
 
+    /**
+     * 流式导入打标表（v1.8.8.3）。
+     *
+     * 大标签文件不能走 [importTagTable]：那条路要求先把整表反序列化成 [TagTable.Payload]，
+     * 再每个类型 `filter` 一次全量 items —— 大文件下「整表 JSON 字符串 + Payload + 三次
+     * filter 副本」同时驻留，几十 MB 就 OOM。
+     *
+     * 这里直接用 [TagTable.parseItems] 逐条解析，按 `itemType` 分流到对应类型的累加器，
+     * 每个类型攒满 [IMPORT_CHUNK] 就落库，内存峰值从「整表 × N」降到「单类型一批」。
+     *
+     * 现有标签 / 旧标题是**懒加载**的：只有真遇到某类型的条目，才读一次该类型的
+     * `tagInstanceDao.allOfType` / `localTagDao.all`（跟 [importTagTable] 一样一次读全量），
+     * 避免三个类型里空类型也白白读两遍库。
+     *
+     * @param reader 已打开的打标表输入（只读，不负责关闭，由调用方关闭）
+     * @param onProgress 写入进度回调（已写条目数, 总条目数，总条目数未知时为 0），写库线程调用
+     * @return 导入覆盖的条目数
+     */
+    suspend fun importTagTableStreaming(
+        reader: java.io.Reader,
+        onProgress: ((done: Int, total: Int) -> Unit)? = null,
+    ): Int {
+        val buckets = LinkedHashMap<String, ImportBucket>()
+        SourceType.entries.forEach { buckets[it.name] = ImportBucket() }
+
+        var importedTotal = 0
+        val now = System.currentTimeMillis()
+
+        try {
+            TagTable.parseItems(
+                reader = reader,
+                onMeta = { _, _, _ -> },
+                onItem = item@{ item ->
+                    val typeName = item.itemType
+                    val bucket = buckets[typeName] ?: return@item  // 未知类型：跳过
+                    mergeItemIntoBucket(bucket, item, typeName, now, onProgress)
+                    importedTotal++
+                },
+            )
+        } finally {
+            // 冲刷每个类型末尾不足一批的残余（即使解析中途抛异常，也把已合并的落库）
+            buckets.values.forEach { bucket ->
+                if (bucket.localRows.isNotEmpty()) {
+                    localTagDao.upsertAll(bucket.localRows)
+                    bucket.localRows.clear()
+                }
+                if (bucket.tagRows.isNotEmpty()) {
+                    tagInstanceDao.upsertAll(bucket.tagRows)
+                    bucket.tagRows.clear()
+                }
+            }
+        }
+        return importedTotal
+    }
+
+    /** 流式导入的单类型累加器：本地行批次 + 标签实例批次 + 懒加载的既有数据缓存 */
+    private class ImportBucket {
+        val localRows = ArrayList<LocalTagEntity>(IMPORT_CHUNK)
+        val tagRows = ArrayList<TagInstanceEntity>(IMPORT_CHUNK * 3)
+        var existing: Map<Pair<String, String>, List<TagInstanceEntity>>? = null
+        var titles: Map<Pair<String, String>, String>? = null
+        var imported = 0
+    }
+
+    /**
+     * 把单条 item 合并进对应类型的累加器（[importTagTableStreaming] 的逐条处理核心）。
+     *
+     * 逻辑与 [importTagTable] 完全一致（同名标签取更高置信度、title 为空回填旧标题），
+     * 只是把「全量 filter 后统一写」换成「逐条攒批、满批即写」。
+     */
+    private suspend fun mergeItemIntoBucket(
+        bucket: ImportBucket,
+        item: TagTable.Item,
+        typeName: String,
+        now: Long,
+        onProgress: ((done: Int, total: Int) -> Unit)?,
+    ) {
+        val existing = bucket.existing ?: run {
+            val map = HashMap<Pair<String, String>, MutableList<TagInstanceEntity>>()
+            tagInstanceDao.allOfType(typeName).forEach { row ->
+                map.getOrPut(row.sourceId to row.itemId) { mutableListOf() }.add(row)
+            }
+            map.also { bucket.existing = it }
+        }
+        val titles = bucket.titles ?: run {
+            localTagDao.all(typeName)
+                .associate { (it.sourceId to it.itemId) to it.title }
+                .also { bucket.titles = it }
+        }
+
+        val rows = LinkedHashMap<String, TagInstanceEntity>()
+        existing[item.sourceId to item.itemId]?.forEach { row ->
+            rows[row.tagName] = TagInstanceEntity(
+                sourceId = item.sourceId,
+                itemId = item.itemId,
+                itemType = typeName,
+                tagName = row.tagName,
+                category = row.category,
+                confidence = row.confidence,
+                origin = row.origin,
+                updatedAt = row.updatedAt.takeIf { it > 0 } ?: now,
+            )
+        }
+        item.tags.forEach { entry ->
+            val canonical = TagAlias.canonicalOf(entry.name)
+            if (canonical.isBlank()) return@forEach
+            val incoming = TagTable.Entry(canonical, entry.category, entry.confidence, entry.origin)
+            val merged = TagTable.mergeEntry(
+                existing = rows[canonical]?.let {
+                    TagTable.Entry(it.tagName, it.category, it.confidence, it.origin)
+                },
+                incoming = incoming,
+            )
+            rows[canonical] = TagInstanceEntity(
+                sourceId = item.sourceId,
+                itemId = item.itemId,
+                itemType = typeName,
+                tagName = canonical,
+                category = merged.category.ifBlank { TagTagger.CATEGORY_GENRE },
+                confidence = merged.confidence.coerceIn(0, 100),
+                origin = merged.origin.ifBlank { TagTagger.ORIGIN_TEXT },
+                updatedAt = now,
+            )
+        }
+        val mergedTags = rows.values.toList()
+        bucket.localRows += LocalTagEntity(
+            sourceId = item.sourceId,
+            itemId = item.itemId,
+            itemType = typeName,
+            title = item.title.ifBlank { titles[item.sourceId to item.itemId].orEmpty() },
+            cover = item.cover,
+            detailUrl = item.detailUrl,
+            sourceName = item.sourceName,
+            author = item.author,
+            tags = mergedTags.joinToString("|") { it.tagName },
+            tagsLower = "|" + mergedTags.joinToString("|") { it.tagName.lowercase() } + "|",
+            updatedAt = now,
+        )
+        bucket.tagRows += mergedTags
+        bucket.imported++
+
+        if (bucket.localRows.size >= IMPORT_CHUNK) {
+            localTagDao.upsertAll(bucket.localRows)
+            bucket.localRows.clear()
+            onProgress?.invoke(bucket.imported, 0)
+        }
+        if (bucket.tagRows.size >= IMPORT_CHUNK) {
+            tagInstanceDao.upsertAll(bucket.tagRows)
+            bucket.tagRows.clear()
+        }
+    }
+
     companion object {
         /**
          * 云端打标表默认地址（v1.8.1.5）。

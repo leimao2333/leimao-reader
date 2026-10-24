@@ -711,7 +711,7 @@ fun SettingsScreen(
             SettingRow(
                 title = "标签导入",
                 subtitle = if (tagImportBusy) "导入中…" else
-                    "导入打标表（本地文件或云端地址），与 PC 打标工具的成果合并进本地标签层",
+                    "导入打标表（本地文件或云端地址），与 PC 打标工具的成果合并进本地标签层；本地文件支持大表流式导入，不再因文件过大而失败",
             ) {
                 Row {
                     TextButton(

@@ -89,6 +89,116 @@ object TagTable {
         gson.fromJson(obj, Payload::class.java)
     }.getOrNull()
 
+    /**
+     * 流式解析打标表（v1.8.8.3）。
+     *
+     * 大标签文件（几十 MB 到上百 MB）不能整表读进内存再反序列化 ——
+     * 旧的 [parse] 会同时驻留「原始字节 + 整段字符串 + 反序列化后的 Payload」三份，
+     * 大文件直接 OOM。这里改用 Gson 的 [com.google.gson.stream.JsonReader] 逐条解析：
+     * 每读完一个 item 就回调给上层（上层按类型分流、分块写库），内存峰值从
+     * 「整表 × 3」降到「单条 item」级别。
+     *
+     * 约定：先回调顶层元数据（version / generatedAt / source），再逐条回调 items。
+     * 回调抛出的异常会向上传播（上层用它做取消 / 条数校验）。
+     *
+     * @param reader 已打开的输入（只读，不负责关闭，由调用方关闭）
+     * @param onMeta 读到顶层元数据时回调一次（version / generatedAt / source）
+     * @param onItem 每读到一条 item 回调一次（suspend：上层可在此做写库 / 取消检查）
+     * @return 表内 item 总数
+     */
+    suspend fun parseItems(
+        reader: java.io.Reader,
+        onMeta: (version: Int, generatedAt: Long, source: String) -> Unit,
+        onItem: suspend (Item) -> Unit,
+    ): Int {
+        var version = VERSION
+        var generatedAt = 0L
+        var source = SOURCE_APP
+        var count = 0
+
+        val json = com.google.gson.stream.JsonReader(reader)
+        json.isLenient = true
+        json.beginObject()
+        while (json.hasNext()) {
+            when (json.nextName()) {
+                "version" -> version = json.nextInt()
+                "generatedAt" -> generatedAt = json.nextLong()
+                "source" -> source = json.nextString().ifBlank { SOURCE_APP }
+                "items" -> {
+                    json.beginArray()
+                    while (json.hasNext()) {
+                        onItem(readItem(json))
+                        count++
+                    }
+                    json.endArray()
+                }
+                else -> json.skipValue()
+            }
+        }
+        json.endObject()
+        onMeta(version, generatedAt, source)
+        return count
+    }
+
+    /** 流式读单条 item（字段名与 [Item] 的 Gson 序列化一致） */
+    private fun readItem(json: com.google.gson.stream.JsonReader): Item {
+        var sourceId = ""
+        var itemId = ""
+        var itemType = ""
+        var title = ""
+        var cover = ""
+        var detailUrl = ""
+        var sourceName = ""
+        var author = ""
+        var tags: List<Entry> = emptyList()
+
+        json.beginObject()
+        while (json.hasNext()) {
+            when (json.nextName()) {
+                "sourceId" -> sourceId = json.nextString()
+                "itemId" -> itemId = json.nextString()
+                "itemType" -> itemType = json.nextString()
+                "title" -> title = json.nextString()
+                "cover" -> cover = json.nextString()
+                "detailUrl" -> detailUrl = json.nextString()
+                "sourceName" -> sourceName = json.nextString()
+                "author" -> author = json.nextString()
+                "tags" -> {
+                    val list = ArrayList<Entry>()
+                    json.beginArray()
+                    while (json.hasNext()) {
+                        list += readEntry(json)
+                    }
+                    json.endArray()
+                    tags = list
+                }
+                else -> json.skipValue()
+            }
+        }
+        json.endObject()
+        return Item(sourceId, itemId, itemType, title, cover, detailUrl, sourceName, author, tags)
+    }
+
+    /** 流式读单条标签 */
+    private fun readEntry(json: com.google.gson.stream.JsonReader): Entry {
+        var name = ""
+        var category = "题材"
+        var confidence = 0
+        var origin = "文本"
+        json.beginObject()
+        while (json.hasNext()) {
+            when (json.nextName()) {
+                "name" -> name = json.nextString()
+                "category" -> category = json.nextString()
+                "confidence" -> confidence = json.nextInt()
+                "origin" -> origin = json.nextString()
+                else -> json.skipValue()
+            }
+        }
+        json.endObject()
+        return Entry(name, category, confidence, origin)
+    }
+
     /** 解析云端清单；连 count / latest 都没有的一律当无效（防止把 HTML 错误页当清单） */
     fun parseManifest(text: String): Manifest? = runCatching {
         val obj = com.google.gson.JsonParser.parseString(text).asJsonObject

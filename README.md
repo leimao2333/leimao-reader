@@ -158,6 +158,19 @@ NovelReader/
 - **只上传 release 构建的包，禁止上传 debug 包**：debug 包含 `application-debuggable`、Compose live edit 支持代码与 ui-tooling，体积大 ~8MB（~25MB vs ~17.6MB），且签名证书是 `CN=Android Debug`（不是正式密钥），无法覆盖升级。v1.7.6.0 及更早的大部分 Release 都误传过 debug 包，v1.7.6.1 起才固定用 release 构建。
 - 若 `keystore.properties` 缺失，构建会退化为**未签名**（`app-release-unsigned.apk`）——这种包**装不上**，禁止发布。
 
+## APK 下载
+
+每个版本在 [Releases](https://github.com/leimao2333/leimao-reader/releases) 页面按 ABI 提供 4 个安装包，按需选择：
+
+| APK | 大小 | 说明 |
+|-----|------|------|
+| `universal` | ~139 MB | 全架构通用（最省事，直接装这个） |
+| `arm64-v8a` | ~61 MB | 主流手机 / 平板 64 位 |
+| `armeabi-v7a` | ~48 MB | 旧 32 位设备 |
+| `x86_64` | ~67 MB | 模拟器 / 部分平板 |
+
+> 一般真机直接下 `arm64-v8a`（体积小、覆盖绝大多数近年设备）；拿不准架构就下 `universal`（通吃但体积最大）。
+
 ## 核心设计
 
 **适配器模式**：上层只依赖 `SourceAdapter` 接口，JSON 源、JS 源、legado 书源各自实现，新增源格式只需新增一个 Adapter，无需改动上层代码。

@@ -45,6 +45,11 @@ function bodyFor(url) {
 
 const pending = new Map();
 const storage = {};
+// 异步网络桥的桩数据（v1.8.8.8）：App 里是 OkHttp 在 IO 线程跑完再回调 JS，
+// 这里用 setTimeout 复刻同样的时序 —— 请求先「立即返回 reqId」，完成时才回调，
+// 好让离线走查真的覆盖异步路径（而不是悄悄退回同步桥）。
+const httpResults = new Map();
+let httpSeq = 0;
 let callSeq = 0;
 
 const sandbox = {
@@ -71,6 +76,24 @@ sandbox.NativeBridge = {
             body: body,
             url: url,
         });
+    },
+    httpAsync(method, url, headersJson, data, binary) {
+        sandbox.__requests.push(method + ' ' + url);
+        const reqId = 'h' + (++httpSeq);
+        const body = bodyFor(url);
+        setTimeout(() => {
+            httpResults.set(reqId, JSON.stringify(binary
+                ? { status: body ? 200 : 404, headers: {}, bodyBase64: '', url: url }
+                : { status: body ? 200 : 404, headers: {}, body: body, url: url }));
+            if (typeof sandbox.__veneraHttpDone === 'function') sandbox.__veneraHttpDone(reqId);
+        }, 0);
+        return reqId;
+    },
+    httpTake(reqId) {
+        if (!httpResults.has(reqId)) return null;
+        const v = httpResults.get(reqId);
+        httpResults.delete(reqId);
+        return v;
     },
     httpBinary(method, url) {
         sandbox.__requests.push(method + ' ' + url);

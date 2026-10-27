@@ -1744,14 +1744,20 @@ class TagSearchViewModel(
         private const val CONTEXT_PAGE_CONFIDENCE = 90
 
         /**
-         * Venera 源的并发上限（v1.8.8.4）。
+         * Venera 源的并发上限。
          *
-         * 引擎是**全应用一个 WebView / 一个 JS 线程**（`VeneraEngine.callMutex`），
-         * 并发给到 24 只是让 23 个协程排队等锁 —— 而它们的外层超时只有 8 秒，
-         * 排在后面的源连执行机会都没有，结果直接被丢掉。压到 4 路：队列短、
-         * 每个源都能在超时前轮到自己，实测反而更快也更全。
+         * **v1.8.8.8 从 4 提到 10。** 旧值 4 是被旧引擎逼出来的补偿：当时网络走
+         * 同步桥，一次请求就把 WebView 的 JS 线程占满 6~12 秒，全应用实际只有一个
+         * 源在跑，并发给到 24 只是让 20 个协程排队等锁、再被 8 秒超时全部丢弃，
+         * 所以压到 4 路「队列短、轮得到」反而更快。
+         *
+         * v1.8.8.8 引擎改成异步网络桥 + 并发闸门（`VeneraEngine` 的
+         * `interactiveGate` / `backgroundGate`）之后，多个源是真的同时在联网，
+         * 4 路就成了新的瓶颈 —— 实测一次标签搜索 82 个源被切成 20 批、每批干等
+         * 8 秒，整轮近三分钟。提到 10 路后批数降到 9 左右，且引擎侧仍有独立
+         * 闸门兜底，不会把 WebView 打爆。
          */
-        private const val VENERA_TAG_CONCURRENCY = 4
+        private const val VENERA_TAG_CONCURRENCY = 10
 
         /**
          * Venera 引擎的**排队预算**（v1.8.8.4，毫秒）。

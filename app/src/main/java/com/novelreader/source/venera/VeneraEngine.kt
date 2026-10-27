@@ -15,12 +15,16 @@ import com.google.gson.JsonParser
 import com.novelreader.core.network.RequestBudget
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -55,9 +59,20 @@ import javax.crypto.spec.SecretKeySpec
  *   Convert / ComicDetails 等 Venera API，并负责把源返回值整理成 JSON；
  * - **原生侧**（本类）：隐藏 WebView 的创建与调度、HTTP、摘要/加解密、设置与数据存取。
  *
- * 关键点：`addJavascriptInterface` 的方法在 JS 侧是**同步**调用，所以 Venera 源码里
- * `Network.get()` 这种同步取值写法可以原样保留；同时 HTTP 全部走原生 OkHttp，
- * 因此完全不受 WebView 同源策略 / CORS 约束。
+ * 关键点：HTTP 全部走原生 OkHttp，因此完全不受 WebView 同源策略 / CORS 约束。
+ *
+ * v1.8.8.8 起网络改走**异步桥**（[Bridge.httpAsync] / [Bridge.httpTake]）：
+ * 旧实现里 `@JavascriptInterface` 的 `http()` 是同步阻塞调用，一次 HTTP 就把
+ * WebView 的 JS 线程占满 6~12 秒，于是无论把并发开到多大，所有源实际上仍是
+ * 一个接一个地跑（[callMutex] 那套串行锁正是为这种「占线」兜底）。
+ * 现在原生在自己的 IO 线程池里发请求，完成后用 `evaluateJavascript` 回调
+ * `window.__veneraHttpDone(reqId)`，JS 侧 `Network.get()` 变成返回 Promise ——
+ * 源码里的 `await Network.get(...)` 写法完全不用改，等待期间 JS 线程即刻空出来
+ * 去跑别的源。这也是调用闸门能从「串行锁」换成「双通道并发闸门」的前提。
+ *
+ * 少数源不走 `await`、直接同步取 `Network.get().body`，这类写法在异步桥下会拿到
+ * Promise。JS 侧对此做了自愈：一旦某个源因这类错误失败，会整体回落同步桥重试一次，
+ * 成功则把该源永久标记为 sync-only。
  */
 class VeneraEngine(private val context: Context) {
 
@@ -78,19 +93,77 @@ class VeneraEngine(private val context: Context) {
     private val bootMutex = Mutex()
 
     /**
-     * 调用串行锁（v1.7.5.0）。
+     * 调用并发闸门（v1.8.8.8，取代 v1.7.5.0 的串行 `callMutex`）。
      *
-     * 隐藏 WebView 的 JS 线程与 JavaBridge 线程都是**单线程**：任何在飞的 Venera 调用
-     * （含源自己 `init()` 里的联网、dynamic loader）都会阻塞其它调用。冷启动时枚举层
-     * 会并发派出一二十个 `categories`，旧代码里它们无条件排队，一个卡死的源就能把
-     * 整条队列拖到 60s 超时（实测整页推荐 0 条）。
+     * 旧实现为什么必须串行：同步 HTTP 桥把 JS 线程占满整个网络往返，同一时刻
+     * 放进第二个调用也只会排在 JS 线程后面，反而让「排队」不可控（一个卡死的源
+     * 能把整条队列拖到 60s，实测整页推荐 0 条）。
      *
-     * 现在同一时刻只放一个调用真正执行；排不上队的调用最多等
-     * [ENGINE_QUEUE_WAIT_MS]，超时直接快速失败（调用方按普通错误处理），
-     * 把「无限期饿死」变成「快速失败 + 下一轮再来」。
+     * 异步桥把网络等待从 JS 线程挪走之后，一次调用只在与 JS 本身打交道时才占用
+     * JS 线程，多个源可以真正并行。现在闸门只负责限制「同时在飞的调用数」，
+     * 避免几十个源同时冲击同一个渲染进程。排不上队的调用最多等
+     * [ENGINE_QUEUE_WAIT_MS]（或调用方下发的 `RequestBudget.queueWaitMs`），
+     * 超时快速失败，把机会让给下一个源。
+     *
+     * **分道（v1.8.8.8）**：闸门拆成「交互」和「后台」两条互不相交的通道。
+     * 用户搜索 / 打开详情时，最怕的是首屏聚合（explore、categories）或后台预热
+     * 已经把槽位占满 —— 表现为「搜了十秒什么都没出来」。现在交互通道有固定额度，
+     * 永远不必等后台任务，后台任务也挤不进交互通道。
      */
-    private val callMutex = Mutex()
+    private val interactiveGate = Semaphore(MAX_CONCURRENT_INTERACTIVE)
+    private val backgroundGate = Semaphore(MAX_CONCURRENT_BACKGROUND)
     private val callSeq = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
+     * 派发锁：只保护「注册 + evaluateJavascript」这一小段，不覆盖网络等待。
+     *
+     * 为什么需要：同一批并发调用里，A 的脚本带 `__veneraRegister`、B 的不带，
+     * 若两者的 `evaluateJavascript` 落地顺序被打乱，B 会先于注册执行而报「源未注册」。
+     * 锁住派发顺序即可保证 JS 侧的注册先于调用。
+     */
+    private val dispatchMutex = Mutex()
+
+    /** 异步 HTTP：请求 id 序号 */
+    private val httpSeq = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** 异步 HTTP：reqId -> 已完成的响应 JSON，等待 JS 侧 `httpTake` 取走 */
+    private val httpResults = ConcurrentHashMap<String, String>()
+
+    /** 异步 HTTP 的并发闸门（独立于调用闸门：一个调用里可能连发多个请求） */
+    private val httpGate = Semaphore(MAX_CONCURRENT_HTTP)
+
+    /** 异步 HTTP 的执行作用域：IO 线程池，随进程存活 */
+    private val httpScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * 把「请求已完成」这件事送回 JS。
+     *
+     * 只送 reqId、不送载荷：真正的大字符串由 JS 侧再调 [Bridge.httpTake] 同步取，
+     * 避免再经 `evaluateJavascript` 的脚本串做一次转义与二次拷贝（24MB 的响应体会
+     * 被放大成几十 MB 的脚本文本）。
+     *
+     * webView 已经没了（崩溃 / 重建）就直接丢弃结果，不掉进内存里等一个不会来的取件。
+     */
+    private fun deliverHttp(reqId: String) {
+        val wv = webView
+        if (wv == null) {
+            httpResults.remove(reqId)
+            return
+        }
+        // 未被取走的结果兜底清理：线程池里可能还有几十个在飞，谁都不许长期驻留
+        if (httpResults.size > MAX_PENDING_HTTP_RESULTS) {
+            val stale = httpResults.keys.take(httpResults.size - MAX_PENDING_HTTP_RESULTS / 2)
+            stale.forEach { httpResults.remove(it) }
+        }
+        wv.post {
+            runCatching {
+                wv.evaluateJavascript(
+                    "window.__veneraHttpDone&&window.__veneraHttpDone(${jsString(reqId)});",
+                    null,
+                )
+            }
+        }
+    }
 
     /** 独立 Cookie Jar：与 legado 源隔离，避免互相污染；登录态 Cookie 持久化到本地 */
     private val cookieJar = SimpleCookieJar()
@@ -200,36 +273,39 @@ class VeneraEngine(private val context: Context) {
     }
 
     private suspend fun callOnce(sourceKey: String, op: String, queueWaitMs: Long, vararg args: Any?): String {
-        // 引擎串行 + 准入：等不上就快速失败，不参与无限期排队（见 callMutex 注释）。
-        // 注意拿锁与 try/finally 必须紧邻：超时未拿到锁时直接抛错，不能进 finally 解锁。
-        val locked = if (callMutex.tryLock()) {
+        // 分道：用户主动发起的操作走交互通道，首屏聚合 / 预热走后台通道
+        val gate = if (isInteractive(op)) interactiveGate else backgroundGate
+        // 并发闸门准入：等不上就快速失败，不参与无限期排队（见 gate 字段注释）。
+        val acquired = if (gate.tryAcquire()) {
             true
         } else {
             withTimeoutOrNull(queueWaitMs) {
-                callMutex.lock()
+                gate.acquire()
                 true
-            }
+            } ?: false
         }
-        if (locked == null) {
-            throw IllegalStateException("Venera 引擎繁忙（已有调用执行中，稍后重试）")
+        if (!acquired) {
+            throw IllegalStateException("Venera 引擎繁忙（并发调用已满，稍后重试）")
         }
         val callId = "c" + callSeq.incrementAndGet()
         val deferred = CompletableDeferred<String>()
         pending[callId] = deferred
         val startedAt = System.currentTimeMillis()
+        // 预热 ping 的预算单独收紧（v1.8.8.8）：它只是「顺手把 init 跑掉」，
+        // 卡住的源不该占着后台通道整整 30 秒 —— 首页推荐还在等这些额度。
+        val callTimeoutMs = if (op == "ping") PING_TIMEOUT_MS else CALL_TIMEOUT_MS
         try {
             try {
-                dispatchLocked(sourceKey, op, callId, deferred, *args)
-                return withTimeout(CALL_TIMEOUT_MS) { deferred.await() }
+                dispatch(sourceKey, op, callId, deferred, *args)
+                return withTimeout(callTimeoutMs) { deferred.await() }
             } catch (e: TimeoutCancellationException) {
-                // 可能是本调用的 30s 到点，也可能是父协程（首页单源预算）取消顺带
+                // 可能是本调用的超时到点，也可能是父协程（首页单源预算）取消顺带
                 // 触发的 —— 两者异常类型相同，用实际耗时区分，日志才不至于误导
                 val elapsed = System.currentTimeMillis() - startedAt
                 android.util.Log.w(LOG_TAG, "call(op=$op) 超时（实际 ${elapsed}ms）")
-                throw IllegalStateException("Venera 源执行超时（${CALL_TIMEOUT_MS / 1000}s）")
+                throw IllegalStateException("Venera 源执行超时（${callTimeoutMs / 1000}s）")
             } catch (e: CancellationException) {
-                // 父协程取消：不是源的错，照常抛出让 withTimeout 收场；
-                // JS 侧善后在下面的 finally 里等落地
+                // 父协程取消：不是源的错，照常抛出让 withTimeout 收场
                 throw e
             } catch (e: Exception) {
                 // 源内部异常（JS 抛错 / 网络失败 / 派发失败）在这里落地，方便排查；
@@ -241,29 +317,38 @@ class VeneraEngine(private val context: Context) {
                 throw e
             }
         } finally {
-            // **关键**：无论成功 / 自身超时 / 被父协程取消，都要等 JS 侧这段工作
-            // 真正落地才放锁。`@JavascriptInterface` 是同步调用，占着 JS 线程；
-            // 放任不管的话，下一个调用会排在这段「没人要但还在跑」的工作后面
-            // （实测冷启动整页推荐 0 条、漫画首页成批 30s 超时的根因）。
-            // NonCancellable 保证父协程已取消时也等得完；宽限时间兜底防永久挂死。
-            // runCatching：postError 会让 await 抛错，不能把原始异常顶掉。
-            if (!deferred.isCompleted) {
-                withContext(NonCancellable) {
-                    runCatching { withTimeoutOrNull(ABANDON_GRACE_MS) { deferred.await() } }
-                }
-            }
+            // v1.8.8.8：网络等待已从 JS 线程挪走，不再需要「等孤儿工作落地再放锁」
+            // （旧实现的 ABANDON_GRACE_MS 等待）。被放弃的调用即使还在 JS 侧跑，
+            // 也只占用它自己那一个并发槽，不会堵住别人 —— 这里直接交还准入即可。
             pending.remove(callId)
-            callMutex.unlock()
+            gate.release()
         }
+    }
+
+    /**
+     * 该 op 是否属于「用户在等结果」的操作。
+     *
+     * - 交互：search（搜索）、info / chapters / content（打开详情与阅读）、
+     *   login / accountInfo / retryImage（账号与图片重试）—— 用户盯着屏幕，
+     *   任何一秒的等待都会被感知。
+     * - 后台：ping（预热）、categories / explore / categoryComics（首屏聚合）——
+     *   用户没在看具体结果，慢一点无感知，但不该抢走交互通道。
+     */
+    private fun isInteractive(op: String): Boolean = when (op) {
+        "search", "info", "chapters", "content", "login", "accountInfo", "retryImage" -> true
+        else -> false
     }
 
     /**
      * 派发一次调用（注册源 + evaluateJavascript）。
      *
      * 与等待分离：派发失败时要把 [deferred] 立即判失败，好让 [callOnce] 的
-     * 收尾逻辑不必白等宽限时间。
+     * 收尾逻辑不必白等。
+     *
+     * [dispatchMutex] 只覆盖「拼脚本 + 投递」这一小段（不含任何网络等待），
+     * 保证同源并发调用时注册语句一定先于调用语句在 JS 线程落地。
      */
-    private suspend fun dispatchLocked(
+    private suspend fun dispatch(
         sourceKey: String,
         op: String,
         callId: String,
@@ -271,24 +356,26 @@ class VeneraEngine(private val context: Context) {
         vararg args: Any?,
     ) {
         try {
-            val code = sources[sourceKey] ?: throw IllegalStateException("源未注册：$sourceKey")
-            ensureStarted(code, sourceKey)
+            dispatchMutex.withLock {
+                val code = sources[sourceKey] ?: throw IllegalStateException("源未注册：$sourceKey")
+                ensureStarted(code, sourceKey)
 
-            val argsJson = gson.toJson(args.toList())
-            val script = buildString {
-                if (registered.add(sourceKey)) {
-                    // 首次调用（或 WebView 重建后）先把源注册进 JS 侧
-                    append("__veneraRegister(").append(jsString(sourceKey)).append(");")
+                val argsJson = gson.toJson(args.toList())
+                val script = buildString {
+                    if (registered.add(sourceKey)) {
+                        // 首次调用（或 WebView 重建后）先把源注册进 JS 侧
+                        append("__veneraRegister(").append(jsString(sourceKey)).append(");")
+                    }
+                    append("__veneraCall(")
+                        .append(jsString(callId)).append(',')
+                        .append(jsString(sourceKey)).append(',')
+                        .append(jsString(op)).append(',')
+                        .append(jsString(argsJson))
+                        .append(");true;")
                 }
-                append("__veneraCall(")
-                    .append(jsString(callId)).append(',')
-                    .append(jsString(sourceKey)).append(',')
-                    .append(jsString(op)).append(',')
-                    .append(jsString(argsJson))
-                    .append(");true;")
-            }
 
-            withContext(Dispatchers.Main) { webView?.evaluateJavascript(script, null) }
+                withContext(Dispatchers.Main) { webView?.evaluateJavascript(script, null) }
+            }
         } catch (e: Throwable) {
             deferred.completeExceptionally(e)
             throw e
@@ -361,6 +448,8 @@ class VeneraEngine(private val context: Context) {
                     }
                     readySignal = null
                     registered.clear()
+                    // 在飞的异步 HTTP 结果无人认领了，一并丢弃
+                    httpResults.clear()
                     // 正在等的调用全部异常返回，避免永久挂起
                     val gone = IllegalStateException("WebView 渲染进程已终止")
                     pending.values.forEach { if (!it.isCompleted) it.completeExceptionally(gone) }
@@ -453,6 +542,74 @@ class VeneraEngine(private val context: Context) {
         fun httpBinary(method: String, url: String, headersJson: String?, data: String?): String =
             runCatching { doHttp(method, url, headersJson, data, binary = true) }
                 .getOrElse { gson.toJson(mapOf("error" to friendly(it))) }
+
+        /**
+         * 异步 HTTP：立刻返回 reqId，请求在原生 IO 线程池里跑，完成后回调 JS。
+         *
+         * 这是 v1.8.8.8 并行的核心 —— 见类注释。JS 侧拿到 reqId 后挂一个 Promise，
+         * 原生完成时 `evaluateJavascript("__veneraHttpDone(reqId)")`，JS 再同步调
+         * [httpTake] 把结果取走（取走是一次 map 查表，不再占着 JS 线程等网络）。
+         *
+         * 所有异常都在这里收成 `{"error": "..."}` JSON，与同步桥的返回形状一致，
+         * 源侧 `if (res.error) throw` 的逻辑不用改。
+         */
+        @JavascriptInterface
+        fun httpAsync(
+            method: String,
+            url: String,
+            headersJson: String?,
+            data: String?,
+            binary: Boolean,
+        ): String {
+            val reqId = "h" + httpSeq.incrementAndGet()
+            val startedAt = System.currentTimeMillis()
+            try {
+                httpScope.launch {
+                    try {
+                        httpGate.withPermit {
+                            var failed = false
+                            val json = runCatching {
+                                doHttp(method, url, headersJson, data, binary)
+                            }.getOrElse {
+                                failed = true
+                                gson.toJson(mapOf("error" to friendly(it)))
+                            }
+                            // 诊断日志：不打 URL / 域名（源与站点信息不进日志），
+                            // 只留耗时与成败 —— 「并行到底有没有生效」全靠它判断
+                            android.util.Log.d(
+                                "VeneraNet",
+                                "$method ${System.currentTimeMillis() - startedAt}ms " +
+                                    "${json.length} 字符" + if (failed) " [失败]" else "",
+                            )
+                            // 结果体积上限与同步桥一致；超限直接替换成错误 JSON，
+                            // 免得把超大串留在内存里等一个可能永远不会来的取件
+                            if (json.length > MAX_RESULT_CHARS) {
+                                httpResults[reqId] = gson.toJson(
+                                    mapOf("error" to "响应体过大（${json.length} 字符）"),
+                                )
+                            } else {
+                                httpResults[reqId] = json
+                            }
+                        }
+                    } finally {
+                        deliverHttp(reqId)
+                    }
+                }
+            } catch (e: Throwable) {
+                // 线程池都排不进（几乎不会发生）：立刻给出错误，别让 JS 侧永久等待
+                httpResults[reqId] = gson.toJson(mapOf("error" to friendly(e)))
+                deliverHttp(reqId)
+            }
+            return reqId
+        }
+
+        /**
+         * JS 侧取走异步 HTTP 的结果（同步、O(1)）。
+         *
+         * @return 响应 JSON；已被取走 / 从未存在时返回 null（JS 侧据此判失败）
+         */
+        @JavascriptInterface
+        fun httpTake(reqId: String): String? = httpResults.remove(reqId)
 
         @JavascriptInterface
         fun setCookie(url: String, lines: String) {
@@ -790,24 +947,37 @@ class VeneraEngine(private val context: Context) {
          */
         private const val CALL_TIMEOUT_MS = 30_000L
 
-        /**
-         * 引擎锁的排队上界：等不上就快速失败，调用方按普通错误处理
-         * （首页推荐排会放弃该源，用户搜索则看到「引擎繁忙」）。
-         *
-         * v1.7.5.0 从 15s 提到 25s：首页每源预算提到 30s 后，6 路并发探一个
-         * 约 5s 的调用时，排在第 6 位的要等 ~25s；15s 会把它误杀成「繁忙」，
-         * 而它本来是能在预算内跑完的。
-         */
-        private const val ENGINE_QUEUE_WAIT_MS = 25_000L
+        /** 预热 ping 的执行上界：只是「顺手跑掉 init」，不值得占着通道太久 */
+        private const val PING_TIMEOUT_MS = 15_000L
 
         /**
-         * 调用被放弃（自身超时 / 父协程取消）后，等 JS 侧工作落地的宽限时间。
+         * 交互通道并发数（v1.8.8.8）。
          *
-         * 同步桥调用占着 JS 线程，不等它就放锁，下一个调用只会排在这段孤儿
-         * 工作后面 —— 实测是「整页推荐 0 条」的直接成因。15s 足够覆盖
-         * 「一次慢请求（≤12s）+ 收尾」。
+         * 旧实现是"一次只能跑一个"，因为同步 HTTP 桥会占满 JS 线程。异步桥之后
+         * 一次调用只在「读写 JS 的那一小段」占用 JS 线程，剩下的时间都在等网络，
+         * 所以并发才有意义。12 是按上层标签搜索的 10 路并发（TagSearchViewModel
+         * 的 `VENERA_TAG_CONCURRENCY`）留出余量定的：搜索占满时，用户点开一本书
+         * 仍然有 2 个槽可以立刻用上。
          */
-        private const val ABANDON_GRACE_MS = 15_000L
+        private const val MAX_CONCURRENT_INTERACTIVE = 12
+
+        /**
+         * 后台通道并发数：首屏聚合 + 预热共用。
+         *
+         * 6 = 上层首屏聚合的 8 路并发里绝大多数都能立刻进场，又不至于在冷启动
+         * 时一次性打出几十个请求。预热是串行的（同一时刻只占 1 个），剩下的
+         * 5 个额度留给 explore —— 首页推荐不必等预热跑完。
+         */
+        private const val MAX_CONCURRENT_BACKGROUND = 6
+
+        /** 异步 HTTP 的原生并发数：要能容纳「12 路调用各自并行发 2 个请求」 */
+        private const val MAX_CONCURRENT_HTTP = 24
+
+        /** 异步 HTTP 结果表的软上限，超出时清理最旧的一半（见 [deliverHttp]） */
+        private const val MAX_PENDING_HTTP_RESULTS = 64
+
+        /** 引擎闸门的排队上界：等不上就快速失败，调用方按普通错误处理 */
+        private const val ENGINE_QUEUE_WAIT_MS = 25_000L
 
         /**
          * 预热 ping 的排队上界：引擎忙（首页正在聚合）立刻让位，不跟首页抢。

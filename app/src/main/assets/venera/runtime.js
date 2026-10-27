@@ -6,13 +6,16 @@
  * 并且大量使用 class 字段、async/await、Map、可选链 —— Rhino（本项目既有 JS 引擎）
  * 连 class 都不支持，所以这里改用系统 WebView（V8）来跑，语法层面零妥协。
  *
- * 与原生（Kotlin）的边界只有一个同步桥 NativeBridge：
+ * 与原生（Kotlin）的边界只有 NativeBridge：
  *   - 所有 HTTP 走原生（OkHttp），因此不受 WebView 同源策略 / CORS 限制，
  *     也能复用应用自己的 Cookie 与字符集处理；
- *   - addJavascriptInterface 的调用在 JS 侧是同步的，所以 Network.get() 这类
- *     「同步返回结果」的写法可以原样保留（await 一个非 Promise 值 = 直接取值）。
+ *   - **网络走异步桥**（v1.8.8.8）：Network.get() 立刻返回 Promise，原生在
+ *     自己的 IO 线程池里发请求，完成时回调 __veneraHttpDone 再结掉 Promise。
+ *     这样等待网络期间 JS 线程是空的，多个源才能真正并行。源脚本里写的
+ *     `await Network.get(...)` 不用改 —— await 一个 Promise 与 await 一个值等价；
+ *   - 其余桥方法（Cookie / 存储 / 加解密）仍是同步的，都是本地计算，耗时极小。
  *
- * 返回结果通过 NativeBridge.postResult / postError 异步回传。
+ * 调用结果通过 NativeBridge.postResult / postError 异步回传。
  */
 (function () {
     'use strict';
@@ -280,18 +283,136 @@
         return JSON.stringify(headers || {});
     }
 
+    // ---------- 异步网络桥（v1.8.8.8）----------
+    //
+    // 旧实现：Network.get() 直接同步调 NativeBridge.http()，一次 HTTP 往返（6~12s）
+    // 期间 JS 线程完全被占住 —— 无论上层把并发开到多大，所有源实际上还是一个接
+    // 一个地跑。现在改成：原生在自己的 IO 线程池里发请求，立刻返回 reqId，JS 侧挂
+    // 一个 Promise；请求完成时原生回调 __veneraHttpDone(reqId)，JS 再同步把结果
+    // 取走（一次查表，不再等网络）。
+    //
+    // 对源脚本完全透明：源里一律是 `await Network.get(...)`，await 一个 Promise
+    // 与 await 一个值的行为一致，所以源码不需要任何改动。
+
+    /** reqId -> { resolve, reject }：还等着原生回话的请求 */
+    var httpPending = Object.create(null);
+
+    /** >0 时本次调用强制走同步桥（sync-only 源 / 自愈重试期间） */
+    var syncDepth = 0;
+
+    /** key -> true：已确认"只能用同步桥"的源（Promise 误用会直接崩的写法） */
+    var syncOnly = Object.create(null);
+
+    /** 异步桥实际发起的请求计数，用于判断一次失败是否可能由异步化引起 */
+    var asyncHits = 0;
+
+    function netSyncFlagKey(key) {
+        return 'venera:net_sync:' + key;
+    }
+
+    function httpBridgeAsync() {
+        return typeof B.httpAsync === 'function' && typeof B.httpTake === 'function';
+    }
+
+    function wantAsync() {
+        return syncDepth === 0 && httpBridgeAsync();
+    }
+
+    function httpBodyArg(data) {
+        return data === null || data === undefined
+            ? null
+            : (typeof data === 'string' ? data : String(data));
+    }
+
+    /** 同步桥：直接返回响应 JSON 字符串（阻塞 JS 线程，仅作回落用） */
+    function httpSyncRaw(method, url, headers, data, binary) {
+        return binary
+            ? B.httpBinary(String(method || 'GET'), String(url), headersToJson(headers), httpBodyArg(data))
+            : B.http(String(method || 'GET'), String(url), headersToJson(headers), httpBodyArg(data));
+    }
+
+    /**
+     * 发一个**异步**请求，返回 Promise&lt;响应 JSON 字符串&gt;。
+     *
+     * 只负责异步路径；同步回落的判断在 Network.sendRequest / fetchBytes 里做 ——
+     * 那里必须返回**裸对象**（而不是 Promise），否则「同步取值」的老写法回落之后
+     * 照样拿到 Promise，等于没救回来。
+     */
+    function httpAsyncCall(method, url, headers, data, binary) {
+        return new Promise(function (resolve, reject) {
+            var reqId;
+            try {
+                asyncHits++;
+                reqId = B.httpAsync(
+                    String(method || 'GET'),
+                    String(url),
+                    headersToJson(headers),
+                    httpBodyArg(data),
+                    !!binary,
+                );
+            } catch (e) {
+                reject(e);
+                return;
+            }
+            if (!reqId) {
+                reject(new Error('网络桥不可用'));
+                return;
+            }
+            httpPending[String(reqId)] = { resolve: resolve, reject: reject };
+        });
+    }
+
+    /**
+     * 原生回调入口：某个异步请求已有结果，来把 Promise 结掉。
+     *
+     * 结果串不随通知一起回来（那样要多经一次脚本转义 + 一次全量拷贝），
+     * 而是这里同步调用 httpTake 现取。
+     */
+    window.__veneraHttpDone = function (reqId) {
+        reqId = String(reqId);
+        var slot = httpPending[reqId];
+        if (!slot) {
+            // 没人等（调用已被上层超时放弃）→ 结果丢弃，别留在原生 map 里
+            try { B.httpTake(reqId); } catch (e) { /* ignore */ }
+            return;
+        }
+        delete httpPending[reqId];
+        var raw;
+        try {
+            raw = B.httpTake(reqId);
+        } catch (e) {
+            slot.reject(e);
+            return;
+        }
+        if (raw === null || raw === undefined) slot.reject(new Error('网络结果已失效'));
+        else slot.resolve(raw);
+    };
+
     var Network = {
         sendRequest: function (method, url, headers, data) {
-            var res = JSON.parse(B.http(String(method || 'GET'), String(url), headersToJson(headers),
-                data === null || data === undefined ? null : (typeof data === 'string' ? data : String(data))));
-            if (res.error) throw new Error(res.error);
-            return { status: res.status, headers: res.headers || {}, body: res.body, url: res.url || url };
+            if (!wantAsync()) {
+                // 同步回落：返回裸对象，与改动前的行为完全一致
+                var sync = JSON.parse(httpSyncRaw(method, url, headers, data, false));
+                if (sync.error) throw new Error(sync.error);
+                return { status: sync.status, headers: sync.headers || {}, body: sync.body, url: sync.url || url };
+            }
+            return httpAsyncCall(method, url, headers, data, false).then(function (raw) {
+                var res = JSON.parse(raw);
+                if (res.error) throw new Error(res.error);
+                return { status: res.status, headers: res.headers || {}, body: res.body, url: res.url || url };
+            });
         },
         fetchBytes: function (method, url, headers, data) {
-            var res = JSON.parse(B.httpBinary(String(method || 'GET'), String(url), headersToJson(headers),
-                data === null || data === undefined ? null : (typeof data === 'string' ? data : String(data))));
-            if (res.error) throw new Error(res.error);
-            return { status: res.status, headers: res.headers || {}, body: b64ToBytes(res.bodyBase64 || '').buffer, url: res.url || url };
+            if (!wantAsync()) {
+                var syncB = JSON.parse(httpSyncRaw(method, url, headers, data, true));
+                if (syncB.error) throw new Error(syncB.error);
+                return { status: syncB.status, headers: syncB.headers || {}, body: b64ToBytes(syncB.bodyBase64 || '').buffer, url: syncB.url || url };
+            }
+            return httpAsyncCall(method, url, headers, data, true).then(function (raw) {
+                var res = JSON.parse(raw);
+                if (res.error) throw new Error(res.error);
+                return { status: res.status, headers: res.headers || {}, body: b64ToBytes(res.bodyBase64 || '').buffer, url: res.url || url };
+            });
         },
         get: function (url, headers) {
             return this.sendRequest('GET', url, headers);
@@ -1345,29 +1466,107 @@
     var MAX_PAYLOAD_CHARS = 8 * 1024 * 1024;
 
     async function runCall(callId, key, op, argsJson) {
+        var args;
         try {
-            var args = argsJson ? JSON.parse(argsJson) : [];
-            var out = await doCall(key, op, args || []);
-            var payload = JSON.stringify(out === undefined ? null : out);
-            if (typeof payload === 'string' && payload.length > MAX_PAYLOAD_CHARS) {
-                B.postError(
-                    String(callId),
-                    '源返回的数据过大已丢弃（' + payload.length + ' 字符 > ' + MAX_PAYLOAD_CHARS + '）',
-                );
+            args = argsJson ? JSON.parse(argsJson) : [];
+        } catch (e) {
+            B.postError(String(callId), '参数解析失败：' + msgOf(e));
+            return;
+        }
+
+        // 已知只能同步取值的源：本次直接上同步桥，别再白试一遍异步
+        var pinned = !!syncOnly[String(key)];
+        var before = asyncHits;
+        var first = await attempt(key, op, args, pinned);
+        if (first.ok) {
+            postOk(callId, first.value);
+            return;
+        }
+
+        // 自愈：异步桥让「同步取值」的旧写法拿到 Promise，表现为
+        // `Cannot read properties of undefined` 一类错误。这类源极少（实测
+        // 33 个源 279 处 Network 调用里 272 处都是 await），但不能让它们直接不可用。
+        // 判定条件三项全中才重试，避免把普通的接口报错也当成兼容问题重打一遍：
+        //   1) 本次不是 pinned；2) 本次确实发过异步请求；3) 错误像"取到 undefined"。
+        if (!pinned && asyncHits > before && looksLikePromiseMisuse(first.error)) {
+            log('warn', '源 ' + key + ' 疑似不兼容异步网络，回落同步桥重试');
+            var second = await attempt(key, op, args, true);
+            if (second.ok) {
+                syncOnly[String(key)] = true;
+                try { B.storageSet(netSyncFlagKey(String(key)), '1'); } catch (e) { /* ignore */ }
+                postOk(callId, second.value);
                 return;
             }
-            B.postResult(String(callId), payload);
-        } catch (e) {
-            var msg = (e && (e.message || e.toString())) || String(e);
-            // window.__veneraDebug = true 时附带堆栈（离线验证台用），应用内保持简洁
-            if (window.__veneraDebug && e && e.stack) msg += '\n' + e.stack;
-            B.postError(String(callId), msg);
+            B.postError(String(callId), describe(second.error));
+            return;
         }
+
+        B.postError(String(callId), describe(first.error));
+    }
+
+    /**
+     * 跑一次 doCall，把结果包成 {ok, value|error}。
+     *
+     * [forceSync] 期间置高 syncDepth，让本次调用内所有 Network.* 走同步桥
+     * （同步桥是改动前的行为，慢但对任何写法都正确）。
+     */
+    async function attempt(key, op, args, forceSync) {
+        if (forceSync) syncDepth++;
+        try {
+            var out = await doCall(key, op, args || []);
+            return { ok: true, value: out };
+        } catch (e) {
+            return { ok: false, error: e };
+        } finally {
+            if (forceSync) syncDepth--;
+        }
+    }
+
+    /** 结果串落地：带体积上限，超限回明确错误而不是把巨型串丢过 JNI */
+    function postOk(callId, out) {
+        var payload = JSON.stringify(out === undefined ? null : out);
+        if (typeof payload === 'string' && payload.length > MAX_PAYLOAD_CHARS) {
+            B.postError(
+                String(callId),
+                '源返回的数据过大已丢弃（' + payload.length + ' 字符 > ' + MAX_PAYLOAD_CHARS + '）',
+            );
+            return;
+        }
+        B.postResult(String(callId), payload);
+    }
+
+    function msgOf(e) {
+        return (e && (e.message || e.toString())) || String(e);
+    }
+
+    function describe(e) {
+        var msg = msgOf(e);
+        // window.__veneraDebug = true 时附带堆栈（离线验证台用），应用内保持简洁
+        if (window.__veneraDebug && e && e.stack) msg += '\n' + e.stack;
+        return msg;
+    }
+
+    /**
+     * 错误形态是否像"把 Promise 当结果用了"。
+     *
+     * 命中概率最高的几种：`undefined.body.data` 这类链式取值（Cannot read
+     * properties of undefined）、把 Promise 当函数调（is not a function）、
+     * 把 Promise 丢给 JSON.parse（"undefined" is not valid JSON / Unexpected token）。
+     * 网络层错误（超时、DNS 失败）不含这些词，因此不会被误判。
+     */
+    function looksLikePromiseMisuse(e) {
+        var msg = msgOf(e);
+        return /cannot read propert|of undefined|of null|is not a function|is not an object|is not valid json|unexpected token/i
+            .test(msg);
     }
 
     // 暴露给 Kotlin
     window.__veneraRegister = function (key) {
         try {
+            // 回灌自愈结果：这个源历史上被判定为"只能用同步桥"
+            try {
+                if (B.storageGet(netSyncFlagKey(String(key))) === '1') syncOnly[String(key)] = true;
+            } catch (e) { /* ignore */ }
             var s = registerSource(key);
             return JSON.stringify({ ok: true, name: s.name, version: s.version });
         } catch (e) {

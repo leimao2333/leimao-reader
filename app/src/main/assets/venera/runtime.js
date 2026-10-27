@@ -300,15 +300,37 @@
     /** >0 时本次调用强制走同步桥（sync-only 源 / 自愈重试期间） */
     var syncDepth = 0;
 
-    /** key -> true：已确认"只能用同步桥"的源（Promise 误用会直接崩的写法） */
+    /**
+     * key -> true：已确认「只能用同步桥」的源（Promise 误用会直接崩的写法）。
+     *
+     * **只在内存里有效，绝不落盘**（v1.8.9.5）。旧实现把结论写进
+     * `venera:net_sync:<key>` 持久化，而判定条件又宽得离谱 —— 一次普通的业务报错
+     * （接口改版、字段缺失、站点返回 HTML）就会被当成「源不支持异步桥」，从此这台
+     * 机器上该源**永久**走同步桥。同步桥会阻塞整条共享 JS 线程 6~12 秒，于是用户
+     * 侧表现为「点进 Venera 源一直转圈」。内存态最多影响当前进程，重启即恢复。
+     */
     var syncOnly = Object.create(null);
+
+    /**
+     * key -> `{ hits, message }`：连续「异步失败 + 同步成功」的计数。
+     *
+     * 判据不是猜错误文本，而是**报错必须一模一样**：同一条报错连续出现两次，
+     * 才说明它是结构性的（源真的在用同步取值），而不是偶发网络抖动。
+     * 任何一次异步调用成功都会把它清掉。
+     */
+    var syncSuspect = Object.create(null);
+
+    /** 连续命中多少次才真正钉成同步桥（每次命中都已经过「同步重试成功」验证） */
+    var SYNC_SUSPECT_THRESHOLD = 2;
 
     /** 异步桥实际发起的请求计数，用于判断一次失败是否可能由异步化引起 */
     var asyncHits = 0;
 
-    function netSyncFlagKey(key) {
-        return 'venera:net_sync:' + key;
-    }
+    /** 网络调用总计数（同步 + 异步都算）：看门狗用它判断「源到底有没有发请求」 */
+    var netCalls = 0;
+
+    /** 旧版本落盘的「只能用同步桥」标记前缀：v1.8.9.5 起不再读取，注册时顺手清掉 */
+    var LEGACY_SYNC_FLAG_PREFIX = 'venera:net_sync:';
 
     function httpBridgeAsync() {
         return typeof B.httpAsync === 'function' && typeof B.httpTake === 'function';
@@ -326,6 +348,8 @@
 
     /** 同步桥：直接返回响应 JSON 字符串（阻塞 JS 线程，仅作回落用） */
     function httpSyncRaw(method, url, headers, data, binary) {
+        if (orphanedNetwork()) throw new Error('调用已取消');
+        netCalls++;
         return binary
             ? B.httpBinary(String(method || 'GET'), String(url), headersToJson(headers), httpBodyArg(data))
             : B.http(String(method || 'GET'), String(url), headersToJson(headers), httpBodyArg(data));
@@ -342,7 +366,10 @@
         return new Promise(function (resolve, reject) {
             var reqId;
             try {
+                // 已被放弃的孤儿循环：直接抛错打断，别再往原生塞请求
+                if (orphanedNetwork()) throw new Error('调用已取消');
                 asyncHits++;
+                netCalls++;
                 reqId = B.httpAsync(
                     String(method || 'GET'),
                     String(url),
@@ -358,9 +385,62 @@
                 reject(new Error('网络桥不可用'));
                 return;
             }
-            httpPending[String(reqId)] = { resolve: resolve, reject: reject };
+            httpPending[String(reqId)] = { resolve: resolve, reject: reject, t0: Date.now() };
         });
     }
+
+    /**
+     * 取件并结掉 Promise（推送与轮询两条路共用）。
+     *
+     * @param strict 推送路径传 true：原生已经说「有结果了」，取不到就是结果丢了，
+     *               立刻报错，别让源永远等下去。轮询路径传 false：取不到只说明还没
+     *               到，继续等下一轮。
+     * @returns true 表示已经处理（无论成败），false 表示结果还没到
+     */
+    function settleHttp(reqId, slot, strict) {
+        var raw;
+        try {
+            raw = B.httpTake(reqId);
+        } catch (e) {
+            delete httpPending[reqId];
+            slot.reject(e);
+            return true;
+        }
+        if (raw === null || raw === undefined) {
+            if (!strict) return false;
+            delete httpPending[reqId];
+            slot.reject(new Error('网络结果已失效'));
+            return true;
+        }
+        delete httpPending[reqId];
+        slot.resolve(raw);
+        return true;
+    }
+
+    /**
+     * 结果投递的**轮询兜底**（v1.8.9.5）。
+     *
+     * 原生完成一个异步请求后走 `wv.post { evaluateJavascript("__veneraHttpDone(...)") }`
+     * 通知 JS —— 而 `wv.post` 排在**应用主线程**上。首页正在聚合几十个源、列表在
+     * 重组时，主线程一旦被占住十几秒，所有通知就全卡在队列里：JS 侧那些 Promise
+     * 一个都结不了，`info` 自然一直等，最后撞上 30 秒超时 —— 用户侧就是「点进去
+     * 一直转圈」。真机日志实测过：`pending=14`（14 个请求已发完却一个都没回话）。
+     *
+     * 这里补一条完全走 JS 定时器 + 同步桥的取件通道（不经过应用主线程）：
+     * 超过 [HTTP_POLL_MIN_AGE_MS] 还没收到通知的请求，就自己 `httpTake` 一次。
+     * 推送仍是快路径（毫秒级），轮询只在推送被卡住时兜底，平时几乎不触发。
+     */
+    var HTTP_POLL_TICK_MS = 250;
+    var HTTP_POLL_MIN_AGE_MS = 1000;
+
+    setInterval(function () {
+        var now = Date.now();
+        Object.keys(httpPending).forEach(function (reqId) {
+            var slot = httpPending[reqId];
+            if (!slot || now - (slot.t0 || 0) < HTTP_POLL_MIN_AGE_MS) return;
+            settleHttp(reqId, slot);
+        });
+    }, HTTP_POLL_TICK_MS);
 
     /**
      * 原生回调入口：某个异步请求已有结果，来把 Promise 结掉。
@@ -376,16 +456,7 @@
             try { B.httpTake(reqId); } catch (e) { /* ignore */ }
             return;
         }
-        delete httpPending[reqId];
-        var raw;
-        try {
-            raw = B.httpTake(reqId);
-        } catch (e) {
-            slot.reject(e);
-            return;
-        }
-        if (raw === null || raw === undefined) slot.reject(new Error('网络结果已失效'));
-        else slot.resolve(raw);
+        settleHttp(reqId, slot, true);
     };
 
     var Network = {
@@ -742,6 +813,92 @@
 
     var SOURCES = {};
     var INFO_CACHE = {};
+
+    /**
+     * 正在飞的 `loadInfo`：`源|id` → Promise（v1.8.9.4）。
+     *
+     * 详情页是**并发**问 `info` 和 `chapters` 的。以前 `chapters` 只在 `info` 已经
+     * 完成时才命中 [INFO_CACHE]，撞上并发就变成把同一个 `loadInfo` 跑两遍 ——
+     * 慢源（要翻页 / 二次请求）直接翻倍，实测顶到 30 秒上界，用户侧就是
+     * 「点进去一直转圈」。上游只加载一次 ComicDetails，这里对齐：同源同 id 共享
+     * 同一个 Promise，后来的调用等它，不重复发请求。
+     */
+    var INFO_INFLIGHT = Object.create(null);
+    var INFO_CACHE_MAX = 64;
+    var INFO_CACHE_ORDER = [];
+
+    /**
+     * 刚失败的 `loadInfo`：`源|id` → `{ message, at }`（v1.8.9.5）。
+     *
+     * 详情页是**串行**问 `info` 再问 `chapters` 的（见 ComicDetailViewModel：
+     * 目录必须在详情之后取，legado 源会靠详情写入变量）。详情一旦卡到 30 秒上界
+     * 失败，目录紧接着又把同一个 `loadInfo` 完整重跑一遍 —— 用户侧就是转圈一分钟。
+     * 记一个短时负缓存，让紧随其后的 `chapters` 立刻拿到同一个错误，
+     * 而不是再赌一次网络。
+     */
+    var INFO_FAIL = Object.create(null);
+    var INFO_FAIL_TTL_MS = 5000;
+
+    /**
+     * 单次 `loadInfo` 的上限（v1.8.9.5）。
+     *
+     * 不加这条的话，源自己的 `loadInfo` 一旦永不返回（等一个永远不结的 Promise），
+     * `INFO_INFLIGHT` 里那条记录就永远摘不掉 —— 之后这个作品的每一次 `info` /
+     * `chapters` 都会共享同一个卡死的 Promise，**本次进程内永久打不开**。
+     * 上界取得比 Kotlin 侧的 30s 宽，正常慢源不会被它误杀。
+     */
+    var LOAD_INFO_TIMEOUT_MS = 45000;
+
+    /** 清掉某个源的全部详情负缓存（同步重试前必须清，见 [attempt]） */
+    function clearInfoFail(key) {
+        var prefix = key + '|';
+        Object.keys(INFO_FAIL).forEach(function (k) {
+            if (k.indexOf(prefix) === 0) delete INFO_FAIL[k];
+        });
+    }
+
+    function loadInfoShared(src, key, id) {
+        var cacheKey = key + '|' + id;
+        if (INFO_CACHE[cacheKey]) return Promise.resolve(INFO_CACHE[cacheKey]);
+        var failed = INFO_FAIL[cacheKey];
+        if (failed) {
+            if (Date.now() - failed.at < INFO_FAIL_TTL_MS) {
+                return Promise.reject(new Error(failed.message));
+            }
+            delete INFO_FAIL[cacheKey];
+        }
+        var inflight = INFO_INFLIGHT[cacheKey];
+        if (inflight) return inflight;
+        inflight = (async function () {
+            try {
+                if (!src.comic || typeof src.comic.loadInfo !== 'function') {
+                    throw new Error('该源没有实现详情加载（comic.loadInfo）');
+                }
+                var d = await Promise.race([
+                    src.comic.loadInfo.call(src, id),
+                    new Promise(function (_resolve, reject) {
+                        setTimeout(function () {
+                            reject(new Error('详情加载超时（源 ' + (LOAD_INFO_TIMEOUT_MS / 1000) + 's 未返回）'));
+                        }, LOAD_INFO_TIMEOUT_MS);
+                    }),
+                ]);
+                INFO_CACHE[cacheKey] = d;
+                INFO_CACHE_ORDER.push(cacheKey);
+                while (INFO_CACHE_ORDER.length > INFO_CACHE_MAX) {
+                    delete INFO_CACHE[INFO_CACHE_ORDER.shift()];
+                }
+                return d;
+            } catch (e) {
+                INFO_FAIL[cacheKey] = { message: msgOf(e), at: Date.now() };
+                throw e;
+            } finally {
+                // 失败也要摘掉，否则一次失败会让这个 id 永远拿到同一个 rejected Promise
+                delete INFO_INFLIGHT[cacheKey];
+            }
+        })();
+        INFO_INFLIGHT[cacheKey] = inflight;
+        return inflight;
+    }
     /**
      * 逐图「失败回退」表（v1.7.1.0）。
      *
@@ -753,8 +910,49 @@
      */
     var IMG_RETRY = {};
 
+    /**
+     * `search.loadNext` 型源的**游标链缓存**。
+     *
+     * 这类源的续页靠 token，没有页码概念；而 App 的列表接口是页码驱动的
+     * （`search(keyword, page)`）。要拿第 N 页就必须从首页 token 顺着走 N-1 次。
+     * 这里把走过的 token 链按 `源|关键词|选项` 缓存下来，翻页时只补走新增段，
+     * 不会每页都从头重走。超过 [NEXT_CHAINS_MAX] 条时丢弃最早插入的。
+     */
+    var NEXT_CHAINS = {};
+    var NEXT_CHAINS_MAX = 64;
+    var NEXT_CHAINS_ORDER = [];
+
+    /**
+     * 丢弃某个源的全部派生状态。
+     *
+     * 什么时候会重新注册同一个 key：源码被编辑 / 更新后 `putSource` 会清掉 Kotlin
+     * 侧的注册标记，下一次调用重新求值。旧实现只换 `SOURCES[key]`，`INIT_STATE` /
+     * `INFO_CACHE` / `NEXT_CHAINS` 里全是**旧实例**留下的东西：新实例永远等不到
+     * 自己的 init，详情还会直接命中旧实例的缓存。这里一并清干净。
+     */
+    function resetSourceState(key) {
+        key = String(key);
+        delete INIT_STATE[key];
+        delete syncOnly[key];
+        delete syncSuspect[key];
+        var prefix = key + '|';
+        Object.keys(INFO_CACHE).forEach(function (k) {
+            if (k.indexOf(prefix) === 0) delete INFO_CACHE[k];
+        });
+        Object.keys(INFO_INFLIGHT).forEach(function (k) {
+            if (k.indexOf(prefix) === 0) delete INFO_INFLIGHT[k];
+        });
+        Object.keys(INFO_FAIL).forEach(function (k) {
+            if (k.indexOf(prefix) === 0) delete INFO_FAIL[k];
+        });
+        Object.keys(NEXT_CHAINS).forEach(function (k) {
+            if (k.indexOf(prefix) === 0) delete NEXT_CHAINS[k];
+        });
+    }
+
     function registerSource(key) {
-        var code = B.getSource(String(key));
+        key = String(key);
+        var code = B.getSource(key);
         if (!code) throw new Error('未找到源代码：' + key);
         var m = /class\s+([A-Za-z_$][\w$]*)\s+extends\s+ComicSource/.exec(code);
         if (!m) throw new Error('不是有效的 Venera 源（未找到 class X extends ComicSource）');
@@ -762,42 +960,88 @@
         var factory = new Function(code + '\n;return new ' + cls + '();');
         var instance = factory();
         instance.key = instance.key || key;
+        resetSourceState(key);
         SOURCES[key] = instance;
+        // 与上游对齐：解析完成即触发 init，不等到第一次调用才现场跑
+        fireInit(key, instance);
         return instance;
     }
 
     /**
-     * 取（并按需构造 / 初始化）源实例。
+     * key -> `{ state, promise }`，`state ∈ 'pending' | 'done' | 'failed'`。
      *
-     * 注意：`init()` 在部分源里是 async，且会填充后面 getter 依赖的状态
-     * （例如某些源的 `static apiDomains` 由 init → refreshApiDomains 写入）。
-     * 因此必须 await，否则第一次调用会撞上未完成的初始化。
+     * 与上游对齐（`venera/lib/foundation/comic_source/parser.dart`）：源在**解析
+     * 完成的那一刻**就触发 `init()`，而不是等到第一次调用才现场跑 —— 上游甚至是
+     * `Future.delayed(50ms, () => runCode("...init()"))`，触发后根本不 await。
+     * 这里同样「注册即触发」，让 init 尽早拿到那几百毫秒 / 几秒的提前量。
      */
-    var INIT_DONE = {};
+    var INIT_STATE = Object.create(null);
 
-    async function ensureSource(key) {
-        var src = SOURCES[key] || registerSource(key);
-        // v1.7.5.0：把「init 进行中」的 Promise 存下来共享，而不是先置完成标记。
-        //
-        // 旧写法 `INIT_DONE[key] = true` 在 `await src.init()` **之前**就置位：
-        // 调用方（Kotlin 侧有 30s 上界）一旦放弃，init 仍在后台跑，而下一个调用
-        // 看到标记已置就直接继续 —— 拿到的是半初始化的源（baseUrl / apiDomains
-        // 还没填好），表现为「接口地址是 null」这类莫名错误。共享 Promise 后，
-        // 后来的调用会等价地等同一个 init 落地，谁也不跳过。
-        var inflight = INIT_DONE[key];
-        if (!inflight) {
-            inflight = (async function () {
-                if (typeof src.init === 'function') {
-                    try {
-                        await src.init();
-                    } catch (e) {
-                        log('warning', 'init', key + ' ' + ((e && e.message) || e));
-                    }
-                }
-            })();
-            INIT_DONE[key] = inflight;
+    /**
+     * 失败后愿意**为 init 补等**多久，以及哪些操作值得补等（毫秒）。
+     *
+     * 为什么不是「调用前先等 init」：`init` 只是少数源才需要的（刷新域名表 /
+     * 登录态），大部分源的 `loadInfo` 根本不碰它。调用前一律等，等于让**所有**源
+     * 都替一个可能永远不结的 Promise 付时间 —— 用户侧就是「点进去一直转圈」。
+     * 所以改成「先直接跑，失败了再看是不是 init 还没完成，是的话补等一次再重试」：
+     * - init 已完成 → 和以前一样，零额外开销；
+     * - init 不需要 → 第一次就成功，连等都不用等；
+     * - init 确实需要 → 第一次毫秒级失败（`this.apiDomains[0]` 取不到），
+     *   补等 init 后重试一次即成功；
+     * - init 卡死 → 也只等一次补等上界就给出明确错误，不会无限拖。
+     *
+     * 后台操作（召回 / 分类枚举）补等时间更短：它们讲究「出多少算多少」，
+     * 一个源的 init 不该拖住整批。
+     */
+    var INIT_RETRY_WAIT_INTERACTIVE_MS = 15000;
+    var INIT_RETRY_WAIT_BACKGROUND_MS = 5000;
+
+    function initRetryWaitForOp(op) {
+        if (op === 'info' || op === 'chapters' || op === 'content') return INIT_RETRY_WAIT_INTERACTIVE_MS;
+        if (op === 'search' || op === 'categories' || op === 'categoryComics' || op === 'explore') {
+            return INIT_RETRY_WAIT_BACKGROUND_MS;
         }
-        await inflight;
+        return 0;
+    }
+
+    /** init 失败后允许重试的冷却时间：源站一时不通不该让这个源本次进程内永久不可用 */
+    var INIT_RETRY_COOLDOWN_MS = 30000;
+
+    /** 触发（或复用）某个源的 init，返回它的 Promise；失败只记日志，不向外抛 */
+    function fireInit(key, src) {
+        var st = INIT_STATE[key];
+        if (st) {
+            // 已经跑过、正在跑、或刚失败还没到冷却时间 → 复用旧结果
+            if (st.state !== 'failed') return st.promise;
+            if (Date.now() - (st.at || 0) < INIT_RETRY_COOLDOWN_MS) return st.promise;
+        }
+        st = { state: 'pending', promise: null, at: Date.now() };
+        INIT_STATE[key] = st;
+        st.promise = (async function () {
+            try {
+                if (typeof src.init === 'function') await src.init();
+                st.state = 'done';
+            } catch (e) {
+                st.state = 'failed';
+                st.at = Date.now();
+                // 与上游一致：init 失败不让整个源不可用（很多源的 init 只是刷新域名表）
+                log('warning', 'init 失败', ((e && e.message) || e));
+            }
+        })();
+        return st.promise;
+    }
+
+    /**
+     * 取（并按需构造 / 触发初始化）源实例。
+     *
+     * **不等 init**（v1.8.9.5）：只负责把 init 跑起来。要不要为 init 补等，
+     * 由 [runCall] 在**失败之后**按操作类型决定（见 [initRetryWaitForOp]）。
+     */
+    async function ensureSource(key) {
+        var src = SOURCES[key];
+        if (!src) src = registerSource(key);
+        // 幂等：已在跑就直接复用；失败且过了冷却时间会重新触发一次
+        fireInit(key, src);
         return src;
     }
 
@@ -1025,11 +1269,15 @@
             }
         }
         // onImageLoad：源用它补签名 / 防盗链头 / 二次解析真实地址 / 给出乱序还原脚本
+        //
+        // **必须并发**（v1.8.9.5）。图库类源（`loadEp` 只返回页码，真实地址在
+        // `onImageLoad` 里逐张解析）一章几十页就是几十次往返 —— 以前这里是
+        // 一个 `await` 接一个 `await` 的串行循环，一章要跑上百次请求、好几分钟，
+        // 上层早就超时了，用户侧就是「章节一直转圈 / 加载不出内容」。
+        // 现在按 [IMAGE_RESOLVE_CONCURRENCY] 并发解析，顺序保持不变（结果按下标回填）。
         var onLoad = src.comic && src.comic.onImageLoad;
         if (typeof onLoad === 'function' && urls.length) {
-            var fixed = [];
-            for (var j = 0; j < urls.length; j++) {
-                var orig = urls[j];
+            urls = await mapLimit(urls, IMAGE_RESOLVE_CONCURRENCY, async function (orig) {
                 var finalUrl = orig;
                 try {
                     var r = await onLoad.call(src, orig, comicId, epId);
@@ -1056,11 +1304,37 @@
                 } catch (e) {
                     log('warning', 'onImageLoad', String(e));
                 }
-                fixed.push(finalUrl);
-            }
-            urls = fixed;
+                return finalUrl;
+            });
         }
         return { images: urls, headers: headers, scripts: scripts };
+    }
+
+    /** 逐张解析图片地址的并发度：够快，又不至于把 HTTP 闸门（24）挤满 */
+    var IMAGE_RESOLVE_CONCURRENCY = 8;
+
+    /**
+     * 按并发上限跑一个异步映射，**结果顺序与原数组一致**。
+     *
+     * 用于「一张图一次往返」的解析：串行太慢（几十页要几分钟），无上限又会把
+     * 并发闸门挤爆。任一任务抛错都按调用方自己的 try/catch 处理，这里不吞。
+     */
+    async function mapLimit(items, limit, fn) {
+        var out = new Array(items.length);
+        var next = 0;
+        var workers = [];
+        var n = Math.min(limit, items.length);
+        for (var w = 0; w < n; w++) {
+            workers.push((async function () {
+                for (;;) {
+                    var i = next++;
+                    if (i >= items.length) return;
+                    out[i] = await fn(items[i], i);
+                }
+            })());
+        }
+        await Promise.all(workers);
+        return out;
     }
 
     /**
@@ -1080,7 +1354,11 @@
             var group = list[i];
             var opts = group && group.options;
             if (!opts || !opts.length) {
-                out.push(null);
+                // 空串而不是 null（v1.8.9.4）：源里常写 `options[0].type` /
+                // `options[0].split(...)` 这类直接取属性的写法，给 null 会抛
+                // `Cannot read properties of undefined (reading 'type')`，
+                // 整次搜索直接失败（真机日志里出现过）。
+                out.push('');
                 continue;
             }
             var first = String(opts[0]);
@@ -1283,8 +1561,12 @@
             }
 
             case 'search': {
-                // 两种契约：load(keyword, options, page) 与 loadNext(keyword, options, next)
-                // （loadNext 用于「下一页 token」型源；两者都存在时 load 优先，与官方一致）
+                // 契约以**源代码**为准（venera-configs 实测多个源一致）：
+                //   load     = (keyword, options, page)
+                //   loadNext = (keyword, options, next)
+                // 注意 options 在**第 2 位**、page/next 在第 3 位。
+                // 上游 Dart 侧 SearchFunction typedef 写的是 (keyword, page, options)，
+                // 那是桥接层内部签名，不能拿来对齐 JS 源，否则 page 会拿到选项数组。
                 var hasLoad = src.search && typeof src.search.load === 'function';
                 var hasNext = src.search && typeof src.search.loadNext === 'function';
                 if (!hasLoad && !hasNext) {
@@ -1297,11 +1579,32 @@
                 if (hasLoad) {
                     r = await src.search.load.call(src, args[0], opts, pageNo);
                 } else {
-                    // 只能从第一页开始翻 token；第 1 页之后的暂不支持
-                    if (pageNo > 1) return { comics: [], maxPage: null };
-                    r = await src.search.loadNext.call(src, args[0], opts, null);
+                    // loadNext 型源：第 N 页的 token 要顺着链走 N-1 次才能拿到。
+                    // 把走过的 token 缓存起来，翻页时只补走新增的那一段。
+                    var chainKey = key + '|' + args[0] + '|' + opts.join(',');
+                    var chain = NEXT_CHAINS[chainKey] || [null]; // chain[0] = 首页 token
+                    var target = pageNo - 1;
+                    var guard = 0;
+                    while (chain.length <= target && guard++ < 200) {
+                        var prevToken = chain[chain.length - 1];
+                        var pageRes = await src.search.loadNext.call(src, args[0], opts, prevToken);
+                        var nextToken = pageRes && (pageRes.nextToken || pageRes.next);
+                        if (!nextToken) break; // 没有下一页了
+                        chain.push(nextToken);
+                    }
+                    if (!NEXT_CHAINS[chainKey]) {
+                        NEXT_CHAINS_ORDER.push(chainKey);
+                        while (NEXT_CHAINS_ORDER.length > NEXT_CHAINS_MAX) {
+                            delete NEXT_CHAINS[NEXT_CHAINS_ORDER.shift()];
+                        }
+                    }
+                    NEXT_CHAINS[chainKey] = chain;
+                    if (target >= chain.length) return { comics: [], maxPage: null };
+                    r = await src.search.loadNext.call(src, args[0], opts, chain[target]);
                 }
-                return { comics: serializeComics((r && r.comics) || []), maxPage: (r && r.maxPage) || null };
+                // 源可能直接返回数组，也可能返回 {comics, maxPage} / {data:[...]}
+                var list = Array.isArray(r) ? r : ((r && (r.comics || r.data)) || []);
+                return { comics: serializeComics(list), maxPage: (r && r.maxPage) || null };
             }
 
             // ===== 分类浏览（v1.7.0.0）=====
@@ -1376,8 +1679,7 @@
             }
 
             case 'info': {
-                var d = await src.comic.loadInfo.call(src, args[0]);
-                INFO_CACHE[key + '|' + args[0]] = d;
+                var d = await loadInfoShared(src, key, args[0]);
                 return {
                     title: d && d.title || '',
                     subTitle: (d && (d.subtitle || d.subTitle)) || '',
@@ -1392,11 +1694,7 @@
             }
 
             case 'chapters': {
-                var cached = INFO_CACHE[key + '|' + args[0]];
-                if (!cached) {
-                    cached = await src.comic.loadInfo.call(src, args[0]);
-                    INFO_CACHE[key + '|' + args[0]] = cached;
-                }
+                var cached = await loadInfoShared(src, key, args[0]);
                 return {
                     chapters: chaptersOf(cached).map(function (p) {
                         return [String(p[0]), chapterTitle(p[1])];
@@ -1465,6 +1763,140 @@
      */
     var MAX_PAYLOAD_CHARS = 8 * 1024 * 1024;
 
+    /**
+     * 正在跑的长操作（v1.8.9.5 看门狗）。
+     *
+     * 排查「点进去一直转圈」时最难区分的是三种情况：① 调用**根本没到** JS（卡在
+     * Kotlin 侧的并发闸门 / 主线程派发）；② 到了 JS 但卡在 `loadInfo` 的网络 await；
+     * ③ 到了 JS 但卡在等 init。Kotlin 侧只能看到「30 秒超时」，三种情况一模一样。
+     *
+     * 这里给交互操作挂一个看门狗：调用开始就记一条，超过 [WATCHDOG_REPORT_MS]
+     * 还没结束就每 2 秒报一次当前阶段 —— 有「开始」日志说明到了 JS，
+     * 有「卡住」日志能直接看出卡在哪一段，什么都没有就说明根本没到 JS。
+     * 只盯 info / chapters / content（召回那种成百上千次调用不跟）。
+     */
+    var LIVE_CALLS = Object.create(null);
+    var WATCHDOG_TICK_MS = 2000;
+    var WATCHDOG_REPORT_MS = 6000;
+    var WATCHDOG_MAX_REPORTS = 5;
+
+    /**
+     * 被放弃、但源函数**还在跑**的调用（v1.8.9.5）。
+     *
+     * JS 无法中断一个正在执行的源函数。某些源（逐页取图那类）的 `loadEp` 是
+     * 「一页一次请求」的循环：Kotlin 侧 30 秒超时放弃之后，循环仍在继续 ——
+     * 实测退出阅读器后网络请求还在一路发（10 秒 35 次），把共享 JS 线程和 HTTP
+     * 闸门长期占住，于是**别的什么都加载不出来**。这里给放弃的调用留标记，
+     * 它下一次发起网络请求时直接抛错，把循环打断。
+     */
+    var ABORTED_CALLS = Object.create(null);
+    var ABORTED_ORDER = [];
+    var ABORTED_MAX = 64;
+
+    /**
+     * 单次调用的硬上界：超过就自己放弃并打断。
+     *
+     * Kotlin 侧的上界更短（它会先发取消通知），这里只是兜底 —— 万一通知没到
+     * （WebView 卡住等），源函数也不许在 JS 里无限跑。
+     * `content` 放宽一档：逐页取图的源本来就是「一页一次请求」，一章几十页
+     * 需要几十次往返，30 秒根本不够（那正是「章节加载不出内容」的来源）。
+     */
+    var CALL_HARD_CAP_MS = 45000;
+    var CALL_HARD_CAP_CONTENT_MS = 90000;
+
+    function callHardCap(op) {
+        return op === 'content' ? CALL_HARD_CAP_CONTENT_MS : CALL_HARD_CAP_MS;
+    }
+
+    function watchOp(op) {
+        return op === 'info' || op === 'chapters' || op === 'content';
+    }
+
+    function liveStart(callId, key, op) {
+        LIVE_CALLS[String(callId)] = {
+            op: op,
+            key: String(key),
+            t0: Date.now(),
+            stage: '开始',
+            stageAt: Date.now(),
+            net0: netCalls,
+            reported: 0,
+        };
+        if (watchOp(op)) log('debug', 'PROBE', op + ' 开始 key=' + String(key));
+    }
+
+    function liveStage(callId, stage) {
+        var c = LIVE_CALLS[String(callId)];
+        if (!c) return;
+        c.stage = stage;
+        c.stageAt = Date.now();
+    }
+
+    function liveEnd(callId) {
+        delete LIVE_CALLS[String(callId)];
+    }
+
+    /** 标记某次调用已被放弃（上层不再等它的结果） */
+    function liveAbort(callId) {
+        var id = String(callId);
+        delete LIVE_CALLS[id];
+        if (!ABORTED_CALLS[id]) {
+            ABORTED_CALLS[id] = true;
+            ABORTED_ORDER.push(id);
+            while (ABORTED_ORDER.length > ABORTED_MAX) delete ABORTED_CALLS[ABORTED_ORDER.shift()];
+        }
+    }
+
+    /**
+     * 当前这次网络调用是否属于「已经被放弃的孤儿循环」。
+     *
+     * 判据：一个还在等结果的调用都没有，但有被放弃的调用。此时唯一还会发请求的
+     * 就是那些孤儿循环 —— 让它们抛错即可打断。（只要有任何一个正常调用在跑，
+     * 就放行：没法区分请求是谁发的，宁可让孤儿多跑一会儿也不能误伤正常调用。）
+     */
+    function orphanedNetwork() {
+        if (!LIVE_CALLS || !ABORTED_CALLS) return false;
+        for (var k in LIVE_CALLS) return false;
+        for (var a in ABORTED_CALLS) return true;
+        return false;
+    }
+
+    setInterval(function () {
+        var now = Date.now();
+        Object.keys(LIVE_CALLS).forEach(function (id) {
+            var c = LIVE_CALLS[id];
+            var elapsed = now - c.t0;
+            // 硬上界兜底：Kotlin 侧的取消通知万一没到（WebView 卡住等），
+            // 这里自己收尾，避免源函数在 JS 里无限跑下去。
+            var cap = callHardCap(c.op);
+            if (elapsed > cap) {
+                liveAbort(id);
+                try {
+                    B.postError(id, 'Venera 源执行超过 ' + (cap / 1000) + 's，已放弃');
+                } catch (e) { /* ignore */ }
+                return;
+            }
+            if (!watchOp(c.op)) return;
+            if (c.reported >= WATCHDOG_MAX_REPORTS) return;
+            if (elapsed < WATCHDOG_REPORT_MS) return;
+            c.reported += 1;
+            var st = INIT_STATE[c.key];
+            // net / pending 是关键判据：net 一直是 0 说明源根本没发请求（卡在源自己的
+            // 逻辑里）；pending > 0 说明在等我们自己的异步网络桥回话。
+            log('debug', 'PROBE', '卡住 ' + c.op + ' ' + elapsed + 'ms' +
+                ' 阶段=' + c.stage + '(' + (now - c.stageAt) + 'ms)' +
+                ' init=' + ((st && st.state) || 'none') +
+                ' net=' + (netCalls - c.net0) +
+                ' pending=' + Object.keys(httpPending).length +
+                ' inflightInfo=' + Object.keys(INFO_INFLIGHT).length);
+        });
+    }, WATCHDOG_TICK_MS);
+
+    /** Kotlin 侧放弃某次调用时调用（见 VeneraEngine.abortJsCall） */
+    window.__veneraAbort = function (callId) {
+        liveAbort(callId);
+    };
+
     async function runCall(callId, key, op, argsJson) {
         var args;
         try {
@@ -1473,35 +1905,134 @@
             B.postError(String(callId), '参数解析失败：' + msgOf(e));
             return;
         }
+        liveStart(callId, key, op);
+        try {
+            await runCallCore(callId, key, op, args);
+        } catch (e) {
+            // 兜底：这里抛出去就是「Kotlin 侧一直等到 30 秒超时」，用户只看到转圈。
+            // 任何意外（结果序列化失败、桥调用异常）都必须变成一个明确的错误回包。
+            try { B.postError(String(callId), describeWithHint(key, e)); } catch (err) { /* ignore */ }
+        } finally {
+            liveEnd(callId);
+        }
+    }
+
+    async function runCallCore(callId, key, op, args) {
+        var startedAt = Date.now();
 
         // 已知只能同步取值的源：本次直接上同步桥，别再白试一遍异步
         var pinned = !!syncOnly[String(key)];
         var before = asyncHits;
+        liveStage(callId, '源加载中');
         var first = await attempt(key, op, args, pinned);
+
+        // init 还没完成就开跑 → 补等一次再重试（见 [initRetryWaitForOp]）。
+        // 半初始化的源会在 `this.apiDomains[0]` 这类下标访问上毫秒级抛错，
+        // 等 init 落地后重试一次基本都能成。
+        if (!first.ok && !pinned) {
+            liveStage(callId, '等初始化');
+            var afterInit = await retryAfterInit(key, op, args);
+            if (afterInit) first = afterInit;
+        }
+
         if (first.ok) {
+            // 异步桥跑通了 → 之前攒的「疑似只能用同步」作废
+            if (!pinned) delete syncSuspect[String(key)];
             postOk(callId, first.value);
             return;
         }
 
-        // 自愈：异步桥让「同步取值」的旧写法拿到 Promise，表现为
-        // `Cannot read properties of undefined` 一类错误。这类源极少（实测
-        // 33 个源 279 处 Network 调用里 272 处都是 await），但不能让它们直接不可用。
-        // 判定条件三项全中才重试，避免把普通的接口报错也当成兼容问题重打一遍：
-        //   1) 本次不是 pinned；2) 本次确实发过异步请求；3) 错误像"取到 undefined"。
-        if (!pinned && asyncHits > before && looksLikePromiseMisuse(first.error)) {
-            log('warn', '源 ' + key + ' 疑似不兼容异步网络，回落同步桥重试');
+        // 自愈：异步桥让「同步取值」的旧写法拿到 Promise（`JSON.parse(Network.get(u).body)`
+        // 拿到 undefined、`res.body.xxx` 拿到 undefined）。这类源极少（实测 33 个源
+        // 279 处 Network 调用里 272 处都是 await），但不能让它们直接不可用。
+        //
+        // **两级判据**（v1.8.9.5）：
+        // - 要不要「这次用同步桥再试一遍」→ 宽判据（[mayNeedSyncBridge]），
+        //   代价只是一次重复调用，宁宽勿窄；
+        // - 要不要「把这个源钉成只能同步」→ 只认**连续两次、且报错文本完全相同**
+        //   的异步失败（[SYNC_SUSPECT_THRESHOLD]）。旧实现靠一条宽正则一次定生死，
+        //   还把结论落盘，于是普通业务报错 / 偶发网络抖动都能把源永久钉死在
+        //   阻塞式同步桥上 —— 同步桥会占满共享 JS 线程，用户侧就是「点进详情一直转圈」。
+        //   另外钉住之后**一旦失败就解钉**，让下一次调用重新试异步。
+        if (!pinned && asyncHits > before && mayNeedSyncBridge(first.error)) {
+            log('warn', '源疑似不兼容异步网络，回落同步桥重试');
+            liveStage(callId, '同步重试');
             var second = await attempt(key, op, args, true);
             if (second.ok) {
-                syncOnly[String(key)] = true;
-                try { B.storageSet(netSyncFlagKey(String(key)), '1'); } catch (e) { /* ignore */ }
+                var firstMsg = msgOf(first.error);
+                var suspect = syncSuspect[String(key)];
+                if (suspect && suspect.message === firstMsg) {
+                    suspect.hits += 1;
+                } else {
+                    suspect = { hits: 1, message: firstMsg };
+                }
+                syncSuspect[String(key)] = suspect;
+                if (suspect.hits >= SYNC_SUSPECT_THRESHOLD) {
+                    syncOnly[String(key)] = true;
+                    log('warn', '源连续 ' + suspect.hits + ' 次同样报错，标记为仅同步桥');
+                }
                 postOk(callId, second.value);
                 return;
             }
-            B.postError(String(callId), describe(second.error));
+            diagFail(key, op, startedAt, '同步重试后仍失败', second.error);
+            B.postError(String(callId), describeWithHint(key, second.error));
             return;
         }
 
-        B.postError(String(callId), describe(first.error));
+        // 钉住之后又失败了 → 解钉，下次重新试异步桥。
+        // 不加这条，「误钉一次」就是永久性的（这正是旧实现最难自查的地方）。
+        if (pinned) {
+            delete syncOnly[String(key)];
+            delete syncSuspect[String(key)];
+            log('warn', '同步桥也失败，解除仅同步桥标记');
+        }
+        diagFail(key, op, startedAt, pinned ? '同步桥' : '异步桥', first.error);
+        B.postError(String(callId), describeWithHint(key, first.error));
+    }
+
+    /**
+     * 失败后如果 init 还没完成，补等一会儿再重试一次。
+     *
+     * @returns 重试结果（`{ok, value|error}`），没补等 / 补等后 init 仍未完成则返回 null
+     */
+    async function retryAfterInit(key, op, args) {
+        var budget = initRetryWaitForOp(op);
+        if (budget <= 0) return null;
+        var st = INIT_STATE[String(key)];
+        if (!st || st.state !== 'pending') return null;
+        await Promise.race([
+            st.promise,
+            new Promise(function (resolve) { setTimeout(resolve, budget); }),
+        ]);
+        // 只等来超时、或者 init 直接失败 → 不再重试（重试也是同一个错）
+        if (st.state !== 'done') return null;
+        // 上一次失败留下的负缓存会直接把重试打回同一个错，等于没重试（见 [attempt]）
+        clearInfoFail(String(key));
+        return await attempt(key, op, args, false);
+    }
+
+    /**
+     * 交互操作失败时打一条**决定性**诊断（v1.8.9.5）。
+     *
+     * 「点进源里一直转圈 / 报个看不懂的错」排查起来最费时间的就是分不清卡在哪：
+     * 等 init、发请求、还是源自己的代码抛了。这条日志把三件事一次说清 ——
+     * 耗时、init 状态、异常首帧。只在 info / chapters / content 失败时打，
+     * 召回那种成百上千次失败不会刷屏。
+     *
+     * 走 `PROBE` 前缀是为了让 Kotlin 侧（[VeneraEngine.Bridge.log]）原样输出：
+     * 其它日志为了不泄露源与站点信息只打长度，而这条只含阶段名、耗时和栈帧。
+     */
+    function diagFail(key, op, startedAt, stage, e) {
+        if (op !== 'info' && op !== 'chapters' && op !== 'content') return;
+        try {
+            var st = INIT_STATE[String(key)];
+            var stack = (e && e.stack) ? String(e.stack).split('\n').slice(0, 3).join(' | ') : '';
+            // 栈里可能带出源的内部地址 / 站点名：日志要能贴出来，先把 URL 抹掉
+            stack = stack.replace(/https?:\/\/\S+/gi, '<url>').replace(/www\.\S+/gi, '<host>');
+            log('debug', 'PROBE', op + ' 失败 ' + (Date.now() - startedAt) + 'ms ' +
+                'init=' + ((st && st.state) || 'none') + ' 通道=' + stage +
+                (stack ? ' ' + stack : ''));
+        } catch (err) { /* ignore */ }
     }
 
     /**
@@ -1511,7 +2042,13 @@
      * （同步桥是改动前的行为，慢但对任何写法都正确）。
      */
     async function attempt(key, op, args, forceSync) {
-        if (forceSync) syncDepth++;
+        if (forceSync) {
+            syncDepth++;
+            // 同步重试前必须清掉上一次（异步）失败留下的负缓存，否则
+            // loadInfoShared 会直接抛回同一个错误，重试等于没试 ——
+            // 这会连带把「这个源到底能不能用同步桥救回来」的判断全做错。
+            clearInfoFail(String(key));
+        }
         try {
             var out = await doCall(key, op, args || []);
             return { ok: true, value: out };
@@ -1547,26 +2084,42 @@
     }
 
     /**
-     * 错误形态是否像"把 Promise 当结果用了"。
+     * **宽判据**：这次失败要不要「用同步桥再试一遍」。
      *
-     * 命中概率最高的几种：`undefined.body.data` 这类链式取值（Cannot read
-     * properties of undefined）、把 Promise 当函数调（is not a function）、
-     * 把 Promise 丢给 JSON.parse（"undefined" is not valid JSON / Unexpected token）。
-     * 网络层错误（超时、DNS 失败）不含这些词，因此不会被误判。
+     * 代价只有一次重复调用，所以宁宽勿窄 —— 漏判会让一个本来能救回来的源直接不可用。
+     * 网络层错误（超时 / DNS 失败 / 连接重置）不含这些词，不会白重试。
      */
-    function looksLikePromiseMisuse(e) {
+    function mayNeedSyncBridge(e) {
         var msg = msgOf(e);
         return /cannot read propert|of undefined|of null|is not a function|is not an object|is not valid json|unexpected token/i
             .test(msg);
     }
 
+    /**
+     * 失败消息 + 现场提示。
+     *
+     * `init()` 卡在网络上时源会停在半初始化状态，`loadInfo` 里
+     * `this.someList[0]` 之类立刻抛 `Cannot read properties of undefined` ——
+     * 那条消息对用户毫无信息量，看起来像「源坏了」。这里补一句真正的原因。
+     */
+    function describeWithHint(key, e) {
+        var msg = describe(e);
+        var st = INIT_STATE[String(key)];
+        if (st && st.state === 'pending') {
+            msg += '（源初始化尚未完成，可能是网络不通，稍后重试）';
+        } else if (st && st.state === 'failed') {
+            msg += '（源初始化失败，通常是源站当前不可达）';
+        }
+        return msg;
+    }
+
     // 暴露给 Kotlin
     window.__veneraRegister = function (key) {
         try {
-            // 回灌自愈结果：这个源历史上被判定为"只能用同步桥"
-            try {
-                if (B.storageGet(netSyncFlagKey(String(key))) === '1') syncOnly[String(key)] = true;
-            } catch (e) { /* ignore */ }
+            // v1.8.9.5：旧版本把「只能用同步桥」的结论落盘过（`venera:net_sync:<key>`），
+            // 而判定条件宽到普通业务报错也会命中 —— 那些机器上的源至今仍被钉死在
+            // 阻塞式同步桥上。这里顺手删掉，且**不再回灌**（同步桥结论只保留在内存）。
+            try { B.storageDelete(LEGACY_SYNC_FLAG_PREFIX + String(key)); } catch (e) { /* ignore */ }
             var s = registerSource(key);
             return JSON.stringify({ ok: true, name: s.name, version: s.version });
         } catch (e) {

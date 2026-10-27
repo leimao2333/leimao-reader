@@ -68,6 +68,19 @@ class TagRepository(
         withContext(Dispatchers.IO) { collect(type) }
     }
 
+    /**
+     * 清空某个类型的标签池缓存（v1.8.9.2）。
+     *
+     * 只删缓存、不立刻重新收集 —— 由调用方决定下一步（用户可能想先改源配置）。
+     * 内存缓存一并清掉，否则下一次 [tags] 还会命中旧对象。
+     */
+    suspend fun clear(type: SourceType): Boolean = refreshMutex.withLock {
+        withContext(Dispatchers.IO) {
+            memCache.remove(type)
+            store.clear(type.name)
+        }
+    }
+
     private suspend fun collect(type: SourceType): TagPlan {
         // includeDisabled = true：涵盖每一个源（v1.6.5.0），禁用源的分类也进标签池
         val sources = try {

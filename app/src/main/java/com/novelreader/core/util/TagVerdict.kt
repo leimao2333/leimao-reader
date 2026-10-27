@@ -1,0 +1,163 @@
+package com.novelreader.core.util
+
+import com.novelreader.core.search.RecallOutcome
+import com.novelreader.domain.model.MediaItem
+
+/**
+ * 一条结果对某个标签的判定结果（v1.8.9.1）。
+ *
+ * 三态而不是二值，是整套搜索方案的核心：
+ * 以前只有「命中 / 不命中」，而「不命中」里混着三种完全不同的情况 ——
+ * 源说没这部（真不命中）、源超时了（不知道）、源的关键词检索宽松（可疑）。
+ * 把它们一起丢掉，用户看到的就是「结果越搜越少」。
+ */
+enum class TagVerdict {
+    /** 明确命中：分类页里抓到过，或标题确实带这个写法 */
+    MATCHED,
+
+    /** 明确不命中：源正常返回了，但标题里没有这个题材词（关键词检索的宽松命中） */
+    MISMATCHED,
+
+    /** 不知道：源超时/报错，或者这类标签本来就不会出现在标题里 */
+    UNKNOWN,
+}
+
+/**
+ * 一个标签的**判定上下文**（v1.8.9.1）：把写法归一化与分级词判定预先算好。
+ *
+ * 为什么需要它：判定是「逐条结果 × 逐标签」跑的，一次搜索要算几万次。
+ * 每次直接调 [TagAlias.searchTermsFor] 都会重跑一遍繁简归一化 + 正则编译，
+ * 实测把主线程卡到输入事件超时（2026-10-27 真机 ANR 复现）。
+ * 这里每个标签只算一次，逐条判定退化成几次字符串包含。
+ */
+class TagContext private constructor(
+    val tag: String,
+    /** 已归一化的写法（小写、去空格） */
+    private val terms: List<String>,
+    /**
+     * 分级 / 状态词（成人向题材的写法）。
+     *
+     * 这类词几乎不会写进作品标题，标题不含它说明不了什么；也正因为如此，
+     * 结果层对它们只认「成人源自己的分类页」这一种证据 —— 普通源的分区里
+     * 常把整站目录挂在任意分类下，那类「证据」只会带来一堆无关内容。
+     */
+    val isExplicitAdult: Boolean,
+) {
+
+    /** 归一化后的标题是否带这个标签的任一写法 */
+    fun matchesNormalized(normalizedTitle: String): Boolean =
+        normalizedTitle.isNotEmpty() && terms.any { normalizedTitle.contains(it) }
+
+    /**
+     * 判定顺序（改动前先读一遍，每条都各有原因）：
+     * 1. **分类页证据优先** —— 站方归类最可信，不拿标题去否它；
+     * 2. **源不可用 → unknown** —— 超时是「不知道」，绝不是「没有」；
+     * 3. **标题命中 → matched**；
+     * 4. **分级 / 状态词 + 成人源 → unknown**；
+     * 5. 其余才是 [TagVerdict.MISMATCHED]。
+     *
+     * [adultSource] 是第 4 条的前提，不能省：分级词（无码 / 有码 / 里番 / 成人）
+     * 几乎不会写进标题，所以在**做这类内容的源**上「标题没写」等于「不确定」。
+     * 但一般向源返回的《夢幻西遊》不是「不确定」，是「这个源根本不做这个题材」——
+     * 以前一律判 unknown，于是它们被当成「没被否证」保留下来，一屏全是无关内容。
+     */
+    fun verdict(
+        normalizedTitle: String,
+        provenByCategory: Boolean,
+        sourceOutcome: RecallOutcome?,
+        adultSource: Boolean = true,
+    ): TagVerdict {
+        if (provenByCategory) return TagVerdict.MATCHED
+        if (sourceOutcome != null && sourceOutcome.isUnknown) return TagVerdict.UNKNOWN
+        if (matchesNormalized(normalizedTitle)) return TagVerdict.MATCHED
+        if (isExplicitAdult && adultSource) return TagVerdict.UNKNOWN
+        return TagVerdict.MISMATCHED
+    }
+
+    companion object {
+        fun of(tag: String): TagContext = TagContext(
+            tag = tag,
+            terms = TagAlias.searchTermsFor(tag)
+                .map(TagVerdicts::normalizeTitle)
+                .filter { it.isNotEmpty() },
+            isExplicitAdult = TagAlias.isExplicitAdultIntent(tag),
+        )
+    }
+}
+
+/** 标签判定的便捷入口（批量场景请用 [TagContext]，别在循环里调这里的单条重载）。 */
+object TagVerdicts {
+
+    /** 标题归一化：小写 + 去空格（判定与比较的唯一口径） */
+    fun normalizeTitle(title: String): String = title.lowercase().replace(" ", "")
+
+    fun contextOf(tag: String): TagContext = TagContext.of(tag)
+
+    fun of(
+        title: String,
+        tag: String,
+        provenByCategory: Boolean,
+        sourceOutcome: RecallOutcome?,
+    ): TagVerdict = TagContext.of(tag)
+        .verdict(normalizeTitle(title), provenByCategory, sourceOutcome)
+
+    /** 标题里是否出现了该标签的任一写法 */
+    fun matchesTitle(title: String, tag: String): Boolean =
+        TagContext.of(tag).matchesNormalized(normalizeTitle(title))
+}
+
+/**
+ * 结果层的取舍与排序策略（v1.8.9.1）。
+ *
+ * 取舍只有一条主线：**有证据的留下，没证据的排后面**。
+ * - 「有证据」= 至少一个标签明确命中（分类页抓到过，或标题确实带这个写法）；
+ * - 没证据的（源超时 / 分级词不进标题 / 关键词检索宽松命中）**不是垃圾，只是不确定**：
+ *   有足够多确凿结果时（≥ [minResults]）不显示，免得把「和标签没关系的东西」混进来；
+ *   确凿结果不够时全部补上 —— 宁可给几条「可能不太相关」，也不要甩一个空结果页。
+ * - 排序**不再按标题长度**：那会把长标题的无关内容顶到前面（v1.8.9.1 真机反馈）。
+ *   同一档内保持召回顺序（`sortedWith` 是稳定排序）。
+ */
+object TagResultPolicy {
+
+    const val MIN_RESULTS = 20
+
+    data class Candidate(
+        val item: MediaItem,
+        val verdicts: List<TagVerdict>,
+    ) {
+        val matchedCount: Int get() = verdicts.count { it == TagVerdict.MATCHED }
+        val unknownCount: Int get() = verdicts.count { it == TagVerdict.UNKNOWN }
+        val mismatchedCount: Int get() = verdicts.count { it == TagVerdict.MISMATCHED }
+        val allKnown: Boolean get() = mismatchedCount == 0
+
+        /**
+         * 有证据：**每个**标签都明确命中（多标签 = 同时满足 / 交集）。
+         *
+         * 两层口径不同，别混：
+         * - **组内**（同一个标签的 27 个写法）任意一个命中就算 —— 由
+         *   [TagAlias.searchTermsFor] 展开的写法表负责，判定时 `terms.any` 即可；
+         * - **组间**（「无码 恋爱」两个标签）必须都命中 —— 用户 2026-10-27 明确要求交集。
+         */
+        val proven: Boolean get() = verdicts.isNotEmpty() && matchedCount == verdicts.size
+    }
+
+    fun rank(candidates: List<Candidate>, minResults: Int = MIN_RESULTS): List<MediaItem> {
+        if (candidates.isEmpty()) return emptyList()
+        val (proven, rest) = candidates.partition { it.proven }
+        val ordered = proven
+            .sortedWith(
+                compareByDescending<Candidate> { it.matchedCount }.thenBy { it.unknownCount },
+            )
+            .map { it.item }
+        if (ordered.size >= minResults) return ordered
+        // 证据不足：把「没被否掉但也没证实」的按召回顺序补上。
+        // **明确不匹配的不补**（v1.8.9.2）：它们是「已经判定为无关」的，补在后面
+        // 正是真机反馈的「下面还是一堆和标签没关系的东西」。以前连它们一起补，
+        // 于是 20 条以下的结果页有半屏都是判定层自己已经否掉的内容。
+        val unproven = rest.filter { it.allKnown }.map { it.item }
+        if (ordered.isNotEmpty() || unproven.isNotEmpty()) return ordered + unproven
+        // 一条确凿的、一条不确定的都没有：才退回明确不匹配的那批，
+        // 至少别甩一个空结果页（这时用户更需要知道「确实没搜到」）。
+        return rest.sortedBy { it.mismatchedCount }.map { it.item }
+    }
+}

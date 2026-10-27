@@ -29,6 +29,16 @@ class RequestBudget(
     val callTimeoutMs: Long? = null,
     /** Venera 引擎排队预算（毫秒）；null = 用 `ENGINE_QUEUE_WAIT_MS` */
     val queueWaitMs: Long? = null,
+    /**
+     * 这次调用是否属于**用户没在盯着**的后台批量工作（v1.8.9.2）。
+     *
+     * 为 true 时 Venera 引擎把它放进后台通道、并压短单次调用超时。动机：
+     * 标签搜索一次要打几十个源，而 `search` 原本被划进交互通道 —— 交互许可
+     * 全被召回占满后，用户点开详情页触发的 `info` 既抢不到许可，又要排在
+     * 一堆长尾搜索后面，实测等到 30008ms 直接超时（表现为「点结果一直转圈」）。
+     * 召回是后台行为，不该跟「用户正在等的那一次点击」抢通道。
+     */
+    val background: Boolean = false,
 ) : AbstractCoroutineContextElement(Key) {
 
     companion object Key : CoroutineContext.Key<RequestBudget>

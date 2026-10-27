@@ -89,4 +89,34 @@ class TagSearchTermsBudgetTest {
         val full = TagAlias.searchTermsFor("无码").size + TagAlias.searchTermsFor("全彩").size
         assertTrue("收缩后应至少少一个数量级：$budget vs $full", budget * 10 <= full)
     }
+
+    @Test
+    fun `按源轮转后整组每个写法都有源去搜`() {
+        // v1.8.9.3：以前每个源都拿同一份前 N 个写法，组里二十来个长尾写法
+        // （无码破解 / 無修正版本 / ai去码 …）一个源都不会发 —— 用户侧就是
+        // 「组里明明有这个词，却怎么也搜不到」。轮转后跨源必须覆盖整组。
+        val all = TagAlias.searchTermsFor("无码").toSet()
+        val covered = HashSet<String>()
+        repeat(40) { ordinal ->
+            covered += TagAlias.searchTermsForSource("无码", sourceOrdinal = ordinal)
+        }
+        assertEquals("整组写法应全部被某个源搜到，缺 ${all - covered}", all, covered)
+    }
+
+    @Test
+    fun `按源轮转不增加单源请求数`() {
+        repeat(8) { ordinal ->
+            assertEquals(
+                TagAlias.MAX_SEARCH_TERMS_PER_SOURCE,
+                TagAlias.searchTermsForSource("无码", sourceOrdinal = ordinal).size,
+            )
+        }
+    }
+
+    @Test
+    fun `每个源都从用户输入那个写法开始`() {
+        repeat(8) { ordinal ->
+            assertEquals("无码", TagAlias.searchTermsForSource("无码", sourceOrdinal = ordinal).first())
+        }
+    }
 }

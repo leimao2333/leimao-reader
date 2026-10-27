@@ -115,6 +115,15 @@ class VeneraEngine(private val context: Context) {
     private val callSeq = java.util.concurrent.atomic.AtomicInteger(0)
 
     /**
+     * 正在飞的**交互**调用数（v1.8.9.4）。
+     *
+     * 后台任务看到它 > 0 就主动让路：用户正在等某次点击时，不再往共享 JS 线程里
+     * 塞新的召回请求。这是「点进 Venera 源一直转圈」的正面修法 ——
+     * 只调小后台并发仍然会让已排队的请求继续挤在前面。
+     */
+    private val interactiveInFlight = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
      * 派发锁：只保护「注册 + evaluateJavascript」这一小段，不覆盖网络等待。
      *
      * 为什么需要：同一批并发调用里，A 的脚本带 `__veneraRegister`、B 的不带，
@@ -155,7 +164,15 @@ class VeneraEngine(private val context: Context) {
             val stale = httpResults.keys.take(httpResults.size - MAX_PENDING_HTTP_RESULTS / 2)
             stale.forEach { httpResults.remove(it) }
         }
+        val postAt = System.currentTimeMillis()
         wv.post {
+            val waitedMs = System.currentTimeMillis() - postAt
+            if (waitedMs > 500) {
+                // 应用主线程被占住时，所有「请求已完成」的通知都会排在队列里 ——
+                // JS 侧那些 Promise 一个都结不了（真机实测 pending 一路涨到 14）。
+                // JS 侧已补了轮询取件兜底，这条日志用来确认它到底有没有被卡。
+                android.util.Log.w("VeneraNet", "投递延迟 ${waitedMs}ms")
+            }
             runCatching {
                 wv.evaluateJavascript(
                     "window.__veneraHttpDone&&window.__veneraHttpDone(${jsString(reqId)});",
@@ -222,17 +239,20 @@ class VeneraEngine(private val context: Context) {
      * 所以这里对这一类失败重试一次即可无感恢复（search/info/chapters/content 都是
      * 幂等读，重试无副作用）。
      */
-    suspend fun call(sourceKey: String, op: String, vararg args: Any?): String =
-        callInternal(
+    suspend fun call(sourceKey: String, op: String, vararg args: Any?): String {
+        val budget = currentCoroutineContext()[RequestBudget]
+        return callInternal(
             sourceKey,
             op,
             // v1.8.8.4：标签搜索在协程上下文里下发短排队预算（2s）。
             // 引擎是全应用一个 JS 线程，几十个源一起冲进来时，按默认 25s 排队意味着
             // 排在第 5 位之后的源光等锁就超过外层 8s 超时 —— 既拿不到结果，还一直占着队列。
             // 短预算下拿不到锁就立刻失败，把机会让给下一个源。未下发时行为不变。
-            currentCoroutineContext()[RequestBudget]?.queueWaitMs ?: ENGINE_QUEUE_WAIT_MS,
+            budget?.queueWaitMs ?: ENGINE_QUEUE_WAIT_MS,
+            budget?.background == true,
             *args,
         )
+    }
 
     /**
      * 预热：串行 ping 一批源，触发各自的 `init()`（v1.7.5.0）。
@@ -261,39 +281,82 @@ class VeneraEngine(private val context: Context) {
         sourceKey: String,
         op: String,
         queueWaitMs: Long,
+        background: Boolean = false,
         vararg args: Any?,
     ): String {
         try {
-            return callOnce(sourceKey, op, queueWaitMs, *args)
+            return callOnce(sourceKey, op, queueWaitMs, background, *args)
         } catch (e: Exception) {
             if (e.message?.contains("渲染进程已终止") != true) throw e
             android.util.Log.w(LOG_TAG, "渲染进程崩溃，重建 WebView 后重试一次 op=$op")
-            return callOnce(sourceKey, op, queueWaitMs, *args)
+            return callOnce(sourceKey, op, queueWaitMs, background, *args)
         }
     }
 
-    private suspend fun callOnce(sourceKey: String, op: String, queueWaitMs: Long, vararg args: Any?): String {
-        // 分道：用户主动发起的操作走交互通道，首屏聚合 / 预热走后台通道
-        val gate = if (isInteractive(op)) interactiveGate else backgroundGate
-        // 并发闸门准入：等不上就快速失败，不参与无限期排队（见 gate 字段注释）。
-        val acquired = if (gate.tryAcquire()) {
-            true
-        } else {
-            withTimeoutOrNull(queueWaitMs) {
-                gate.acquire()
+    private suspend fun callOnce(
+        sourceKey: String,
+        op: String,
+        queueWaitMs: Long,
+        background: Boolean = false,
+        vararg args: Any?,
+    ): String {
+        // 分道：用户主动发起的操作走交互通道，首屏聚合 / 预热 / 标签召回走后台通道
+        val interactive = !background && isInteractive(op)
+        val gate = if (interactive) interactiveGate else backgroundGate
+        // 后台任务主动让路（v1.8.9.4）：用户正在等某次点击（详情 / 目录 / 正文）时，
+        // 不再往那条**全应用共用**的 JS 线程里塞新的召回请求。否则召回会把线程排满，
+        // 交互请求即使拿到了许可也只能排在后面 —— 实测顶到 30 秒上界，表现就是
+        // 「点进 Venera 源一直转圈」。等待有上界（[YIELD_TO_INTERACTIVE_MS]），
+        // 用户离开后后台工作照常继续，不会被永久饿死。
+        if (!interactive && interactiveInFlight.get() > 0) {
+            val deadline = System.currentTimeMillis() + YIELD_TO_INTERACTIVE_MS
+            while (interactiveInFlight.get() > 0 && System.currentTimeMillis() < deadline) {
+                kotlinx.coroutines.delay(YIELD_POLL_MS)
+            }
+        }
+        if (interactive) interactiveInFlight.incrementAndGet()
+        try {
+            // 并发闸门准入：等不上就快速失败，不参与无限期排队（见 gate 字段注释）。
+            val acquired = if (gate.tryAcquire()) {
                 true
-            } ?: false
+            } else {
+                withTimeoutOrNull(queueWaitMs) {
+                    gate.acquire()
+                    true
+                } ?: false
+            }
+            if (!acquired) {
+                throw IllegalStateException("Venera 引擎繁忙（并发调用已满，稍后重试）")
+            }
+            return awaitCall(sourceKey, op, background, gate, *args)
+        } finally {
+            if (interactive) interactiveInFlight.decrementAndGet()
         }
-        if (!acquired) {
-            throw IllegalStateException("Venera 引擎繁忙（并发调用已满，稍后重试）")
-        }
+    }
+
+    private suspend fun awaitCall(
+        sourceKey: String,
+        op: String,
+        background: Boolean,
+        gate: Semaphore,
+        vararg args: Any?,
+    ): String {
         val callId = "c" + callSeq.incrementAndGet()
         val deferred = CompletableDeferred<String>()
         pending[callId] = deferred
         val startedAt = System.currentTimeMillis()
         // 预热 ping 的预算单独收紧（v1.8.8.8）：它只是「顺手把 init 跑掉」，
         // 卡住的源不该占着后台通道整整 30 秒 —— 首页推荐还在等这些额度。
-        val callTimeoutMs = if (op == "ping") PING_TIMEOUT_MS else CALL_TIMEOUT_MS
+        val callTimeoutMs = when {
+            op == "ping" -> PING_TIMEOUT_MS
+            // v1.8.9.5：读章节单独放宽。有些源的 loadEp 是「一页一次请求」，
+            // 一章几十页 = 几十次往返，30 秒必然不够 —— 用户侧就是「章节加载不出内容」。
+            // 放宽到 60s 是安全的：超时后 [abortJsCall] 会把 JS 侧的循环打断，
+            // 不会再出现「放弃了还在后台狂发请求」。
+            op == "content" -> CONTENT_TIMEOUT_MS
+            background -> BACKGROUND_CALL_TIMEOUT_MS
+            else -> CALL_TIMEOUT_MS
+        }
         try {
             try {
                 dispatch(sourceKey, op, callId, deferred, *args)
@@ -318,10 +381,36 @@ class VeneraEngine(private val context: Context) {
             }
         } finally {
             // v1.8.8.8：网络等待已从 JS 线程挪走，不再需要「等孤儿工作落地再放锁」
-            // （旧实现的 ABANDON_GRACE_MS 等待）。被放弃的调用即使还在 JS 侧跑，
-            // 也只占用它自己那一个并发槽，不会堵住别人 —— 这里直接交还准入即可。
+            // （旧实现的 ABANDON_GRACE_MS 等待）。
+            //
+            // v1.8.9.5：但**必须通知 JS 侧取消**。实测某些源（逐页取图那类）的
+            // `loadEp` 是「一页一次请求」的循环，Kotlin 这边 30 秒超时放弃之后，
+            // JS 里的循环仍在继续 —— 退出阅读器后网络请求还在一路发（实测 10 秒
+            // 35 次），把共享 JS 线程和 HTTP 闸门长期占住，于是**别的什么都加载不出来**。
+            // 这里给 JS 打一个取消标记，JS 侧的下一次网络调用会直接抛错，把循环打断。
+            if (!deferred.isCompleted) {
+                abortJsCall(callId)
+            }
             pending.remove(callId)
             gate.release()
+        }
+    }
+
+    /**
+     * 通知 JS 侧放弃某次调用（v1.8.9.5）。
+     *
+     * 只是「打个标记」：JS 无法真正中断一个正在跑的源函数，但它在下一次
+     * `Network.*` 时会看到标记并抛错，从而把源的循环 / 重试链打断。
+     */
+    private fun abortJsCall(callId: String) {
+        val wv = webView ?: return
+        wv.post {
+            runCatching {
+                wv.evaluateJavascript(
+                    "window.__veneraAbort&&window.__veneraAbort(${jsString(callId)});",
+                    null,
+                )
+            }
         }
     }
 
@@ -355,8 +444,10 @@ class VeneraEngine(private val context: Context) {
         deferred: CompletableDeferred<String>,
         vararg args: Any?,
     ) {
+        val dispatchStartedAt = System.currentTimeMillis()
         try {
             dispatchMutex.withLock {
+                val lockedAt = System.currentTimeMillis()
                 val code = sources[sourceKey] ?: throw IllegalStateException("源未注册：$sourceKey")
                 ensureStarted(code, sourceKey)
 
@@ -375,6 +466,16 @@ class VeneraEngine(private val context: Context) {
                 }
 
                 withContext(Dispatchers.Main) { webView?.evaluateJavascript(script, null) }
+                // 派发耗时（v1.8.9.5）：交互调用卡 30 秒时，必须先分清是卡在
+                // 「等锁 / 等主线程派发」还是「JS 里真的跑不完」——
+                // 以前这两种情况在日志里长得一模一样，只能靠猜。
+                val dispatchMs = System.currentTimeMillis() - dispatchStartedAt
+                if (dispatchMs > DISPATCH_SLOW_MS) {
+                    android.util.Log.w(
+                        LOG_TAG,
+                        "dispatch 偏慢 ${dispatchMs}ms（等锁 ${lockedAt - dispatchStartedAt}ms）op=$op",
+                    )
+                }
             }
         } catch (e: Throwable) {
             deferred.completeExceptionally(e)
@@ -529,7 +630,14 @@ class VeneraEngine(private val context: Context) {
         @JavascriptInterface
         fun log(level: String, message: String) {
             // 源自己打出的日志内容不可控（常含站点名 / 图片地址 / 接口参数），
-            // 只保留级别与长度，避免日志里出现具体的源与站点
+            // 只保留级别与长度，避免日志里出现具体的源与站点。
+            // 例外：我们自己的 PROBE 诊断（v1.8.9.5）只含操作名、耗时、init 状态与
+            // 已抹掉 URL 的栈帧，原样输出 —— 详情/目录/正文失败时靠它一眼分清
+            // 「卡在等 init」「卡在发请求」还是「源自己的代码抛了」。
+            if (message.contains("PROBE")) {
+                android.util.Log.d("VeneraProbe", message)
+                return
+            }
             android.util.Log.d("VeneraJs", "[$level] (${message.length} chars)")
         }
 
@@ -566,7 +674,12 @@ class VeneraEngine(private val context: Context) {
             try {
                 httpScope.launch {
                     try {
+                        val gateAt = System.currentTimeMillis()
                         httpGate.withPermit {
+                            val gateWait = System.currentTimeMillis() - gateAt
+                            if (gateWait > 1_000) {
+                                android.util.Log.w("VeneraNet", "HTTP 闸门等了 ${gateWait}ms")
+                            }
                             var failed = false
                             val json = runCatching {
                                 doHttp(method, url, headersJson, data, binary)
@@ -947,8 +1060,40 @@ class VeneraEngine(private val context: Context) {
          */
         private const val CALL_TIMEOUT_MS = 30_000L
 
+        /**
+         * 读章节（`content`）的执行上界（v1.8.9.5）。
+         *
+         * 比普通调用宽一倍：部分源的 `loadEp` 是「一页一次请求」的循环，
+         * 一章几十页就是几十次往返，30 秒必然取不完 —— 用户侧看到的就是
+         * 「章节一直转圈 / 加载不出内容」。放宽后这些源能真正打开。
+         *
+         * 放宽不会回到「卡死源堵住引擎」的老问题：超时后 [abortJsCall] 会通知
+         * JS 打断源的循环，不再让它在后台继续发请求。
+         */
+        private const val CONTENT_TIMEOUT_MS = 60_000L
+
         /** 预热 ping 的执行上界：只是「顺手跑掉 init」，不值得占着通道太久 */
         private const val PING_TIMEOUT_MS = 15_000L
+
+        /**
+         * 后台批量调用（标签召回等）的执行上界（v1.8.9.2）。
+         *
+         * 召回本来就是「能出多少算多少」，硬截止也只有 30s；单个源卡满 30s 毫无收益，
+         * 却会长时间占着后台通道、连带把共享 JS 线程排满，让用户的点击排在后面。
+         * 压到 15s 与一次 HTTP 的 callTimeout 同量级，卡死的源尽快让位。
+         */
+        private const val BACKGROUND_CALL_TIMEOUT_MS = 15_000L
+
+        /**
+         * 后台任务为交互调用让路的最长等待（v1.8.9.4）。
+         *
+         * 有上界才不会把后台工作永久饿死：用户点开详情看完就退，或点开之后一直停在
+         * 那一页，后台召回最多让这么久就继续跑（那时用户已经在看内容，不再感知召回）。
+         */
+        private const val YIELD_TO_INTERACTIVE_MS = 3_000L
+
+        /** 让路期间的轮询间隔：够快跟上交互调用的起落，又不至于空转 */
+        private const val YIELD_POLL_MS = 50L
 
         /**
          * 交互通道并发数（v1.8.8.8）。
@@ -978,6 +1123,9 @@ class VeneraEngine(private val context: Context) {
 
         /** 引擎闸门的排队上界：等不上就快速失败，调用方按普通错误处理 */
         private const val ENGINE_QUEUE_WAIT_MS = 25_000L
+
+        /** 派发超过这个时长就记一条警告（见 [dispatch] 里的耗时埋点） */
+        private const val DISPATCH_SLOW_MS = 1_000L
 
         /**
          * 预热 ping 的排队上界：引擎忙（首页正在聚合）立刻让位，不跟首页抢。

@@ -589,19 +589,22 @@ object TagAlias {
     const val MAX_SEARCH_TERMS_PER_SOURCE = 6
 
     /**
-     * 供**发请求**用的写法列表（v1.8.7.1 改挑选口径）。
+     * 按**源**分配写法（v1.8.9.3）。
      *
-     * 不再「取组内前 N 个」，而是**按语系挑代表**：用户输入永远排第一，第二给组内
-     * 第一个不同写法（简繁互补的那个主同义词），第三给一个外文写法（优先拉丁、其次日文）。
+     * 以前所有源拿到的是同一份前 N 个写法（用户输入 + 简繁互补 + 一个拉丁 + 一个日文），
+     * 组里剩下的二十来个写法 —— `无码破解` / `無修正版本` / `ai去码` … —— **一个源都不会发**。
+     * 于是「组里明明有这个词，却怎么也搜不到」，而这正是用户要的：**分组里全部词都能搜到东西**。
      *
-     * 这样「无码」发出去的三个写法是 `无码` / `無碼` / `uncensored` ——
-     * 覆盖简体站、繁体站、英文站三种叫法；用户输 `無修正` 时同理得到
-     * `無修正` / `无码` / `uncensored`，不会出现「只搜了两个字面几乎一样的词」。
+     * 现在分两段：
+     * 1. **高价值写法每个源都发**（用户输入 / 简繁互补 / 拉丁 / 日文），保证单源质量不降；
+     * 2. **剩下的名额按源序号轮转**，把还没被挑中的写法错开分配给不同源。
      *
-     * 分类页入口不受此限：那条路径只按真实分类 url 请求，不展开写法。
+     * S 个源 × 每个 `limit - 4` 个轮转名额，通常足以覆盖组内全部写法，
+     * 而**单源请求数一点没涨**（仍是 [MAX_SEARCH_TERMS_PER_SOURCE] 个）。
      */
-    fun searchTermsForQuery(
+    fun searchTermsForSource(
         tag: String,
+        sourceOrdinal: Int,
         limit: Int = MAX_SEARCH_TERMS_PER_SOURCE,
     ): List<String> {
         val all = searchTermsFor(tag)
@@ -610,21 +613,38 @@ object TagAlias {
         // 1) 用户输入永远排第一
         picked += all.first()
         // 2) 组内第一个不同写法：通常是简繁互补的那个主同义词
-        //    （`無修正` → `无码`），少了它等于把另一半中文源整个放弃
         if (picked.size < limit) all.firstOrNull { it !in picked }?.let { picked += it }
-        // 3) 一个外文写法：优先拉丁（英文站数量通常更多），其次日文
+        // 3) 一个外文写法：优先拉丁（英文站通常更多），其次日文
         for (script in listOf(2, 1)) {
             if (picked.size >= limit) break
             if (picked.any { scriptOf(it) == script }) continue
             all.firstOrNull { scriptOf(it) == script }?.let { picked += it }
         }
-        // 仍有空位（组里没有外文写法）→ 按声明顺序补满
-        for (term in all) {
-            if (picked.size >= limit) break
-            picked += term
+        // 4) 剩余名额轮转：错开起点，让不同源去搜组里不同的长尾写法
+        val rest = all.filterNot { it in picked }
+        val slots = limit - picked.size
+        if (rest.isNotEmpty() && slots > 0) {
+            val offset = Math.floorMod(sourceOrdinal * slots, rest.size)
+            for (i in 0 until slots) {
+                picked += rest[(offset + i) % rest.size]
+            }
         }
         return picked.toList()
     }
+
+    /**
+     * 供**发请求**用的写法列表（v1.8.7.1 口径，v1.8.9.3 起转为按源分配）。
+     *
+     * 挑选规则：用户输入永远排第一，第二给组内第一个不同写法（简繁互补的主同义词），
+     * 第三给一个外文写法（优先拉丁、其次日文），剩下的名额按源序号轮转。
+     *
+     * 注：多源场景请用 [searchTermsForSource]（带源序号，保证组内每个写法都有源去搜）。
+     * 这个不带源序号的版本等价于「第 0 个源」，留给单源场景与单测用。
+     */
+    fun searchTermsForQuery(
+        tag: String,
+        limit: Int = MAX_SEARCH_TERMS_PER_SOURCE,
+    ): List<String> = searchTermsForSource(tag, sourceOrdinal = 0, limit = limit)
 
     /** 写法所属字符集：0 = 中文，1 = 日文（含假名），2 = 拉丁 */
     private fun scriptOf(term: String): Int = when {

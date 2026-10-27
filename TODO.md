@@ -340,6 +340,75 @@
   - 涉及：`core/util/TagAlias.kt`（`GROUPS` 中该题材分组）。
   - 后续：若实测仍覆盖不全，按「用户反馈一批 → 补一批」迭代，不必一次穷举。
 
+- [x] **42. 标签搜索按「召回 / 判定分离」重构：去掉打补丁式的取舍逻辑** ✅ v1.8.9.1
+  - 背景：v1.8.8.x 一路在旧链路上加补丁（死源表、每源入口上限、整轮标题过滤、「全是分级词就跳过过滤」特判、组合关键词直搜特判），补丁之间互相打架 —— 一个源认不出某种写法就被整轮拉黑、超时被当成「没结果」、慢源被当成「不匹配」，表现出来就是「结果越搜越少」。
+  - **四条铁律（改这条链路之前先读）**：
+    1. **超时 = 未知，不是无结果** —— 召回层必须用 `RecallOutcome` 区分 `SUCCESS / EMPTY / TIMEOUT / ERROR / SKIPPED`，禁止再用 `emptyList()` 表示一切；
+    2. **慢 ≠ 不匹配** —— 慢源只影响排序，不影响取舍；`SourceHealth` 只调顺序，绝不跳过；
+    3. **首包与全量解耦** —— 每批回来就推界面，软截止（4s）先推一版空快照，别让用户对着转圈等最慢的源；
+    4. **「全部出现」由任务终态判定** —— `pending` 归零即 done，不看结果是否稳定（后者在慢源上会误判）。
+  - 落地：
+    - 新增 `core/search/RecallModels.kt`（`RecallOutcome` / `EntryKind` / `RecallTask` / `RecallResponse` / `RecallBatch` / `RecallResult`）；
+    - 新增 `core/search/TagRecallScheduler.kt`：近义词按 `termPriority` 排序 → 每批 4 个 → 滑动窗口（总并发 / 批大小）→ 双重限流（全局池 + 每源 2 个）→ 软截止 4s / 硬截止 30s → 收敛早停（连续 3 批新增 < 2 就停发长尾）；
+    - 新增 `core/search/SlowSourceCache.kt`：慢源结果缓存（15 分钟、只缓存非空）+ `SourceHealth` 健康度（超时率 ≥ 0.5 且样本 ≥ 3 视为慢源，**只排后不跳过**）；
+    - 新增 `core/util/TagVerdict.kt`：三态判定（`MATCHED` / `MISMATCHED` / `UNKNOWN`）+ `TagResultPolicy`（unknown 排在 matched 之后但不丢；不足 20 条自动把不匹配项兜底补回）；
+    - `TagSearchViewModel`：删掉 `deadSources` / `sourceLocks` / `permitFor` / `searchOneTag` / `filterByGroupKeywords` / `isSearchEntry` / `limitEntriesPerSource` / `fetchGrid` / `searchCombinedKeyword` / `exploreTagEntry` / `searchOnlyResult` / `MAX_URLS_PER_SOURCE` / 组合关键词缓存与 Venera 独立额度；入口改带 `term` + `termPriority` + `kind`；翻页与首屏共用 `recallEntries`；
+    - `TagSearchScreen`：按 `SearchPhase`（`STREAMING` / `DONE_COMPLETE` / `DONE_PARTIAL`）区分「仍在收集」与「N 个源未返回，结果可能不全」。
+  - 附带修正：成人源沉底改到排序之后（否则 `TagResultPolicy.rank` 会按命中数重排把沉底作废）；流式上屏改为与本地索引结果合并（原来直接覆盖，看着像「越搜越少」）。
+  - 测试：`TagVerdictTest`（11 例，锁三态判定与兜底）、`TagRecallSchedulerTest`（8 例，锁四条铁律）。
+  - 涉及：`core/search/*`、`core/util/TagVerdict.kt`、`ui/screens/tag/TagSearchViewModel.kt`、`ui/screens/tag/TagSearchScreen.kt`。
+
+- [x] **43. 修：标签搜索「点结果进不去详情页」+「一堆无关内容」** ✅ v1.8.9.2
+  - 现象（v1.8.9.1 真机反馈）：① 点搜索结果一直转圈，`logcat` 只有 `W VeneraEngine: call(op=info) 超时（实际 30008ms）`；② 搜分级 / 属性类标签时混进大量一般向作品。
+  - 根因一（进不去）：`VeneraEngine.isInteractive` 把 `search` 也算成交互操作。标签搜索一次要打几十个源，`interactiveGate`（12）全被召回占住、每个还能挂满 `CALL_TIMEOUT_MS`(30s)，用户点开详情页触发的 `info` 既抢不到许可又要排在长尾后面。
+    - 修法：`RequestBudget` 新增 `background` 字段；`TagSearchViewModel.executeRecall` 置 `background = true`；`VeneraEngine.callOnce` 据此走 `backgroundGate`，并改用 `BACKGROUND_CALL_TIMEOUT_MS`(15s)。交互请求从此永远有位置。
+  - 根因二（无关内容）：`TagContext.verdict` 对分级词一律返回 `UNKNOWN`（"标题不写不代表没有"），而 `UNKNOWN` 被 `TagResultPolicy` 视为"没被否证"予以保留 —— 一般向源返回的无关作品于是整批留在列表里。
+    - 修法：`verdict` 增加 `adultSource` 参数，第 4 条规则改为 `isExplicitAdult && adultSource`；`rankByVerdict` 用 `item.sourceId in adultSourceIds` 传入。一般向源的分级词搜索直接判 `MISMATCHED`，确凿结果 ≥ 20 时整批不显示。
+    - 兜底：`adultSourceIds` 为空（源表没拿到）时不启用该收紧，避免把分级词搜索一刀切成空页。
+  - 顺带（按上游源仓库核对 Venera 源搜索契约，用户 2026-10-27 要求"参照上游改 venera 源部分"）：
+    - 实测 `venera-configs` 多个源，`search.load` 的真实签名是 `(keyword, options, page)`、`loadNext` 是 `(keyword, options, next)`，**options 在第 2 位**；上游 Dart 侧 `SearchFunction` typedef 写的 `(keyword, page, options)` 是桥接层内部签名，不能拿来对齐 JS 源。`runtime.js` 的 `case 'search'` 按此加注释锁定，防止后人照 typedef 改错。
+    - 返回值兼容 `{comics, maxPage}` / 裸数组 / `{data}` 三种形态。
+    - 新增 `NEXT_CHAINS` 游标链缓存（LRU 64）：`loadNext` 型源的第 N 页 token 需从首页顺走 N-1 次，缓存后翻页只补走新增段（原来第 2 页起直接返回空）。
+  - 测试：`TagVerdictTest` 增至 16 例（新增"一般向源上的分级词搜索不会把无关作品留成未知"、"一般向源的分级词命中不给分类页证据"）。
+  - 涉及：`core/network/RequestBudget.kt`、`source/venera/VeneraEngine.kt`、`assets/venera/runtime.js`、`core/util/TagVerdict.kt`、`ui/screens/tag/TagSearchViewModel.kt`、`test/TagVerdictTest.kt`。
+
+- [x] **44. 修：Venera 源点进去一直转圈（`call(op=info) 超时 30009ms`）** ✅ v1.8.9.4（**未根治，见 #45**）
+  - 现象：真机点开 Venera 源作品，详情页转圈到超时；日志只有 `W VeneraEngine: call(op=info) 超时（实际 30009ms）`，且同源 `call(op=ping) 超时（15003ms）`。
+  - 已查明的四个缺陷（逐个修掉）：
+    1. **`init()` 没有上界**（`runtime.js` `ensureSource`）：部分源在 init 里拉域名表 / 登录态，站点挂住时这个 Promise 永不结；而 `doCall` 第一行就是 `await ensureSource(key)`，于是**详情、目录、正文全部被一个卡死的 init 拖住**。修法：`Promise.race` + `INIT_TIMEOUT_MS`(12s)，到点继续执行并记一条 warning。
+    2. **详情重复加载**：详情页先 `info` 再 `chapters`，而 `chapters` 只在 `info` 已完成时才命中 `INFO_CACHE`；并发或缓存被清时会把同一个 `loadInfo` 跑两遍。修法：`loadInfoShared()` 用 `INFO_INFLIGHT` 共享同一个 Promise，`INFO_CACHE` 加 64 条上限，失败时也摘掉 inflight。
+    3. **`defaultOptions` 返回 `null`**：空选项组塞 `null`，源里 `options[0].type` 这类写法直接抛 `Cannot read properties of undefined (reading 'type')`（真机日志里出现过，整次 search 失败）。修法：改推空串。
+    4. **后台不主动让路**：只调小召回并发不够，已排队的请求照样挤在共享 JS 线程前面。修法：`VeneraEngine.interactiveInFlight` 计数，后台调用看到 >0 就暂停投放新请求（上界 `YIELD_TO_INTERACTIVE_MS`=3s），用户离开后继续。
+  - 诊断：`runtime.js` 里加了 `PROBE` 探针（`info-init` / `info-load` 耗时），`VeneraEngine` 的 `log` 桥对含 `PROBE` 的消息原样输出到 `VeneraProbe` tag；**定位完成后要摘掉**。
+  - 涉及：`assets/venera/runtime.js`、`source/venera/VeneraEngine.kt`。
+  - **复盘（2026-10-28）**：缺陷 1 的修法是错的 —— `Promise.race` + `INIT_TIMEOUT_MS` 把 init **判成了完成**，源停在半初始化状态，`loadInfo` 里 `this.apiDomains[0]` 立刻抛 `Cannot read properties of undefined (reading '0')`。真正的根因是下面 #45 的第 1 条。
+
+- [x] **45. 修：Venera 源「点进去一直转圈」的真正根因（自愈逻辑把源永久钉死在同步桥）** ✅ v1.8.9.5
+  - 现象：真机点开 Venera 源作品一直转圈；探针显示 `PROBE info-init 0ms` 紧接 `call(op=info) 失败：Cannot read properties of undefined (reading '0')`，另有一部分源直接 `超时（30009ms）`。前三版（#43 / #44）都只治了症状。
+  - 根因一（转圈 30s）：`runtime.js` 的 `looksLikePromiseMisuse` 正则宽到 `/cannot read propert|of undefined|of null|is not a function|is not valid json|unexpected token/i` —— 接口改版、字段缺失、站点返回网页这类**普通业务报错全都会命中**。命中后 `syncOnly[key] = true` 并且 `B.storageSet('venera:net_sync:' + key, '1')` **落盘持久化**：这台机器上该源从此永久走 `httpSyncRaw`（阻塞式同步桥），一次 HTTP 就把共享 JS 线程占满 6~12 秒，后面的详情请求只能排队到 30 秒上界。**重启也不会恢复**。
+    - 修法：拆成两级判据。宽判据 `mayNeedSyncBridge` 只决定「这次要不要用同步桥再试一遍」（代价一次重复调用）；是否把源钉成「只能用同步」改成**同一条报错连续出现两次**（`syncSuspect` 记 `{hits, message}`，任何一次异步成功即清零），且结论**只存内存**、钉住后再失败立刻解钉。旧标记 `venera:net_sync:*` 在 `__veneraRegister` 里顺手 `storageDelete`，不再回灌。
+  - 根因二（`reading '0'`）：`init()` 之前只在第一次调用时现场跑，且 #44 引入的 `INIT_TIMEOUT_MS` 把「等超时」当成「已完成」。上游（`venera/lib/foundation/comic_source/parser.dart`）的做法是**解析完成即触发 init、且完全不 await**；`init` 填的正是 `apiDomains` 这类被 `loadInfo` 直接下标访问的状态。
+    - 修法：`registerSource` 内部调 `fireInit`（注册即触发，对齐上游）；`INIT_STATE` 记 `pending / done / failed`；**调用不再等 init**，`ensureSource` 只负责把它跑起来，失败之后由 `retryAfterInit` 按操作类型补等一次再重试（详情 / 目录 / 正文 15s、搜索 / 分类 5s、其余 0）。这样「不需要 init 的源」零额外开销、「需要的源」毫秒级失败后补等即成功、「init 卡死」也只有一个补等上界。`failed` 后 30s 冷却（`INIT_RETRY_COOLDOWN_MS`）自动重试一次，避免源站一时不通就让该源本次进程内永久不可用。
+  - 顺带修（失败要等两遍）：详情页串行问 `info` 再问 `chapters`，详情卡到 30s 失败后目录会把同一份 `loadInfo` 完整重跑一遍 —— 用户侧转圈一分钟。新增 `INFO_FAIL` 短时负缓存（5s）：紧随其后的 `chapters` 直接拿到同一个错误。同步重试前必须 `clearInfoFail(key)`，否则重试命中负缓存等于没试（这个坑在冒烟测试里被抓到过）。
+  - 诊断转永久：`PROBE` 探针改为**只在 `info` / `chapters` / `content` 失败时**输出（操作名 + 耗时 + `init` 状态 + 抹掉 URL 的栈首帧），召回那种成百上千次失败不刷屏。定位结论已拿到，但保留它能省掉下一次「靠猜」。
+  - 根因三（**加载不出内容 / 引擎被占死**）：`httpAsync` 完成后走 `wv.post { evaluateJavascript("__veneraHttpDone(...)") }` 通知 JS —— 那是**应用主线程**。首页聚合几十个源时主线程被占住，通知全排在队列里，JS 侧那些 Promise 一个都结不了（真机看门狗实测 `pending=14`，一个都没回话）。
+    - 修法：`runtime.js` 增加轮询取件兜底（`HTTP_POLL_TICK_MS`=250ms，只处理超过 `HTTP_POLL_MIN_AGE_MS`=1s 还没收到通知的请求），走 JS 定时器 + 同步桥 `httpTake`，完全不经过应用主线程；推送仍是快路径。另加 `投递延迟`/`HTTP 闸门等了`/`dispatch 偏慢` 三条埋点，确认是否真的被卡。
+  - 根因四（**放弃的调用停不下来**）：Kotlin 侧 30 秒超时放弃后，JS 里源的 `loadEp`（「一页一次请求」的循环）仍在继续。实测退出阅读器后 10 秒还发了 35 个请求，把共享 JS 线程与 HTTP 闸门长期占满 —— 于是**别的什么都加载不出来**。
+    - 修法：`awaitCall` 的 finally 里若 `deferred` 未完成就调 `abortJsCall(callId)` → JS `__veneraAbort` 打标记；`Network.*` 在下一次调用时若「一个正常调用都没有、但有被放弃的调用」就直接抛 `调用已取消`，把循环打断（`orphanedNetwork()`）。JS 侧另有硬上界兜底（`CALL_HARD_CAP_MS`=45s、`content` 90s）。
+  - 根因五（**章节加载不出内容**）：`serializeImages` 里 `onImageLoad` 是**串行** `for` + `await`。图库类源（`loadEp` 只返回页码，真实地址在 `onImageLoad` 里逐张解析，如 ehentai）一章几十页就是上百次往返，几分钟才返回 —— 上层早就超时了。
+    - 修法：新增 `mapLimit`，`onImageLoad` 按 `IMAGE_RESOLVE_CONCURRENCY`=8 并发解析，结果按下标回填保证顺序；`content` 的 Kotlin 上界单独提到 `CONTENT_TIMEOUT_MS`=60s。
+  - 顺带放宽：`content` 的 Kotlin 上界单独提到 `CONTENT_TIMEOUT_MS`=60s —— 逐页取图的源一章几十页就是几十次往返，30 秒必然取不完，那正是「章节加载不出内容」。有取消机制兜底，放宽不会回到「一个卡死的源堵住引擎」。
+  - 回归：新增 `tools/venera-runtime-smoke.js`（Node + `vm` 假宿主，不需要 WebView），24 例覆盖 —— 注册即触发 init、慢 init 源能出详情、目录与详情共享一次加载、负缓存生效且不耗时、同步写法源两级判据（第 1 次救回不钉死 / 第 2 次钉住 / 第 3 次直接同步）、结论不落盘、普通业务报错不钉死、init 卡死时最坏耗时 ≤17s 且错误可读、推送被卡住时轮询能取到结果、放弃后死循环被立刻打断、**逐张解析图片是并发的且顺序不乱**。`node tools/venera-runtime-smoke.js` → 24/24。
+  - 涉及：`assets/venera/runtime.js`、`source/venera/VeneraEngine.kt`、`tools/venera-runtime-smoke.js`。
+
+- [x] **46. 标签搜索：去掉「继续往下翻」按钮改上滑翻页 + 修「进作品返回后不再加载」** ✅ v1.8.9.6
+  - 需求一（按钮改手势）：列表到底后页脚挂着一个「继续往下翻」的 `TextButton`，用户要求去掉、改成上滑就翻。那个按钮除了多点一步，还常被当成一句说明文字（看着像「内容就到这里」），实际上路是通的。
+    - 修法：`LoadMoreFooter` 的到底分支只留两行文字（到底原因 + 「继续上滑可再试一次」），按钮删除。新增 `SwipeContinueConnection`（`NestedScrollConnection`）挂在 `LazyVerticalGrid` / `LazyColumn` 上，在 `onPostScroll` 里判 `available.y < 0`（列表已经推不动、用户还在往上推）并累积位移，超过 `SWIPE_CONTINUE_THRESHOLD_DP`=72dp 才触发 `loadMore(force = true)`，两次之间 `SWIPE_CONTINUE_COOLDOWN_MS`=900ms 冷却；往回拉（`available.y > 0`）立刻清零，避免来回蹭凑满阈值。没到底时列表会把滚动全部消费掉、`available.y` 恒为 0，所以不需要额外判「是否到底」。
+    - 坑：`enabled` 里不能读 `displayResults` —— 它是 `remember(results)` 算出来的普通值，被 `derivedStateOf` 的 lambda 捕获后永远是创建那一刻的旧值（结果从空变有之后仍判 false，手势永远不触发）。必须读 `results`（`collectAsState` 的 State 委托），每次求值都会读 `State.value`，变化能被追踪。
+  - 需求二（返回后不再加载）：`paging`（翻页上下文：标签、入口、源列表、是否单集、交集缓存）以前只在整轮召回**全部结束之后**才赋值；而点开某条结果时会调 `abandonBackgroundWork()` 主动取消 `searchJob` 以腾出全应用共用的 JS 线程（v1.8.9.2）。**点得快就永远走不到赋值那一步**，`paging` 恒为 null，返回搜索页后 `loadMore()` 第一行 `paging ?: return` 直接退出 —— 用户侧就是「进去看了一部，回来怎么滑都不再加载」。
+    - 修法：把 `PagingContext` 的建立**提前到召回之前**（此时 `knownEntries` / `usedSources` 已经确定，不需要召回结果），`nextPage` / `_hasMore` / `_sourceCount` 一并前置；召回结束后只补 `union`（`paging = paging?.copy(union = outcome.union.orEmpty())`），只有 `final.isEmpty()`（一条结果都没有）时才 `paging = null` 收回翻页能力。中途取消只会让这一页结果不完整，不会再砍掉「继续往下翻」的能力。
+    - 涉及：`ui/screens/tag/TagSearchViewModel.kt`（`search()` 的召回前置、召回尾部的 `paging` 收尾）、`ui/screens/tag/TagSearchScreen.kt`（`LoadMoreFooter`、`SwipeContinueConnection`、两处列表的 `nestedScroll`）。
+
 ---
 
 ## 五、RSS

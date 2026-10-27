@@ -3,14 +3,24 @@ package com.novelreader.ui.screens.tag
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novelreader.core.network.RequestBudget
+import com.novelreader.core.search.EntryKind
+import com.novelreader.core.search.RecallBatch
+import com.novelreader.core.search.RecallOutcome
+import com.novelreader.core.search.RecallResult
+import com.novelreader.core.search.RecallTask
+import com.novelreader.core.search.SlowSourceCache
+import com.novelreader.core.search.SourceHealth
+import com.novelreader.core.search.TagRecallScheduler
 import com.novelreader.core.util.SearchResultMerge
 import com.novelreader.core.util.TagAlias
+import com.novelreader.core.util.TagResultPolicy
 import com.novelreader.core.util.TagSuggestions
 import com.novelreader.core.util.TagEntryUrl
 import com.novelreader.core.util.TagProvenance
 import com.novelreader.core.util.TagQuery
 import com.novelreader.core.util.TagQuerySpec
 import com.novelreader.core.util.TagTagger
+import com.novelreader.core.util.TagVerdicts
 import com.novelreader.data.cache.TagPlan
 import com.novelreader.data.repository.TagRepository
 import com.novelreader.domain.model.MediaItem
@@ -21,10 +31,6 @@ import com.novelreader.domain.repository.SourceRepository
 import com.novelreader.source.category.isAdult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,11 +40,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.withTimeout
 
 /**
  * 标签搜索 ViewModel（v1.5.10.0 起；v1.6.1.0 重做 UI 后保留全量 + 新增热门标签；
- * v1.7.0.0 重修复合搜索；v1.7.9.9 改为并集相交）。
+ * v1.7.0.0 重修复合搜索；v1.7.9.9 改为并集相交；v1.8.9.1 按「召回 / 判定分离」重构）。
+ *
+ * v1.8.9.1 的四条铁律（改这条链路之前请先读完）：
+ * 1. **超时 = 未知，不是没结果** —— 召回层用 [RecallOutcome] 区分，别再用 `emptyList()` 表示一切；
+ * 2. **慢 ≠ 不匹配** —— 慢源只影响排序，不影响取舍（[SourceHealth] 只调顺序）；
+ * 3. **首包与全量解耦** —— 每批回来就推界面，软截止先推空快照，别让用户对着转圈等最慢的源；
+ * 4. **「全部出现」由任务终态判定** —— `pending` 归零才算完，不看结果是否稳定。
  *
  * - 标签来自 [TagRepository] 自动收集的各源发现分类（落盘缓存，冷启动即有）；
  * - **热门标签**：按标签覆盖源数倒序，取 top [HOT_TAG_LIMIT] 展示在搜索页顶部；
@@ -48,6 +59,15 @@ import kotlinx.coroutines.withTimeout
  *   跨源同名作品视为同一部，不再要求两个标签落在同一个源上；
  * - 视频结果把 18+ 成人源内容沉底（与首页/搜索一致）。
  */
+enum class SearchPhase {
+    IDLE,
+    /** 还在收，结果会继续增加 */
+    STREAMING,
+    /** 全部任务正常终态（success / empty），结果完整 */
+    DONE_COMPLETE,
+    /** 有源超时或报错，结果可能不全 */
+    DONE_PARTIAL,
+}
 class TagSearchViewModel(
     private val contentRepository: ContentRepository,
     private val tagRepository: TagRepository,
@@ -392,14 +412,27 @@ class TagSearchViewModel(
     private var searchGeneration = 0L
 
     // ===== 分页（v1.8.1.2）=====
+    /**
+     * 一个搜索入口（v1.8.9.1 起带上写法与种类）。
+     *
+     * 以前入口只有 `(sourceId, url)` 两元组，调度层没法知道「这条入口用的是哪个近义词」，
+     * 于是只能用「每源最多 2 条」这种粗暴截断控制请求量。现在写法与优先级一起带下来，
+     * 才能按「主词先发、长尾后发、收敛即停」来调度。
+     */
+    private data class TagEntry(
+        val sourceId: String,
+        val url: String,
+        val term: String,
+        val termPriority: Int,
+        val kind: EntryKind,
+    )
+
     /** 本次搜索的上下文：滚到底时按同一批入口继续抓下一页 */
     private data class PagingContext(
         val tags: List<String>,
-        val entriesPerTag: List<List<Pair<String, String>>>,
+        val entriesPerTag: List<List<TagEntry>>,
         val sources: List<String>,
-        val allSearchOnly: Boolean,
         val single: Boolean,
-        val keyword: String,
         val union: List<LinkedHashMap<String, MediaItem>>,
     )
 
@@ -422,37 +455,44 @@ class TagSearchViewModel(
     private var paging: PagingContext? = null
 
     /**
-     * 本轮搜索里**已判定不可用**的源（v1.8.8.8）。
+     * 本轮搜索的**任务终态**（v1.8.9.1）。
      *
-     * 为什么需要：一个标签往往有多种写法（「无码」→ 无码 / 無碼 / 无码版 / 無碼版 /
-     * 无码破解 / 無修正 …），[fetchGrid] 会为「每个源 × 每种写法」各派一个请求 ——
-     * 41 个源 × 6 种写法 = 246 个请求。可实际上能用的源往往只有个位数，其余要么被墙、
-     * 要么域名已死，每个都要等满 8 秒超时。于是整轮搜索的耗时几乎全花在「反复确认
-     * 同一个源已经死了」上面：实测 246 个请求要跑近四分钟，而屏幕上早就没有新东西了。
-     *
-     * 现在同源只要有**一次**超时/异常，就把该源记进来，本轮后续写法直接跳过（且不占
-     * 并发额度）。活源一次都不会进来，死源从「等 6 遍」变成「等 1 遍」。
-     *
-     * 只在**单轮搜索内**有效，每次 [search] 开始清空 —— 跨轮记忆会让偶发抽风的源
-     * 在之后几次搜索里被凭空拉黑。
+     * 以前这里是一张 `deadSources`：某个源超时一次就把整轮拉黑，连它其它写法的
+     * 结果一起丢掉 —— 一个源认不出英文写法，整源下线，结果自然越来越少。
+     * 现在超时只记进 [sourceStatus]（= 未知），源照样会被问，只是排到后一波。
      */
-    private val deadSources: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    private val sourceStatus = java.util.concurrent.ConcurrentHashMap<String, RecallOutcome>()
 
     /**
-     * 每个源一把串行锁（v1.8.8.8）：**同一个源的多写法不并发**。
+     * 本轮**真的给出过回答**的源（success / empty 任一）。
      *
-     * 光有 [deadSources] 还不够 —— [searchOneTag] 会把 246 个请求一次性全部
-     * `async` 出去，如果某个源有 6 种写法，它的 6 个请求会同时抢到并发额度、
-     * 一起卡满 8 秒。10 路额度被两三个死源一占，其余源连入场机会都没有。
-     *
-     * 加锁后：每个源同一时刻只有 1 个请求在飞，第一个写法超时 → 标记死源 →
-     * 剩下 5 个写法拿到锁后立刻发现已死、直接放行。死源从「等 6 遍 × 8 秒」
-     * 变成「等 1 遍 8 秒」，而活源只是把 6 个写法排成队（单个 1 秒左右，无感）。
+     * 判定层用它区分两种「源不可用」：一条结果既然是从这个源抓回来的，说明这个源
+     * 这次是通的 —— 它别的写法超时只意味着「可能还有更多」，不该把已经拿到的
+     * 结果降级成 UNKNOWN。只有**完全没回话**的源才让结果变 unknown。
      */
-    private val sourceLocks = java.util.concurrent.ConcurrentHashMap<String, Semaphore>()
+    private val sourceReturned = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
-    private fun sourceLock(sourceId: String): Semaphore =
-        sourceLocks.getOrPut(sourceId) { Semaphore(1) }
+    /**
+     * 搜索阶段（v1.8.9.1）：界面据此区分「还在补」和「真的完了」。
+     *
+     * 判据是**任务终态归零**，不是「结果连续几次没变化」—— 后者在慢源上会误判：
+     * 结果只是暂时停住，源其实还在返回。
+     */
+    private val _phase = MutableStateFlow(SearchPhase.IDLE)
+    val phase: StateFlow<SearchPhase> = _phase.asStateFlow()
+
+    /**
+     * 首页是否已经有足够多的「确凿结果」（v1.8.9.1）。
+     *
+     * 首页判定层在确凿结果 ≥ 20 条时会把「没证据」的（源超时 / 关键词检索宽松命中）
+     * 整批挡掉；翻页必须用同一口径，否则第 2 页起又会把无关内容追加回来 ——
+     * 真机上表现为「往下滑一堆和标签没关系的东西」。
+     */
+    private var dropUnproven = false
+
+    /** 本轮因超时/报错而「不知道有没有」的源数量 */
+    private val _slowSourceCount = MutableStateFlow(0)
+    val slowSourceCount: StateFlow<Int> = _slowSourceCount.asStateFlow()
 
     // ===== 并发额度（v1.8.8.4）=====
     /**
@@ -467,22 +507,25 @@ class TagSearchViewModel(
         Semaphore(com.novelreader.core.preferences.PreferencesManager.DEFAULT_TAG_SEARCH_CONCURRENCY)
 
     /**
-     * Venera 源的并发额度（v1.8.8.4），与 [pageSemaphore] **分开**。
+     * Venera 源的并发额度（v1.8.8.4；v1.8.9.1 曾删掉，**又加回来了**）。
      *
-     * Venera 引擎是全应用一个 WebView / 一个 JS 线程（`VeneraEngine.callMutex`），
-     * 24 路一起冲进去只是排队：1 个执行、23 个等锁，等锁的还会因为外层 8 秒超时
-     * 全部丢弃结果。压到 4 路反而更快 —— 队列短、每个源都能在超时前轮到自己。
+     * 删掉的代价是真机实测出来的：标签搜索一口气派几十个 explore 进引擎，
+     * 引擎内部的 HTTP 通道被占满，此时点开一部作品，详情页的 `info` 调用排队到
+     * 30 秒超时 —— 用户看到的就是「点进去一直转圈，进不去」。
+     *
+     * 引擎自己的「交互 / 后台」分道帮不上忙：`explore` 本来就走在后台通道，
+     * 真正被打满的是两条通道共用的 HTTP 额度。所以应用层必须给标签搜索单独压一道，
+     * 让交互请求始终有位置。
      */
     private var veneraSemaphore: Semaphore = Semaphore(VENERA_TAG_CONCURRENCY)
-
-    /** 组合关键词直搜的额度：一次请求就覆盖全部标签，不需要占满 [pageSemaphore] */
-    private var combinedSemaphore: Semaphore = Semaphore(
-        com.novelreader.core.preferences.PreferencesManager.DEFAULT_TAG_SEARCH_CONCURRENCY / 2,
-    )
 
     /** 本次搜索里哪些源是 Venera 格式（由 [search] 填充，翻页 / 预取沿用） */
     @Volatile
     private var veneraSourceIds: Set<String> = emptySet()
+
+    /** 本次搜索涉及的成人源 id（分级 / 属性类标签只采信它们的分类页证据） */
+    @Volatile
+    private var adultSourceIds: Set<String> = emptySet()
 
     /** 用户设置的标签搜索并发（设置页滑块），下一次搜索生效 */
     @Volatile
@@ -530,22 +573,6 @@ class TagSearchViewModel(
     val loadingMore: StateFlow<Boolean> = _loadingMore.asStateFlow()
 
     /**
-     * 组合关键词搜索结果缓存（v1.8.1.1，LRU 8 条 / 10 分钟）。
-     *
-     * 「无码 全彩」这类查询每次都要打几十个源、耗时几十秒；用户来回切页或重复搜索时
-     * 没必要再打一遍。命中缓存直接秒开，并在提示里标明是缓存结果。
-     */
-    private val combinedCache =
-        object : LinkedHashMap<String, Pair<Long, List<MediaItem>>>(8, 0.75f, true) {
-            override fun removeEldestEntry(
-                eldest: MutableMap.MutableEntry<String, Pair<Long, List<MediaItem>>>?,
-            ): Boolean = size > 8
-        }
-
-    private data class TagSearchRequest(val tagIndex: Int, val sourceId: String, val url: String)
-    private data class TagSearchResponse(val tagIndex: Int, val sourceId: String, val items: List<MediaItem>)
-
-    /**
      * 复合搜索产出：结果 + 展示说明（[note]）。
      *
      * [note] 用来解释「为什么这批结果长这样」—— 走了组合关键词直搜、还是只拿到了单组内容，
@@ -589,6 +616,35 @@ class TagSearchViewModel(
     }
 
     /** 强制重新收集标签（源变了 / 分类没刷出来时用） */
+    /**
+     * 清空当前类型（漫画 / 小说 / 视频）已收录的标签池（v1.8.9.2）。
+     *
+     * 标签池是从各源分类聚合出来的，站点改版、误收噪声分类、早期一次错误的成人
+     * 判定都会让它变脏；「刷新标签」只在旧池子上覆盖，脏东西可能留在里面。
+     * 这里直接把缓存删掉，下次进页面会重新收集一份干净的。
+     */
+    fun clearCollectedTags() {
+        viewModelScope.launch {
+            _collecting.value = true
+            val removed = runCatching { tagRepository.clear(type) }.getOrDefault(false)
+            // 内存里的展示状态一起复位，否则界面上还挂着旧的 929 个标签
+            tagPlan = TagPlan.EMPTY
+            _allTags.value = emptyList()
+            _hotTags.value = emptyList()
+            _tagsByCoverage.value = emptyList()
+            _activeTags.value = emptyList()
+            _suggestions.value = emptyList()
+            _results.value = emptyList()
+            _phase.value = SearchPhase.IDLE
+            _collecting.value = false
+            _notice.value = if (removed) {
+                "已清空「${typeLabel(type)}」的收录标签，重新进入本页会重新收集"
+            } else {
+                "「${typeLabel(type)}」本来就没有收录标签缓存，无需清空"
+            }
+        }
+    }
+
     fun refreshTags() {
         viewModelScope.launch {
             _collecting.value = true
@@ -864,40 +920,44 @@ class TagSearchViewModel(
         }
     }
 
-    /** 抓某一页（单标签 / 复合严格求交 / 组合直搜三种形态），并带上打标证据 */
-    private suspend fun fetchPage(ctx: PagingContext, page: Int): PageResult =
-        fetchPage(ctx, page, ctx.entriesPerTag, ctx.sources)
-
-    private suspend fun fetchPage(
-        ctx: PagingContext,
-        page: Int,
-        entriesPerTag: List<List<Pair<String, String>>>,
-        sources: List<String>,
-    ): PageResult = when {
-        ctx.single && entriesPerTag[0].isNotEmpty() -> {
-            val proven = mutableMapOf<String, MutableSet<String>>()
+    /**
+     * 抓某一页（单标签 / 复合求交两种形态），并带上打标证据。
+     *
+     * v1.8.9.1 起**只有两种形态**：单标签取并集、复合标签取各集求交。
+     * 旧版的第三种「组合关键词直搜」是「有标签没分类页」时的特判，现在已经由
+     * 判定层接管（分级词按 unknown 保留），那条分支连同 `allSearchOnly` 一起删掉了。
+     */
+    private suspend fun fetchPage(ctx: PagingContext, page: Int): PageResult = when {
+        ctx.single && ctx.entriesPerTag[0].isNotEmpty() -> {
             val only = ctx.tags.firstOrNull()
-            val items = searchOneTag(
-                entriesPerTag[0],
-                page,
-                onCategoryHit = { item ->
-                    if (only != null) proven.getOrPut(itemKey(item)) { mutableSetOf() }.add(only)
-                },
-                // 翻页同样要过相关性过滤（v1.8.8.0，待办 #36）：
-                // 以前只有第一页过滤，第 2 页起是原样追加的，用户一往下滚就是一堆无关内容
-                titleFilterTags = ctx.tags,
-            )
-            PageResult(items, proven)
+            val proven = mutableMapOf<String, MutableSet<String>>()
+            val result = recallEntries(ctx.entriesPerTag, page = page)
+            result.responses.forEach { response ->
+                if (response.task.kind != EntryKind.CATEGORY) return@forEach
+                response.items.forEach { item ->
+                    if (only != null) {
+                        proven.getOrPut(itemKey(item)) { mutableSetOf() }.add(only)
+                    }
+                }
+            }
+            val items = result.responses.flatMap { it.items }
+                .distinctBy { "${it.sourceId}:${it.id}" }
+            // 翻页同样要过判定层：不过的话第 2 页起又会把无关内容原样追加回来
+            PageResult(rankOffMain(items, ctx.tags, proven, pagingMinResults()), proven)
         }
-        // 纯关键词搜索：结果只是「标题包含」，没有任何归属证据
-        ctx.allSearchOnly -> PageResult(
-            searchCombinedKeyword(sources, ctx.keyword, combinedSemaphore, page),
-        )
+        // 有标签在源里没有真实分类页 → 组合筛选在数据层不成立，退回各集并集。
+        // 取舍交给判定层，不再用一刀切的标题过滤把这些内容砍掉。
+        ctx.entriesPerTag.any { list -> list.none { it.kind == EntryKind.CATEGORY } } -> {
+            val result = recallEntries(ctx.entriesPerTag, page = page)
+            val items = result.responses.flatMap { it.items }
+                .distinctBy { "${it.sourceId}:${it.id}" }
+            PageResult(rankOffMain(items, ctx.tags, emptyMap(), pagingMinResults()))
+        }
         else -> {
-            val bySrc = entriesPerTag.map { list -> list.groupBy({ it.first }, { it.second }) }
-            val strict = strictIntersection(
-                bySrc, sources, page, pageSemaphore, {}, ctx.union,
-            )
+            val categoryEntries = ctx.entriesPerTag.map { list ->
+                list.filter { it.kind == EntryKind.CATEGORY }
+            }
+            val strict = strictIntersection(categoryEntries, page, {}, ctx.union)
             PageResult(strict.matched, provenOf(strict, ctx.tags))
         }
     }
@@ -936,7 +996,24 @@ class TagSearchViewModel(
         val fresh = items.filter { it.sourceId.isNotBlank() && it.id.isNotBlank() }
             .filter { indexedInSearch.add(itemKey(it)) }
         if (fresh.isEmpty()) return
-        val groups = TagProvenance.groupByProof(fresh, proven, ::itemKey)
+        // 分级 / 属性类标签只给成人源写进索引（v1.8.9.2）：一般向源的分类页有时会把
+        // 整站目录挂在任意分类下，那种「证据」一旦落库就变成永久脏标签 ——
+        // 之后每次搜索都作为「本地命中」直接合并进结果，绕过全部判定，越搜越脏。
+        val adultIds = adultSourceIds
+        val safeProven = if (adultIds.isEmpty()) {
+            proven
+        } else {
+            buildMap {
+                fresh.forEach { item ->
+                    val provenTags = proven[itemKey(item)] ?: return@forEach
+                    val kept = provenTags.filter {
+                        !TagAlias.isExplicitAdultIntent(it) || item.sourceId in adultIds
+                    }
+                    if (kept.isNotEmpty()) put(itemKey(item), kept.toSet())
+                }
+            }
+        }
+        val groups = TagProvenance.groupByProof(fresh, safeProven, ::itemKey)
         // 分组本身是纯内存计算（快），真正的打标与写库在 [TagIndexRepository.indexItems]
         // 里切到 IO；这里再包一层是为了让「一组一组写」与最后的计数在同一个后台协程里。
         withContext(Dispatchers.IO) {
@@ -1019,6 +1096,105 @@ class TagSearchViewModel(
         _progress.value = progressDone.get().coerceAtMost(total) to total
     }
 
+    /**
+     * 用户点开某条结果、即将离开搜索页时调用（v1.8.9.2）。
+     *
+     * 召回与翻页都是长尾任务：用户既然已经挑中了一条，后面的结果对他没用了。
+     * 但它们会继续占着 Venera 引擎那条**全应用共用**的 JS 线程（实测有源一次
+     * 返回 2.3MB JSON，解析期间 JS 线程无法做别的），详情页的 `info` 于是排队
+     * 到 30 秒超时 —— 用户侧看到的就是「点结果一直转圈，进不去」。
+     * 这里把后台作业停掉，界面上已有的结果原样保留。
+     */
+    fun abandonBackgroundWork() {
+        val runningSearch = searchJob?.isActive == true
+        val runningPreload = preloadJob?.isActive == true
+        if (!runningSearch && !runningPreload) return
+        // 首屏召回被中途停掉 → 记一笔，返回搜索页时由 [resumeAfterReturn] 补完（v1.8.9.6）
+        if (runningSearch) recallAbandoned = true
+        searchJob?.cancel()
+        preloadJob?.cancel()
+        searchJob = null
+        preloadJob = null
+        _searching.value = false
+        // 还有源没回来，但用户已经不需要了：状态收成「部分」，别一直显示「仍在收集」
+        if (_phase.value == SearchPhase.STREAMING) _phase.value = SearchPhase.DONE_PARTIAL
+    }
+
+    /**
+     * 首屏召回是否被 [abandonBackgroundWork] 中途停掉（v1.8.9.6）。
+     *
+     * 点开结果时停掉召回是为了腾出全应用共用的执行线程，但**回来之后必须补上** ——
+     * 否则顶部会一直挂着「部分源未返回」，列表也永远停在那半截结果上，
+     * 用户看到的就是「进去看了一部，回来就不继续搜索了」。
+     */
+    private var recallAbandoned = false
+
+    /**
+     * 从详情页 / 阅读页返回搜索页时调用：把上次被中断的首屏召回补完（v1.8.9.6）。
+     *
+     * 只补**一个结果都没回来的源**（[sourceReturned] 里没有的）：已经回来的源再问一遍
+     * 纯属浪费，而且它们的结果已经在列表里了。补回来的条目走 [appendResultsCounted]
+     * 增量追加去重，不会把用户已经看到的顺序打乱。
+     */
+    fun resumeAfterReturn() {
+        if (!recallAbandoned) return
+        recallAbandoned = false
+        val ctx = paging ?: return
+        if (_searching.value || searchJob?.isActive == true) return
+        val pendingEntries = ctx.entriesPerTag.map { list ->
+            list.filter { it.sourceId !in sourceReturned }
+        }
+        if (pendingEntries.all { it.isEmpty() }) return
+        val generation = searchGeneration
+        searchJob = viewModelScope.launch {
+            _searching.value = true
+            _phase.value = SearchPhase.STREAMING
+            try {
+                val tasks = pendingEntries.flatMapIndexed { index, entries ->
+                    tasksOf(entries, index, 1)
+                }
+                if (tasks.isEmpty()) return@launch
+                val result = recall(tasks)
+                if (generation != searchGeneration) return@launch
+                val items = result.responses.flatMap { it.items }
+                    .distinctBy { "${it.sourceId}:${it.id}" }
+                if (items.isNotEmpty()) {
+                    // 证据口径与首屏一致：只有分类页入口命中的才算「属于这个标签」
+                    val proven = mutableMapOf<String, MutableSet<String>>()
+                    result.responses.forEach { response ->
+                        if (response.task.kind != EntryKind.CATEGORY) return@forEach
+                        val tag = ctx.tags.getOrNull(response.task.tagIndex) ?: return@forEach
+                        response.items.forEach { item ->
+                            proven.getOrPut(itemKey(item)) { mutableSetOf() }.add(tag)
+                        }
+                    }
+                    val ranked = rankOffMain(items, ctx.tags, proven)
+                    // 排除词口径必须和 [search] 里完全一致（别名组展开 + 标题归一化），
+                    // 否则补回来的这批会把用户明确排除的内容又放进来
+                    val excludeTerms = TagQuerySpec.parse(_query.value)
+                        .filter { it.exclude }
+                        .flatMap { spec -> TagAlias.searchTermsFor(spec.name) + spec.name }
+                        .map(TagQuery::normalizeTitle)
+                        .filter { it.isNotEmpty() }
+                    val network = withoutExcluded(filterAdults(ranked, ctx.tags), excludeTerms)
+                    appendResultsCounted(network)
+                    indexProvenance(network, proven)
+                }
+                _phase.value =
+                    if (result.partial) SearchPhase.DONE_PARTIAL else SearchPhase.DONE_COMPLETE
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                android.util.Log.w("TagSearch", "补完被中断的召回失败", error)
+            } finally {
+                if (generation == searchGeneration) {
+                    _searching.value = false
+                    _progress.value = null
+                }
+            }
+        }
+    }
+
     fun search() {
         _suggestions.value = emptyList()
         val firstParse = logicalTagsInQuery(_query.value)
@@ -1041,13 +1217,16 @@ class TagSearchViewModel(
                     ?: tagConcurrency
                 tagConcurrency = concurrency
                 pageSemaphore = Semaphore(concurrency)
-                // Venera 引擎是单线程，给它更窄的额度；用户把总并发调到比它还小时以用户为准
+                // Venera 引擎是单线程 + 共用 HTTP 额度，给它更窄的一道
                 veneraSemaphore = Semaphore(minOf(VENERA_TAG_CONCURRENCY, concurrency))
-                combinedSemaphore = Semaphore(maxOf(2, concurrency / 2))
                 veneraSourceIds = veneraIdsOf()
-                // 新一轮搜索：死源判定与源内锁表都从头开始（见 deadSources / sourceLocks）
-                deadSources.clear()
-                sourceLocks.clear()
+                // 新一轮搜索：本轮终态表从头开始。**这里不再有「死源」** ——
+                // 超时只记进 sourceStatus（= 未知），源照样会被问到（v1.8.9.1）。
+                sourceStatus.clear()
+                sourceReturned.clear()
+                _slowSourceCount.value = 0
+                dropUnproven = false
+                _phase.value = SearchPhase.STREAMING
                 ensurePlan()
                 // v1.8.1.3 查询语法：-排除 / 大类:标签 / 通配 *
                 val specs = TagQuerySpec.parse(_query.value)
@@ -1106,6 +1285,14 @@ class TagSearchViewModel(
                     }
                 }
 
+                // 分级 / 属性类标签的判定要用：哪些源本身是成人源
+                adultSourceIds = runCatching {
+                    sourceRepository?.getSourcesByType(type)
+                        ?.filter { it.isAdult }
+                        ?.map { it.id }
+                        ?.toSet()
+                        .orEmpty()
+                }.getOrDefault(emptySet())
                 val enabledIds = enabledSourceIds()
                 if (enabledIds != null && enabledIds.isEmpty()) {
                     _activeTags.value = emptyList()
@@ -1120,32 +1307,52 @@ class TagSearchViewModel(
                 }
                 // 按源搜索：选了某个源就只保留它的入口（优先级高于「已启用源」集合）
                 val allowedIds = _selectedSourceIds.value.takeIf { it.isNotEmpty() } ?: enabledIds
-                val entriesPerTag = uniqueSpecs.mapIndexed { index, (spec, _) ->
+                val entriesPerTag: List<List<TagEntry>> = uniqueSpecs.mapIndexed { index, (spec, _) ->
                     variantsPerTag[index]
-                        .flatMap { variant -> tagPlan.searchEntriesFor(variant, spec.name) }
-                        .distinct()
-                        .let { if (allowedIds == null) it else it.filter { e -> e.first in allowedIds } }
-                        // v1.8.1.0：同一个源最多留 [MAX_URLS_PER_SOURCE] 条入口。
-                        // 池里有多个等价写法时，上面的 flatMap 会让同一个源出现好几条
-                        // 相同的搜索入口，请求数被平白翻倍。
-                        .let(::limitEntriesPerSource)
+                        .flatMapIndexed { variantIndex, variant ->
+                            tagPlan.searchEntriesFor(variant, spec.name).map { (sourceId, url) ->
+                                TagEntry(
+                                    sourceId = sourceId,
+                                    url = url,
+                                    term = variant,
+                                    termPriority = variantIndex,
+                                    kind = if (isSearchUrl(url)) EntryKind.KEYWORD else EntryKind.CATEGORY,
+                                )
+                            }
+                        }
+                        // 同一 (源, URL) 只留一条：池子里多个等价写法会给出重复入口，
+                        // 全发出去请求数平白翻倍。**不再限制「每源最多 N 条」** ——
+                        // 请求量由调度层按写法优先级分批 + 收敛早停控制（v1.8.9.1）。
+                        .distinctBy { it.sourceId to it.url }
+                        .let { list -> if (allowedIds == null) list else list.filter { it.sourceId in allowedIds } }
                 }
                 val known = tags.filterIndexed { i, _ -> entriesPerTag[i].isNotEmpty() }
                 val missing = tags.filterNot { it in known }
                 val knownEntries = entriesPerTag.filter { it.isNotEmpty() }
-                // 纯关键词搜索（没有真实分类页）才做标题相关性过滤：
-                // 源站的包含匹配会把《全面接触》算进「全彩」、把英文源的一堆无关漫画算进「无码」，
-                // 不过滤的话流式上屏的那几秒全是噪声（v1.8.1.2）。
-                val searchOnlyResult = knownEntries.all { list -> list.all(::isSearchEntry) }
 
-                // v1.8.1.1：**流式上屏**。以前只有「明确成人标签」才允许增量刷新，
-                // 用户点完搜索只能对着转圈等全部源返回。现在只要有结果就先显示，
-                // 后面的源陆续补充进来（结果一致单调增加）。
-                // v1.8.1.2：中间结果也要过相关性过滤，否则用户先看到的全是不相关的东西。
-                val updatePartialResults: (List<MediaItem>) -> Unit = { partial ->
-                    if (generation == searchGeneration) {
-                        val visible =
-                            if (searchOnlyResult) filterByGroupKeywords(partial, tags) else partial
+                // 流式上屏（v1.8.1.1）：只要有结果就先显示，后面的源陆续补进来。
+                // 取舍交给判定层：分级词 unknown 保留、题材词按标题校验，
+                // 不再有「全是关键词入口才过滤」这种整轮开关（v1.8.9.1）。
+                //
+                // 两条性能约束（v1.8.9.1，真机 ANR 之后加的）：
+                // 1. 判定 + 排序全部在 [Dispatchers.Default] 上跑，主线程只接结果；
+                // 2. 按 [STREAM_EMIT_INTERVAL_MS] 节流 —— 每来一批就重排全部累计结果
+                //    是 O(n²)，246 个请求会把主线程占死。最后一批不推也没关系，
+                //    搜索收尾时会用累加器整体刷一次。
+                var lastEmitMs = 0L
+                val updatePartialResults: suspend (List<MediaItem>) -> Unit = { partial ->
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (generation == searchGeneration &&
+                        now - lastEmitMs >= STREAM_EMIT_INTERVAL_MS
+                    ) {
+                        lastEmitMs = now
+                        val visible = withContext(Dispatchers.Default) {
+                            val ranked = rankByVerdict(partial, known, emptyMap())
+                            // 索引里已经查到的要先并进来：流式上屏是**覆盖**写 results，
+                            // 光用网络这批会把眼前已有的本地结果顶掉，看着像「越搜越少」。
+                            if (localItems.isEmpty()) ranked
+                            else SearchResultMerge.merge(localItems, ranked)
+                        }
                         if (visible.isNotEmpty()) _results.value = visible
                     }
                 }
@@ -1153,10 +1360,7 @@ class TagSearchViewModel(
                     val variants = variantsPerTag[i]
                     val self = TagQuery.normalizeTitle(tag)
                     val terms = TagAlias.searchTermsFor(tag)
-                    val hasKeywordEntries = entriesPerTag[i].any { (_, url) ->
-                        TagEntryUrl.searchKeywordOf(url) != null ||
-                            TagEntryUrl.categoryOf(url)?.kind == "search"
-                    }
+                    val hasKeywordEntries = entriesPerTag[i].any { it.kind == EntryKind.KEYWORD }
                     when {
                         terms.size > 1 && hasKeywordEntries ->
                             "搜索「${tag}」时同时检索：${terms.joinToString("、")}"
@@ -1218,32 +1422,65 @@ class TagSearchViewModel(
                 ).joinToString("；").takeIf { it.isNotBlank() }
 
                 _notice.value = headNote
-                val singleProven = mutableMapOf<String, MutableSet<String>>()
-                val outcome = if (knownEntries.size == 1) {
+                // ===== 翻页上下文**先建好**（v1.8.9.6）=====
+                // 以前 `paging` 只在整轮召回**结束之后**才赋值，于是踩了一个必然的坑：
+                // 用户在首屏还在流式收集时就点开某条结果 → [abandonBackgroundWork] 取消
+                // searchJob → 永远走不到赋值那一步 → `paging` 恒为 null →
+                // 返回搜索页后 `loadMore()` 第一行 `paging ?: return` 直接退出，
+                // 界面上就是「进去看了一部，回来怎么滑都不再加载了」。
+                // 现在召回**开始前**就把上下文建好（此时入口已经确定，不需要召回结果），
+                // 取消只会让这一页的结果不完整，不会把「继续往下翻」的能力一起砍掉。
+                val usedSources = knownEntries.flatten().map { it.sourceId }.distinct()
+                paging = PagingContext(
+                    tags = known,
+                    entriesPerTag = knownEntries,
+                    sources = usedSources,
+                    single = knownEntries.size == 1,
+                    // 交集缓存要等召回才产生；复合求交在翻页时只把它当「已知集合」参考，
+                    // 给空表只是少一点优化，不影响正确性（下面召回完会补上）。
+                    union = emptyList(),
+                )
+                nextPage = 2
+                _hasMore.value = true
+                _sourceCount.value = usedSources.size
+                // ===== 召回（v1.8.9.1）=====
+                // 单标签与复合标签走同一个调度层，区别只在「怎么合并」：
+                // 单标签 = 并集，复合 = 各标签并集再求交。判定（哪条算命中）统一在结果层做。
+                val outcome: CompoundOutcome
+                if (knownEntries.size == 1) {
                     val only = known.firstOrNull()
-                    val items = searchOneTag(
-                        knownEntries[0],
-                        onPartial = updatePartialResults,
-                        // 只有分类页入口的结果才算「这部作品属于该标签」的证据
-                        onCategoryHit = { item ->
+                    val result = recallEntries(knownEntries, page = 1, onItems = updatePartialResults)
+                    // 分类页入口的结果才算「这部作品属于该标签」的证据
+                    val proven = mutableMapOf<String, MutableSet<String>>()
+                    result.responses.forEach { response ->
+                        if (response.task.kind != EntryKind.CATEGORY) return@forEach
+                        response.items.forEach { item ->
                             if (only != null) {
-                                singleProven.getOrPut(itemKey(item)) { mutableSetOf() }.add(only)
+                                proven.getOrPut(itemKey(item)) { mutableSetOf() }.add(only)
                             }
-                        },
-                        // v1.8.8.0（待办 #36）：关键词入口按标题校验，分类页入口照旧全收
-                        titleFilterTags = known,
+                        }
+                    }
+                    outcome = CompoundOutcome(
+                        items = result.responses.flatMap { it.items }
+                            .distinctBy { "${it.sourceId}:${it.id}" },
+                        proven = proven,
                     )
-                    CompoundOutcome(items, proven = singleProven)
                 } else {
-                    searchCompound(knownEntries, known, updatePartialResults)
+                    outcome = searchCompound(knownEntries, known, updatePartialResults)
                 }
                 val searchResult = outcome.items
                 if (generation != searchGeneration) return@launch
                 // 同一部作品在不同源上标题写法可能不同（繁简 / 带作者后缀），
                 // 按作品身份键再去重一次，避免结果里出现两条「同一部」。
+                // **取舍只走判定层**（[rankByVerdict]）：分级词 unknown 保留、
+                // 题材词按标题校验、数量不足自动兜底，不再有「整轮标题硬过滤」的开关。
+                val ranked = rankOffMain(searchResult, known, outcome.proven)
+                // 条数变少 = 判定层挡掉了「没证据」的那批 → 翻页沿用同一口径
+                dropUnproven = ranked.size < searchResult.size
                 val network = withoutExcluded(
-                    filterAdults(searchResult, tags)
-                        .let { if (searchOnlyResult) filterByGroupKeywords(it, tags) else it },
+                    // 先按相关性排序，再把成人源内容沉底 —— 顺序反了的话
+                    // [TagResultPolicy.rank] 会按命中数重排，成人沉底就白做了。
+                    filterAdults(ranked, tags),
                     excludeTerms,
                 )
                 // 索引里的是「按真实题材命中」的，不再过标题过滤；与网络结果合并去重。
@@ -1251,7 +1488,7 @@ class TagSearchViewModel(
                 // 存的是旧标题、网络返回的是新标题时，只按标题去重会留下两条同一个 id，
                 // 列表（LazyColumn key = sourceId:id）会直接崩。
                 val final = withoutExcluded(
-                    SearchResultMerge.merge(localItems, network),
+                    SearchResultMerge.merge(dropNonAdultForExplicitTags(localItems, tags), network),
                     excludeTerms,
                 )
                 if (generation != searchGeneration) return@launch
@@ -1268,22 +1505,12 @@ class TagSearchViewModel(
                 if (network.isNotEmpty()) {
                     viewModelScope.launch { indexProvenance(network, outcome.proven) }
                 }
-                // 分页上下文：后续「加载更多」按同一批入口抓下一页（v1.8.1.2）
+                // 分页上下文在召回**之前**就建好了（见上面 v1.8.9.6 的说明），这里只补
+                // 召回才产出的交集缓存；只有「一条结果都没有」时才收回翻页能力。
                 if (final.isNotEmpty()) {
-                    paging = PagingContext(
-                        tags = known,
-                        entriesPerTag = knownEntries,
-                        sources = knownEntries.flatMap { list -> list.map { it.first } }.distinct(),
-                        allSearchOnly = knownEntries.all { list -> list.all(::isSearchEntry) },
-                        single = knownEntries.size == 1,
-                        keyword = known.joinToString(" "),
-                        union = outcome.union.orEmpty(),
-                    )
-                    nextPage = 2
+                    paging = paging?.copy(union = outcome.union.orEmpty())
+                    // nextPage 已在召回前置为 2；这里不再重置，避免中途取消后重复问第 2 页
                     _hasMore.value = true
-                    // 这次搜索一共动了多少个源（同一源多个入口只算一个）
-                    _sourceCount.value = knownEntries.flatMap { list -> list.map { it.first } }
-                        .distinct().size
                     preloadNextPages(generation)
                 } else {
                     paging = null
@@ -1295,7 +1522,7 @@ class TagSearchViewModel(
                     known.size > 1 -> "没有作品同时属于「${known.joinToString("」「")}」（每个大集里各要命中至少一个标签）"
                     else -> "「${known.first()}」下暂无内容"
                 }
-                _notice.value = listOfNotNull(headNote, tail)
+                _notice.value = listOfNotNull(headNote, tail, partialNote())
                     .joinToString("；")
                     .takeIf { it.isNotBlank() }
             } catch (cancelled: CancellationException) {
@@ -1310,6 +1537,9 @@ class TagSearchViewModel(
                 if (generation == searchGeneration) {
                     _progress.value = null
                     _searching.value = false
+                    // 走到这里还是 STREAMING，说明中途提前收场（没入口 / 无标签 / 报错）——
+                    // 界面不该继续显示「仍在收集」。正常收尾时 phase 已是 DONE_*，保持不动。
+                    if (_phase.value == SearchPhase.STREAMING) _phase.value = SearchPhase.IDLE
                 }
             }
         }
@@ -1346,8 +1576,8 @@ class TagSearchViewModel(
     /**
      * 本次搜索里哪些源走 Venera 引擎（v1.8.8.4）。
      *
-     * 这些源的请求必须走 [veneraSemaphore] 的窄额度：引擎只有一个 JS 线程，
-     * 并发给高了只是排队，还会因为外层超时把排在后面的源的结果全部丢掉。
+     * 这些源的请求必须走 [veneraSemaphore] 的窄额度：引擎只有一个 JS 线程、一条共用
+     * 的 HTTP 通道，标签搜索把额度吃满时，用户点开详情就只能干等（实测 30 秒超时）。
      * 读失败就当作「没有 Venera 源」，退化成统一额度，不影响搜索本身。
      */
     private suspend fun veneraIdsOf(): Set<String> = try {
@@ -1364,163 +1594,288 @@ class TagSearchViewModel(
     }
 
     /**
-     * 取该源该用的额度：Venera 源一律走 [veneraSemaphore]，其余走调用方给的额度。
+     * 召回一批任务（v1.8.9.1）—— 调度层、慢源缓存、健康度的唯一入口。
      *
-     * 三处发请求的地方（单标签 / 严格求交 / 组合直搜）都过这个函数，
-     * 保证「引擎串行的源不会被塞进大并发队列」这件事只有一处判据。
+     * 三件事都在这里收口，别在调用点重复实现：
+     * - 缓存命中直接返回（慢源第二次搜索就能立刻参与首包）；
+     * - 超时 / 报错只记进 [RecallResult.sourceStatus]，**不拉黑源**；
+     * - 每批回来就把累计结果推给 [onItems]，界面边出边补。
      */
-    private fun permitFor(sourceId: String, fallback: Semaphore): Semaphore =
-        if (sourceId in veneraSourceIds) veneraSemaphore else fallback
-
-    /**
-     * 单标签：聚合所有拥有该分类的源，抓**指定一页**（v1.8.1.2 改为分页）。
-     *
-     * 以前每源固定抓 1~2 页就结束，结果自然少；现在每页由 UI 触底触发，
-     * 用户想看多少就往下翻多少，且每返回一个源就回调，边出边显示。
-     */
-    private suspend fun searchOneTag(
-        entries: List<Pair<String, String>>,
-        page: Int = 1,
-        semaphore: Semaphore = pageSemaphore,
-        onPartial: (List<MediaItem>) -> Unit = {},
-        /**
-         * 真实分类页命中的回调（v1.8.4.1）。只有走了分类页的入口才回调 ——
-         * 关键词入口的结果只是「标题包含该词」，不能当归属证据。
-         */
-        onCategoryHit: (MediaItem) -> Unit = {},
-        /**
-         * 纯关键词入口的标题相关性过滤标签（v1.8.8.0，待办 #36）。
-         *
-         * 以前这件事是在整次搜索结束后统一做的，判据是「**全部**入口都是关键词入口」
-         * （`searchOnlyResult`）—— 只要这个标签在任意一个源上有真分类页，过滤就整个关掉，
-         * 于是同一批关键词入口捞回来的《哆啦A梦》这类标题完全不相关的条目也一起上屏了。
-         * 现在改成**按入口**判定：来自 `search::` 的条目必须标题命中别名写法才留下，
-         * 来自真分类页的条目照旧全收（那是站方归类，不该拿标题去否它）。
-         *
-         * 空列表 = 不过滤（老调用点行为不变）。
-         */
-        titleFilterTags: List<String> = emptyList(),
-    ): List<MediaItem> =
-        coroutineScope {
-            val accumulated = mutableListOf<MediaItem>()
-            val lock = Any()
-            addProgressTotal(entries.size)
-            entries.map { entry ->
-                val (srcId, url) = entry
-                async {
-                    // 同源已在别的写法上超时 → 剩下的写法直接跳过（见 deadSources）。
-                    // **判断放在 withPermit 之外**：死源不该继续占着并发额度。
-                    val raw = if (srcId in deadSources) {
-                        stepProgress()
-                        emptyList()
-                    } else {
-                        sourceLock(srcId).withPermit {
-                            // 等锁期间同源别的写法可能已经超时了，拿到锁再确认一次
-                            if (srcId in deadSources) {
-                                stepProgress()
-                                emptyList()
-                            } else {
-                                permitFor(srcId, semaphore).withPermit {
-                                    try {
-                                        exploreTagEntry(srcId, url, page)
-                                    } finally {
-                                        stepProgress()
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // v1.8.8.0（待办 #36）：关键词入口的结果必须标题命中写法
-                    val items = if (titleFilterTags.isNotEmpty() && isSearchEntry(entry)) {
-                        filterByGroupKeywords(raw, titleFilterTags)
-                    } else {
-                        raw
-                    }
-                    // 诊断（v1.8.9.0）：只在「有结果」或「被过滤掉」时打一行，
-                    // 用来回答「为什么结果这么少」—— 是源没返回，还是被过滤砍了。
-                    // 不打 URL / 域名，只留源 id 与条数。
-                    if (raw.isNotEmpty()) {
-                        android.util.Log.i(
-                            "TagSearchStat",
-                            "src=$srcId kind=${if (isSearchEntry(entry)) "search" else "category"} " +
-                                "raw=${raw.size} kept=${items.size}",
-                        )
-                    }
-                    if (items.isNotEmpty() && !isSearchEntry(entry)) {
-                        items.forEach(onCategoryHit)
-                    }
-                    if (items.isNotEmpty()) {
-                        val snapshot = synchronized(lock) {
-                            accumulated.addAll(items)
-                            accumulated.distinctBy { "${it.sourceId}:${it.id}" }
-                        }
-                        onPartial(snapshot)
-                    }
-                    items
+    private suspend fun recall(
+        tasks: List<RecallTask>,
+        onItems: suspend (List<MediaItem>) -> Unit = {},
+        onBatch: (suspend (RecallBatch) -> Unit)? = null,
+    ): RecallResult {
+        if (tasks.isEmpty()) return RecallResult(emptyList(), emptyMap())
+        val concurrency = tagConcurrency
+        val scheduler = TagRecallScheduler(
+            globalPool = pageSemaphore,
+            batchSize = RECALL_BATCH_SIZE,
+            // 窗口按「总并发 / 批大小」推：用户把滑块调大时窗口跟着开，
+            // 调小时窗口也跟着收，滑块才真的有效（v1.8.8.4 的教训）
+            windowSize = maxOf(2, concurrency / RECALL_BATCH_SIZE),
+            requestTimeoutMs = SEARCH_REQUEST_TIMEOUT_MS,
+            // 历史超时率偏高的源排到后一波（只调顺序，不跳过）
+            slowSources = tasks.map { it.sourceId }.distinct()
+                .filter { SourceHealth.isSlow(it) }
+                .toSet(),
+            execute = { task -> executeRecall(task) },
+        )
+        addProgressTotal(tasks.size)
+        val collected = mutableListOf<MediaItem>()
+        val lock = Any()
+        val result = scheduler.run(tasks) { batch ->
+            repeat(batch.responses.size) { stepProgress() }
+            val fresh = batch.responses.flatMap { it.items }
+            if (fresh.isNotEmpty()) {
+                val snapshot = synchronized(lock) {
+                    collected.addAll(fresh)
+                    collected.distinctBy { "${it.sourceId}:${it.id}" }
                 }
-            }.awaitAll()
-            synchronized(lock) { accumulated.distinctBy { "${it.sourceId}:${it.id}" } }
+                onItems(snapshot)
+            }
+            onBatch?.invoke(batch)
         }
+        // 诊断日志（v1.8.9.1）：排查「为什么这一屏长这样」时，一眼看出是源没返回、
+        // 还是返回了但被判定层挡掉。只记源标识 / 入口种类 / 条数，不记网址。
+        result.responses.groupBy { it.task.sourceId }.forEach { (sourceId, list) ->
+            android.util.Log.d(
+                "TagSearch",
+                "源 $sourceId：${list.size} 次请求，共 ${list.sumOf { it.items.size }} 条，" +
+                    "终态 ${list.groupingBy { it.outcome }.eachCount()}",
+            )
+        }
+        // 健康度与缓存：只影响后续调度顺序与下次首包，**不参与本次取舍**
+        result.responses.forEach { response ->
+            SourceHealth.record(response.task.sourceId, response.outcome, response.latencyMs)
+            if (response.outcome == RecallOutcome.SUCCESS || response.outcome == RecallOutcome.EMPTY) {
+                sourceReturned.add(response.task.sourceId)
+            }
+            if (response.items.isNotEmpty()) {
+                SlowSourceCache.put(
+                    SlowSourceCache.key(
+                        response.task.sourceId,
+                        response.task.term,
+                        response.task.page,
+                    ),
+                    response.items,
+                )
+            }
+        }
+        result.sourceStatus.forEach { (sourceId, outcome) -> sourceStatus[sourceId] = outcome }
+        // 只统计第一页：翻页 / 预取的源状态会把「N 个源未返回」改得和收尾提示对不上
+        if (tasks.any { it.page == 1 }) {
+            _slowSourceCount.value = result.sourceStatus.count { it.value.isFailure }
+        }
+        return result
+    }
 
     /**
-     * 复合标签：**每个标签先取全量并集，再把各并集按标题求交**（v1.7.9.9 重构）。
+     * 按「入口组」召回一页，并把本轮终态落到 [phase]（v1.8.9.1）。
      *
-     * 口径示例：「无码 全彩」= （无码 + 無修正 + uncensored… 全部译名 / 转义写法 /
-     * 全部源的结果并集）∩（全彩 + full color + カラー… 的全部并集）。
-     *
-     * 与 v1.7.0.0 ~ v1.7.9.8 的「同源严格相交」的区别：
-     * - 不再要求「同一个源同时拥有两个标签入口」才参与。以前无码只在 A 站、全彩只在
-     *   B 站时，两个标签的源集合没有交集，直接返回空；现在 A 的并集与 B 的并集照样
-     *   按标题相交，同名作品能被找出来。
-     * - 判定同一部作品仍用**归一化标题**（[TagQuery.normalizeTitle]）：跨源同名即视为
-     *   同一部 —— 这是用户口径，代价是同名不同作会合并成一条。
-     * - 交集为空时保持空结果，不回退成并集。
+     * 这是首屏与翻页共用的入口：把入口摊平成任务、记下本轮任务表（供慢源重试用）、
+     * 收尾时把 pending 归零的结果折算成 [SearchPhase]。
+     * **「全部出现」只看这里 —— 任务全部进终态即 done，不看结果是否还在变。**
      */
-    private suspend fun searchCompound(
-        entriesPerTag: List<List<Pair<String, String>>>,
+    private suspend fun recallEntries(
+        entriesPerTag: List<List<TagEntry>>,
+        page: Int,
+        onItems: suspend (List<MediaItem>) -> Unit = {},
+        onBatch: (suspend (RecallBatch) -> Unit)? = null,
+    ): RecallResult {
+        val tasks = entriesPerTag.flatMapIndexed { index, entries -> tasksOf(entries, index, page) }
+        val result = recall(tasks, onItems = onItems, onBatch = onBatch)
+        // 只有第一页决定 phase：翻页不会把已经 DONE 的搜索打回 STREAMING
+        if (page == 1) {
+            _phase.value = if (result.partial) SearchPhase.DONE_PARTIAL else SearchPhase.DONE_COMPLETE
+        }
+        return result
+    }
+
+    /**
+     * 结果层取舍（v1.8.9.1）：逐条 × 逐标签做三态判定，再交给 [TagResultPolicy] 排序。
+     *
+     * 这里是**唯一**决定「这条结果留不留、排多前」的地方：
+     * - 分类页证明过 → matched；源这次没回话 → unknown；分级词不进标题 → unknown；
+     *   标题里确实没有这个题材词 → mismatched（但数量不足 20 条时会兜底补回）。
+     * - [sourceReturned] 里有的源不算「没回话」：一条结果既然从它抓回来了，
+     *   它别的写法超时只说明「可能还有更多」，不该把已有结果降级。
+     *
+     * **必须在后台线程调用**（见 [rankOffMain]）：一次搜索要算几万次判定，
+     * 放主线程会卡到输入事件超时（v1.8.9.1 真机 ANR 复现过）。
+     */
+    private fun rankByVerdict(
+        items: List<MediaItem>,
         tags: List<String>,
-        onPartial: (List<MediaItem>) -> Unit,
-    ): CompoundOutcome {
-        if (entriesPerTag.isEmpty() || entriesPerTag.any { it.isEmpty() }) return CompoundOutcome.EMPTY
+        proven: Map<String, Set<String>>,
+        minResults: Int = TagResultPolicy.MIN_RESULTS,
+    ): List<MediaItem> {
+        if (items.isEmpty() || tags.isEmpty()) return items
+        // 写法归一化 / 分级词判定每个标签只算一次，逐条时只剩字符串包含
+        val contexts = tags.map(TagVerdicts::contextOf)
+        // 源表没拿到时（字段为空）不要一刀切成「都不是成人源」：那会把分级词搜索
+        // 直接清空。信息缺失时按旧口径处理，宁可留几条可疑的，也不给空结果页。
+        val adultIds = adultSourceIds
+        val adultKnown = adultIds.isNotEmpty()
+        val candidates = items.map { item ->
+            val provenTags = proven[itemKey(item)].orEmpty()
+            val outcome = if (item.sourceId in sourceReturned) null else sourceStatus[item.sourceId]
+            val title = TagVerdicts.normalizeTitle(item.title)
+            val adultSource = !adultKnown || item.sourceId in adultIds
+            TagResultPolicy.Candidate(
+                item = item,
+                verdicts = contexts.map { ctx ->
+                    // 分级 / 属性类标签**只认成人源自己的分类页**：普通源的分区里常把
+                    // 整站目录挂在任意分类下（实测出现过用一般向作品凑数的源），
+                    // 那种「证据」正是「一堆和标签没关系的东西」的来源。
+                    val provenHere = ctx.tag in provenTags &&
+                        (!ctx.isExplicitAdult || adultSource)
+                    ctx.verdict(title, provenHere, outcome, adultSource)
+                },
+            )
+        }
+        return TagResultPolicy.rank(candidates, minResults)
+    }
 
-        // 并集口径：每个标签查它自己的全部入口；源集合取并集（各标签的源可以完全不同）。
-        val sources = entriesPerTag.flatMap { entries -> entries.map { it.first } }.distinct()
-        if (sources.isEmpty()) return CompoundOutcome.EMPTY
+    /** 把判定 + 排序挪到后台线程：主线程只负责把结果丢给 Compose */
+    private suspend fun rankOffMain(
+        items: List<MediaItem>,
+        tags: List<String>,
+        proven: Map<String, Set<String>>,
+        minResults: Int = TagResultPolicy.MIN_RESULTS,
+    ): List<MediaItem> = if (items.isEmpty() || tags.isEmpty()) items
+    else withContext(Dispatchers.Default) { rankByVerdict(items, tags, proven, minResults) }
 
-        // v1.8.8.4：宽标签（无码 / 全彩）不再单独加码到 32 —— 并发由用户滑块决定，
-        // 这里再偷偷翻倍的话，把滑块拖到 8 的用户实际还在跑 32 路，滑块就白给了。
-        val semaphore = pageSemaphore
+    /** 翻页用的阈值：首页已经够多确凿结果时（0）只留确凿的，否则（20）照样兜底全给 */
+    private fun pagingMinResults(): Int =
+        if (dropUnproven) 0 else TagResultPolicy.MIN_RESULTS
 
-        // v1.8.1.2 **关键修正**：只有「真实分类入口」才代表「作品属于这个标签」。
-        // 纯关键词入口搜出来的是「标题里出现了这个词」，把它当作该标签的成员去求交，
-        // 只会得到一堆看起来毫无关系的内容（实测：搜「无码 全彩」回来《全面接触》
-        // 和一堆英文无关漫画）。所以这里把两类入口分开。
-        val categoryEntries = entriesPerTag.map { list -> list.filterNot(::isSearchEntry) }
-        val withoutCategory = categoryEntries.indices.filter { categoryEntries[it].isEmpty() }
+    /** 类型的中文名（只用于给用户看的提示文案） */
+    private fun typeLabel(value: SourceType): String = when (value) {
+        SourceType.NOVEL -> "小说"
+        SourceType.COMIC -> "漫画"
+        SourceType.VIDEO -> "视频"
+    }
 
-        if (withoutCategory.isNotEmpty()) {
-            // 有标签在漫画源里根本没有分类页 → 「组合筛选」在数据层不成立。
-            // 这时**如实**展示各标签单独搜到的内容（标题必须真的包含对应写法），
-            // 而不是拿源站宽松匹配的结果冒充交集。
-            val union = coroutineScope {
-                entriesPerTag.map { entries ->
-                    async { searchOneTag(entries, 1, semaphore, titleFilterTags = tags) }
-                }.awaitAll().flatten()
-            }.distinctBy { "${it.sourceId}:${it.id}" }
-            val visible = filterByGroupKeywords(union, tags)
-            if (visible.isEmpty()) return CompoundOutcome.EMPTY
-            onPartial(visible)
-            return CompoundOutcome(
-                visible,
-                "「${withoutCategory.joinToString("」「") { tags[it] }}」在漫画源里没有真实分类页、" +
-                    "只能按标题搜，无法与其它标签做组合筛选；下面是各标签单独搜到、" +
-                    "且标题确实包含对应写法的内容（无码 / 全彩这类属性常不写进标题，搜不到不代表没有）",
+    /**
+     * 本地索引结果的**成人源过滤**（v1.8.9.2）。
+     *
+     * 索引那批不过判定层 —— 它们靠自身标签命中，标题里通常没有标签词，拿标题去否
+     * 会把整个本地索引否光。但分级 / 属性类标签是例外：一般向源的条目根本不可能
+     * 属于这类题材。而索引里的标签有可能来自早期一次误判（某些站的分类页把整站
+     * 目录挂在任意分类下），写进索引后会**自我强化** —— 每次搜索都作为「本地命中」
+     * 直接合并进结果，绕过所有判定，用户看到的就是「下面还是一堆无关的」。
+     * 这里按源挡一道，成人源缺失时不动（宁可少过滤，也不把索引清空）。
+     */
+    private fun dropNonAdultForExplicitTags(
+        items: List<MediaItem>,
+        tags: List<String>,
+    ): List<MediaItem> {
+        if (items.isEmpty()) return items
+        if (tags.none(TagAlias::isExplicitAdultIntent)) return items
+        val adultIds = adultSourceIds
+        if (adultIds.isEmpty()) return items
+        return items.filter { it.sourceId in adultIds }
+    }
+
+    /** 收尾提示：有源没回话时如实说明「可能不全」，别让用户以为这就是全部。 */
+    private fun partialNote(): String? {
+        if (_phase.value != SearchPhase.DONE_PARTIAL) return null
+        val slow = _slowSourceCount.value
+        return if (slow > 0) "$slow 个源超时或报错，结果可能不全（不代表没有）"
+        else "部分源未正常返回，结果可能不全"
+    }
+
+    /**
+     * 真正发请求。异常**交给调度层**折算终态 —— 这里不许再 catch 成 emptyList。
+     *
+     * 以前这里把超时和报错都吞成空列表，下游无从分辨「源说没有」和「源没说话」，
+     * 于是「慢源」被当成「没结果」，结果越搜越少。现在超时抛出去，由调度层记 TIMEOUT。
+     */
+    private suspend fun executeRecall(task: RecallTask): List<MediaItem> {
+        SlowSourceCache.get(SlowSourceCache.key(task.sourceId, task.term, task.page))
+            ?.let { return it }
+        val call: suspend () -> List<MediaItem> = {
+            withContext(
+                RequestBudget(
+                    callTimeoutMs = SEARCH_REQUEST_TIMEOUT_MS,
+                    queueWaitMs = VENERA_TAG_QUEUE_WAIT_MS,
+                    // v1.8.9.2：召回属于后台批量工作。不这么标的话，几十个源的 search
+                    // 会全部挤进 Venera 引擎的交互通道，用户点开详情页时 info 抢不到
+                    // 通道，实测等到 30008ms 超时 —— 表现就是「点结果一直转圈」。
+                    background = true,
+                ),
+            ) {
+                contentRepository.explore(task.sourceId, task.url, task.page)
+            }
+        }
+        // Venera 源必须先过窄额度：让引擎里始终留着位置给详情 / 正文这类交互请求
+        return if (task.sourceId in veneraSourceIds) veneraSemaphore.withPermit { call() }
+        else call()
+    }
+
+    /**
+     * 入口是不是「只能按关键词搜」（源站没给这个标签真实分类页）。
+     *
+     * 判定层要用它区分「分类页证据」和「标题里出现了这个词」——
+     * 后者不能当成「作品属于该标签」，但也不该被丢掉（见 [rankByVerdict]）。
+     */
+    private fun isSearchUrl(url: String): Boolean =
+        TagEntryUrl.searchKeywordOf(url) != null ||
+            TagEntryUrl.categoryOf(url)?.kind == "search"
+
+    /** 入口 → 召回任务。主词（termPriority 小）先发，长尾后发。 */
+    private fun tasksOf(entries: List<TagEntry>, tagIndex: Int, page: Int): List<RecallTask> =
+        entries.map { entry ->
+            RecallTask(
+                tagIndex = tagIndex,
+                sourceId = entry.sourceId,
+                url = entry.url,
+                term = entry.term,
+                termPriority = entry.termPriority,
+                kind = entry.kind,
+                page = page,
             )
         }
 
-        // 全部标签都有真实分类页 → 严格求交（组内并、组间交）
-        val bySrcPerTag = categoryEntries.map { list -> list.groupBy({ it.first }, { it.second }) }
-        val strict = strictIntersection(bySrcPerTag, sources, 1, semaphore, onPartial)
+    /**
+     * 复合标签：**每个标签先取全量并集，再把各并集按标题求交**（v1.7.9.9 口径）。
+     *
+     * v1.8.9.1 只换了底下的调度层与取舍口径：
+     * - 不再「有标签没有分类页就整批退回并集 + 标题硬过滤」，而是照常召回，
+     *   由判定层逐词处理（分级词按 unknown 保留，题材词才按标题校验）；
+     * - 求交仍然按归一化标题跨源进行（A 站有「无码」、B 站有「全彩」时同名作品要能对上）。
+     */
+    private suspend fun searchCompound(
+        entriesPerTag: List<List<TagEntry>>,
+        tags: List<String>,
+        onPartial: suspend (List<MediaItem>) -> Unit,
+    ): CompoundOutcome {
+        if (entriesPerTag.isEmpty() || entriesPerTag.any { it.isEmpty() }) return CompoundOutcome.EMPTY
+        val sources = entriesPerTag.flatMap { entries -> entries.map { it.sourceId } }.distinct()
+        if (sources.isEmpty()) return CompoundOutcome.EMPTY
+
+        // 只有「真实分类入口」才代表「作品属于这个标签」；关键词入口只是标题里出现了这个词
+        val categoryEntries = entriesPerTag.map { list -> list.filter { it.kind == EntryKind.CATEGORY } }
+        val withoutCategory = categoryEntries.indices.filter { categoryEntries[it].isEmpty() }
+
+        if (withoutCategory.isNotEmpty()) {
+            // 有标签在源里根本没有分类页 → 「组合筛选」在数据层不成立。
+            // 如实展示各标签单独搜到的内容，不再用一刀切的标题过滤把它们砍掉，
+            // 取舍交给判定层（分级词 unknown 保留 / 题材词按标题校验）。
+            val result = recallEntries(entriesPerTag, page = 1, onItems = onPartial)
+            val union = result.responses.flatMap { it.items }.distinctBy { "${it.sourceId}:${it.id}" }
+            if (union.isEmpty()) return CompoundOutcome.EMPTY
+            return CompoundOutcome(
+                union,
+                "「${withoutCategory.joinToString("」「") { tags[it] }}」在漫画源里没有真实分类页、" +
+                    "只能按标题搜，无法与其它标签做组合筛选；下面是各标签单独搜到的内容" +
+                    "（无码 / 全彩这类属性常不写进标题，搜不到不代表没有）",
+                proven = emptyMap(),
+            )
+        }
+
+        val strict = strictIntersection(categoryEntries, 1, onPartial)
         return if (strict.matched.isNotEmpty()) {
             CompoundOutcome(
                 strict.matched,
@@ -1531,15 +1886,15 @@ class TagSearchViewModel(
             CompoundOutcome.EMPTY
         }
     }
+
     private data class StrictResult(
         val matched: List<MediaItem>,
         val unionPerTag: List<LinkedHashMap<String, MediaItem>>,
         /**
          * 每个大集的「同源 + 同标题」证明键集合（v1.8.4.1）。
          *
-         * 求交本身是**跨源**按标题算的（v1.7.9.9 口径，A 站有「无码」、B 站有「全彩」
-         * 时同名作品也要能对上）。但**打标**不能跟着跨源走：B 站那部同名作品不是同一部，
-         * 拿它当证据会给 A 站的作品贴错标签。所以这里额外记一份「同一个源自己命中过」的键。
+         * 求交本身是**跨源**按标题算的，但**打标**不能跟着跨源走：
+         * B 站那部同名作品不是同一部，拿它当证据会给 A 站的作品贴错标签。
          */
         val provenKeysPerTag: List<Set<String>> = emptyList(),
     )
@@ -1547,268 +1902,56 @@ class TagSearchViewModel(
     /**
      * 严格求交（单页）：每个大集先取组内并集（组内 OR），再把各大集按作品身份键求交（组间 AND）。
      *
-     * v1.8.1.2 改为**单页**：翻页交给 UI 触底触发（[loadMore]），[carry] 用于跨页累积，
-     * 否则第 2 页只能和本页自己求交，跨源同名作品会对不上。
+     * v1.8.8.0 起**边收边求交**：每回来一批就并入并集并按 [STREAM_EMIT_INTERVAL_MS]
+     * 节流重算一次交集推给 UI —— 宽标签要等最慢的源才能算出完整交集，不流式就是干等。
      */
     private suspend fun strictIntersection(
-        bySrcPerTag: List<Map<String, List<String>>>,
-        sources: List<String>,
+        entriesPerTag: List<List<TagEntry>>,
         page: Int,
-        semaphore: Semaphore,
-        onPartial: (List<MediaItem>) -> Unit,
+        onPartial: suspend (List<MediaItem>) -> Unit,
         carry: List<LinkedHashMap<String, MediaItem>>? = null,
     ): StrictResult {
-        val unionPerTag = carry ?: MutableList(bySrcPerTag.size) {
+        val unionPerTag = carry ?: MutableList(entriesPerTag.size) {
             LinkedHashMap<String, MediaItem>()
         }
-        val provenKeys = MutableList(bySrcPerTag.size) { mutableSetOf<String>() }
-        // v1.8.8.0（待办 #34）：**边收边求交**。以前要等 fetchGrid 全部 awaitAll 回来
-        // 才第一次算交集，宽标签（几十个源 × 多个写法）等于让用户盯着空列表等最慢的源。
-        // 现在每回来一批就并入并集，并按 [STREAM_EMIT_INTERVAL_MS] 节流重算一次交集推给 UI。
+        val provenKeys = MutableList(entriesPerTag.size) { mutableSetOf<String>() }
         val emitLock = Any()
         var lastEmitMs = 0L
-        val fetched = fetchGrid(bySrcPerTag, sources, page, semaphore) { tagIndex, sourceId, items ->
-            var snapshot: List<List<MediaItem>>? = null
-            synchronized(emitLock) {
-                items.forEach { item ->
-                    val key = TagQuery.identityKey(item.title)
-                        .ifEmpty { "${item.sourceId}:${item.id}" }
-                    unionPerTag[tagIndex].putIfAbsent(key, item)
-                    TagProvenance.proofKey(sourceId, item.title)?.let { provenKeys[tagIndex].add(it) }
+
+        recallEntries(
+            entriesPerTag,
+            page,
+            onBatch = { batch ->
+                var snapshot: List<List<MediaItem>>? = null
+                synchronized(emitLock) {
+                    batch.responses.forEach { response ->
+                        response.items.forEach { item ->
+                            val key = TagQuery.identityKey(item.title)
+                                .ifEmpty { "${item.sourceId}:${item.id}" }
+                            unionPerTag[response.task.tagIndex].putIfAbsent(key, item)
+                            TagProvenance.proofKey(response.task.sourceId, item.title)
+                                ?.let { provenKeys[response.task.tagIndex].add(it) }
+                        }
+                    }
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (batch.responses.any { it.items.isNotEmpty() } &&
+                        now - lastEmitMs >= STREAM_EMIT_INTERVAL_MS
+                    ) {
+                        lastEmitMs = now
+                        // 锁内只做浅拷贝；求交很贵，挪到 Default 线程（本项目有过 ANR 前科）
+                        snapshot = unionPerTag.map { ArrayList(it.values) }
+                    }
                 }
-                val now = android.os.SystemClock.uptimeMillis()
-                if (items.isNotEmpty() && now - lastEmitMs >= STREAM_EMIT_INTERVAL_MS) {
-                    lastEmitMs = now
-                    // 锁内只做一次浅拷贝（引用数组，很便宜）；求交本身很贵，挪到 Default 线程，
-                    // 免得几十个响应连续到达时把主线程占住（本项目有过 ANR 前科）
-                    snapshot = unionPerTag.map { ArrayList(it.values) }
+                snapshot?.let { snap ->
+                    val matched = withContext(Dispatchers.Default) { TagQuery.intersect(snap) }
+                    onPartial(matched)
                 }
-            }
-            snapshot?.let { snap ->
-                val matched = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                    TagQuery.intersect(snap)
-                }
-                onPartial(matched)
-            }
-        }
-        fetched.forEachIndexed { tagIndex, perSource ->
-            perSource.forEach { (sourceId, items) ->
-                items.forEach { item ->
-                    val key = TagQuery.identityKey(item.title)
-                        .ifEmpty { "${item.sourceId}:${item.id}" }
-                    unionPerTag[tagIndex].putIfAbsent(key, item)
-                    // 同源命中才算证明（跨源同名只用于展示层的求交）
-                    TagProvenance.proofKey(sourceId, item.title)?.let { provenKeys[tagIndex].add(it) }
-                }
-            }
-        }
+            },
+        )
         val matched = TagQuery.intersect(unionPerTag.map { it.values.toList() })
         onPartial(matched)
         return StrictResult(matched, unionPerTag, provenKeys)
     }
-
-    /**
-     * 组合关键词直搜：把多个标签拼成一次查询，抓**指定一页**（v1.8.1.2 分页化）。
-     *
-     * 哪个源先返回就先追加（流式），用户点完几秒就能看到第一批。
-     */
-    private suspend fun searchCombinedKeyword(
-        sources: List<String>,
-        keyword: String,
-        semaphore: Semaphore,
-        page: Int = 1,
-        onPartial: (List<MediaItem>) -> Unit = {},
-    ): List<MediaItem> = coroutineScope {
-        val url = TagEntryUrl.search(keyword)
-        val accumulated = mutableListOf<MediaItem>()
-        val lock = Any()
-        addProgressTotal(sources.size)
-        sources.map { sourceId ->
-            async {
-                val items = permitFor(sourceId, semaphore).withPermit {
-                    try {
-                        exploreTagEntry(sourceId, url, page)
-                    } finally {
-                        stepProgress()
-                    }
-                }
-                if (items.isNotEmpty()) {
-                    val snapshot = synchronized(lock) {
-                        accumulated.addAll(items)
-                        accumulated.distinctBy { "${it.sourceId}:${it.id}" }
-                    }
-                    onPartial(snapshot)
-                }
-                items
-            }
-        }.awaitAll()
-        synchronized(lock) { accumulated.distinctBy { "${it.sourceId}:${it.id}" } }
-    }
-
-    /**
-     * 相关性过滤（v1.8.1.2）。
-     *
-     * 源站的关键词搜索是「包含匹配」：搜「无码 全彩」会把标题里只有一个「全」字的
-     * 《全面接触》也返回来（实测就是这样），列表看着跟标签毫无关系。
-     * 这里要求标题**至少命中一个大集里的某个写法**，把这种纯噪声滤掉。
-     *
-     * 注意：不要求两组都命中 —— 「无码」「全彩」这类属性大多不写进标题，
-     * 要求同时命中会直接归零；两组都命中的情况由严格求交那条路负责。
-     */
-    private fun filterByGroupKeywords(items: List<MediaItem>, tags: List<String>): List<MediaItem> {
-        if (items.isEmpty()) return items
-        // **属性词不过滤**（v1.8.9.0）：`无码` / `有码` / `里番` / `成人` 这类是
-        // 分级与状态描述，几乎不会出现在作品标题里（没有哪部作品叫《无码××》）。
-        // v1.8.8.0 给关键词入口加的「标题必须命中标签写法」过滤，用在它们身上
-        // 等于把整批内容砍光 —— 这就是「搜无码明明一堆、界面上只剩几百条」的直接原因。
-        // 这类标签走的是源站自己的分级 / 标签检索，命中本身就准，不需要再用标题兜一遍。
-        if (tags.isNotEmpty() && tags.all { TagAlias.isExplicitAdultIntent(it) }) return items
-        val groups = tags.map { tag ->
-            TagAlias.searchTermsFor(tag)
-                .map { it.lowercase().replace(" ", "") }
-                .filter { it.isNotEmpty() }
-        }
-        return items.filter { item ->
-            val title = item.title.lowercase().replace(" ", "")
-            groups.any { terms -> terms.any { title.contains(it) } }
-        }
-    }
-
-    /** 该入口是否**只能按关键词搜**（源站没给这个标签真实分类页）。 */
-    private fun isSearchEntry(entry: Pair<String, String>): Boolean =
-        TagEntryUrl.searchKeywordOf(entry.second) != null ||
-            TagEntryUrl.categoryOf(entry.second)?.kind == "search"
-
-    /**
-     * 每个源只保留 [MAX_URLS_PER_SOURCE] 条入口。
-     *
-     * 标签池里同一个标签常挂着多个等价写法的入口（真分类 + 搜索），全发出去会让请求数
-     * 成倍膨胀；保留时优先真分类页（结果就是该分类的作品，比标题搜索准得多）。
-     */
-    private fun limitEntriesPerSource(
-        entries: List<Pair<String, String>>,
-    ): List<Pair<String, String>> {
-        if (entries.size <= MAX_URLS_PER_SOURCE) return entries
-        val bySource = LinkedHashMap<String, MutableList<Pair<String, String>>>()
-        entries.forEach { entry -> bySource.getOrPut(entry.first) { mutableListOf() }.add(entry) }
-        return bySource.values.flatMap { list ->
-            if (list.size <= MAX_URLS_PER_SOURCE) {
-                list
-            } else {
-                list.sortedBy { entry -> if (isSearchEntry(entry)) 1 else 0 }
-                    .take(MAX_URLS_PER_SOURCE)
-            }
-        }
-    }
-
-    /** 并发抓取 `[标签][源]` 请求，所有参与源共享同一个并发限制。 */
-    private suspend fun fetchGrid(
-        bySrcPerTag: List<Map<String, List<String>>>,
-        sources: List<String>,
-        page: Int,
-        semaphore: Semaphore,
-        /**
-         * 每回来一个响应就回调一次（v1.8.8.0，待办 #34）。
-         *
-         * 组合搜索（宽标签）必须先把两个标签的并集攒齐才能求交，等最慢的源就是
-         * 「搜一个词干等十几秒」。有了这个回调，调用方可以边收边增量求交、边推 UI。
-         * 回调在协程上下文里执行，实现方自己保证线程安全。
-         */
-        onResponse: (suspend (tagIndex: Int, sourceId: String, items: List<MediaItem>) -> Unit)? = null,
-    ): List<Map<String, List<MediaItem>>> = coroutineScope {
-        val requests = bySrcPerTag.flatMapIndexed { tagIndex, bySource ->
-            sources.flatMap { sourceId ->
-                bySource[sourceId].orEmpty().map { url ->
-                    TagSearchRequest(tagIndex, sourceId, url)
-                }
-            }
-        }
-        addProgressTotal(requests.size)
-        val responses = requests.map { request ->
-            async {
-                // 同源已在别处超时 → 这个写法不必再等一遍（见 deadSources）。
-                // **必须在 withPermit 之外判断**，否则照样占着并发额度空转。
-                val items = if (request.sourceId in deadSources) {
-                    stepProgress()
-                    emptyList()
-                } else {
-                    sourceLock(request.sourceId).withPermit {
-                        if (request.sourceId in deadSources) {
-                            stepProgress()
-                            emptyList()
-                        } else {
-                            permitFor(request.sourceId, semaphore).withPermit {
-                                try {
-                                    exploreTagEntry(request.sourceId, request.url, page)
-                                } finally {
-                                    stepProgress()
-                                }
-                            }
-                        }
-                    }
-                }
-                onResponse?.invoke(request.tagIndex, request.sourceId, items)
-                TagSearchResponse(request.tagIndex, request.sourceId, items)
-            }
-        }.awaitAll()
-        List(bySrcPerTag.size) { tagIndex ->
-            LinkedHashMap<String, List<MediaItem>>().apply {
-                responses.asSequence()
-                    .filter { it.tagIndex == tagIndex }
-                    .groupBy { it.sourceId }
-                    .forEach { (sourceId, sourceResponses) ->
-                        put(
-                            sourceId,
-                            sourceResponses.flatMap { it.items }
-                                .distinctBy { "${it.sourceId}:${it.id}" },
-                        )
-                    }
-            }
-        }
-    }
-
-    /**
-     * 单个标签请求，带**能真正中断**的超时（v1.8.1.1；v1.8.8.4 改为 callTimeout）。
-     *
-     * 标签搜索会同时打几十个源，只要有几个源卡住，整次搜索就被拖到它们超时为止 ——
-     * 这是「进度条走到 40/41 停住不动」的常见原因。
-     *
-     * v1.8.8.4：以前只包一层 `withTimeout(8s)`，但协程取消**掐不断**已经阻塞在
-     * `call.execute()` 里的 socket 读 —— 适配器的 connect/read 超时是 15s / 20s，
-     * 于是「8 秒硬超时」实际要等满 20 秒，进度条就卡在那儿。现在把 8 秒作为
-     * [RequestBudget.callTimeoutMs] 下发给适配器，交给 OkHttp 的 `callTimeout`
-     * 到点真中断连接；外层 `withTimeout` 留 [TIMEOUT_GRACE_MS] 余量做兜底，
-     * 只负责「万一适配器没理会预算」时收场。
-     *
-     * 同时下发 [RequestBudget.queueWaitMs]：Venera 引擎排队只等 2 秒，
-     * 拿不到锁就快速失败，别占着队列拖累后面的源。
-     */
-    private suspend fun exploreTagEntry(sourceId: String, url: String, page: Int): List<MediaItem> =
-        try {
-            withTimeout(SEARCH_REQUEST_TIMEOUT_MS + TIMEOUT_GRACE_MS) {
-                withContext(
-                    RequestBudget(
-                        callTimeoutMs = SEARCH_REQUEST_TIMEOUT_MS,
-                        queueWaitMs = VENERA_TAG_QUEUE_WAIT_MS,
-                    ),
-                ) {
-                    contentRepository.explore(sourceId, url, page)
-                }
-            }
-        } catch (timeout: TimeoutCancellationException) {
-            deadSources.add(sourceId)
-            android.util.Log.w("TagSearch", "标签请求超时（${SEARCH_REQUEST_TIMEOUT_MS}ms），sourceId=$sourceId")
-            emptyList()
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            // **不标记死源**：普通异常绝大多数是「这个源不认这种写法」或「这次的参数
-            // 不合法」，而不是源不可用。把它当死源会把该源其它写法一并废掉 ——
-            // 直接后果就是结果变少（同一个源明明只错了一种写法，整源下线）。
-            // 只有真正的超时（下面那个分支）才说明「这个源这轮指望不上」。
-            android.util.Log.w("TagSearch", "标签请求失败，sourceId=$sourceId", error)
-            emptyList()
-        }
 
     /** 成人源内容默认隐藏；用户明确选择成人/修饰标签时视为本次主动请求。 */
     private suspend fun filterAdults(items: List<MediaItem>, tags: List<String>): List<MediaItem> {
@@ -1830,20 +1973,14 @@ class TagSearchViewModel(
         private const val CONTEXT_PAGE_CONFIDENCE = 90
 
         /**
-         * Venera 源的并发上限。
+         * Venera 源的并发上限（v1.8.9.2 从 10 收回 4）。
          *
-         * **v1.8.8.8 从 4 提到 10。** 旧值 4 是被旧引擎逼出来的补偿：当时网络走
-         * 同步桥，一次请求就把 WebView 的 JS 线程占满 6~12 秒，全应用实际只有一个
-         * 源在跑，并发给到 24 只是让 20 个协程排队等锁、再被 8 秒超时全部丢弃，
-         * 所以压到 4 路「队列短、轮得到」反而更快。
-         *
-         * v1.8.8.8 引擎改成异步网络桥 + 并发闸门（`VeneraEngine` 的
-         * `interactiveGate` / `backgroundGate`）之后，多个源是真的同时在联网，
-         * 4 路就成了新的瓶颈 —— 实测一次标签搜索 82 个源被切成 20 批、每批干等
-         * 8 秒，整轮近三分钟。提到 10 路后批数降到 9 左右，且引擎侧仍有独立
-         * 闸门兜底，不会把 WebView 打爆。
+         * 10 路的前提是「异步桥之后多个源是真并行」，但 JS 侧仍是**单线程**：
+         * 一次返回 2.3MB JSON 的源在解析期间独占线程，10 路一起冲进来时详情页的
+         * `info` 实测排队到 30009ms 直接超时。收到 4 路后单轮慢一些，但用户点开
+         * 任何一部作品都能立刻拿到详情 —— 这是更该保的那个。
          */
-        private const val VENERA_TAG_CONCURRENCY = 10
+        private const val VENERA_TAG_CONCURRENCY = 4
 
         /**
          * Venera 引擎的**排队预算**（v1.8.8.4，毫秒）。
@@ -1853,12 +1990,6 @@ class TagSearchViewModel(
          * 2 秒内拿不到锁就快速失败，让位给下一个。
          */
         private const val VENERA_TAG_QUEUE_WAIT_MS = 2_000L
-
-        /** 单标签搜索每个源抓几页（v1.8.1.1：原来只抓 1 页，结果太少） */
-        private const val SINGLE_TAG_PAGES = 2
-
-        /** 组合关键词直搜每个源抓几页 */
-        private const val COMBINED_SEARCH_PAGES = 2
 
         /** 首次搜索完成后后台预取几页（v1.8.1.2） */
         private const val PRELOAD_PAGES = 3
@@ -1885,37 +2016,24 @@ class TagSearchViewModel(
         private const val STREAM_EMIT_INTERVAL_MS = 400L
 
         /**
-         * 单个标签请求的硬超时（v1.8.1.1；v1.8.8.4 起交给 OkHttp 的 callTimeout）。
+         * 单个召回请求的超时（v1.8.1.1；v1.8.9.1 起由调度层统一计时）。
          *
-         * 源站卡住时默认要等 20 秒，一个源就能把整次搜索拖到 20 秒以上；
-         * 8 秒拿不到就当作该源没有结果，先让用户看到其余源的内容。
+         * 它同时是 [RequestBudget.callTimeoutMs]（交给 OkHttp 的 `callTimeout`，到点
+         * **真中断连接**）和调度层 `withTimeout` 的时长。两者必须一致 ——
+         * 调度层先到会把协程取消掉，callTimeout 就白设了。
          *
-         * 注意它现在**同时**是 [RequestBudget.callTimeoutMs]（真中断）和外层
-         * `withTimeout` 的基准（加 [TIMEOUT_GRACE_MS] 余量）。两者不要拆开调 ——
-         * 外层比内层短的话，会先被协程取消打断，callTimeout 就白设了。
+         * 到点只记 [RecallOutcome.TIMEOUT]（= 未知），**不再等同于「源里没有」**。
          */
         private const val SEARCH_REQUEST_TIMEOUT_MS = 8_000L
 
         /**
-         * 外层 `withTimeout` 相对 [SEARCH_REQUEST_TIMEOUT_MS] 的余量（v1.8.8.4）。
+         * 召回批大小（v1.8.9.1）。
          *
-         * 留 1.5 秒是为了让 OkHttp 的 callTimeout **先**触发（它抛
-         * `InterruptedIOException`，连接被真正掐断、线程立刻释放）；外层只是兜底，
-         * 万一某个适配器没把预算传给网络层，至少还能让协程收场。
+         * 近义词按优先级排序后每批 4 个一起发，同时在飞的批次由滑动窗口控制
+         * （窗口 = 总并发 / 批大小）。批太小调度开销大、批太大收敛早停不灵敏 ——
+         * 4 是「一批回来就能判断有没有新东西」的量级。
          */
-        private const val TIMEOUT_GRACE_MS = 1_500L
-
-        /** 组合关键词结果的缓存有效期（10 分钟） */
-        private const val COMBINED_CACHE_TTL_MS = 10 * 60 * 1000L
-
-        /**
-         * 同一个标签下**每个源**最多保留几条入口（v1.8.1.0）。
-         *
-         * 标签池里一个标签常挂着多条入口（真分类 + 若干搜索写法），全发出去请求数成倍增长：
-         * 搜「无码 全彩」实测会打出上千个请求。按源截到 2 条后请求量降一个数量级，
-         * 真分类入口优先保留（它给出的就是该分类的作品，比标题搜索准）。
-         */
-        private const val MAX_URLS_PER_SOURCE = 2
+        private const val RECALL_BATCH_SIZE = 4
 
         /** 热门推荐标签上限（v1.6.1.0） */
         const val HOT_TAG_LIMIT = 12

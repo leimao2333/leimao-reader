@@ -64,6 +64,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -78,6 +79,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -148,17 +154,41 @@ fun TagSearchScreen(
     val loadingPage by viewModel.loadingPage.collectAsState()
     /** 这次搜索用了多少个源（v1.8.7.5）：顶部与数量一起显示 */
     val sourceCount by viewModel.sourceCount.collectAsState()
+    /**
+     * 搜索阶段（v1.8.9.1）：STREAMING = 还有任务没进终态，DONE_PARTIAL = 有源没回话。
+     *
+     * 和 `searching` 的区别：`searching` 只管转圈，这个管**说法**——
+     * 「还在收」和「收完了但可能不全」是两件事，界面上必须分开讲，
+     * 否则用户看到结果停住不动，会以为这就是全部了。
+     */
+    val phase by viewModel.phase.collectAsState()
+    /** 因超时/报错而「不知道有没有」的源数量（v1.8.9.1）：结果可能不全时说清楚 */
+    val slowSourceCount by viewModel.slowSourceCount.collectAsState()
     val activeTags by viewModel.activeTags.collectAsState()
     /** 结果展示方式（v1.8.7.1）：true = 宫格，false = 列表 */
     val searchGrid by viewModel.searchGrid.collectAsState()
     /** 宫格列数（v1.8.7.5）：0 = 自适应（视频 3 列、其余 2 列），2~5 = 固定 */
     val gridColumns by viewModel.gridColumns.collectAsState()
 
+    // 从详情页 / 阅读页返回时补完上次被中断的首屏召回（v1.8.9.6）。
+    // 点开结果时为了腾出执行线程会主动停掉召回，回来不补的话顶部会一直挂着
+    // 「部分源未返回」、列表也停在半截结果上 —— 用户侧就是「回来就不继续搜索了」。
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) viewModel.resumeAfterReturn()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     // v1.6.2.0：「更多热门」展开面板开关
     var showAllHotTags by remember { mutableStateOf(false) }
 
     // v1.8.1.3：全量索引预热入口（遍历源 + 详情打标，重活，按需触发）
     var showIndexDialog by remember { mutableStateOf(false) }
+    // v1.8.9.2：清空当前类型已收录的标签池（标签池变脏时从头收集一份干净的）
+    var confirmClearTags by remember { mutableStateOf(false) }
     // v1.8.1.5：云端打标表（PC 工具 → GitHub → App 导入）
     val context = LocalContext.current
     val dialogScope = rememberCoroutineScope()
@@ -254,7 +284,37 @@ fun TagSearchScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showIndexDialog = false }) { Text("关闭") }
+                Row {
+                    TextButton(onClick = { confirmClearTags = true }) {
+                        Text("清空收录标签", color = MaterialTheme.colorScheme.error)
+                    }
+                    TextButton(onClick = { showIndexDialog = false }) { Text("关闭") }
+                }
+            },
+        )
+    }
+
+    // 清空标签池是破坏性操作，先确认再动手
+    if (confirmClearTags) {
+        AlertDialog(
+            onDismissRequest = { confirmClearTags = false },
+            title = { Text("清空收录标签？") },
+            text = {
+                Text(
+                    "会删掉当前类型已收录的全部标签（以及这些标签指向的各源入口），" +
+                        "下次进入本页会重新从各源分类收集一份。已建好的作品索引不受影响。",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmClearTags = false
+                        viewModel.clearCollectedTags()
+                    },
+                ) { Text("清空", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClearTags = false }) { Text("取消") }
             },
         )
     }
@@ -547,8 +607,22 @@ fun TagSearchScreen(
                         append(if (found > 0) "已找到 $found 部" else "正在搜索…")
                         // 「用多少源」也留着：这个数说明覆盖面，掉了用户会以为源被悄悄砍了
                         if (sourceCount > 0) append("　·　用 $sourceCount 个源")
-                        progress?.let { (done, total) ->
-                            if (total > 0) append("　·　总进度 $done/$total")
+                        // v1.8.9.1：总进度只在「还在收」时显示。收完之后分母里还挂着
+                        // 预取那几页的请求数，留在屏幕上会变成「已找到 424 部 · 总进度 504/738」，
+                        // 看着像没跑完。
+                        if (phase == SearchPhase.STREAMING) {
+                            progress?.let { (done, total) ->
+                                if (total > 0) append("　·　总进度 $done/$total")
+                            }
+                        }
+                        // v1.8.9.1：任务终态决定说法，不再靠「结果有没有变」猜
+                        when (phase) {
+                            SearchPhase.STREAMING -> append("　·　仍在收集")
+                            SearchPhase.DONE_PARTIAL -> append(
+                                if (slowSourceCount > 0) "　·　$slowSourceCount 个源未返回，结果可能不全"
+                                else "　·　部分源未返回，结果可能不全",
+                            )
+                            else -> Unit
                         }
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -647,6 +721,18 @@ fun TagSearchScreen(
             // 这两类封面本身比视频更方，三列会把书名挤成一两个字。
             searchGrid -> {
                 val gridState = rememberLazyGridState()
+                // 到底之后继续上滑 = 再往前问一页（v1.8.9.6，替代原来的「继续往下翻」按钮）
+                val canSwipeContinue = remember {
+                    derivedStateOf { !hasMore && !loadingMore && results.isNotEmpty() }
+                }
+                val density = LocalDensity.current
+                val swipeContinue = remember(density) {
+                    SwipeContinueConnection(
+                        enabled = { canSwipeContinue.value },
+                        thresholdPx = with(density) { SWIPE_CONTINUE_THRESHOLD_DP.dp.toPx() },
+                        onTrigger = { viewModel.loadMore(force = true) },
+                    )
+                }
                 val columns = gridColumns.takeIf { it >= 2 }
                     ?: adaptiveGridColumns(LocalConfiguration.current.screenWidthDp, viewModel.type)
                 // 触底即加载下一页（v1.8.1.2）：首次搜索已后台预取 3 页，这里只兜住更深的滚动
@@ -661,14 +747,24 @@ fun TagSearchScreen(
                 Box(Modifier.fillMaxSize()) {
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(columns),
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .nestedScroll(swipeContinue),
                         state = gridState,
                         contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         items(displayResults, key = { "${it.sourceId}:${it.id}" }) { item ->
-                            TagPosterCard(item = item, onClick = { onItemClick(item) })
+                            TagPosterCard(
+                                item = item,
+                                // 进详情前先放掉后台召回：它占着全应用共用的 JS 线程，
+                                // 详情页的 info 会被排到 30 秒超时（v1.8.9.2）
+                                onClick = {
+                                    viewModel.abandonBackgroundWork()
+                                    onItemClick(item)
+                                },
+                            )
                         }
                         // 页脚**始终**渲染（v1.8.7.8）：到底也得让用户看见为什么停了
                         item(
@@ -680,7 +776,6 @@ fun TagSearchScreen(
                                 hasMore = hasMore,
                                 emptyPage = emptyPage,
                                 onLoadMore = { viewModel.loadMore() },
-                                onContinue = { viewModel.loadMore(force = true) },
                             )
                         }
                     }
@@ -696,6 +791,18 @@ fun TagSearchScreen(
 
             else -> {
                 val listState = rememberLazyListState()
+                // 列表态同宫格态：到底之后上滑即翻页（v1.8.9.6）
+                val canSwipeContinue = remember {
+                    derivedStateOf { !hasMore && !loadingMore && results.isNotEmpty() }
+                }
+                val density = LocalDensity.current
+                val swipeContinue = remember(density) {
+                    SwipeContinueConnection(
+                        enabled = { canSwipeContinue.value },
+                        thresholdPx = with(density) { SWIPE_CONTINUE_THRESHOLD_DP.dp.toPx() },
+                        onTrigger = { viewModel.loadMore(force = true) },
+                    )
+                }
                 LaunchedEffect(listState, hasMore) {
                     snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
                         .distinctUntilChanged()
@@ -706,15 +813,21 @@ fun TagSearchScreen(
                 }
                 Box(Modifier.fillMaxSize()) {
                     LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .nestedScroll(swipeContinue),
                         state = listState,
                         contentPadding = PaddingValues(vertical = 8.dp),
                     ) {
                         items(displayResults, key = { "${it.sourceId}:${it.id}" }) { item ->
+                            val open = {
+                                viewModel.abandonBackgroundWork()
+                                onItemClick(item)
+                            }
                             MediaItemCard(
                                 item = item,
-                                onClick = { onItemClick(item) },
-                                onRead = { onItemClick(item) },
+                                onClick = open,
+                                onRead = open,
                             )
                         }
                         // 列表态同样**始终**渲染页脚（理由同宫格态）
@@ -724,7 +837,6 @@ fun TagSearchScreen(
                                 hasMore = hasMore,
                                 emptyPage = emptyPage,
                                 onLoadMore = { viewModel.loadMore() },
-                                onContinue = { viewModel.loadMore(force = true) },
                             )
                         }
                     }
@@ -1085,7 +1197,6 @@ private fun LoadMoreFooter(
     hasMore: Boolean,
     emptyPage: Int = 0,
     onLoadMore: () -> Unit,
-    onContinue: () -> Unit,
 ) {
     // v1.8.8.0（待办 #35）：页脚就是「触底哨兵」。
     //
@@ -1120,8 +1231,10 @@ private fun LoadMoreFooter(
                 )
             }
             hasMore -> TextButton(onClick = onLoadMore) { Text("加载更多") }
-            // v1.8.7.8：到底也要有东西可看、有路可走。以前这里整个页脚不渲染，
-            // 触底既不自动加载、也没按钮、也没说明 —— 用户看到的就是「到底后没反应」。
+            // v1.8.9.6：到底之后**不再挂按钮**，改成「继续上滑」的手势。
+            // 以前这里是一个「继续往下翻」的 TextButton：既要多点一下，又常常被
+            // 当成一句说明文字（用户反馈「这个按键去掉，改成上滑就翻」）。
+            // 手势的实现在 [SwipeContinueConnection]，这里只留一行提示告诉用户怎么用。
             else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
                     text = if (emptyPage > 0) {
@@ -1133,8 +1246,60 @@ private fun LoadMoreFooter(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                TextButton(onClick = onContinue) { Text("继续往下翻") }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "继续上滑可再试一次",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                )
             }
         }
     }
 }
+
+/**
+ * 「到底之后继续上滑 = 再往前问一页」（v1.8.9.6）。
+ *
+ * 只认「列表已经推不动、但用户还在往上推」的那部分滚动量：
+ * 没到底时列表会把滚动全部消费掉，`available.y` 恒为 0，这里自然不会触发。
+ * 用**累积位移 + 冷却时间**兜住「一次猛滑连开好几页」，往回拉则清零，
+ * 避免用户来回蹭把阈值凑满。
+ */
+private class SwipeContinueConnection(
+    private val enabled: () -> Boolean,
+    private val thresholdPx: Float,
+    private val onTrigger: () -> Unit,
+) : NestedScrollConnection {
+    private var accumulated = 0f
+    private var lastTriggerAt = 0L
+
+    override fun onPostScroll(
+        consumed: Offset,
+        available: Offset,
+        source: NestedScrollSource,
+    ): Offset {
+        if (!enabled()) {
+            accumulated = 0f
+            return Offset.Zero
+        }
+        if (available.y < 0f) {
+            // y < 0 = 内容继续往上走（用户想看更下面的东西），但列表已经到底了
+            accumulated += -available.y
+            val now = System.currentTimeMillis()
+            if (accumulated >= thresholdPx && now - lastTriggerAt >= SWIPE_CONTINUE_COOLDOWN_MS) {
+                accumulated = 0f
+                lastTriggerAt = now
+                onTrigger()
+            }
+        } else if (available.y > 0f) {
+            accumulated = 0f
+        }
+        return Offset.Zero
+    }
+}
+
+/** 上滑触发翻页需要累积的位移（dp）：太小会误触，太大要滑很久 */
+private const val SWIPE_CONTINUE_THRESHOLD_DP = 72f
+
+/** 两次上滑翻页之间的冷却，防止一次甩动连续开好几页 */
+private const val SWIPE_CONTINUE_COOLDOWN_MS = 900L

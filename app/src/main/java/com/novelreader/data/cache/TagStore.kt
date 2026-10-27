@@ -68,10 +68,22 @@ data class TagPlan(
      * v1.8.1.0：写法**只取前 [TagAlias.MAX_SEARCH_TERMS_PER_SOURCE] 个**（用户输入优先）。
      * 以前整组二三十个写法 × 每个源各发一次，搜「无码 全彩」要打上千个请求，
      * 用户看到的是「转半天圈还搜不出东西」。
+     *
+     * v1.8.9.3：这 N 个写法**按源轮转分配**，不再是每个源都拿同一份前 N 个 ——
+     * 那样组里二十来个长尾写法（`无码破解` / `無修正版本` / `ai去码` …）一个源都不会发，
+     * 用户侧就是「组里明明有这个词，却怎么也搜不到」。现在高价值写法（用户输入 /
+     * 简繁互补 / 拉丁 / 日文）每个源照发，剩余名额按源序号错开，跨源覆盖整组，
+     * 而**单源请求数不变**。
      */
-    fun searchEntriesFor(tag: String, query: String = tag): List<Pair<String, String>> =
-        entriesFor(tag).flatMap { (sourceId, url) ->
-            val terms = TagAlias.searchTermsForQuery(query)
+    fun searchEntriesFor(tag: String, query: String = tag): List<Pair<String, String>> {
+        val entries = entriesFor(tag)
+        // 源序号只用于错开轮转起点，取「该源在本次入口表里第一次出现的次序」
+        val ordinals = LinkedHashMap<String, Int>()
+        entries.forEach { (sourceId, _) ->
+            if (sourceId !in ordinals) ordinals[sourceId] = ordinals.size
+        }
+        return entries.flatMap { (sourceId, url) ->
+            val terms = TagAlias.searchTermsForSource(query, ordinals[sourceId] ?: 0)
             val category = TagEntryUrl.categoryOf(url)
             when {
                 TagEntryUrl.searchKeywordOf(url) != null ->
@@ -90,6 +102,7 @@ data class TagPlan(
                 else -> listOf(sourceId to url)
             }
         }.distinct()
+    }
 
     /** Gson 载体：Pair 不走反射构造，用两层字符串数组 */
     private data class Dto(val collectedAtMs: Long, val plan: Map<String, List<List<String>>>)
@@ -235,6 +248,25 @@ class TagStore(private val dir: File) {
      * 首次使用自然重新收集一次。
      */
     fun fileOf(typeName: String) = File(dir, "$typeName.$LOGIC_VERSION.json")
+
+    /**
+     * 清空某个类型的标签缓存（v1.8.9.2）。
+     *
+     * 用户侧的需求是「清空漫画的收录标签」：标签池由各源分类聚合而来，站点改版、
+     * 误收噪声分类、或早期一次错误的成人判定都可能让它变脏，而「刷新标签」
+     * 只会在旧池子上重新覆盖 —— 想彻底重来就得先把缓存删掉。
+     * 同时清掉不带版本号的旧文件，避免 [load] 之外的路径再读到。
+     *
+     * @return 是否真的删掉了文件（缓存本来就不存在时返回 false）
+     */
+    fun clear(typeName: String): Boolean {
+        val targets = listOf(fileOf(typeName), File(dir, "$typeName.json"))
+        var removed = false
+        targets.forEach { f ->
+            if (f.isFile) removed = runCatching { f.delete() }.getOrDefault(false) || removed
+        }
+        return removed
+    }
 
     companion object {
         /**

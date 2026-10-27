@@ -421,6 +421,39 @@ class TagSearchViewModel(
 
     private var paging: PagingContext? = null
 
+    /**
+     * 本轮搜索里**已判定不可用**的源（v1.8.8.8）。
+     *
+     * 为什么需要：一个标签往往有多种写法（「无码」→ 无码 / 無碼 / 无码版 / 無碼版 /
+     * 无码破解 / 無修正 …），[fetchGrid] 会为「每个源 × 每种写法」各派一个请求 ——
+     * 41 个源 × 6 种写法 = 246 个请求。可实际上能用的源往往只有个位数，其余要么被墙、
+     * 要么域名已死，每个都要等满 8 秒超时。于是整轮搜索的耗时几乎全花在「反复确认
+     * 同一个源已经死了」上面：实测 246 个请求要跑近四分钟，而屏幕上早就没有新东西了。
+     *
+     * 现在同源只要有**一次**超时/异常，就把该源记进来，本轮后续写法直接跳过（且不占
+     * 并发额度）。活源一次都不会进来，死源从「等 6 遍」变成「等 1 遍」。
+     *
+     * 只在**单轮搜索内**有效，每次 [search] 开始清空 —— 跨轮记忆会让偶发抽风的源
+     * 在之后几次搜索里被凭空拉黑。
+     */
+    private val deadSources: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /**
+     * 每个源一把串行锁（v1.8.8.8）：**同一个源的多写法不并发**。
+     *
+     * 光有 [deadSources] 还不够 —— [searchOneTag] 会把 246 个请求一次性全部
+     * `async` 出去，如果某个源有 6 种写法，它的 6 个请求会同时抢到并发额度、
+     * 一起卡满 8 秒。10 路额度被两三个死源一占，其余源连入场机会都没有。
+     *
+     * 加锁后：每个源同一时刻只有 1 个请求在飞，第一个写法超时 → 标记死源 →
+     * 剩下 5 个写法拿到锁后立刻发现已死、直接放行。死源从「等 6 遍 × 8 秒」
+     * 变成「等 1 遍 8 秒」，而活源只是把 6 个写法排成队（单个 1 秒左右，无感）。
+     */
+    private val sourceLocks = java.util.concurrent.ConcurrentHashMap<String, Semaphore>()
+
+    private fun sourceLock(sourceId: String): Semaphore =
+        sourceLocks.getOrPut(sourceId) { Semaphore(1) }
+
     // ===== 并发额度（v1.8.8.4）=====
     /**
      * 普通源的并发额度，**一次搜索共用一个**。
@@ -1012,6 +1045,9 @@ class TagSearchViewModel(
                 veneraSemaphore = Semaphore(minOf(VENERA_TAG_CONCURRENCY, concurrency))
                 combinedSemaphore = Semaphore(maxOf(2, concurrency / 2))
                 veneraSourceIds = veneraIdsOf()
+                // 新一轮搜索：死源判定与源内锁表都从头开始（见 deadSources / sourceLocks）
+                deadSources.clear()
+                sourceLocks.clear()
                 ensurePlan()
                 // v1.8.1.3 查询语法：-排除 / 大类:标签 / 通配 *
                 val specs = TagQuerySpec.parse(_query.value)
@@ -1372,11 +1408,26 @@ class TagSearchViewModel(
             entries.map { entry ->
                 val (srcId, url) = entry
                 async {
-                    val raw = permitFor(srcId, semaphore).withPermit {
-                        try {
-                            exploreTagEntry(srcId, url, page)
-                        } finally {
-                            stepProgress()
+                    // 同源已在别的写法上超时 → 剩下的写法直接跳过（见 deadSources）。
+                    // **判断放在 withPermit 之外**：死源不该继续占着并发额度。
+                    val raw = if (srcId in deadSources) {
+                        stepProgress()
+                        emptyList()
+                    } else {
+                        sourceLock(srcId).withPermit {
+                            // 等锁期间同源别的写法可能已经超时了，拿到锁再确认一次
+                            if (srcId in deadSources) {
+                                stepProgress()
+                                emptyList()
+                            } else {
+                                permitFor(srcId, semaphore).withPermit {
+                                    try {
+                                        exploreTagEntry(srcId, url, page)
+                                    } finally {
+                                        stepProgress()
+                                    }
+                                }
+                            }
                         }
                     }
                     // v1.8.8.0（待办 #36）：关键词入口的结果必须标题命中写法
@@ -1659,11 +1710,25 @@ class TagSearchViewModel(
         addProgressTotal(requests.size)
         val responses = requests.map { request ->
             async {
-                val items = permitFor(request.sourceId, semaphore).withPermit {
-                    try {
-                        exploreTagEntry(request.sourceId, request.url, page)
-                    } finally {
-                        stepProgress()
+                // 同源已在别处超时 → 这个写法不必再等一遍（见 deadSources）。
+                // **必须在 withPermit 之外判断**，否则照样占着并发额度空转。
+                val items = if (request.sourceId in deadSources) {
+                    stepProgress()
+                    emptyList()
+                } else {
+                    sourceLock(request.sourceId).withPermit {
+                        if (request.sourceId in deadSources) {
+                            stepProgress()
+                            emptyList()
+                        } else {
+                            permitFor(request.sourceId, semaphore).withPermit {
+                                try {
+                                    exploreTagEntry(request.sourceId, request.url, page)
+                                } finally {
+                                    stepProgress()
+                                }
+                            }
+                        }
                     }
                 }
                 onResponse?.invoke(request.tagIndex, request.sourceId, items)
@@ -1715,11 +1780,13 @@ class TagSearchViewModel(
                 }
             }
         } catch (timeout: TimeoutCancellationException) {
+            deadSources.add(sourceId)
             android.util.Log.w("TagSearch", "标签请求超时（${SEARCH_REQUEST_TIMEOUT_MS}ms），sourceId=$sourceId")
             emptyList()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
+            deadSources.add(sourceId)
             android.util.Log.w("TagSearch", "标签请求失败，sourceId=$sourceId", error)
             emptyList()
         }

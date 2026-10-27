@@ -1436,6 +1436,16 @@ class TagSearchViewModel(
                     } else {
                         raw
                     }
+                    // 诊断（v1.8.9.0）：只在「有结果」或「被过滤掉」时打一行，
+                    // 用来回答「为什么结果这么少」—— 是源没返回，还是被过滤砍了。
+                    // 不打 URL / 域名，只留源 id 与条数。
+                    if (raw.isNotEmpty()) {
+                        android.util.Log.i(
+                            "TagSearchStat",
+                            "src=$srcId kind=${if (isSearchEntry(entry)) "search" else "category"} " +
+                                "raw=${raw.size} kept=${items.size}",
+                        )
+                    }
                     if (items.isNotEmpty() && !isSearchEntry(entry)) {
                         items.forEach(onCategoryHit)
                     }
@@ -1647,6 +1657,12 @@ class TagSearchViewModel(
      */
     private fun filterByGroupKeywords(items: List<MediaItem>, tags: List<String>): List<MediaItem> {
         if (items.isEmpty()) return items
+        // **属性词不过滤**（v1.8.9.0）：`无码` / `有码` / `里番` / `成人` 这类是
+        // 分级与状态描述，几乎不会出现在作品标题里（没有哪部作品叫《无码××》）。
+        // v1.8.8.0 给关键词入口加的「标题必须命中标签写法」过滤，用在它们身上
+        // 等于把整批内容砍光 —— 这就是「搜无码明明一堆、界面上只剩几百条」的直接原因。
+        // 这类标签走的是源站自己的分级 / 标签检索，命中本身就准，不需要再用标题兜一遍。
+        if (tags.isNotEmpty() && tags.all { TagAlias.isExplicitAdultIntent(it) }) return items
         val groups = tags.map { tag ->
             TagAlias.searchTermsFor(tag)
                 .map { it.lowercase().replace(" ", "") }
@@ -1786,7 +1802,10 @@ class TagSearchViewModel(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
-            deadSources.add(sourceId)
+            // **不标记死源**：普通异常绝大多数是「这个源不认这种写法」或「这次的参数
+            // 不合法」，而不是源不可用。把它当死源会把该源其它写法一并废掉 ——
+            // 直接后果就是结果变少（同一个源明明只错了一种写法，整源下线）。
+            // 只有真正的超时（下面那个分支）才说明「这个源这轮指望不上」。
             android.util.Log.w("TagSearch", "标签请求失败，sourceId=$sourceId", error)
             emptyList()
         }

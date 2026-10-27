@@ -162,18 +162,39 @@ class NovelReaderViewModel(
     /** 章节正文原文内存缓存：chapterIndex -> raw */
     private val memoryCache = LinkedHashMap<Int, String>()
 
+    /**
+     * 预缓存窗口的正文快照，供 UI 层**预分页**（v1.8.8.5）。
+     *
+     * 分页要用到屏宽 / 字号 / 行高 / 字体等排版参数，这些只有 UI 层知道，
+     * 所以 ViewModel 不自己分页，只把「已经预取到的正文」交给 UI；
+     * 由 UI 在后台按当前排版参数提前把这些章排好，切章时直接命中，不再白屏等排版。
+     */
+    private val _cachedChapters = MutableStateFlow<Map<Int, Pair<String, String>>>(emptyMap())
+    val cachedChapters: StateFlow<Map<Int, Pair<String, String>>> = _cachedChapters.asStateFlow()
+
     private fun putMemory(index: Int, raw: String) {
         if (raw.isBlank()) return
         memoryCache[index] = raw
         // v1.7.1.0：8 → 16。预取窗口现在前后各 3 章，容量太小会把刚预取好的章节立刻淘汰，
         // 连翻几章后又退化成现拉网络。
-        while (memoryCache.size > 16) {
+        // v1.8.8.5：档位上限 5 → 10，窗口前后各 10 章 + 当前章，容量同步 16 → 24，
+        // 否则刚预取好的章会被自己挤出去。
+        while (memoryCache.size > 24) {
             val eldest = memoryCache.keys.firstOrNull() ?: break
             memoryCache.remove(eldest)
         }
+        // 快照带上章节标题：UI 预分页要用它算首页可用高度（标题占掉的那一块），
+        // 标题传错会让首页多排/少排一行。
+        _cachedChapters.value = memoryCache.mapValues { (idx, text) ->
+            val title = _chapters.value.getOrNull(idx)?.title?.let { cleanChapterTitle(it) } ?: ""
+            title to text
+        }
     }
 
-    private fun clearMemory() = memoryCache.clear()
+    private fun clearMemory() {
+        memoryCache.clear()
+        _cachedChapters.value = emptyMap()
+    }
 
     /**
      * 预取请求：最新要阅读的章节下标（v1.7.1.0）。
@@ -826,7 +847,7 @@ class NovelReaderViewModel(
      * 一旦发现请求的章节已变（用户连翻），立刻收尾交给新一轮，不白等旧窗口。
      */
     private suspend fun runPreloadWindow(index: Int) {
-        val count = preloadChapters.value.coerceIn(0, 5)
+        val count = preloadChapters.value.coerceIn(0, 10)
         if (count == 0) return
         val chapters = _chapters.value
         val anchor = currentItem ?: return
@@ -906,7 +927,17 @@ class NovelReaderViewModel(
     fun prevChapter() {
         val idx = currentIndex()
         if (idx > 0) {
-            loadContent(_chapters.value[idx - 1])
+            // v1.8.8.5 修：往回翻章必须落到上一章的**末尾**，不能落到开头。
+            // 旧实现走 loadContent()，它无条件把 initialTextPosition / initialPageIndex
+            // 清 0 —— 于是在某章第 1 页继续往前翻，会跳到上一章第一页，
+            // 用户体感是「往前走反而倒退了几十页」。
+            // 这里用 10000（100%）交给 UI 的分页换算成最后一页（startPage = pageCount-1）；
+            // 不能直接调 loadContent()，它会把下面这三行重新清零。
+            lastTextPosition = 10000
+            _initialTextPosition.value = 10000
+            lastPageIndex = 0
+            _initialPageIndex.value = 0
+            loadChapter(_chapters.value[idx - 1])
         } else {
             showToast("已是第一章")
         }

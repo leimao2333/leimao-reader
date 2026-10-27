@@ -13,7 +13,7 @@ import kotlin.system.measureTimeMillis
 
 internal object SourceBundleTestSupport {
     const val DEFAULT_MANIFEST_URL =
-        "https://raw.githubusercontent.com/leimao2333/leimao-sources/main/all.json"
+        "https://raw.githubusercontent.com/leimao2333/leimao-sources-dist/main/all.json"
 
     data class LoadedSources(
         val sources: List<LegadoBookSource>,

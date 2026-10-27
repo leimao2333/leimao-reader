@@ -82,13 +82,13 @@ class SourcePackTest {
 
     @Test
     fun `相对路径按清单目录解析`() {
-        val base = "https://raw.githubusercontent.com/leimao2333/leimao-sources/main/all.json"
+        val base = "https://raw.githubusercontent.com/leimao2333/leimao-sources-dist/main/all.json"
         assertEquals(
-            "https://raw.githubusercontent.com/leimao2333/leimao-sources/main/legado-all.json",
+            "https://raw.githubusercontent.com/leimao2333/leimao-sources-dist/main/legado-all.json",
             SourcePack.resolveUrl(base, "legado-all.json"),
         )
         assertEquals(
-            "https://raw.githubusercontent.com/leimao2333/leimao-sources/main/venera/index.json",
+            "https://raw.githubusercontent.com/leimao2333/leimao-sources-dist/main/venera/index.json",
             SourcePack.resolveUrl(base, "venera/index.json"),
         )
     }

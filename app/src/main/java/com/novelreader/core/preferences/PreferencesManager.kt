@@ -89,7 +89,7 @@ class PreferencesManager(private val context: Context) {
         /** 累计阅读时长（秒，全局） */
         val KEY_NOVEL_READ_SECONDS = longPreferencesKey("novel_read_seconds")
 
-        /** 小说预缓存话数（向后预取接下来 N 章，1~5，默认 3；v1.6.0.0） */
+        /** 小说预缓存话数（向后预取接下来 N 章，0~10，默认 3；v1.6.0.0，v1.8.8.5 上限 5→10） */
         val KEY_NOVEL_PRELOAD_CHAPTERS = intPreferencesKey("novel_preload_chapters")
 
         /** 小说「未加入书架」提示开关（v1.8.3.0，默认开启） */
@@ -724,12 +724,12 @@ class PreferencesManager(private val context: Context) {
         context.dataStore.edit { it[KEY_NOVEL_READ_SECONDS] = (it[KEY_NOVEL_READ_SECONDS] ?: 0L) + delta }
     }
 
-    /** 小说预缓存话数（向后预取接下来 N 章，1~5，默认 3；v1.6.0.0） */
+    /** 小说预缓存话数（向后预取接下来 N 章，0~10，默认 3；v1.6.0.0，v1.8.8.5 上限 5→10） */
     val novelPreloadChaptersFlow: Flow<Int> = context.dataStore.data
         .map { it[KEY_NOVEL_PRELOAD_CHAPTERS] ?: DEFAULT_NOVEL_PRELOAD_CHAPTERS }
 
     suspend fun setNovelPreloadChapters(value: Int) {
-        context.dataStore.edit { it[KEY_NOVEL_PRELOAD_CHAPTERS] = value.coerceIn(0, 5) }
+        context.dataStore.edit { it[KEY_NOVEL_PRELOAD_CHAPTERS] = value.coerceIn(0, 10) }
     }
 
     /** 小说「未加入书架」提示开关（v1.8.3.0，默认开启） */

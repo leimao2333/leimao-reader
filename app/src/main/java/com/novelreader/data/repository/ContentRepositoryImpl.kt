@@ -44,6 +44,8 @@ class ContentRepositoryImpl(
     private val sourceManager: SourceManager,
     private val localBookStore: com.novelreader.core.local.LocalBookStore? = null,
     private val preferencesManager: com.novelreader.core.preferences.PreferencesManager? = null,
+    /** 目录本地缓存（v1.8.8.5）；为空则退化为纯网络 */
+    private val chapterListCache: com.novelreader.data.database.ChapterListCacheDao? = null,
 ) : ContentRepository {
 
     /**
@@ -359,6 +361,22 @@ class ContentRepositoryImpl(
 
     override suspend fun chapterList(item: MediaItem): List<ChapterItem> =
         withContext(Dispatchers.IO) {
+            // v1.8.8.5：**先本地、后网络**。
+            // 目录动辄几百上千章，网络请求是「点书没反应」的最大来源；
+            // 缓存新鲜（[CHAPTER_LIST_TTL_MS] 内）就直接返回，进书是毫秒级。
+            // 过期或没缓存才走网络，成功后回写。
+            chapterListCache?.let { dao ->
+                val cached = runCatching { dao.get(item.sourceId, item.id) }.getOrNull()
+                if (cached != null &&
+                    System.currentTimeMillis() - cached.cachedAt < CHAPTER_LIST_TTL_MS
+                ) {
+                    val parsed = runCatching {
+                        GSON.fromJson(cached.json, Array<ChapterItem>::class.java)?.toList()
+                    }.getOrNull()
+                    if (!parsed.isNullOrEmpty()) return@withContext parsed
+                }
+            }
+
             val adapter = resolveAdapter(item.sourceId)
             if (adapter == null) {
                 // 同上：适配器拿不到时会返回空目录，若不记原因，UI 会误报
@@ -370,11 +388,28 @@ class ContentRepositoryImpl(
                 return@withContext emptyList()
             }
             // v1.7.1.0：失败时记一笔真实异常，让 UI 能把「源报错」与「确实没目录」区分开
-            runCatching { adapter.chapterList(item) }
+            val result = runCatching { adapter.chapterList(item) }
                 .onSuccess { SourceErrorLog.clear(item.sourceId) }
                 .onFailure { SourceErrorLog.record(item.sourceId, "目录", it) }
                 .getOrDefault(emptyList())
+            // 只有真正拿到目录才写缓存：空结果写进去会让「源临时抽风」变成 30 分钟空目录
+            if (result.isNotEmpty()) {
+                chapterListCache?.let { dao ->
+                    runCatching {
+                        dao.put(
+                            com.novelreader.data.model.ChapterListCacheEntity(
+                                sourceId = item.sourceId,
+                                itemId = item.id,
+                                json = GSON.toJson(result),
+                                count = result.size,
+                            )
+                        )
+                    }
+                }
+            }
+            result
         }
+
 
     override suspend fun chapterLines(item: MediaItem): List<ChapterLine> =
         withContext(Dispatchers.IO) {
@@ -721,3 +756,14 @@ class ContentRepositoryImpl(
         const val ENUM_DEADLINE_MS = 15_000L
     }
 }
+
+/**
+ * 目录缓存有效期（v1.8.8.5）：30 分钟。
+ *
+ * 够覆盖「连着读几章 / 反复进出同一本」，又不至于让新章节等太久；
+ * 超时后自动走网络并回写。
+ */
+private const val CHAPTER_LIST_TTL_MS = 30L * 60 * 1000
+
+/** 目录表专用的 JSON 序列化器（独立实例，避免与其它模块的 Gson 配置互相影响） */
+private val GSON = com.google.gson.Gson()

@@ -74,6 +74,7 @@ class AppContainer(context: Context) {
                 AppDatabase.MIGRATION_14_15,
                 AppDatabase.MIGRATION_15_16,
                 AppDatabase.MIGRATION_16_17,
+                AppDatabase.MIGRATION_17_18,
             )
             .build()
     }
@@ -139,7 +140,13 @@ class AppContainer(context: Context) {
     }
 
     val contentRepository: ContentRepository by lazy {
-        ContentRepositoryImpl(sourceManager, localBookStore, preferencesManager)
+        // v1.8.8.5：带上目录缓存 DAO —— 进书先读本地目录，不再每次都等网络
+        ContentRepositoryImpl(
+            sourceManager,
+            localBookStore,
+            preferencesManager,
+            database.chapterListCacheDao(),
+        )
     }
 
     val bookRepository: BookRepository by lazy {

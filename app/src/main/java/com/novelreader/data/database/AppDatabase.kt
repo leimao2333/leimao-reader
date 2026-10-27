@@ -9,6 +9,7 @@ import com.novelreader.data.model.LocalTagEntity
 import com.novelreader.data.model.TagInstanceEntity
 import com.novelreader.data.model.BookmarkEntity
 import com.novelreader.data.model.ChapterCacheEntity
+import com.novelreader.data.model.ChapterListCacheEntity
 import com.novelreader.data.model.ProgressEntity
 import com.novelreader.data.model.RssArticleEntity
 import com.novelreader.data.model.RssFeedEntity
@@ -34,8 +35,9 @@ import com.novelreader.data.model.SourceEntity
         RssPdfEntity::class,
         LocalTagEntity::class,
         TagInstanceEntity::class,
+        ChapterListCacheEntity::class,
     ],
-    version = 17,
+    version = 18,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -43,6 +45,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun bookDao(): BookDao
     abstract fun progressDao(): ProgressDao
     abstract fun chapterCacheDao(): ChapterCacheDao
+    abstract fun chapterListCacheDao(): ChapterListCacheDao
     abstract fun bookmarkDao(): BookmarkDao
     abstract fun rssDao(): RssDao
     abstract fun rssPdfDao(): RssPdfDao
@@ -392,6 +395,30 @@ abstract class AppDatabase : RoomDatabase() {
                       `fileName` TEXT NOT NULL,
                       `size` INTEGER NOT NULL,
                       `addedAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+
+        /**
+         * v17 -> v18：新增目录缓存表（v1.8.8.5）。
+         *
+         * 只缓存正文（chapter_cache）不够：目录本身每次进书都要重新请求，
+         * 几百上千章的表要一两秒，慢源好几秒 —— 这是「点一下没反应」的主因。
+         * 一本书一行、整份目录存 JSON（目录是整体使用的，拆行只会变成 N 次查询）。
+         */
+        val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `chapter_list_cache` (
+                      `sourceId` TEXT NOT NULL,
+                      `itemId` TEXT NOT NULL,
+                      `json` TEXT NOT NULL,
+                      `count` INTEGER NOT NULL,
+                      `cachedAt` INTEGER NOT NULL,
+                      PRIMARY KEY(`sourceId`, `itemId`)
                     )
                     """.trimIndent(),
                 )

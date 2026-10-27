@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.view.WindowManager
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
@@ -12,6 +13,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -28,9 +30,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
+import androidx.compose.foundation.pager.PagerSnapDistance
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -49,6 +54,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -66,6 +73,10 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -86,6 +97,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
@@ -99,6 +111,7 @@ import com.novelreader.ui.theme.ReaderBackgrounds
 import com.novelreader.ui.theme.SystemBarIconsOn
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -193,6 +206,8 @@ fun NovelReaderScreen(
     }
     val loading by viewModel.loading.collectAsState()
     val error by viewModel.error.collectAsState()
+    // v1.8.8.5：预缓存窗口（正文 + 标题），交给分页层提前排版，切章不再等排版。
+    val cachedChapters by viewModel.cachedChapters.collectAsState()
     val fontSize by viewModel.fontSize.collectAsState()
     val bgIndex by viewModel.bgIndex.collectAsState()
     val nightMode by viewModel.nightMode.collectAsState()
@@ -550,10 +565,12 @@ fun NovelReaderScreen(
                     onRatioChanged = { r -> currentRatio = r; viewModel.updatePagerRatio(r) },
                     onPageTextChanged = { pageText = it },
                     pageTurn = viewModel.pageTurn,
+                    prefetchedContent = cachedChapters,
                 )
             }
             else -> {
-                HorizontalPagerNovel(
+                // v1.8.8.5：Canvas 三页翻页（参照 legadoT，整页手绘，绕开 Compose 子布局）
+                CanvasPagerNovel(
                     content = content,
                     chapterTitle = chapterTitle,
                     chapterIndex = chapterIndex,
@@ -568,6 +585,7 @@ fun NovelReaderScreen(
                     paragraphSpacing = paragraphSpacing,
                     sidePadding = sidePadding,
                     textColor = textColor,
+                    bgColor = backgroundColor,
                     hideChapterTitle = hideChapterTitle,
                     pageType = pageType,
                     autoPage = autoPage,
@@ -580,6 +598,7 @@ fun NovelReaderScreen(
                     onRatioChanged = { r -> currentRatio = r; viewModel.updatePagerRatio(r) },
                     onPageTextChanged = { pageText = it },
                     pageTurn = viewModel.pageTurn,
+                    prefetchedContent = cachedChapters,
                 )
             }
         }
@@ -932,6 +951,8 @@ private fun HorizontalPagerNovel(
     onRatioChanged: (Int) -> Unit,
     onPageTextChanged: (String) -> Unit = {},
     pageTurn: kotlinx.coroutines.flow.SharedFlow<Int>? = null,
+    /** 预缓存窗口（章 index → (标题, 正文)），用于提前排版（v1.8.8.5） */
+    prefetchedContent: Map<Int, Pair<String, String>> = emptyMap(),
 ) {
     BoxWithConstraintsCompat { maxWidthDp, maxHeightDp ->
         val density = LocalDensity.current.density
@@ -943,9 +964,15 @@ private fun HorizontalPagerNovel(
         val paraSpacingPx = paragraphSpacing * density
         val titleSpacerPx = 16f * density
 
+        // v1.8.8.5：排版结果按章缓存（整个阅读页生命周期内复用），配合预分页做到切章不白屏。
+        val pageCache = remember { mutableMapOf<Int, List<String>>() }
+
         // v1.7.1.0：分页计算移出主线程（null = 还在算）
-        val pagesOrNull = rememberPaginatedPages(
+        val pagesOrNull = rememberPaginatedPagesCached(
             content = content,
+            chapterIndex = chapterIndex,
+            prefetched = prefetchedContent,
+            cache = pageCache,
             chapterTitle = chapterTitle,
             hideChapterTitle = hideChapterTitle,
             widthPx = availWidthPx,
@@ -961,9 +988,12 @@ private fun HorizontalPagerNovel(
         )
         val pages = pagesOrNull.orEmpty()
         val pagesReady = pagesOrNull != null
-        val hasNextGate = content.isNotBlank() && hasNextChapter
-        // 分页未就绪时页数记 0：Pager 不渲染内容，避免「只有半章」的中间态被翻到
-        val pageCount = if (pagesReady) pages.size + if (hasNextGate) 1 else 0 else 0
+        // v1.8.8.5：去掉章末的「本章已读完」中转页。
+        // 以前页数是 pages.size + 1，多出来那一页只写「本章已读完 / 继续翻页进入下一章」，
+        // 用户翻到它就是多一次点击、多一次闪动，读书节奏被打断。
+        // 现在页数就是正文页数：在最后一页再往后翻，requestTurn 直接返回 false →
+        // 调用方切下一章，中间不再插一页。
+        val pageCount = if (pagesReady) pages.size else 0
 
         val startPage = remember(chapterIndex, initialPage, initialRatio, pageCount) {
             when {
@@ -975,13 +1005,41 @@ private fun HorizontalPagerNovel(
         val pagerState = rememberPagerState(initialPage = startPage, pageCount = { pageCount })
 
         // v1.7.1.0：分页是异步算出来的，Pager 创建时 pageCount 还是 0，`initialPage` 无从生效。
-        // 结果就绪后补一次定位（只在**首次**就绪时做：后续切章由 chapterIndex 那个 effect 归零）。
-        var didInitialPosition by remember { mutableStateOf(false) }
-        LaunchedEffect(pagesOrNull) {
-            if (!didInitialPosition && pagesOrNull != null) {
-                didInitialPosition = true
-                if (startPage > 0 && startPage < pageCount) pagerState.scrollToPage(startPage)
-            }
+        // 结果就绪后补一次定位。
+        //
+        // v1.8.8.5 修：这个「首次」标志以前用 `remember { }`（不带 key），整个阅读页只生效一次。
+        // 于是**切章之后再也不定位** —— 配合 chapterIndex effect 里的 scrollToPage(0)，
+        // 结果是每次换章都停在第 0 页。往前翻章因此总落在上一章开头（用户报的严重问题）。
+        // 现在把 chapterIndex 也作为 key，切章时会重新跑一遍定位（见下面 chapterIndex effect
+        // 里对 didInitialPosition 的重置）。
+        // v1.8.8.5 第三次修（关键）：换成「待恢复比例」机制，不再用 `didInitialPosition` 布尔标志。
+        //
+        // 布尔标志有个致命的时序漏洞：预分页缓存命中时，切章后 pagesOrNull 从**旧值**
+        // 直接变成**新值**（中间不经过 null）。定位 effect 重启那一刻标志还是 true → 直接 return；
+        // 紧接着切章 effect 才把标志清成 false，但此后 pagesOrNull 不再变化、effect 不会重启，
+        // 于是**永远不定位** —— 表现就是用户看到的「往回翻仍停在上一章开头」。
+        //
+        // 现在：切章时登记「待恢复比例」，页数一就绪就把比例换算成页并消费掉（置 -1）。
+        // 不依赖两个 effect 的先后顺序。
+        var pendingRatio by remember { mutableIntStateOf(initialRatio.coerceIn(0, 10000)) }
+        LaunchedEffect(pagesOrNull, pageCount, pendingRatio) {
+            if (pagesOrNull == null || pageCount <= 0) return@LaunchedEffect
+            val ratio = pendingRatio
+            if (ratio < 0) return@LaunchedEffect
+            pendingRatio = -1
+            val target = when {
+                initialPage > 0 -> initialPage
+                ratio > 0 -> (ratio / 10000f * (pageCount - 1)).toInt()
+                else -> 0
+            }.coerceIn(0, pageCount - 1)
+            // 排查用：往回翻若仍落在开头，看这行是否出现、target 是否为 pageCount-1
+            android.util.Log.d(
+                "NovelRestore",
+                "定位 chapter=$chapterIndex ratio=$ratio pageCount=$pageCount target=$target from=${pagerState.currentPage}",
+            )
+            // 无条件对齐（不再只在 target > 0 时跳）：切章后 Pager 可能还停在上一个
+            // 阅读位置，新章只有 1~2 页时那里是越界的，必须拉回 0。
+            if (pagerState.currentPage != target) pagerState.scrollToPage(target)
         }
 
         // ===== 连点翻页（v1.8.8.4）=====
@@ -994,8 +1052,36 @@ private fun HorizontalPagerNovel(
         // 握着**旧的** State —— 于是点击把值写进了一个没人读的废弃对象，组合侧收不到
         // 任何变化，effect 永远不执行。日志里的表现就是切章之后只有「点击」没有「翻页」。
         // 所以 State 的生命周期必须覆盖整个阅读页，切章时只重置目标、不动对象本身。
-        var turnTick by remember { mutableIntStateOf(0) }
+        // v1.8.8.5：改成「点击回调里直接发滚动指令」，不再经过 turnTick + LaunchedEffect。
+        // 原来那次中转要额外等一个重组周期才发出指令，连点时指令还会排队，
+        // 手上的感觉就是「点了不动 / 动一下停一下」。目标页仍然在 [requestTurn] 里
+        // **同步**累加（保证连点不丢），只是把「发指令」提前到同一帧。
+        val turnScope = rememberCoroutineScope()
         val turnTarget = remember { intArrayOf(-1) }
+        var lastTurnAt by remember { mutableLongStateOf(0L) }
+
+        /** 发出翻页；[target] 由 requestTurn 同步算好 */
+        fun dispatchTurn(target: Int) {
+            val now = android.os.SystemClock.uptimeMillis()
+            val rapid = now - lastTurnAt < 300L
+            lastTurnAt = now
+            turnScope.launch {
+                if (rapid) {
+                    // 连点：直接跳。animateScrollToPage 中途被取消会回弹到最近整页，
+                    // 而连点间隔比动画短 → 每一下都在中途被取消、原地弹回，等于一下没翻。
+                    pagerState.scrollToPage(target)
+                } else {
+                    pagerState.animateScrollToPage(
+                        target,
+                        // 翻页 200ms：参考实现的位移动画同样很短，够看出「翻过去了」，
+                        // 又不会让连续点击排队等上一下。
+                        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+                    )
+                }
+                // 落定后以实际页为准（响应中途可能被拖动或回弹改变）
+                if (turnTarget[0] == target) turnTarget[0] = pagerState.currentPage
+            }
+        }
 
         /** 请求翻 +delta 页；false = 真的到头了，调用方该切章 / 回上一章 */
         fun requestTurn(delta: Int): Boolean {
@@ -1005,8 +1091,7 @@ private fun HorizontalPagerNovel(
             val target = base + delta
             if (target in 0..last) {
                 turnTarget[0] = target
-                turnTick++
-                android.util.Log.d("NovelTurn", "点击 delta=$delta base=$base target=$target last=$last")
+                dispatchTurn(target)
                 return true
             }
             // 目标越界。**只有实际页面真的停在边界**才算「到头」——
@@ -1017,41 +1102,10 @@ private fun HorizontalPagerNovel(
             } else {
                 pagerState.currentPage <= 0
             }
-            if (atEdge) {
-                android.util.Log.d("NovelTurn", "到底 delta=$delta current=${pagerState.currentPage} last=$last")
-                return false
-            }
+            if (atEdge) return false
             turnTarget[0] = target.coerceIn(0, last)
-            turnTick++
-            android.util.Log.d(
-                "NovelTurn",
-                "钳制 delta=$delta base=$base target=$target → ${turnTarget[0]}",
-            )
+            dispatchTurn(turnTarget[0])
             return true
-        }
-
-        LaunchedEffect(turnTick) {
-            if (turnTick == 0) return@LaunchedEffect
-            val target = turnTarget[0]
-            if (target < 0) return@LaunchedEffect
-            val distance = kotlin.math.abs(target - pagerState.currentPage)
-            android.util.Log.d(
-                "NovelTurn",
-                "翻页 target=$target current=${pagerState.currentPage} distance=$distance",
-            )
-            if (distance > 1) {
-                // 连点：**直接跳**，不走动画。
-                // animateScrollToPage 被取消时 Pager 会回弹到最近的整页 —— 连点间隔
-                // 比动画短，每次都在中途取消、弹回原页，等于一下都没翻。瞬跳没有这个问题。
-                pagerState.scrollToPage(target)
-            } else if (distance == 1) {
-                pagerState.animateScrollToPage(
-                    target,
-                    animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
-                )
-            }
-            // 目标没被新点击改过就清空；改过就留给下一轮
-            if (turnTarget[0] == target) turnTarget[0] = -1
         }
 
         if (pageTurn != null) {
@@ -1069,24 +1123,17 @@ private fun HorizontalPagerNovel(
         }
 
         var lastChapterIndex by remember { mutableIntStateOf(chapterIndex) }
-        LaunchedEffect(chapterIndex) {
-            if (lastChapterIndex != chapterIndex) {
+        var lastInitialRatio by remember { mutableIntStateOf(initialRatio) }
+        LaunchedEffect(chapterIndex, initialRatio) {
+            if (lastChapterIndex != chapterIndex || lastInitialRatio != initialRatio) {
                 lastChapterIndex = chapterIndex
+                lastInitialRatio = initialRatio
                 // 切章后页码重新算，旧目标作废（State 对象本身不动，见上面的说明）
                 turnTarget[0] = -1
-                if (pagerState.currentPage != 0) pagerState.scrollToPage(0)
+                // v1.8.8.5：登记本章要恢复的位置。往前翻时 ViewModel 给的是 10000（100%），
+                // 由定位 effect 换算成「最后一页」；往后翻 / 点目录进来是 0，即第一页。
+                pendingRatio = initialRatio.coerceIn(0, 10000)
                 onPageChanged(0)
-            }
-        }
-
-        var gateConsumed by remember { mutableIntStateOf(-1) }
-        LaunchedEffect(pagerState.currentPage, pageCount, chapterIndex) {
-            if (hasNextGate && pageCount > 0 &&
-                pagerState.currentPage == pageCount - 1 &&
-                gateConsumed != chapterIndex
-            ) {
-                gateConsumed = chapterIndex
-                onNextChapter()
             }
         }
 
@@ -1161,8 +1208,19 @@ private fun HorizontalPagerNovel(
             }
         }
 
+        // v1.8.8.5：翻页手感 —— 参照成熟实现（xrn1997/android-ebook 的 ReaderPager）。
+        // 它的翻页成功阈值只有 **30dp**（不是半页），一次轻扫就翻；松手吸附动画也很短。
+        // 依据屏宽换算成比例：1080px 屏宽上 30dp ≈ 90px ≈ 0.083。
+        val pagerFling = PagerDefaults.flingBehavior(
+            state = pagerState,
+            pagerSnapDistance = PagerSnapDistance.atMost(1),
+            snapPositionalThreshold = 0.08f,
+            snapAnimationSpec = tween(durationMillis = 140, easing = FastOutSlowInEasing),
+        )
+
         HorizontalPager(
             state = pagerState,
+            flingBehavior = pagerFling,
             modifier = Modifier
                 .fillMaxSize()
                 // 到边界继续滑换章（v1.8.8.4）：横向翻页看 X 位移
@@ -1194,8 +1252,9 @@ private fun HorizontalPagerNovel(
                             PreferencesManager.PAGE_TYPE_NO_ANIM -> PageTransform.NoAnim
                             else -> PageTransform.slide
                         }
-                        // 3D 翻转要绕边缘转才有「翻书」感，绕中心转是扑克牌翻面
-                        transformOrigin = TransformOrigin(transform.originX, 0.5f)
+                        // 3D 翻转要绕边缘转才有「翻书」感，绕中心转是扑克牌翻面。
+                        // v1.8.8.5：纵向支点也交给变换（仿真模式的翻走页要绕底边转）。
+                        transformOrigin = TransformOrigin(transform.originX, transform.originY)
                         // v1.8.8.4：alpha < 1 时 Compose 默认把整页先渲到离屏 buffer 再合成，
                         // 而阅读页是整屏文字 —— 每帧一次全屏离屏合成，正是快速翻页掉帧的来源。
                         // ModulateAlpha 直接把 alpha 乘到绘制上，不建离屏层。
@@ -1204,6 +1263,8 @@ private fun HorizontalPagerNovel(
                         scaleY = transform.scaleY
                         alpha = transform.alpha
                         rotationY = transform.rotationY
+                        // v1.8.8.5：平面倾角 —— 仿真翻页「边线斜着掀起」靠它
+                        rotationZ = transform.rotationZ
                         // 阴影要配合 shape 才会真正画出来（只设 elevation 是空转）
                         shape = RectangleShape
                         shadowElevation = transform.shadowElevation
@@ -1228,100 +1289,730 @@ private fun HorizontalPagerNovel(
                     textColor = textColor,
                 )
 
-                // v1.8.8.4：卷曲阴影 —— 纸张翻起时靠书脊的一侧是暗的。
-                // 加这一层渐变，3D 翻转看起来才有「纸的厚度」，而不是一块平面在转。
-                // 除了「无动画」模式，其余模式都压这一层：默认的平移模式原来纯平移、
-                // 一点层次都没有，加上边缘阴影后翻页立刻不像「图片在滑」了。
-                if (pageType != PreferencesManager.PAGE_TYPE_NO_ANIM) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .drawBehind {
-                                val shadeOffset = (pagerState.currentPage - page) +
-                                    pagerState.currentPageOffsetFraction
-                                val strength = kotlin.math.abs(shadeOffset).coerceIn(0f, 1f)
-                                if (strength <= 0.01f) return@drawBehind
-                                val band = size.width * 0.32f
-                                val shade = Color.Black.copy(alpha = 0.55f * strength)
-                                val brush = if (shadeOffset > 0f) {
-                                    // 正在翻走：书脊在左，左边缘压暗
-                                    Brush.horizontalGradient(
-                                        colors = listOf(shade, Color.Transparent),
-                                        startX = 0f,
-                                        endX = band,
-                                    )
-                                } else {
-                                    // 正在进入：从右侧滑来，右边缘背光
-                                    Brush.horizontalGradient(
-                                        colors = listOf(Color.Transparent, shade),
-                                        startX = size.width - band,
-                                        endX = size.width,
-                                    )
-                                }
-                                drawRect(brush = brush)
-                            },
-                    )
-                }
-                // v1.8.8.4：卷边 —— 仿真模式下翻走的页在右边缘卷起一条，
-                // 露出纸背面 + 落在下一页上的投影。纯 3D 旋转看起来还是「一块平面在转」，
-                // 有了卷边才有纸的厚度，这是「翻书感」最直观的一笔。
-                if (pageType == PreferencesManager.PAGE_TYPE_SIMULATE) {
-                    Spacer(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .drawBehind {
-                                val offset = (pagerState.currentPage - page) +
-                                    pagerState.currentPageOffsetFraction
-                                // 只有正在翻走的页才有卷边；进来的页是平的
-                                if (offset <= 0.02f) return@drawBehind
-                                val progress = offset.coerceIn(0f, 1f)
-                                val w = size.width
-                                val h = size.height
-                                val band = w * 0.16f * progress
-                                if (band <= 0.5f) return@drawBehind
-
-                                // 卷起的条带（露出的纸背面）
-                                val curl = Path().apply {
-                                    moveTo(w, 0f)
-                                    lineTo(w - band, 0f)
-                                    quadraticBezierTo(w - band * 0.30f, h * 0.5f, w - band, h)
-                                    lineTo(w, h)
-                                    close()
-                                }
-                                drawPath(
-                                    path = curl,
-                                    brush = Brush.horizontalGradient(
-                                        colors = listOf(
-                                            Color(0xFFF7F4EC).copy(alpha = 0.96f),
-                                            Color(0xFFD6D1C4).copy(alpha = 0.92f),
-                                        ),
-                                        startX = w - band,
-                                        endX = w,
-                                    ),
-                                )
-                                // 卷边在下方那页上投的影
-                                val shadowBand = band * 2.2f
-                                drawRect(
-                                    brush = Brush.horizontalGradient(
-                                        colors = listOf(
-                                            Color.Transparent,
-                                            Color.Black.copy(alpha = 0.30f * progress),
-                                        ),
-                                        startX = w - shadowBand,
-                                        endX = w - band,
-                                    ),
-                                    topLeft = Offset(w - shadowBand, 0f),
-                                    size = Size(shadowBand, h),
-                                )
-                            },
-                    )
-                }
             }
         }
 
         // v1.7.1.0：分页在后台线程算，就绪前显示轻量加载态。
         // 此时 pageCount = 0、Pager 不渲染任何页，所以这层覆盖不会挡到已渲染的内容。
         if (!pagesReady) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(
+                    modifier = Modifier.width(28.dp),
+                    strokeWidth = 2.dp,
+                )
+            }
+        }
+    }
+}
+
+/* ===================== 左右翻页：三页窗口（v1.8.8.5） ===================== */
+
+/**
+ * 左右翻页的**三页窗口**实现（参照 xrn1997/android-ebook 的 `ReaderPager`）。
+ *
+ * 为什么换掉 `HorizontalPager`：
+ * 1. Pager 的位移来自 `currentPageOffsetFraction`（快照状态），动画期间会触发重组；
+ *    这里位移是一个 `Animatable<Float>`，在 `offset {}` 里**布局期**读取 —— 翻页过程零重组，
+ *    只重定位三个图层，这是「跟手不黏」的关键。
+ * 2. Pager 会把邻近页一起组合、还要跑 fling/snap 判定；这里只有三个槽位、一条位移。
+ * 3. 阈值按参考实现的 **30dp**（不是半页），轻扫就翻。
+ *
+ * 层级（后画的在上）：下一页（底）→ 当前页 → 上一页（顶），
+ * 与参考项目的 FrameLayout addView 顺序一致：向后翻时当前页左移露出下层；
+ * 向前翻时上一页从左侧滑入盖住当前页。
+ *
+ * 连点：位移动画进行中再点，**直接跳页**（不等动画）。Pager 的动画被取消会回弹到最近整页，
+ * 连点间隔比动画短时每一下都被取消、原地弹回 —— 那正是「点了没翻」的来源。
+ */
+@Composable
+private fun HorizontalWindowNovel(
+    content: String,
+    chapterTitle: String,
+    chapterIndex: Int,
+    initialPage: Int,
+    initialRatio: Int,
+    fontSize: Float,
+    fontFamily: FontFamily,
+    bold: Boolean,
+    indent: Boolean,
+    letterSpacing: Float,
+    lineHeightMultiplier: Float,
+    paragraphSpacing: Float,
+    sidePadding: Float,
+    textColor: Color,
+    /** 阅读背景色：**每个页面槽位必须铺满它**，否则下面那页的文字会透上来叠印 */
+    bgColor: Color,
+    hideChapterTitle: Boolean,
+    pageType: Int,
+    autoPage: Boolean,
+    autoPageInterval: Int,
+    hasNextChapter: Boolean,
+    onTapCenter: () -> Unit,
+    onReachFirst: () -> Unit,
+    onNextChapter: () -> Unit,
+    onPageChanged: (Int) -> Unit,
+    onRatioChanged: (Int) -> Unit,
+    onPageTextChanged: (String) -> Unit = {},
+    pageTurn: kotlinx.coroutines.flow.SharedFlow<Int>? = null,
+    prefetchedContent: Map<Int, Pair<String, String>> = emptyMap(),
+) {
+    BoxWithConstraintsCompat { maxWidthDp, maxHeightDp ->
+        val density = LocalDensity.current
+        val densityDensity = density.density
+        val availWidthPx = (maxWidthDp - sidePadding * 2f).coerceAtLeast(1f) * densityDensity
+        val fontPx = fontSize * densityDensity *
+            androidx.compose.ui.platform.LocalDensity.current.fontScale
+        val textHeightPx = ((maxHeightDp - 96f).coerceAtLeast(1f) * densityDensity -
+            fontPx * 1.8f).coerceAtLeast(1f)
+        val paraSpacingPx = paragraphSpacing * densityDensity
+        val titleSpacerPx = 16f * densityDensity
+
+        val pageCache = remember { mutableMapOf<Int, List<String>>() }
+        val pagesOrNull = rememberPaginatedPagesCached(
+            content = content,
+            chapterIndex = chapterIndex,
+            prefetched = prefetchedContent,
+            cache = pageCache,
+            chapterTitle = chapterTitle,
+            hideChapterTitle = hideChapterTitle,
+            widthPx = availWidthPx,
+            heightPx = textHeightPx,
+            fontSize = fontSize,
+            lineHeightMultiplier = lineHeightMultiplier,
+            paragraphSpacingPx = paraSpacingPx,
+            titleSpacerPx = titleSpacerPx,
+            fontFamily = fontFamily,
+            bold = bold,
+            letterSpacing = letterSpacing,
+            indent = indent,
+        )
+        val pages = pagesOrNull.orEmpty()
+        val pagesReady = pagesOrNull != null
+        val pageCount = if (pagesReady) pages.size else 0
+
+        val widthPx = maxWidthDp * densityDensity
+        val scope = rememberCoroutineScope()
+        // v1.8.8.5：drag 绑到 chapterIndex —— 切章时重建、初值必为 0。
+        // 不绑的话，切章那一瞬若正处在翻页动画中途，drag 会停在 ±width，
+        // 新章的当前页被 offset 推到屏幕外 → 正文整片空白（只有标题）。
+        val drag = remember(chapterIndex) { Animatable(0f) }
+        var moving by remember { mutableStateOf(false) }
+        var cur by remember { mutableIntStateOf(0) }
+        val turnThresholdPx = with(density) { 30.dp.toPx() }
+        val touchSlop = androidx.compose.ui.platform.LocalViewConfiguration.current.touchSlop
+
+        // 定位：切章 / 分页就绪 / 书签跳转都走这里。
+        // `initialRatio` 由 ViewModel 给：往前翻章是 10000（→ 最后一页），其余是 0（→ 第一页）。
+        LaunchedEffect(chapterIndex, initialPage, initialRatio, pageCount) {
+            if (pageCount <= 0) return@LaunchedEffect
+            val target = when {
+                initialPage > 0 -> initialPage
+                initialRatio > 0 -> (initialRatio / 10000f * (pageCount - 1)).toInt()
+                else -> 0
+            }.coerceIn(0, pageCount - 1)
+            cur = target
+            drag.snapTo(0f)
+            moving = false
+            android.util.Log.d(
+                "NovelRestore",
+                "三页窗口定位 chapter=$chapterIndex ratio=$initialRatio pageCount=$pageCount target=$target",
+            )
+        }
+
+        // 进度 / 页码：cur 落定后回调（等价于原来 pagerState 的监听）
+        LaunchedEffect(cur, pageCount) {
+            if (pageCount <= 0) return@LaunchedEffect
+            onPageChanged(cur)
+            onPageTextChanged("${cur + 1}/$pageCount")
+            onRatioChanged(if (pageCount <= 1) 0 else cur * 10000 / (pageCount - 1))
+        }
+
+        /** 翻一页；越界交给调用方切章 */
+        fun turn(delta: Int) {
+            if (pageCount <= 0) return
+            val target = cur + delta
+            if (target < 0) {
+                onReachFirst()
+                return
+            }
+            if (target > pageCount - 1) {
+                onNextChapter()
+                return
+            }
+            if (moving) {
+                // 连点：直接跳，避免每一下都被上一段动画取消后回弹
+                cur = target
+                scope.launch { drag.snapTo(0f) }
+                return
+            }
+            scope.launch {
+                moving = true
+                drag.animateTo(
+                    if (delta > 0) -widthPx else widthPx,
+                    tween(durationMillis = 200, easing = FastOutSlowInEasing),
+                )
+                cur = target
+                drag.snapTo(0f)
+                moving = false
+            }
+        }
+
+        LaunchedEffect(autoPage, autoPageInterval, chapterIndex) {
+            if (!autoPage) return@LaunchedEffect
+            while (true) {
+                delay(autoPageInterval * 1000L)
+                turn(1)
+            }
+        }
+
+        if (pageTurn != null) {
+            LaunchedEffect(pageTurn, chapterIndex) {
+                pageTurn.collect { dir -> turn(if (dir > 0) 1 else -1) }
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(pageCount, chapterIndex, cur) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val startX = down.position.x
+                        var lastX = startX
+                        var pointerX = startX
+                        var moved = false
+                        var pressed = true
+                        while (pressed) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            pressed = change.pressed
+                            pointerX = change.position.x
+                            val delta = pointerX - lastX
+                            lastX = pointerX
+                            if (!moved && kotlin.math.abs(pointerX - startX) > touchSlop) {
+                                moved = true
+                            }
+                            if (moved) {
+                                change.consume()
+                                val hasPrev = cur > 0
+                                val hasNext = cur < pageCount - 1
+                                // 边界方向不跟手：没有上一页时右滑位移恒为 0
+                                val clamped = (drag.value + delta).coerceIn(
+                                    if (hasNext) -widthPx else 0f,
+                                    if (hasPrev) widthPx else 0f,
+                                )
+                                scope.launch { drag.snapTo(clamped) }
+                            }
+                        }
+                        if (moving) return@awaitEachGesture
+                        val totalDx = pointerX - startX
+                        val hasPrev = cur > 0
+                        val hasNext = cur < pageCount - 1
+                        if (!moved) {
+                            // 点击：左右三分区翻页，中间唤菜单
+                            val w = size.width.toFloat()
+                            when {
+                                startX < w / 3f -> turn(-1)
+                                startX > w * 2f / 3f -> turn(1)
+                                else -> onTapCenter()
+                            }
+                        } else {
+                            val success = kotlin.math.abs(totalDx) > turnThresholdPx
+                            val toPrev = totalDx > 0 && hasPrev
+                            val toNext = totalDx < 0 && hasNext
+                            scope.launch {
+                                moving = true
+                                when {
+                                    toPrev -> {
+                                        drag.animateTo(
+                                            if (success) widthPx else 0f,
+                                            tween(if (success) 200 else 140),
+                                        )
+                                        if (success) cur = (cur - 1).coerceAtLeast(0)
+                                    }
+                                    toNext -> {
+                                        drag.animateTo(
+                                            if (success) -widthPx else 0f,
+                                            tween(if (success) 200 else 140),
+                                        )
+                                        if (success) cur = (cur + 1).coerceAtMost(pageCount - 1)
+                                    }
+                                    else -> drag.animateTo(0f, tween(140))
+                                }
+                                drag.snapTo(0f)
+                                moving = false
+                            }
+                            // 已经没有上一/下一页还继续往外拖 → 切章
+                            if (success) {
+                                if (!hasPrev && totalDx > 0) onReachFirst()
+                                else if (!hasNext && totalDx < 0) onNextChapter()
+                            }
+                        }
+                    }
+                },
+        ) {
+            // 下一页：最底层（向后翻时当前页左移露出它）
+            if (cur + 1 < pageCount) {
+                WindowPageSlot(
+                    pages = pages,
+                    pageIndex = cur + 1,
+                    offsetX = { 0f },
+                    chapterTitle = chapterTitle,
+                    hideChapterTitle = hideChapterTitle,
+                    fontSize = fontSize,
+                    fontFamily = fontFamily,
+                    bold = bold,
+                    indent = indent,
+                    letterSpacing = letterSpacing,
+                    lineHeightMultiplier = lineHeightMultiplier,
+                    paragraphSpacing = paragraphSpacing,
+                    sidePadding = sidePadding,
+                    textColor = textColor,
+                    bgColor = bgColor,
+                )
+            }
+            // 当前页：向后翻时随手势左移
+            WindowPageSlot(
+                pages = pages,
+                pageIndex = cur,
+                offsetX = { kotlin.math.min(drag.value, 0f) },
+                chapterTitle = chapterTitle,
+                hideChapterTitle = hideChapterTitle,
+                fontSize = fontSize,
+                fontFamily = fontFamily,
+                bold = bold,
+                indent = indent,
+                letterSpacing = letterSpacing,
+                lineHeightMultiplier = lineHeightMultiplier,
+                paragraphSpacing = paragraphSpacing,
+                sidePadding = sidePadding,
+                textColor = textColor,
+                    bgColor = bgColor,
+            )
+            // 上一页：最顶层，向前翻时从左侧滑入
+            if (cur - 1 >= 0) {
+                WindowPageSlot(
+                    pages = pages,
+                    pageIndex = cur - 1,
+                    offsetX = { -widthPx + kotlin.math.max(drag.value, 0f) },
+                    chapterTitle = chapterTitle,
+                    hideChapterTitle = hideChapterTitle,
+                    fontSize = fontSize,
+                    fontFamily = fontFamily,
+                    bold = bold,
+                    indent = indent,
+                    letterSpacing = letterSpacing,
+                    lineHeightMultiplier = lineHeightMultiplier,
+                    paragraphSpacing = paragraphSpacing,
+                    sidePadding = sidePadding,
+                    textColor = textColor,
+                    bgColor = bgColor,
+                )
+            }
+        }
+
+        // v1.8.8.5：pageCount = 0 也要显示加载态。
+        // 以前只判 `!pagesReady`（pagesOrNull == null），而「空排版」不是 null ——
+        // 于是既不画内容也不转圈，整页空白，用户只看到一条标题。
+        if (!pagesReady || pageCount == 0) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(
+                    modifier = Modifier.width(28.dp),
+                    strokeWidth = 2.dp,
+                )
+            }
+        }
+    }
+}
+
+/** 三页窗口里的单个页面槽位：位移在 `offset {}` 里读 `drag`，动画期间只重布局、不重组 */
+@Composable
+private fun WindowPageSlot(
+    pages: List<String>,
+    pageIndex: Int,
+    offsetX: () -> Float,
+    chapterTitle: String,
+    hideChapterTitle: Boolean,
+    fontSize: Float,
+    fontFamily: FontFamily,
+    bold: Boolean,
+    indent: Boolean,
+    letterSpacing: Float,
+    lineHeightMultiplier: Float,
+    paragraphSpacing: Float,
+    sidePadding: Float,
+    textColor: Color,
+    bgColor: Color,
+) {
+    // v1.8.8.5 修（白屏真因）：**不能用提前 return**。
+    // 首帧 pages 还是空的 → 直接 return，这一轮没有创建任何节点；
+    // 等分页就绪再进来时，Compose 的组结构对不上（上一次这里什么都没有），
+    // 结果是「Box 的背景画出来了、里面一个字都没有」。改成条件包裹就不会有这种重组错位。
+    if (pageIndex in pages.indices) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                // 每个槽位必须铺不透明背景：三页窗口里「下一页」固定画在 (0,0) 被当前页盖住，
+                // 当前页若没有背景，两页正文就会在同一位置叠印。
+                .background(bgColor)
+                // v1.8.8.5：位移改走 graphicsLayer.translationX（**绘制阶段**），
+                // 不用 Modifier.offset（布局阶段）。两者都是「动画期间零重组」，
+                // 但绘制阶段读写状态不会参与布局测量，翻页时少一次布局传递，也更不容易掉帧。
+                .graphicsLayer { translationX = offsetX() },
+        ) {
+            PageContent(
+                page = pageIndex,
+                pages = pages,
+                chapterTitle = chapterTitle,
+                hideChapterTitle = hideChapterTitle,
+                fontSize = fontSize,
+                fontFamily = fontFamily,
+                bold = bold,
+                indent = indent,
+                letterSpacing = letterSpacing,
+                lineHeightMultiplier = lineHeightMultiplier,
+                paragraphSpacing = paragraphSpacing,
+                sidePadding = sidePadding,
+                textColor = textColor,
+            )
+        }
+    }
+}
+
+/* ===================== Canvas 三页翻页（参照 legadoT） ===================== */
+
+/**
+ * 左右翻页：**整页 Canvas 手绘**（参照 skybbk1001/legadoT 的 PageView + PageDelegate 体系）。
+ *
+ * 为什么改成 Canvas 画而不是 Compose 子节点：
+ * 1. legado 的每页内容是画到 Canvas / Bitmap 上的，翻页只做 `translate`，没有任何子 View 的
+ *    测量/布局参与 —— 这是它「跟手、不掉帧」的根本；
+ * 2. 上一版用 Compose 三页槽位时，真机上出现过「外层背景能画、内部 Column 一个字都不画」
+ *    的问题（排查了提前 return、offset、颜色、字体参数都没找到），换 Canvas 直接绕开这条路；
+ * 3. 文本排版结果（[TextLayoutResult]）按页缓存，翻页时只换 `translate` 偏移，零重新测量。
+ *
+ * 交互对齐 legado：翻页阈值 30dp、越界继续拖 = 切章、连点直接跳页、点击三分区。
+ */
+@Composable
+private fun CanvasPagerNovel(
+    content: String,
+    chapterTitle: String,
+    chapterIndex: Int,
+    initialPage: Int,
+    initialRatio: Int,
+    fontSize: Float,
+    fontFamily: FontFamily,
+    bold: Boolean,
+    indent: Boolean,
+    letterSpacing: Float,
+    lineHeightMultiplier: Float,
+    paragraphSpacing: Float,
+    sidePadding: Float,
+    textColor: Color,
+    bgColor: Color,
+    hideChapterTitle: Boolean,
+    pageType: Int,
+    autoPage: Boolean,
+    autoPageInterval: Int,
+    hasNextChapter: Boolean,
+    onTapCenter: () -> Unit,
+    onReachFirst: () -> Unit,
+    onNextChapter: () -> Unit,
+    onPageChanged: (Int) -> Unit,
+    onRatioChanged: (Int) -> Unit,
+    onPageTextChanged: (String) -> Unit = {},
+    pageTurn: kotlinx.coroutines.flow.SharedFlow<Int>? = null,
+    prefetchedContent: Map<Int, Pair<String, String>> = emptyMap(),
+) {
+    BoxWithConstraintsCompat { maxWidthDp, maxHeightDp ->
+        val density = LocalDensity.current
+        val d = density.density
+        val availWidthPx = (maxWidthDp - sidePadding * 2f).coerceAtLeast(1f) * d
+        val fontPx = fontSize * d * androidx.compose.ui.platform.LocalDensity.current.fontScale
+        val textHeightPx = ((maxHeightDp - 96f).coerceAtLeast(1f) * d - fontPx * 1.8f)
+            .coerceAtLeast(1f)
+        val paraSpacingPx = paragraphSpacing * d
+        val titleSpacerPx = 16f * d
+
+        val pageCache = remember { mutableMapOf<Int, List<String>>() }
+        val pagesOrNull = rememberPaginatedPagesCached(
+            content = content,
+            chapterIndex = chapterIndex,
+            prefetched = prefetchedContent,
+            cache = pageCache,
+            chapterTitle = chapterTitle,
+            hideChapterTitle = hideChapterTitle,
+            widthPx = availWidthPx,
+            heightPx = textHeightPx,
+            fontSize = fontSize,
+            lineHeightMultiplier = lineHeightMultiplier,
+            paragraphSpacingPx = paraSpacingPx,
+            titleSpacerPx = titleSpacerPx,
+            fontFamily = fontFamily,
+            bold = bold,
+            letterSpacing = letterSpacing,
+            indent = indent,
+        )
+        val pages = pagesOrNull.orEmpty()
+        val pageCount = if (pagesOrNull != null) pages.size else 0
+
+        val widthPx = maxWidthDp * d
+        val scope = rememberCoroutineScope()
+        // v1.8.8.5：位移改成**普通 Float state + 同步赋值**。
+        // 之前用 Animatable 时，每个 MOVE 事件都 `scope.launch { drag.snapTo(...) }` ——
+        // 触摸事件一秒几十个，协程并发写同一个值、顺序不保证，最后写进去的可能是较早那次，
+        // 表现就是「拖到一半卡住 / 往前滑不动 / 停在两页中间」。
+        // 现在拖动直接赋值（同步、有序），只有松手收尾才用一次协程做动画。
+        var dragX by remember(chapterIndex) {
+            androidx.compose.runtime.mutableFloatStateOf(0f)
+        }
+        var animJob by remember {
+            androidx.compose.runtime.mutableStateOf<kotlinx.coroutines.Job?>(null)
+        }
+        var moving by remember { mutableStateOf(false) }
+        var cur by remember { mutableIntStateOf(0) }
+        val turnThresholdPx = with(density) { 30.dp.toPx() }
+        val touchSlop = androidx.compose.ui.platform.LocalViewConfiguration.current.touchSlop
+
+        /** 单一动画入口：先取消上一个动画任务，避免并发写 dragX */
+        fun startAnim(target: Float, durationMs: Int, onEnd: (() -> Unit)? = null) {
+            animJob?.cancel()
+            animJob = scope.launch {
+                moving = true
+                val start = dragX
+                androidx.compose.animation.core.animate(
+                    initialValue = start,
+                    targetValue = target,
+                    animationSpec = tween(durationMillis = durationMs, easing = FastOutSlowInEasing),
+                ) { value, _ -> dragX = value }
+                dragX = target
+                onEnd?.invoke()
+                moving = false
+            }
+        }
+
+        LaunchedEffect(chapterIndex, initialPage, initialRatio, pageCount) {
+            if (pageCount <= 0) return@LaunchedEffect
+            val target = when {
+                initialPage > 0 -> initialPage
+                initialRatio > 0 -> (initialRatio / 10000f * (pageCount - 1)).toInt()
+                else -> 0
+            }.coerceIn(0, pageCount - 1)
+            animJob?.cancel()
+            cur = target
+            dragX = 0f
+            moving = false
+        }
+
+        LaunchedEffect(cur, pageCount) {
+            if (pageCount <= 0) return@LaunchedEffect
+            onPageChanged(cur)
+            onPageTextChanged("${cur + 1}/$pageCount")
+            onRatioChanged(if (pageCount <= 1) 0 else cur * 10000 / (pageCount - 1))
+        }
+
+        // ===== 文本排版：只排「可见的三页」，按页缓存 =====
+        val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+        val style = androidx.compose.ui.text.TextStyle(
+            color = textColor,
+            fontSize = fontSize.sp,
+            fontFamily = fontFamily,
+            fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
+            lineHeight = (fontSize * lineHeightMultiplier).sp,
+            letterSpacing = letterSpacing.sp,
+        )
+        val textConstraints = androidx.compose.ui.unit.Constraints(
+            maxWidth = availWidthPx.toInt().coerceAtLeast(1),
+        )
+        val layouts = remember(cur, pages, style, textConstraints, paragraphSpacing, indent) {
+            val m = HashMap<Int, androidx.compose.ui.text.TextLayoutResult>(3)
+            for (i in (cur - 1)..(cur + 1)) {
+                if (i in pages.indices) {
+                    m[i] = measurer.measure(
+                        text = buildReaderText(pages[i], fontSize, paragraphSpacing, indent),
+                        style = style,
+                        constraints = textConstraints,
+                    )
+                }
+            }
+            m
+        }
+        // 章名单独排一次（只画在第 0 页）
+        val titleLayout = remember(chapterTitle, style, textConstraints, fontSize) {
+            if (chapterTitle.isBlank()) null
+            else measurer.measure(
+                text = chapterTitle,
+                style = style.copy(
+                    fontSize = (fontSize + 2).sp,
+                    fontWeight = FontWeight.Bold,
+                ),
+                constraints = textConstraints,
+            )
+        }
+
+        fun turn(delta: Int) {
+            if (pageCount <= 0) return
+            val target = cur + delta
+            if (target < 0) {
+                onReachFirst()
+                return
+            }
+            if (target > pageCount - 1) {
+                onNextChapter()
+                return
+            }
+            if (moving) {
+                // 连点：取消进行中的动画，直接落页
+                animJob?.cancel()
+                cur = target
+                dragX = 0f
+                moving = false
+                return
+            }
+            startAnim(
+                target = if (delta > 0) -widthPx else widthPx,
+                durationMs = 200,
+                onEnd = {
+                    cur = target
+                    dragX = 0f
+                },
+            )
+        }
+
+        LaunchedEffect(autoPage, autoPageInterval, chapterIndex) {
+            if (!autoPage) return@LaunchedEffect
+            while (true) {
+                delay(autoPageInterval * 1000L)
+                turn(1)
+            }
+        }
+
+        if (pageTurn != null) {
+            LaunchedEffect(pageTurn, chapterIndex) {
+                pageTurn.collect { dir -> turn(if (dir > 0) 1 else -1) }
+            }
+        }
+
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(pageCount, chapterIndex, cur) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        // 手指按下先打断上一次收尾动画，否则它会继续写 dragX
+                        animJob?.cancel()
+                        moving = false
+                        val startX = down.position.x
+                        var lastX = startX
+                        var pointerX = startX
+                        var moved = false
+                        var pressed = true
+                        while (pressed) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            pressed = change.pressed
+                            pointerX = change.position.x
+                            val delta = pointerX - lastX
+                            lastX = pointerX
+                            if (!moved && kotlin.math.abs(pointerX - startX) > touchSlop) {
+                                moved = true
+                            }
+                            if (moved) {
+                                change.consume()
+                                val hasPrev = cur > 0
+                                val hasNext = cur < pageCount - 1
+                                // 同步赋值：触摸事件是串行的，不需要协程，也不会乱序
+                                dragX = (dragX + delta).coerceIn(
+                                    if (hasNext) -widthPx else 0f,
+                                    if (hasPrev) widthPx else 0f,
+                                )
+                            }
+                        }
+                        val totalDx = pointerX - startX
+                        val hasPrev = cur > 0
+                        val hasNext = cur < pageCount - 1
+                        if (!moved) {
+                            val w = size.width.toFloat()
+                            when {
+                                startX < w / 3f -> turn(-1)
+                                startX > w * 2f / 3f -> turn(1)
+                                else -> onTapCenter()
+                            }
+                        } else {
+                            val success = kotlin.math.abs(totalDx) > turnThresholdPx
+                            val toPrev = totalDx > 0 && hasPrev
+                            val toNext = totalDx < 0 && hasNext
+                            val animTarget = when {
+                                toPrev -> if (success) widthPx else 0f
+                                toNext -> if (success) -widthPx else 0f
+                                else -> 0f
+                            }
+                            startAnim(
+                                target = animTarget,
+                                durationMs = if (success) 200 else 140,
+                                onEnd = {
+                                    if (success && toPrev) cur = (cur - 1).coerceAtLeast(0)
+                                    if (success && toNext) cur = (cur + 1).coerceAtMost(pageCount - 1)
+                                    dragX = 0f
+                                },
+                            )
+                            if (success) {
+                                if (!hasPrev && totalDx > 0) onReachFirst()
+                                else if (!hasNext && totalDx < 0) onNextChapter()
+                            }
+                        }
+                    }
+                },
+        ) {
+            val dx = dragX
+            val padPx = sidePadding * d
+            val topPx = 48f * d
+
+            /** 画一页：背景 + （第 0 页的章名）+ 正文 + 页码 */
+            fun drawPage(idx: Int, offsetX: Float) {
+                if (idx !in pages.indices) return
+                translate(offsetX, 0f) {
+                    drawRect(color = bgColor)
+                    // 正文严格裁到「分页时用的可用高度」内。
+                    // TextLayoutResult 的实际高度会比分页测量多出零点几行（行高取整累积），
+                    // 不按分页高度裁，最后一行就会压到页码上、看着像多了一行乱码。
+                    clipRect(0f, 0f, size.width, topPx + textHeightPx) {
+                        var y = topPx
+                        if (idx == 0 && !hideChapterTitle && titleLayout != null) {
+                            drawText(titleLayout, topLeft = Offset(padPx, y))
+                            y += titleLayout.size.height + titleSpacerPx
+                        }
+                        layouts[idx]?.let { layout ->
+                            drawText(layout, topLeft = Offset(padPx, y))
+                        }
+                    }
+                    // 页码：画在正文区下方、底部留白里，始终可见
+                    // 页码：注意这里必须写 ${pages.size}（带花括号）。
+                    // 写成 `$pages.size` 时 Kotlin 只把 `$pages` 当变量，尾巴 `.size` 变字面量，
+                    // 结果画出来是「整个列表的 toString() + .size」那一长串乱码。
+                    val pageText = "${idx + 1}/${pages.size}"
+                    val pageLayout = measurer.measure(
+                        text = pageText,
+                        style = style.copy(fontSize = (fontSize - 6).sp),
+                    )
+                    drawText(
+                        pageLayout,
+                        topLeft = Offset(
+                            (widthPx - pageLayout.size.width) / 2f,
+                            topPx + textHeightPx + 6f * d,
+                        ),
+                        alpha = 0.55f,
+                    )
+                }
+            }
+
+            // 层级（后画在上）：下一页 → 当前页 → 上一页
+            if (cur + 1 < pageCount) drawPage(cur + 1, 0f)
+            drawPage(cur, kotlin.math.min(dx, 0f))
+            if (cur - 1 >= 0) drawPage(cur - 1, -widthPx + kotlin.math.max(dx, 0f))
+        }
+
+        if (pageCount == 0) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(
                     modifier = Modifier.width(28.dp),
@@ -1361,6 +2052,8 @@ private fun VerticalPagerNovel(
     onRatioChanged: (Int) -> Unit,
     onPageTextChanged: (String) -> Unit = {},
     pageTurn: kotlinx.coroutines.flow.SharedFlow<Int>? = null,
+    /** 预缓存窗口（章 index → (标题, 正文)），用于提前排版（v1.8.8.5） */
+    prefetchedContent: Map<Int, Pair<String, String>> = emptyMap(),
 ) {
     BoxWithConstraintsCompat { maxWidthDp, maxHeightDp ->
         val density = LocalDensity.current.density
@@ -1372,9 +2065,15 @@ private fun VerticalPagerNovel(
         val paraSpacingPx = paragraphSpacing * density
         val titleSpacerPx = 16f * density
 
+        // v1.8.8.5：排版结果按章缓存（整个阅读页生命周期内复用），配合预分页做到切章不白屏。
+        val pageCache = remember { mutableMapOf<Int, List<String>>() }
+
         // v1.7.1.0：分页计算移出主线程（null = 还在算）
-        val pagesOrNull = rememberPaginatedPages(
+        val pagesOrNull = rememberPaginatedPagesCached(
             content = content,
+            chapterIndex = chapterIndex,
+            prefetched = prefetchedContent,
+            cache = pageCache,
             chapterTitle = chapterTitle,
             hideChapterTitle = hideChapterTitle,
             widthPx = availWidthPx,
@@ -1390,9 +2089,12 @@ private fun VerticalPagerNovel(
         )
         val pages = pagesOrNull.orEmpty()
         val pagesReady = pagesOrNull != null
-        val hasNextGate = content.isNotBlank() && hasNextChapter
-        // 分页未就绪时页数记 0：Pager 不渲染内容，避免「只有半章」的中间态被翻到
-        val pageCount = if (pagesReady) pages.size + if (hasNextGate) 1 else 0 else 0
+        // v1.8.8.5：去掉章末的「本章已读完」中转页。
+        // 以前页数是 pages.size + 1，多出来那一页只写「本章已读完 / 继续翻页进入下一章」，
+        // 用户翻到它就是多一次点击、多一次闪动，读书节奏被打断。
+        // 现在页数就是正文页数：在最后一页再往后翻，requestTurn 直接返回 false →
+        // 调用方切下一章，中间不再插一页。
+        val pageCount = if (pagesReady) pages.size else 0
 
         val startPage = remember(chapterIndex, initialPage, initialRatio, pageCount) {
             when {
@@ -1404,13 +2106,41 @@ private fun VerticalPagerNovel(
         val pagerState = rememberPagerState(initialPage = startPage, pageCount = { pageCount })
 
         // v1.7.1.0：分页是异步算出来的，Pager 创建时 pageCount 还是 0，`initialPage` 无从生效。
-        // 结果就绪后补一次定位（只在**首次**就绪时做：后续切章由 chapterIndex 那个 effect 归零）。
-        var didInitialPosition by remember { mutableStateOf(false) }
-        LaunchedEffect(pagesOrNull) {
-            if (!didInitialPosition && pagesOrNull != null) {
-                didInitialPosition = true
-                if (startPage > 0 && startPage < pageCount) pagerState.scrollToPage(startPage)
-            }
+        // 结果就绪后补一次定位。
+        //
+        // v1.8.8.5 修：这个「首次」标志以前用 `remember { }`（不带 key），整个阅读页只生效一次。
+        // 于是**切章之后再也不定位** —— 配合 chapterIndex effect 里的 scrollToPage(0)，
+        // 结果是每次换章都停在第 0 页。往前翻章因此总落在上一章开头（用户报的严重问题）。
+        // 现在把 chapterIndex 也作为 key，切章时会重新跑一遍定位（见下面 chapterIndex effect
+        // 里对 didInitialPosition 的重置）。
+        // v1.8.8.5 第三次修（关键）：换成「待恢复比例」机制，不再用 `didInitialPosition` 布尔标志。
+        //
+        // 布尔标志有个致命的时序漏洞：预分页缓存命中时，切章后 pagesOrNull 从**旧值**
+        // 直接变成**新值**（中间不经过 null）。定位 effect 重启那一刻标志还是 true → 直接 return；
+        // 紧接着切章 effect 才把标志清成 false，但此后 pagesOrNull 不再变化、effect 不会重启，
+        // 于是**永远不定位** —— 表现就是用户看到的「往回翻仍停在上一章开头」。
+        //
+        // 现在：切章时登记「待恢复比例」，页数一就绪就把比例换算成页并消费掉（置 -1）。
+        // 不依赖两个 effect 的先后顺序。
+        var pendingRatio by remember { mutableIntStateOf(initialRatio.coerceIn(0, 10000)) }
+        LaunchedEffect(pagesOrNull, pageCount, pendingRatio) {
+            if (pagesOrNull == null || pageCount <= 0) return@LaunchedEffect
+            val ratio = pendingRatio
+            if (ratio < 0) return@LaunchedEffect
+            pendingRatio = -1
+            val target = when {
+                initialPage > 0 -> initialPage
+                ratio > 0 -> (ratio / 10000f * (pageCount - 1)).toInt()
+                else -> 0
+            }.coerceIn(0, pageCount - 1)
+            // 排查用：往回翻若仍落在开头，看这行是否出现、target 是否为 pageCount-1
+            android.util.Log.d(
+                "NovelRestore",
+                "定位 chapter=$chapterIndex ratio=$ratio pageCount=$pageCount target=$target from=${pagerState.currentPage}",
+            )
+            // 无条件对齐（不再只在 target > 0 时跳）：切章后 Pager 可能还停在上一个
+            // 阅读位置，新章只有 1~2 页时那里是越界的，必须拉回 0。
+            if (pagerState.currentPage != target) pagerState.scrollToPage(target)
         }
 
         // ===== 连点翻页（v1.8.8.4）=====
@@ -1423,8 +2153,36 @@ private fun VerticalPagerNovel(
         // 握着**旧的** State —— 于是点击把值写进了一个没人读的废弃对象，组合侧收不到
         // 任何变化，effect 永远不执行。日志里的表现就是切章之后只有「点击」没有「翻页」。
         // 所以 State 的生命周期必须覆盖整个阅读页，切章时只重置目标、不动对象本身。
-        var turnTick by remember { mutableIntStateOf(0) }
+        // v1.8.8.5：改成「点击回调里直接发滚动指令」，不再经过 turnTick + LaunchedEffect。
+        // 原来那次中转要额外等一个重组周期才发出指令，连点时指令还会排队，
+        // 手上的感觉就是「点了不动 / 动一下停一下」。目标页仍然在 [requestTurn] 里
+        // **同步**累加（保证连点不丢），只是把「发指令」提前到同一帧。
+        val turnScope = rememberCoroutineScope()
         val turnTarget = remember { intArrayOf(-1) }
+        var lastTurnAt by remember { mutableLongStateOf(0L) }
+
+        /** 发出翻页；[target] 由 requestTurn 同步算好 */
+        fun dispatchTurn(target: Int) {
+            val now = android.os.SystemClock.uptimeMillis()
+            val rapid = now - lastTurnAt < 300L
+            lastTurnAt = now
+            turnScope.launch {
+                if (rapid) {
+                    // 连点：直接跳。animateScrollToPage 中途被取消会回弹到最近整页，
+                    // 而连点间隔比动画短 → 每一下都在中途被取消、原地弹回，等于一下没翻。
+                    pagerState.scrollToPage(target)
+                } else {
+                    pagerState.animateScrollToPage(
+                        target,
+                        // 翻页 200ms：参考实现的位移动画同样很短，够看出「翻过去了」，
+                        // 又不会让连续点击排队等上一下。
+                        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+                    )
+                }
+                // 落定后以实际页为准（响应中途可能被拖动或回弹改变）
+                if (turnTarget[0] == target) turnTarget[0] = pagerState.currentPage
+            }
+        }
 
         /** 请求翻 +delta 页；false = 真的到头了，调用方该切章 / 回上一章 */
         fun requestTurn(delta: Int): Boolean {
@@ -1434,8 +2192,7 @@ private fun VerticalPagerNovel(
             val target = base + delta
             if (target in 0..last) {
                 turnTarget[0] = target
-                turnTick++
-                android.util.Log.d("NovelTurn", "点击 delta=$delta base=$base target=$target last=$last")
+                dispatchTurn(target)
                 return true
             }
             // 目标越界。**只有实际页面真的停在边界**才算「到头」——
@@ -1446,41 +2203,10 @@ private fun VerticalPagerNovel(
             } else {
                 pagerState.currentPage <= 0
             }
-            if (atEdge) {
-                android.util.Log.d("NovelTurn", "到底 delta=$delta current=${pagerState.currentPage} last=$last")
-                return false
-            }
+            if (atEdge) return false
             turnTarget[0] = target.coerceIn(0, last)
-            turnTick++
-            android.util.Log.d(
-                "NovelTurn",
-                "钳制 delta=$delta base=$base target=$target → ${turnTarget[0]}",
-            )
+            dispatchTurn(turnTarget[0])
             return true
-        }
-
-        LaunchedEffect(turnTick) {
-            if (turnTick == 0) return@LaunchedEffect
-            val target = turnTarget[0]
-            if (target < 0) return@LaunchedEffect
-            val distance = kotlin.math.abs(target - pagerState.currentPage)
-            android.util.Log.d(
-                "NovelTurn",
-                "翻页 target=$target current=${pagerState.currentPage} distance=$distance",
-            )
-            if (distance > 1) {
-                // 连点：**直接跳**，不走动画。
-                // animateScrollToPage 被取消时 Pager 会回弹到最近的整页 —— 连点间隔
-                // 比动画短，每次都在中途取消、弹回原页，等于一下都没翻。瞬跳没有这个问题。
-                pagerState.scrollToPage(target)
-            } else if (distance == 1) {
-                pagerState.animateScrollToPage(
-                    target,
-                    animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
-                )
-            }
-            // 目标没被新点击改过就清空；改过就留给下一轮
-            if (turnTarget[0] == target) turnTarget[0] = -1
         }
 
         if (pageTurn != null) {
@@ -1498,24 +2224,17 @@ private fun VerticalPagerNovel(
         }
 
         var lastChapterIndex by remember { mutableIntStateOf(chapterIndex) }
-        LaunchedEffect(chapterIndex) {
-            if (lastChapterIndex != chapterIndex) {
+        var lastInitialRatio by remember { mutableIntStateOf(initialRatio) }
+        LaunchedEffect(chapterIndex, initialRatio) {
+            if (lastChapterIndex != chapterIndex || lastInitialRatio != initialRatio) {
                 lastChapterIndex = chapterIndex
+                lastInitialRatio = initialRatio
                 // 切章后页码重新算，旧目标作废（State 对象本身不动，见上面的说明）
                 turnTarget[0] = -1
-                if (pagerState.currentPage != 0) pagerState.scrollToPage(0)
+                // v1.8.8.5：登记本章要恢复的位置。往前翻时 ViewModel 给的是 10000（100%），
+                // 由定位 effect 换算成「最后一页」；往后翻 / 点目录进来是 0，即第一页。
+                pendingRatio = initialRatio.coerceIn(0, 10000)
                 onPageChanged(0)
-            }
-        }
-
-        var gateConsumed by remember { mutableIntStateOf(-1) }
-        LaunchedEffect(pagerState.currentPage, pageCount, chapterIndex) {
-            if (hasNextGate && pageCount > 0 &&
-                pagerState.currentPage == pageCount - 1 &&
-                gateConsumed != chapterIndex
-            ) {
-                gateConsumed = chapterIndex
-                onNextChapter()
             }
         }
 
@@ -1753,9 +2472,17 @@ private data class PageTransform(
     val scaleY: Float = 1f,
     val alpha: Float = 1f,
     val rotationY: Float = 0f,
+    /**
+     * 平面旋转（v1.8.8.5）：仿真翻页靠它做出「纸页斜着掀起」的观感。
+     * 纯 rotationY 是绕竖轴的透视翻转，页面始终是正矩形，看起来像卡片在转；
+     * 加一个平面倾角，边线才是斜的、文字才是斜的 —— 这才像一张纸被掀起来。
+     */
+    val rotationZ: Float = 0f,
     val shadowElevation: Float = 0f,
     /** 变换原点：0 = 左边缘，0.5 = 中心，1 = 右边缘 */
     val originX: Float = 0.5f,
+    /** 变换原点纵向：仿真模式下固定在底边（1），让纸页「从角上翘起」 */
+    val originY: Float = 0.5f,
 ) {
     companion object {
         val NoAnim = PageTransform()
@@ -1780,29 +2507,18 @@ private data class PageTransform(
         }
 
         /**
-         * 仿真：绕书脊做 3D 翻转。
+         * 仿真：v1.8.8.5 按参考实现（xrn1997/android-ebook 的 ReaderPager）改为**纯平移**。
          *
-         * v1.8.8.4 二次调整：角度 45° → 22°。
-         * 45° 时透视把页面宽度投影压到约 70%，翻页中间态会看到「左边一条空白、
-         * 文字从中间开始」，观感是页面被挤扁、文字错位（用户反馈的「失真」）。
-         * 22° 的投影宽度约 93%，几乎看不出变形，配合卷边仍然有翻书的层次。
-         * 变换原点跟着方向走：翻走的页绕左边缘（书脊）转出，进来的页绕右边缘转进。
+         * 那个项目翻页只有三个槽位（上一页 / 当前页 / 下一页）+ 一个 `Animatable` 位移，
+         * 位移在布局期读取（`offset {}`），动画期间零重组、零额外绘制 —— 这是它「翻得飞快」的原因。
+         *
+         * 我们之前在这里叠了 3D 旋转 + 全屏渐变阴影 + 贝塞尔卷边，每帧要额外做两次全屏
+         * 渐变填充和一次离屏合成，快速连翻时直接掉帧。既然目标是「响应和流畅」，
+         * 就把这些全部去掉，只做平移。
+         *
+         * 注意：`PageTransform` 的字段仍保留（覆盖模式在用），这里只是不再设置它们。
          */
-        fun simulate(pageOffset: Float): PageTransform {
-            val d = pageOffset.coerceIn(-1f, 1f)
-            val leave = easeOutCubic(kotlin.math.abs(d))
-            return PageTransform(
-                rotationY = d * 22f,
-                scaleX = 1f - leave * 0.03f,
-                scaleY = 1f - leave * 0.02f,
-                alpha = 1f - leave * 0.18f,
-                shadowElevation = leave * 18f,
-                // 翻走的页绕**左边缘**（书脊）转出，进来的页绕右边缘转进。
-                // 录屏里发现原来写反了：翻页中间态是「左侧一条空白、文字从中间开始」，
-                // 说明页面绕的是右边缘。交换之后纸张从书脊一侧翘起，符合直觉。
-                originX = if (d >= 0f) 1f else 0f,
-            )
-        }
+        fun simulate(pageOffset: Float): PageTransform = PageTransform()
 
         /**
          * 缓出三次曲线：末段减速。
@@ -2033,6 +2749,137 @@ private fun rememberPaginatedPages(
             }
         }
     }
+    return pages
+}
+
+/**
+ * 带**预分页**的排版结果（v1.8.8.5）。
+ *
+ * 为什么要有这个：`rememberPaginatedPages` 每次切章都从头排一遍，排版期间调用方只显示
+ * 一个进度圈（pageCount = 0，Pager 不渲染任何页）——用户体感是「切章白屏」。
+ * 排版本身要用 TextMeasurer 逐段测量，长章节要几百毫秒，这段时间没法省。
+ *
+ * 解法是**提前算**：ViewModel 的预缓存窗口（档位可调，见设置「预加载章节」）已经抓好了
+ * 后面几章的正文，这里拿同一份窗口在后台按当前排版参数提前排好，结果放进 [cache]。
+ * 用户真的翻到那一章时，同一份缓存直接命中，`pagesOrNull` 一次就绪，没有白屏。
+ *
+ * 缓存失效：所有影响断行的参数（宽高 / 字号 / 行高 / 段距 / 字体 / 加粗 / 字距 / 缩进 /
+ * 是否显示章名）合成一个指纹 [paramSig]，任一变化就把整份缓存清空重算——否则改字号后
+ * 会用旧断行渲染新字号，末行会被裁掉。
+ */
+@Composable
+private fun rememberPaginatedPagesCached(
+    content: String,
+    chapterIndex: Int,
+    prefetched: Map<Int, Pair<String, String>>,
+    cache: MutableMap<Int, List<String>>,
+    chapterTitle: String,
+    hideChapterTitle: Boolean,
+    widthPx: Float,
+    heightPx: Float,
+    fontSize: Float,
+    lineHeightMultiplier: Float,
+    paragraphSpacingPx: Float,
+    titleSpacerPx: Float,
+    fontFamily: FontFamily,
+    bold: Boolean,
+    letterSpacing: Float,
+    indent: Boolean,
+): List<String>? {
+    val resolver = androidx.compose.ui.platform.LocalFontFamilyResolver.current
+    val density = LocalDensity.current
+    val layoutDirection = androidx.compose.ui.platform.LocalLayoutDirection.current
+    val style = readerTextStyle(fontSize, lineHeightMultiplier, fontFamily, bold, letterSpacing)
+    val paragraphSpacingDp = paragraphSpacingPx / density.density
+    val render: (String) -> AnnotatedString = { buildReaderText(it, fontSize, paragraphSpacingDp, indent) }
+    val showTitle = !hideChapterTitle
+
+    val paramSig = remember(
+        widthPx, heightPx, fontSize, lineHeightMultiplier, paragraphSpacingPx,
+        titleSpacerPx, fontFamily, bold, letterSpacing, indent, hideChapterTitle,
+    ) {
+        listOf(
+            widthPx, heightPx, fontSize, lineHeightMultiplier, paragraphSpacingPx,
+            titleSpacerPx, fontFamily, bold, letterSpacing, indent, hideChapterTitle,
+        )
+    }
+
+    // 排版参数变了 → 旧缓存全部失效
+    LaunchedEffect(paramSig) { cache.clear() }
+
+    /** 单章排版：每次现造 TextMeasurer（它的内部布局缓存跨线程共享不安全） */
+    suspend fun measure(text: String, title: String): List<String> =
+        withContext(Dispatchers.Default) {
+            val result = runCatching {
+                paginateByMeasurement(
+                    measurer = androidx.compose.ui.text.TextMeasurer(resolver, density, layoutDirection),
+                    content = text,
+                    chapterTitle = title,
+                    showTitle = showTitle,
+                    widthPx = widthPx,
+                    heightPx = heightPx,
+                    style = style,
+                    paragraphSpacingPx = paragraphSpacingPx,
+                    render = render,
+                    titleSpacerPx = titleSpacerPx,
+                )
+            }.getOrNull()
+            // 空结果兜底成「整章一页」：宁可让用户滚动/被裁剪，也不能渲染成整页空白
+            if (result.isNullOrEmpty()) listOf(text) else result
+        }
+
+    // v1.8.8.5 修（白屏根因）：**尺寸没测量出来之前绝不能分页**。
+    // `BoxWithConstraints` 首帧拿到的是 0 宽/0 高（甚至布局未完成时是极小值），
+    // 用它去排版，每一段都「放不下」→ 分页算法切出**空列表**，而这份空排版又被
+    // 写进缓存；随后切到那一章时命中缓存 → pageCount = 0、又不满足「未就绪」条件
+    // （不是 null）→ 既没有加载圈、也没有内容 → **整页白屏**（用户截图那一幕）。
+    // 尺寸未就绪时直接不跑，等尺寸回调触发重组后再算。
+    val sizeReady = widthPx >= 60f && heightPx >= 60f
+
+    // 空列表一律当没缓存：宁可重排一次，也不能拿空排版去渲染
+    var pages by remember(chapterIndex, paramSig) {
+        mutableStateOf(cache[chapterIndex]?.takeIf { it.isNotEmpty() })
+    }
+
+    LaunchedEffect(chapterIndex, paramSig, sizeReady) {
+        if (!sizeReady) return@LaunchedEffect
+        cache[chapterIndex]?.takeIf { it.isNotEmpty() }?.let {
+            pages = it
+            return@LaunchedEffect
+        }
+        // 未命中 → 退回「先显示加载态再补」，和原来的行为一致
+        pages = null
+        val result = measure(content, chapterTitle)
+        if (result.isNotEmpty()) cache[chapterIndex] = result
+        pages = result
+    }
+
+    // ===== 预分页：把预缓存窗口里的章节提前排好 =====
+    // 顺序按「离当前章由近到远」，保证紧接着的下一章最先就绪。
+    // 已经在缓存里的跳过；命中 `cache` 判断放在循环里，避免 effect 频繁重启后重复劳动。
+    LaunchedEffect(prefetched, paramSig, chapterIndex, sizeReady) {
+        if (!sizeReady) return@LaunchedEffect
+        if (prefetched.isEmpty()) return@LaunchedEffect
+        val targets = prefetched.keys
+            .filter { it != chapterIndex && cache[it] == null }
+            .sortedBy { kotlin.math.abs(it - chapterIndex) }
+        for (idx in targets) {
+            if (cache[idx] != null) continue
+            // v1.8.8.5：每章之间让一次路。预分页是纯 CPU 活（逐段文本测量），
+            // 连排十本会把 Default 池占满、和翻页动画抢核心，表现为「翻页发黏」。
+            // 80ms 的间隔对后台任务无所谓，但足够让渲染帧插进来。
+            kotlinx.coroutines.delay(80)
+            val entry = prefetched[idx] ?: continue
+            val raw = entry.second
+            if (raw.isBlank()) continue
+            // 标题要跟着正文一起排：首页可用高度扣的是标题那一块，
+            // 用空标题会让首页多排一行、末页少排一行。
+            val p = measure(raw, entry.first)
+            // 只缓存非空结果，避免「空排版」污染缓存导致后续白屏
+            if (p.isNotEmpty()) cache[idx] = p
+        }
+    }
+
     return pages
 }
 

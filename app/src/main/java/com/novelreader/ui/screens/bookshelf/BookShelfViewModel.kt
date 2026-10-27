@@ -206,24 +206,38 @@ class BookShelfViewModel(
         item: MediaItem,
         onReady: (chapters: List<ChapterItem>, target: ChapterItem?) -> Unit,
     ) {
+        // v1.8.8.5：「点一下几秒没反应」的根因在这里。
+        // 旧实现无条件先发一次 `chapterList` 网络请求，拿到整份目录才回调 → 导航。
+        // 目录动辄几百上千章，普通源要一两秒，慢源要好几秒，这段时间界面**毫无反应**。
+        //
+        // 现在先吃目录预热缓存（书架补「最新章节」时已顺手存进来，见 enrichChapterInfo）：
+        // 命中就**同步**回调，点击当帧就能导航；进度直接用 `_progressMap`
+        // （书架列表加载时已读进内存），不再额外查一次数据库。
+        val cached = com.novelreader.ui.navigation.NavCache.getChapters(item)
+        if (cached.isNotEmpty()) {
+            onReady(cached, resolveTarget(item, cached))
+            return
+        }
         viewModelScope.launch {
-            val progress = progressRepository.getProgress(item.sourceId, item.id)
             val chapters = runCatching { contentRepository.chapterList(item) }
                 .getOrDefault(emptyList())
-
             if (chapters.isEmpty()) {
                 onReady(emptyList(), null)
                 return@launch
             }
-
-            // 定位进度章节
-            val target = progress?.let { p ->
-                chapters.firstOrNull { it.url == p.chapterUrl }
-                    ?: chapters.firstOrNull { it.index == p.chapterIndex }
-            } ?: chapters.first()
-
-            onReady(chapters, target)
+            com.novelreader.ui.navigation.NavCache.putChapters(item, chapters)
+            onReady(chapters, resolveTarget(item, chapters))
         }
+    }
+
+    /** 在章节表里定位上次读到的章节；找不到就退回第一章 */
+    private fun resolveTarget(item: MediaItem, chapters: List<ChapterItem>): ChapterItem? {
+        if (chapters.isEmpty()) return null
+        val p = _progressMap.value[itemKey(item)]
+        return p?.let { prog ->
+            chapters.firstOrNull { it.url == prog.chapterUrl }
+                ?: chapters.firstOrNull { it.index == prog.chapterIndex }
+        } ?: chapters.first()
     }
 
     /** 生成进度缓存 key */
@@ -245,6 +259,10 @@ class BookShelfViewModel(
                 if (_lastChapterMap.value.containsKey(key)) return@forEach
                 val chapters = runCatching { contentRepository.chapterList(item) }.getOrDefault(emptyList())
                 if (chapters.isEmpty()) return@forEach
+                // v1.8.8.5：这次请求本来就是为「最新章节 / 章节总数」发的，
+                // 顺手把整份目录塞进导航缓存 —— 用户随后点击这本书时直接命中，
+                // 不用再等一次目录请求（点击响应的关键）。
+                com.novelreader.ui.navigation.NavCache.putChapters(item, chapters)
                 _chapterCountMap.value = _chapterCountMap.value + (key to chapters.size)
                 val last = chapters.lastOrNull()?.title
                 if (!last.isNullOrBlank()) {

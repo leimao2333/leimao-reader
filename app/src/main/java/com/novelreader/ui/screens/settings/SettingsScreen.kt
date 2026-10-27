@@ -299,6 +299,8 @@ fun SettingsScreen(
             }
 
             // 预加载章数（v1.8.3.0）：0=关闭，避免流量/内存紧张时仍强制预取
+            // v1.8.8.5：上限 5 → 10。预分页和预缓存共用这个档位，档位越大，
+            // 往后连续翻章时越可能「正文已就绪 + 分页已算好」，代价是流量与内存。
             Spacer(Modifier.height(16.dp))
             Text(
                 text = if (novelPreloadChapters == 0) "预加载章节：关闭"
@@ -306,15 +308,15 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodyMedium,
             )
             Text(
-                text = "阅读时向后预取接下来 N 章，越大翻章越顺但更耗流量；设为 0 可完全关闭",
+                text = "阅读时向后预取接下来 N 章（并预先排好版），越大翻章越顺但更耗流量；设为 0 可完全关闭",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Slider(
                 value = novelPreloadChapters.toFloat(),
                 onValueChange = { viewModel.setNovelPreloadChapters(it.toInt()) },
-                valueRange = 0f..5f,
-                steps = 4,
+                valueRange = 0f..10f,
+                steps = 9,
             )
             SettingRow(
                 title = "未加入书架时提示",

@@ -969,7 +969,9 @@ private fun ScrollNovel(
                         text = if (hasNextChapter) "下一章 ›" else "已是最后一章",
                         fontSize = (fontSize + 2).sp,
                         fontWeight = FontWeight.Bold,
-                        color = if (hasNextChapter) MaterialTheme.colorScheme.primary else textColor.copy(alpha = 0.5f),
+                        // 不用 colorScheme.primary：浅色主题的深紫压在夜间纸张上对比度太低，
+                        // 这里直接用正文色（加粗已足够强调），夜间也清晰。
+                        color = if (hasNextChapter) textColor else textColor.copy(alpha = 0.5f),
                     )
                 }
                 Spacer(Modifier.height(24.dp))

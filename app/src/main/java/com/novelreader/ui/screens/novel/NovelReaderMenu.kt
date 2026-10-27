@@ -55,6 +55,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -399,7 +400,10 @@ internal fun BoxScope.ReaderBottomMenu(
     ) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             // ===== 面板区（目录 / 界面 / 设置）=====
+            // 菜单刚弹出时是「收起」态（MENU_TAB_NONE）：只露进度条 + 工具行，
+            // 不预先铺开一整列章节，点哪个页签才展开哪个。
             when (menuTab) {
+                NovelReaderViewModel.MENU_TAB_NONE -> Unit
                 0 -> DirectoryPanel(viewModel, chapters, chapterPosition, cachedIndices, chapterQuery, chapterDesc, textColor)
                 1 -> MenuScrollPanel {
                     InterfacePanel(
@@ -418,7 +422,7 @@ internal fun BoxScope.ReaderBottomMenu(
                         textColor = textColor,
                     )
                 }
-                else -> MenuScrollPanel {
+                2 -> MenuScrollPanel {
                     SettingsPanel(
                         viewModel = viewModel,
                         nightMode = nightMode,
@@ -510,7 +514,7 @@ internal fun BoxScope.ReaderBottomMenu(
                 ToolButton("界面", Icons.Filled.TextFormat, menuTab == 1, textColor) { viewModel.setMenuTab(1) }
                 ToolButton("设置", Icons.Filled.Settings, menuTab == 2, textColor) { viewModel.setMenuTab(2) }
                 ToolButton("换源", Icons.Filled.SwapHoriz, false, textColor) { viewModel.openChangeSource() }
-                ToolButton("书签", Icons.Filled.BookmarkBorder, false, textColor) { viewModel.setMenuTab(3) }
+                ToolButton("书签", Icons.Filled.BookmarkBorder, menuTab == 3, textColor) { viewModel.setMenuTab(3) }
                 ToolButton("缓存", Icons.Filled.Download, false, textColor) { viewModel.cacheCurrentChapter() }
                 // 听书（v1.8.7.4）：朗读原先只藏在「设置」页签里，得先展开菜单再切页签才能找到。
                 // 这是阅读时的高频动作，提到工具行做成一键开关；正在朗读时图标变方块、高亮显示。
@@ -536,7 +540,7 @@ internal fun BoxScope.ReaderBottomMenu(
             onAddCurrent = onAddBookmark,
             onJump = { viewModel.jumpToBookmark(it) },
             onDelete = { viewModel.removeBookmark(it) },
-            onClose = { viewModel.setMenuTab(0) },
+            onClose = { viewModel.closeMenuPanel() },
         )
     }
 }
@@ -681,7 +685,7 @@ private fun DirectoryPanel(
                         modifier = Modifier
                             .fillMaxHeight()
                             .width(10.dp)
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(5.dp)),
+                            .background(textColor.copy(alpha = 0.12f), RoundedCornerShape(5.dp)),
                         contentAlignment = Alignment.Center,
                     ) {
                         Box(Modifier.size(10.dp).background(AccentColor, CircleShape))
@@ -730,13 +734,13 @@ private fun InterfacePanel(
     // 字号
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text("字号", color = textColor, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-        MenuButton("A-") { viewModel.decreaseFontSize() }
+        MenuButton("A-", textColor) { viewModel.decreaseFontSize() }
         Text(
             text = "${fontSize.toInt()}",
             color = textColor,
             modifier = Modifier.padding(horizontal = 14.dp),
         )
-        MenuButton("A+") { viewModel.increaseFontSize() }
+        MenuButton("A+", textColor) { viewModel.increaseFontSize() }
     }
     Spacer(Modifier.height(10.dp))
     // 字体
@@ -750,8 +754,8 @@ private fun InterfacePanel(
         MenuChip("等宽", fontFamily == PreferencesManager.FONT_FAMILY_MONO, textColor) { viewModel.setFontFamily(PreferencesManager.FONT_FAMILY_MONO) }
     }
     Spacer(Modifier.height(10.dp))
-    SettingSwitch("加粗", bold) { viewModel.setBold(it) }
-    SettingSwitch("首行缩进", indent) { viewModel.setIndent(it) }
+    SettingSwitch("加粗", bold, textColor) { viewModel.setBold(it) }
+    SettingSwitch("首行缩进", indent, textColor) { viewModel.setIndent(it) }
     SettingSlider(
         label = "字间距",
         value = letterSpacing,
@@ -852,16 +856,16 @@ private fun SettingsPanel(
     speechRate: Float,
     textColor: Color,
 ) {
-    SettingSwitch("夜间模式", nightMode) { viewModel.toggleNightMode() }
-    SettingSwitch("沉浸式全屏", fullScreen) { viewModel.setFullScreen(it) }
-    SettingSwitch("隐藏顶部栏", hideTopBar) { viewModel.setHideTopBar(it) }
-    SettingSwitch("隐藏进度栏", hideBottomBar) { viewModel.setHideBottomBar(it) }
-    SettingSwitch("隐藏章节标题", hideChapterTitle) { viewModel.setHideChapterTitle(it) }
-    SettingSwitch("音量键翻页", volumePage) { viewModel.setVolumePage(it) }
+    SettingSwitch("夜间模式", nightMode, textColor) { viewModel.toggleNightMode() }
+    SettingSwitch("沉浸式全屏", fullScreen, textColor) { viewModel.setFullScreen(it) }
+    SettingSwitch("隐藏顶部栏", hideTopBar, textColor) { viewModel.setHideTopBar(it) }
+    SettingSwitch("隐藏进度栏", hideBottomBar, textColor) { viewModel.setHideBottomBar(it) }
+    SettingSwitch("隐藏章节标题", hideChapterTitle, textColor) { viewModel.setHideChapterTitle(it) }
+    SettingSwitch("音量键翻页", volumePage, textColor) { viewModel.setVolumePage(it) }
     if (volumePage) {
-        SettingSwitch("音量上键=上一页", volumeUpPrev) { viewModel.setVolumeUpPrev(it) }
+        SettingSwitch("音量上键=上一页", volumeUpPrev, textColor) { viewModel.setVolumeUpPrev(it) }
     }
-    SettingSwitch("自动翻页", autoPage) { viewModel.setAutoPage(it) }
+    SettingSwitch("自动翻页", autoPage, textColor) { viewModel.setAutoPage(it) }
     if (autoPage) {
         SettingSlider(
             label = "翻页间隔(秒)",
@@ -930,7 +934,11 @@ private fun SettingsPanel(
     )
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text("亮度跟随系统", color = textColor, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-        Switch(checked = brightness < 0f, onCheckedChange = { v -> viewModel.setBrightness(if (v) -1f else 0.5f) })
+        Switch(
+            checked = brightness < 0f,
+            onCheckedChange = { v -> viewModel.setBrightness(if (v) -1f else 0.5f) },
+            colors = readerSwitchColors(textColor),
+        )
     }
     Spacer(Modifier.height(8.dp))
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1032,7 +1040,7 @@ private fun BoxScope.BookmarkPanel(
                                 }
                                 Text(
                                     text = "删除",
-                                    color = MaterialTheme.colorScheme.error,
+                                    color = readerErrorColor(textColor),
                                     style = MaterialTheme.typography.labelMedium,
                                     modifier = Modifier
                                         .clickable { onDelete(bm.id) }
@@ -1113,7 +1121,7 @@ internal fun BoxScope.TextReplacePanel(
                 Spacer(Modifier.height(6.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("正则匹配", color = textColor, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                    Switch(checked = isRegex, onCheckedChange = { isRegex = it })
+                    Switch(checked = isRegex, onCheckedChange = { isRegex = it }, colors = readerSwitchColors(textColor))
                 }
                 Spacer(Modifier.height(6.dp))
                 MenuChip("添加规则", true, textColor) {
@@ -1159,7 +1167,7 @@ internal fun BoxScope.TextReplacePanel(
                                 }
                                 Text(
                                     text = "删除",
-                                    color = MaterialTheme.colorScheme.error,
+                                    color = readerErrorColor(textColor),
                                     style = MaterialTheme.typography.labelMedium,
                                     modifier = Modifier
                                         .clickable {
@@ -1223,7 +1231,7 @@ internal fun BoxScope.ChangeSourcePanel(
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("仅同作者", color = textColor, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                    Switch(checked = sameAuthorOnly, onCheckedChange = onToggleSameAuthor)
+                    Switch(checked = sameAuthorOnly, onCheckedChange = onToggleSameAuthor, colors = readerSwitchColors(textColor))
                 }
                 // 搜索进度反馈（边搜边显示）
                 if (progress != null && loading) {
@@ -1238,7 +1246,7 @@ internal fun BoxScope.ChangeSourcePanel(
                     // 还没有候选时才整屏转圈；有候选则列表常显（上方已有进度行）
                     loading && candidates.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                     error != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp))
+                        Text(error, color = readerErrorColor(textColor), modifier = Modifier.padding(16.dp))
                     }
                     candidates.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text("未找到可切换的同名书源", color = textColor)
@@ -1263,7 +1271,7 @@ internal fun BoxScope.ChangeSourcePanel(
                                         cand.author?.let {
                                             Text(
                                                 text = it,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                color = textColor.copy(alpha = 0.55f),
                                                 style = MaterialTheme.typography.bodySmall,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
@@ -1284,7 +1292,7 @@ internal fun BoxScope.ChangeSourcePanel(
                                     if (meta.isNotEmpty()) {
                                         Text(
                                             text = meta,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                                            color = textColor.copy(alpha = 0.45f),
                                             style = MaterialTheme.typography.labelSmall,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
@@ -1331,15 +1339,15 @@ internal fun MenuScrollPanel(content: @Composable () -> Unit) {
     }
 }
 
-/** 普通按钮（无选中态） */
+/** 普通按钮（无选中态）。同样必须跟随阅读页配色，理由见 [SettingSwitch]。 */
 @Composable
-private fun MenuButton(text: String, onClick: () -> Unit) {
+private fun MenuButton(text: String, textColor: Color, onClick: () -> Unit) {
     Text(
         text = text,
-        color = MaterialTheme.colorScheme.onSurface,
+        color = textColor,
         fontSize = 15.sp,
         modifier = Modifier
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+            .background(textColor.copy(alpha = 0.10f), RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
     )
@@ -1360,17 +1368,51 @@ private fun MenuChip(text: String, selected: Boolean, textColor: Color, onClick:
     )
 }
 
+/**
+ * 阅读页菜单内开关的统一配色。
+ *
+ * 菜单面板铺的是**阅读页纸张色**（不是应用主题的 surface），所以开关也必须跟着纸张走：
+ * 默认配色取的是应用主题的 surfaceVariant / outline —— 浅色主题下是一组浅灰，
+ * 压到夜间纸张上过亮、很刺眼；反过来深色主题配浅色纸张又会糊成一片。
+ */
+@Composable
+private fun readerSwitchColors(textColor: Color) = SwitchDefaults.colors(
+    checkedThumbColor = Color.White,
+    uncheckedThumbColor = textColor.copy(alpha = 0.6f),
+    uncheckedTrackColor = textColor.copy(alpha = 0.15f),
+    uncheckedBorderColor = textColor.copy(alpha = 0.35f),
+)
+
+/**
+ * 错误提示色：跟随纸张明暗。
+ *
+ * Material 的 error 是浅色主题设计的深红，压在深色纸张上对比度太低（几乎看不清）；
+ * 反过来深色主题的浅红落在浅色纸张上也会发飘。按正文色的明暗二选一。
+ */
+private fun readerErrorColor(textColor: Color): Color {
+    val luminance = 0.299f * textColor.red + 0.587f * textColor.green + 0.114f * textColor.blue
+    // 正文色偏亮 → 纸张是深色 → 用亮红；正文色偏暗 → 纸张是浅色 → 用深红
+    return if (luminance > 0.5f) Color(0xFFFF8A80) else Color(0xFFB3261E)
+}
+
 /** 开关行 */
 @Composable
-private fun SettingSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun SettingSwitch(label: String, checked: Boolean, textColor: Color, onChange: (Boolean) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(text = label, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-        Switch(checked = checked, onCheckedChange = onChange)
+        // 必须用阅读页的文字色，**不能**用 MaterialTheme.colorScheme.onSurface：
+        // 那是应用主题色（浅色主题下近黑），压到夜间纸张上就成了「深灰字 + 深底色」，
+        // 夜间模式下整排开关标签几乎看不见。
+        Text(text = label, color = textColor, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        Switch(
+            checked = checked,
+            onCheckedChange = onChange,
+            colors = readerSwitchColors(textColor),
+        )
     }
 }
 

@@ -521,7 +521,8 @@ class NovelReaderViewModel(
     val showMenu: StateFlow<Boolean> = _showMenu.asStateFlow()
 
     /** 菜单页签：0=目录，1=界面，2=设置 */
-    private val _menuTab = MutableStateFlow(0)
+    /** 当前展开的页签；[MENU_TAB_NONE] = 都不展开（菜单刚弹出时的默认态） */
+    private val _menuTab = MutableStateFlow(MENU_TAB_NONE)
     val menuTab: StateFlow<Int> = _menuTab.asStateFlow()
 
     /** 目录搜索关键词 */
@@ -1023,6 +1024,10 @@ class NovelReaderViewModel(
         if (now - lastMenuToggleAt < 200L) return
         lastMenuToggleAt = now
         _showMenu.value = !_showMenu.value
+        // 每次弹出菜单都回到「不展开任何面板」的状态。
+        // 之前默认展开目录，一打开菜单就被一千多章的目录吃掉大半屏，
+        // 用户只是想去点「设置」都得先跨过一整个目录列表。
+        if (_showMenu.value) _menuTab.value = MENU_TAB_NONE
     }
 
     /** 直接收起菜单（点选项目后调用） */
@@ -1032,8 +1037,24 @@ class NovelReaderViewModel(
 
     private var lastMenuToggleAt: Long = 0L
 
+    /**
+     * 切换页签：点未展开的页签 = 展开，再点同一个 = 收起。
+     *
+     * 收起态（[MENU_TAB_NONE]）是菜单打开时的默认态 —— 只有进度条和工具行，
+     * 不预先占用屏幕。
+     */
     fun setMenuTab(tab: Int) {
-        _menuTab.value = tab
+        _menuTab.value = if (_menuTab.value == tab) MENU_TAB_NONE else tab
+    }
+
+    /** 收起当前展开的面板（不影响菜单本身） */
+    fun closeMenuPanel() {
+        _menuTab.value = MENU_TAB_NONE
+    }
+
+    companion object {
+        /** 不展开任何面板 */
+        const val MENU_TAB_NONE = -1
     }
 
     fun setChapterQuery(q: String) {

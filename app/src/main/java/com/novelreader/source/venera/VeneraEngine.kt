@@ -12,11 +12,13 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.google.gson.Gson
 import com.google.gson.JsonParser
+import com.novelreader.core.network.RequestBudget
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -148,7 +150,16 @@ class VeneraEngine(private val context: Context) {
      * 幂等读，重试无副作用）。
      */
     suspend fun call(sourceKey: String, op: String, vararg args: Any?): String =
-        callInternal(sourceKey, op, ENGINE_QUEUE_WAIT_MS, *args)
+        callInternal(
+            sourceKey,
+            op,
+            // v1.8.8.4：标签搜索在协程上下文里下发短排队预算（2s）。
+            // 引擎是全应用一个 JS 线程，几十个源一起冲进来时，按默认 25s 排队意味着
+            // 排在第 5 位之后的源光等锁就超过外层 8s 超时 —— 既拿不到结果，还一直占着队列。
+            // 短预算下拿不到锁就立刻失败，把机会让给下一个源。未下发时行为不变。
+            currentCoroutineContext()[RequestBudget]?.queueWaitMs ?: ENGINE_QUEUE_WAIT_MS,
+            *args,
+        )
 
     /**
      * 预热：串行 ping 一批源，触发各自的 `init()`（v1.7.5.0）。

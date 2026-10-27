@@ -633,6 +633,16 @@ class SettingsViewModel(
     private val _searchConcurrency = MutableStateFlow(PreferencesManager.DEFAULT_SEARCH_CONCURRENCY)
     val searchConcurrency: StateFlow<Int> = _searchConcurrency.asStateFlow()
 
+    /**
+     * 标签搜索并发（v1.8.8.4）。
+     *
+     * 与上面的「并行搜索线程数」分开：标签搜索是「标签 × 源 × 入口」的笛卡尔积，
+     * 请求数动辄上百，需要更大的额度区间（1~40）。
+     */
+    private val _tagSearchConcurrency =
+        MutableStateFlow(PreferencesManager.DEFAULT_TAG_SEARCH_CONCURRENCY)
+    val tagSearchConcurrency: StateFlow<Int> = _tagSearchConcurrency.asStateFlow()
+
     /** 隐藏成人内容（v1.7.5.0，默认开启） */
     private val _hideAdult = MutableStateFlow(true)
     val hideAdult: StateFlow<Boolean> = _hideAdult.asStateFlow()
@@ -950,6 +960,11 @@ class SettingsViewModel(
             preferencesManager.searchConcurrencyFlow.collect { _searchConcurrency.value = it }
         }
         viewModelScope.launch {
+            preferencesManager.tagSearchConcurrencyFlow.collect {
+                _tagSearchConcurrency.value = it
+            }
+        }
+        viewModelScope.launch {
             preferencesManager.videoFullscreenDefaultFlow.collect { _videoFullscreenDefault.value = it }
         }
         viewModelScope.launch {
@@ -1119,6 +1134,11 @@ class SettingsViewModel(
 
     fun setSearchConcurrency(value: Int) {
         viewModelScope.launch { preferencesManager.setSearchConcurrency(value) }
+    }
+
+    /** 标签搜索并发（v1.8.8.4）：下一次标签搜索生效 */
+    fun setTagSearchConcurrency(value: Int) {
+        viewModelScope.launch { preferencesManager.setTagSearchConcurrency(value) }
     }
 
     // ===== 视频播放（v1.3.2.0） =====

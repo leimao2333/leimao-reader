@@ -98,6 +98,7 @@ fun SettingsScreen(
     val comicPreloadWifiOnly by viewModel.comicPreloadWifiOnly.collectAsState()
     val comicEdgeGesture by viewModel.comicEdgeGesture.collectAsState()
     val searchConcurrency by viewModel.searchConcurrency.collectAsState()
+    val tagSearchConcurrency by viewModel.tagSearchConcurrency.collectAsState()
     val videoFullscreenDefault by viewModel.videoFullscreenDefault.collectAsState()
     val videoLongPressSpeed by viewModel.videoLongPressSpeed.collectAsState()
     val videoLongPressRewind by viewModel.videoLongPressRewind.collectAsState()
@@ -411,6 +412,25 @@ fun SettingsScreen(
                 onValueChange = { viewModel.setSearchConcurrency(it.toInt()) },
                 valueRange = 1f..16f,
                 steps = 15,
+            )
+            Spacer(Modifier.height(8.dp))
+            // v1.8.8.4：标签搜索并发单独一个滑块 —— 标签搜索的请求数是
+            // 「标签 × 源 × 入口」的笛卡尔积，跟关键词搜索不是一个量级。
+            Text(
+                text = "标签搜索并发：$tagSearchConcurrency",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = "标签搜索同时打多少个源。调大更快，但站点多、网络差时容易整批超时；" +
+                    "Venera 漫画源固定按 4 路走（它们的引擎是单线程，给高了只是排队）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Slider(
+                value = tagSearchConcurrency.toFloat(),
+                onValueChange = { viewModel.setTagSearchConcurrency(it.toInt()) },
+                valueRange = 1f..40f,
+                steps = 38,
             )
             Spacer(Modifier.height(8.dp))
             SettingRow(

@@ -116,7 +116,7 @@ class PreferencesManager(private val context: Context) {
         const val PAGE_TYPE_VERTICAL = 4
         const val PAGE_TYPE_NO_ANIM = 5
         /** 默认翻页方式：滑动（与开源阅读默认一致） */
-        const val DEFAULT_PAGE_TYPE = PAGE_TYPE_SLIDE
+        const val DEFAULT_PAGE_TYPE = PAGE_TYPE_SIMULATE
         /** 是否横向分页（覆盖/仿真/滑动/无动画） */
         fun isHorizontalPager(type: Int): Boolean = when (type) {
             PAGE_TYPE_COVER, PAGE_TYPE_SIMULATE, PAGE_TYPE_SLIDE, PAGE_TYPE_NO_ANIM -> true
@@ -241,6 +241,15 @@ class PreferencesManager(private val context: Context) {
         /** 并行搜索线程数（并发搜索的源数量） */
         val KEY_SEARCH_CONCURRENCY = intPreferencesKey("search_concurrency")
 
+        /**
+         * 标签搜索并发（v1.8.8.4）。
+         *
+         * 与 [KEY_SEARCH_CONCURRENCY] 分开记：关键词搜索是「每个源一次请求」，
+         * 6 路就够；标签搜索是「标签 × 源 × 入口」的笛卡尔积，动辄上百个请求，
+         * 上限需要拉到 40，两个场景共用一个值只会互相迁就。
+         */
+        val KEY_TAG_SEARCH_CONCURRENCY = intPreferencesKey("tag_search_concurrency")
+
         // ===== 搜索结果展示（v1.8.6.0 待办 #26） =====
         // 四个模块各自独立记忆：同一个用户可能想「小说看列表（要看清作者/字数）、
         // 漫画看宫格（认封面）」，共用一个开关会互相打架。
@@ -349,6 +358,15 @@ class PreferencesManager(private val context: Context) {
         const val DEFAULT_SEARCH_CONCURRENCY = 6
         /** 并行搜索线程数上限 */
         const val MAX_SEARCH_CONCURRENCY = 16
+        /**
+         * 标签搜索默认并发（v1.8.8.4）：与改动前写死的 24 保持一致，
+         * 升级后用户手感不变，想调再自己拖。
+         */
+        const val DEFAULT_TAG_SEARCH_CONCURRENCY = 24
+        /** 标签搜索并发下限：1 等于完全串行，留给「弱网 / 怕被站点限流」的场景 */
+        const val MIN_TAG_SEARCH_CONCURRENCY = 1
+        /** 标签搜索并发上限：再多也压不过 OkHttp 的 maxRequests(64) 和站点限流 */
+        const val MAX_TAG_SEARCH_CONCURRENCY = 40
         /** 默认漫画预加载张数 */
         const val DEFAULT_COMIC_PRELOAD_COUNT = 4
         /** 默认漫画预加载话数（v1.6.0.0） */
@@ -962,6 +980,23 @@ class PreferencesManager(private val context: Context) {
     // ===== 搜索 =====
     val searchConcurrencyFlow: Flow<Int> = context.dataStore.data
         .map { it[KEY_SEARCH_CONCURRENCY] ?: DEFAULT_SEARCH_CONCURRENCY }
+
+    /**
+     * 标签搜索并发（v1.8.8.4）：标签搜索一次要打「标签 × 源 × 入口」上百个请求，
+     * 默认 24，可拖到 40。改完下一次搜索生效（Semaphore 在每次 search 时重建）。
+     */
+    val tagSearchConcurrencyFlow: Flow<Int> = context.dataStore.data
+        .map {
+            (it[KEY_TAG_SEARCH_CONCURRENCY] ?: DEFAULT_TAG_SEARCH_CONCURRENCY)
+                .coerceIn(MIN_TAG_SEARCH_CONCURRENCY, MAX_TAG_SEARCH_CONCURRENCY)
+        }
+
+    suspend fun setTagSearchConcurrency(value: Int) {
+        context.dataStore.edit {
+            it[KEY_TAG_SEARCH_CONCURRENCY] =
+                value.coerceIn(MIN_TAG_SEARCH_CONCURRENCY, MAX_TAG_SEARCH_CONCURRENCY)
+        }
+    }
 
     // ===== 搜索结果展示（v1.8.6.0 待办 #26） =====
     /** 小说搜索结果是否宫格（false = 列表，默认） */

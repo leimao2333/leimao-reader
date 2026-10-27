@@ -1,12 +1,14 @@
 package com.novelreader.source.legado
 
 import com.novelreader.core.network.HttpClient
+import com.novelreader.core.network.RequestBudget
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.ContentResult
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceAdapter
 import com.novelreader.domain.model.SourceInfo
 import com.novelreader.domain.model.ExploreCategory
+import kotlinx.coroutines.currentCoroutineContext
 import org.jsoup.Jsoup
 
 /**
@@ -76,6 +78,14 @@ class LegadoSourceAdapter(
     ): List<MediaItem> {
         val (urlTemplate, requestConfig) = splitRequestConfig(rawSpec)
 
+        // v1.8.8.4：标签搜索会在协程上下文里下发 [RequestBudget]，要求「到点真中断」。
+        // 只认 callTimeoutMs —— timeoutMs 管的是 connect/read 各自的等待，一次
+        // 「连上了但慢慢吐数据」的请求仍能拖满 readTimeout；callTimeout 是整个调用
+        // 的总闸，到点 OkHttp 直接掐连接。未下发时行为与以前完全一致。
+        val budgetTimeoutMs = currentCoroutineContext()[RequestBudget]?.callTimeoutMs
+        val listTimeoutMs = budgetTimeoutMs ?: requestTimeoutMs
+        val listCallTimeoutMs = budgetTimeoutMs ?: requestTimeoutMs
+
         val charset = requestConfig?.get("charset")?.asString?.takeIf { it.isNotBlank() }
         var url = renderUrl(urlTemplate, keyword, page, charset)
         if (!url.startsWith("http")) {
@@ -111,18 +121,18 @@ class LegadoSourceAdapter(
                     reqHeaders,
                     charset,
                     contentType,
-                    timeoutMs = requestTimeoutMs,
+                    timeoutMs = listTimeoutMs,
                     retry = retryRequests,
-                    callTimeoutMs = requestTimeoutMs,
+                    callTimeoutMs = listCallTimeoutMs,
                 )
             } else {
                 HttpClient.get(
                     url,
                     reqHeaders,
                     charset,
-                    timeoutMs = requestTimeoutMs,
+                    timeoutMs = listTimeoutMs,
                     retry = retryRequests,
-                    callTimeoutMs = requestTimeoutMs,
+                    callTimeoutMs = listCallTimeoutMs,
                 )
             }
         }.getOrNull()

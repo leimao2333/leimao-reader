@@ -322,6 +322,10 @@ private fun ScrollbarBox(
             label = "scrollbarAlpha",
         )
 
+        // 拇指位置 / 高度要在手势里读，用 rememberUpdatedState 避免数值变化重启 pointerInput
+        val thumbTopState = rememberUpdatedState(thumbTop)
+        val thumbHeightState = rememberUpdatedState(thumbPx)
+
         Box(
             modifier = Modifier
                 .fillMaxHeight()
@@ -332,6 +336,16 @@ private fun ScrollbarBox(
                 .pointerInput(Unit) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
+                        // v1.8.8.4：**只有按在拇指附近才算数**。
+                        // 触控带为了好按做得很宽（52dp），但整条都吃事件的话，列表右侧
+                        // 那一竖条的点击/翻页全被它吞掉 —— 用户点右边没反应，体验很差。
+                        // 现在按在拇指上下各 32dp 之外就直接放行，事件照常传给下层。
+                        val hitSlop = 32.dp.toPx()
+                        val top = thumbTopState.value
+                        val bottom = top + thumbHeightState.value
+                        if (down.position.y < top - hitSlop || down.position.y > bottom + hitSlop) {
+                            return@awaitEachGesture
+                        }
                         // 不等触摸阈值：手指落下就放大，这样「按到了」是立刻可见的
                         pressed = true
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)

@@ -1,5 +1,10 @@
 package com.novelreader.ui.navigation
 
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -85,7 +90,25 @@ fun AppNavHost(
         }
     }
 
-    NavHost(navController = navController, startDestination = Routes.HOME) {
+    NavHost(
+        navController = navController,
+        startDestination = Routes.HOME,
+        // v1.8.8.4：页面切换加过渡。
+        // 以前 NavHost 用默认转场 —— 直接硬切，从书架点进阅读页就是「白等一段，
+        // 然后整屏文字突然出现」，主观上像卡住。这里统一给一个轻量的
+        // 「淡入 + 轻微右移」，让点击到内容之间有一段连续的运动。
+        // 位移只有 1/16 屏宽，不抢戏，也不会让重内容的页面明显掉帧。
+        enterTransition = {
+            fadeIn(tween(durationMillis = 260)) +
+                slideInHorizontally(tween(durationMillis = 260)) { it / 8 }
+        },
+        exitTransition = { fadeOut(tween(durationMillis = 160)) },
+        popEnterTransition = {
+            fadeIn(tween(durationMillis = 260)) +
+                slideInHorizontally(tween(durationMillis = 260)) { -it / 8 }
+        },
+        popExitTransition = { fadeOut(tween(durationMillis = 160)) },
+    ) {
         // ===== 首页 =====
         composable(Routes.HOME) {
             val homeViewModel: HomeViewModel = viewModel(

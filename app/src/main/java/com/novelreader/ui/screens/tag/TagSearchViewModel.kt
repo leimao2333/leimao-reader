@@ -2,6 +2,7 @@ package com.novelreader.ui.screens.tag
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.novelreader.core.network.RequestBudget
 import com.novelreader.core.util.SearchResultMerge
 import com.novelreader.core.util.TagAlias
 import com.novelreader.core.util.TagSuggestions
@@ -13,6 +14,7 @@ import com.novelreader.core.util.TagTagger
 import com.novelreader.data.cache.TagPlan
 import com.novelreader.data.repository.TagRepository
 import com.novelreader.domain.model.MediaItem
+import com.novelreader.domain.model.SourceFormat
 import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.SourceRepository
@@ -121,6 +123,10 @@ class TagSearchViewModel(
             // 宫格列数（v1.8.7.5）：与普通搜索结果共用一个偏好，改一处两处同时生效
             viewModelScope.launch {
                 prefs.searchGridColumnsFlow.collect { _gridColumns.value = it }
+            }
+            // 标签搜索并发（v1.8.8.4）：设置页滑块的值，下一次搜索按它建 Semaphore
+            viewModelScope.launch {
+                prefs.tagSearchConcurrencyFlow.collect { tagConcurrency = it }
             }
         }
     }
@@ -414,6 +420,41 @@ class TagSearchViewModel(
     private val indexedInSearch = mutableSetOf<String>()
 
     private var paging: PagingContext? = null
+
+    // ===== 并发额度（v1.8.8.4）=====
+    /**
+     * 普通源的并发额度，**一次搜索共用一个**。
+     *
+     * 以前每页（`fetchPage`）都 `Semaphore(TAG_SEARCH_CONCURRENCY)` 新建一个，
+     * 于是「首屏 + 后台预取 3 页 + 用户触底翻页」各自 24 路并行，实际能叠到近百个
+     * 请求同时打出去 —— 用户把滑块调到 8 也没用，因为额度根本没共享。现在统一由
+     * [search] 按用户设置建一次，翻页和预取都从这一个额度里取。
+     */
+    private var pageSemaphore: Semaphore =
+        Semaphore(com.novelreader.core.preferences.PreferencesManager.DEFAULT_TAG_SEARCH_CONCURRENCY)
+
+    /**
+     * Venera 源的并发额度（v1.8.8.4），与 [pageSemaphore] **分开**。
+     *
+     * Venera 引擎是全应用一个 WebView / 一个 JS 线程（`VeneraEngine.callMutex`），
+     * 24 路一起冲进去只是排队：1 个执行、23 个等锁，等锁的还会因为外层 8 秒超时
+     * 全部丢弃结果。压到 4 路反而更快 —— 队列短、每个源都能在超时前轮到自己。
+     */
+    private var veneraSemaphore: Semaphore = Semaphore(VENERA_TAG_CONCURRENCY)
+
+    /** 组合关键词直搜的额度：一次请求就覆盖全部标签，不需要占满 [pageSemaphore] */
+    private var combinedSemaphore: Semaphore = Semaphore(
+        com.novelreader.core.preferences.PreferencesManager.DEFAULT_TAG_SEARCH_CONCURRENCY / 2,
+    )
+
+    /** 本次搜索里哪些源是 Venera 格式（由 [search] 填充，翻页 / 预取沿用） */
+    @Volatile
+    private var veneraSourceIds: Set<String> = emptySet()
+
+    /** 用户设置的标签搜索并发（设置页滑块），下一次搜索生效 */
+    @Volatile
+    private var tagConcurrency: Int =
+        com.novelreader.core.preferences.PreferencesManager.DEFAULT_TAG_SEARCH_CONCURRENCY
 
     private var nextPage = 2
 
@@ -817,12 +858,12 @@ class TagSearchViewModel(
         }
         // 纯关键词搜索：结果只是「标题包含」，没有任何归属证据
         ctx.allSearchOnly -> PageResult(
-            searchCombinedKeyword(sources, ctx.keyword, Semaphore(WIDE_COMBINED_CONCURRENCY), page),
+            searchCombinedKeyword(sources, ctx.keyword, combinedSemaphore, page),
         )
         else -> {
             val bySrc = entriesPerTag.map { list -> list.groupBy({ it.first }, { it.second }) }
             val strict = strictIntersection(
-                bySrc, sources, page, Semaphore(TAG_SEARCH_CONCURRENCY), {}, ctx.union,
+                bySrc, sources, page, pageSemaphore, {}, ctx.union,
             )
             PageResult(strict.matched, provenOf(strict, ctx.tags))
         }
@@ -961,6 +1002,16 @@ class TagSearchViewModel(
             repeatPages = 0
 
             try {
+                // v1.8.8.4：按用户设置重建本次搜索的并发额度。放在 ensurePlan 之前，
+                // 让「收集标签」与「抓内容」用同一套额度；改设置后下一次搜索即生效。
+                val concurrency = preferencesManager?.tagSearchConcurrencyFlow?.first()
+                    ?: tagConcurrency
+                tagConcurrency = concurrency
+                pageSemaphore = Semaphore(concurrency)
+                // Venera 引擎是单线程，给它更窄的额度；用户把总并发调到比它还小时以用户为准
+                veneraSemaphore = Semaphore(minOf(VENERA_TAG_CONCURRENCY, concurrency))
+                combinedSemaphore = Semaphore(maxOf(2, concurrency / 2))
+                veneraSourceIds = veneraIdsOf()
                 ensurePlan()
                 // v1.8.1.3 查询语法：-排除 / 大类:标签 / 通配 *
                 val specs = TagQuerySpec.parse(_query.value)
@@ -1257,6 +1308,35 @@ class TagSearchViewModel(
     }
 
     /**
+     * 本次搜索里哪些源走 Venera 引擎（v1.8.8.4）。
+     *
+     * 这些源的请求必须走 [veneraSemaphore] 的窄额度：引擎只有一个 JS 线程，
+     * 并发给高了只是排队，还会因为外层超时把排在后面的源的结果全部丢掉。
+     * 读失败就当作「没有 Venera 源」，退化成统一额度，不影响搜索本身。
+     */
+    private suspend fun veneraIdsOf(): Set<String> = try {
+        sourceRepository?.getSourcesByType(type)
+            ?.filter { it.format == SourceFormat.VENERA }
+            ?.map { it.id }
+            ?.toSet()
+            .orEmpty()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        android.util.Log.w("TagSearch", "读取 Venera 源列表失败，type=$type", error)
+        emptySet()
+    }
+
+    /**
+     * 取该源该用的额度：Venera 源一律走 [veneraSemaphore]，其余走调用方给的额度。
+     *
+     * 三处发请求的地方（单标签 / 严格求交 / 组合直搜）都过这个函数，
+     * 保证「引擎串行的源不会被塞进大并发队列」这件事只有一处判据。
+     */
+    private fun permitFor(sourceId: String, fallback: Semaphore): Semaphore =
+        if (sourceId in veneraSourceIds) veneraSemaphore else fallback
+
+    /**
      * 单标签：聚合所有拥有该分类的源，抓**指定一页**（v1.8.1.2 改为分页）。
      *
      * 以前每源固定抓 1~2 页就结束，结果自然少；现在每页由 UI 触底触发，
@@ -1265,7 +1345,7 @@ class TagSearchViewModel(
     private suspend fun searchOneTag(
         entries: List<Pair<String, String>>,
         page: Int = 1,
-        semaphore: Semaphore = Semaphore(TAG_SEARCH_CONCURRENCY),
+        semaphore: Semaphore = pageSemaphore,
         onPartial: (List<MediaItem>) -> Unit = {},
         /**
          * 真实分类页命中的回调（v1.8.4.1）。只有走了分类页的入口才回调 ——
@@ -1292,7 +1372,7 @@ class TagSearchViewModel(
             entries.map { entry ->
                 val (srcId, url) = entry
                 async {
-                    val raw = semaphore.withPermit {
+                    val raw = permitFor(srcId, semaphore).withPermit {
                         try {
                             exploreTagEntry(srcId, url, page)
                         } finally {
@@ -1346,11 +1426,9 @@ class TagSearchViewModel(
         val sources = entriesPerTag.flatMap { entries -> entries.map { it.first } }.distinct()
         if (sources.isEmpty()) return CompoundOutcome.EMPTY
 
-        val wideComic = type == SourceType.COMIC &&
-            tags.all { TagAlias.canonicalOf(it) in WIDE_COMIC_SEARCH_TAGS }
-        val semaphore = Semaphore(
-            if (wideComic) WIDE_COMPOUND_CONCURRENCY else TAG_SEARCH_CONCURRENCY,
-        )
+        // v1.8.8.4：宽标签（无码 / 全彩）不再单独加码到 32 —— 并发由用户滑块决定，
+        // 这里再偷偷翻倍的话，把滑块拖到 8 的用户实际还在跑 32 路，滑块就白给了。
+        val semaphore = pageSemaphore
 
         // v1.8.1.2 **关键修正**：只有「真实分类入口」才代表「作品属于这个标签」。
         // 纯关键词入口搜出来的是「标题里出现了这个词」，把它当作该标签的成员去求交，
@@ -1486,7 +1564,7 @@ class TagSearchViewModel(
         addProgressTotal(sources.size)
         sources.map { sourceId ->
             async {
-                val items = semaphore.withPermit {
+                val items = permitFor(sourceId, semaphore).withPermit {
                     try {
                         exploreTagEntry(sourceId, url, page)
                     } finally {
@@ -1581,7 +1659,7 @@ class TagSearchViewModel(
         addProgressTotal(requests.size)
         val responses = requests.map { request ->
             async {
-                val items = semaphore.withPermit {
+                val items = permitFor(request.sourceId, semaphore).withPermit {
                     try {
                         exploreTagEntry(request.sourceId, request.url, page)
                     } finally {
@@ -1609,16 +1687,32 @@ class TagSearchViewModel(
     }
 
     /**
-     * 单个标签请求，带**硬超时**（v1.8.1.1）。
+     * 单个标签请求，带**能真正中断**的超时（v1.8.1.1；v1.8.8.4 改为 callTimeout）。
      *
      * 标签搜索会同时打几十个源，只要有几个源卡住，整次搜索就被拖到它们超时为止 ——
-     * 这是「进度条走到 40/41 停住不动」的常见原因。这里给每个请求设上限，
-     * 超时就当这个源没有结果，先让用户看到其余源的内容。
+     * 这是「进度条走到 40/41 停住不动」的常见原因。
+     *
+     * v1.8.8.4：以前只包一层 `withTimeout(8s)`，但协程取消**掐不断**已经阻塞在
+     * `call.execute()` 里的 socket 读 —— 适配器的 connect/read 超时是 15s / 20s，
+     * 于是「8 秒硬超时」实际要等满 20 秒，进度条就卡在那儿。现在把 8 秒作为
+     * [RequestBudget.callTimeoutMs] 下发给适配器，交给 OkHttp 的 `callTimeout`
+     * 到点真中断连接；外层 `withTimeout` 留 [TIMEOUT_GRACE_MS] 余量做兜底，
+     * 只负责「万一适配器没理会预算」时收场。
+     *
+     * 同时下发 [RequestBudget.queueWaitMs]：Venera 引擎排队只等 2 秒，
+     * 拿不到锁就快速失败，别占着队列拖累后面的源。
      */
     private suspend fun exploreTagEntry(sourceId: String, url: String, page: Int): List<MediaItem> =
         try {
-            withTimeout(SEARCH_REQUEST_TIMEOUT_MS) {
-                contentRepository.explore(sourceId, url, page)
+            withTimeout(SEARCH_REQUEST_TIMEOUT_MS + TIMEOUT_GRACE_MS) {
+                withContext(
+                    RequestBudget(
+                        callTimeoutMs = SEARCH_REQUEST_TIMEOUT_MS,
+                        queueWaitMs = VENERA_TAG_QUEUE_WAIT_MS,
+                    ),
+                ) {
+                    contentRepository.explore(sourceId, url, page)
+                }
             }
         } catch (timeout: TimeoutCancellationException) {
             android.util.Log.w("TagSearch", "标签请求超时（${SEARCH_REQUEST_TIMEOUT_MS}ms），sourceId=$sourceId")
@@ -1646,23 +1740,27 @@ class TagSearchViewModel(
     }
 
     companion object {
-        private val WIDE_COMIC_SEARCH_TAGS = setOf("无码", "全彩")
-
-        /**
-         * 并发上限（v1.8.1.1 上调）。
-         *
-         * 标签搜索是「几十个源各发一次、彼此独立」的典型场景，串行等最慢的源毫无意义。
-         * 普通组合 8 → 12，宽标签（无码 / 全彩走组合直搜）16 → 32：
-         * 41 个源两批就能打完，配合单请求 8 秒硬超时，整体从分钟级压到十秒级。
-         */
         /** 分类页上下文打标的置信度（v1.8.1.9）：低于站方自述 100，高于文本猜的 60 */
         private const val CONTEXT_PAGE_CONFIDENCE = 90
 
-        private const val TAG_SEARCH_CONCURRENCY = 24
-        private const val WIDE_COMPOUND_CONCURRENCY = 32
+        /**
+         * Venera 源的并发上限（v1.8.8.4）。
+         *
+         * 引擎是**全应用一个 WebView / 一个 JS 线程**（`VeneraEngine.callMutex`），
+         * 并发给到 24 只是让 23 个协程排队等锁 —— 而它们的外层超时只有 8 秒，
+         * 排在后面的源连执行机会都没有，结果直接被丢掉。压到 4 路：队列短、
+         * 每个源都能在超时前轮到自己，实测反而更快也更全。
+         */
+        private const val VENERA_TAG_CONCURRENCY = 4
 
-        /** 组合关键词直搜的并发（与严格求交并行时各占一半，避免互相抢占） */
-        private const val WIDE_COMBINED_CONCURRENCY = 16
+        /**
+         * Venera 引擎的**排队预算**（v1.8.8.4，毫秒）。
+         *
+         * 引擎默认允许排队等 25 秒（`ENGINE_QUEUE_WAIT_MS`），但标签搜索单请求只给
+         * 8 秒 —— 等到第 20 秒才轮到已经毫无意义，期间还白占着锁拖累后面的源。
+         * 2 秒内拿不到锁就快速失败，让位给下一个。
+         */
+        private const val VENERA_TAG_QUEUE_WAIT_MS = 2_000L
 
         /** 单标签搜索每个源抓几页（v1.8.1.1：原来只抓 1 页，结果太少） */
         private const val SINGLE_TAG_PAGES = 2
@@ -1695,12 +1793,25 @@ class TagSearchViewModel(
         private const val STREAM_EMIT_INTERVAL_MS = 400L
 
         /**
-         * 单个标签请求的硬超时（v1.8.1.1）。
+         * 单个标签请求的硬超时（v1.8.1.1；v1.8.8.4 起交给 OkHttp 的 callTimeout）。
          *
          * 源站卡住时默认要等 20 秒，一个源就能把整次搜索拖到 20 秒以上；
          * 8 秒拿不到就当作该源没有结果，先让用户看到其余源的内容。
+         *
+         * 注意它现在**同时**是 [RequestBudget.callTimeoutMs]（真中断）和外层
+         * `withTimeout` 的基准（加 [TIMEOUT_GRACE_MS] 余量）。两者不要拆开调 ——
+         * 外层比内层短的话，会先被协程取消打断，callTimeout 就白设了。
          */
         private const val SEARCH_REQUEST_TIMEOUT_MS = 8_000L
+
+        /**
+         * 外层 `withTimeout` 相对 [SEARCH_REQUEST_TIMEOUT_MS] 的余量（v1.8.8.4）。
+         *
+         * 留 1.5 秒是为了让 OkHttp 的 callTimeout **先**触发（它抛
+         * `InterruptedIOException`，连接被真正掐断、线程立刻释放）；外层只是兜底，
+         * 万一某个适配器没把预算传给网络层，至少还能让协程收场。
+         */
+        private const val TIMEOUT_GRACE_MS = 1_500L
 
         /** 组合关键词结果的缓存有效期（10 分钟） */
         private const val COMBINED_CACHE_TTL_MS = 10 * 60 * 1000L

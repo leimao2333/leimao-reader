@@ -1,5 +1,11 @@
 package com.novelreader.ui.screens.novel
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -51,9 +57,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,15 +69,21 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.novelreader.core.preferences.PreferencesManager
 import com.novelreader.core.text.ReplaceRule
 import com.novelreader.domain.model.ChapterItem
@@ -98,7 +112,93 @@ private fun chipColors(selected: Boolean, textColor: Color): Pair<Color, Color> 
     return bg to fg
 }
 
-/** 顶部栏（返回 + 书名/章节/来源 + 收藏 + 加书签 + 进度） */
+/**
+ * 当前电量（0..100）；拿不到时返回 -1（顶栏就不画，不占位）。
+ *
+ * 沉浸全屏把系统状态栏藏了，读着书根本看不到还剩多少电 —— 顶栏把这条信息补回来。
+ * 用 `ACTION_BATTERY_CHANGED` 这条 **sticky 广播**：注册的瞬间系统就会把当前值推过来，
+ * 不必等电量变化；只在顶栏展开期间注册，收起即注销（这条广播很频繁，没必要常驻）。
+ */
+@Composable
+private fun rememberBatteryPercent(): Int {
+    val context = LocalContext.current
+    var percent by remember { mutableIntStateOf(-1) }
+    DisposableEffect(context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                val i = intent ?: return
+                val level = i.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                val scale = i.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+                if (level >= 0 && scale > 0) percent = (level * 100 / scale).coerceIn(0, 100)
+            }
+        }
+        // Android 14 起动态注册必须显式声明导出性；系统广播统一用 NOT_EXPORTED
+        runCatching {
+            ContextCompat.registerReceiver(
+                context,
+                receiver,
+                IntentFilter(Intent.ACTION_BATTERY_CHANGED),
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        }
+        onDispose { runCatching { context.unregisterReceiver(receiver) } }
+    }
+    return percent
+}
+
+/**
+ * 顶栏电量：小电池轮廓 + 百分比。
+ *
+ * 不用 Material 图标 —— 核心图标集里没有电池形状，自带一个 14×8dp 的轮廓更轻，
+ * 灰度也跟顶栏其余小字一致；20% 以下描边转红，扫一眼就知道该充电了。
+ */
+@Composable
+private fun BatteryBadge(percent: Int, tint: Color) {
+    if (percent < 0) return
+    val low = percent <= 20
+    val fg = if (low) Color(0xFFE05252) else tint
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Canvas(modifier = Modifier.width(12.dp).height(7.dp)) {
+            val capW = 1.5.dp.toPx()
+            val bodyW = size.width - capW
+            val strokeW = 0.9.dp.toPx()
+            // 外壳
+            drawRoundRect(
+                color = fg.copy(alpha = 0.55f),
+                topLeft = Offset(0f, 0f),
+                size = Size(bodyW, size.height),
+                cornerRadius = CornerRadius(1.6f * density, 1.6f * density),
+                style = Stroke(width = strokeW),
+            )
+            // 正极凸点
+            drawRoundRect(
+                color = fg.copy(alpha = 0.55f),
+                topLeft = Offset(bodyW + 0.4.dp.toPx(), size.height * 0.28f),
+                size = Size(capW, size.height * 0.44f),
+                cornerRadius = CornerRadius(0.5f * density),
+            )
+            // 电量填充（留一点内缩，避免和描边糊在一起）
+            val inset = strokeW * 1.6f
+            val fillW = (bodyW - inset * 2f) * (percent / 100f)
+            if (fillW > 0f) {
+                drawRoundRect(
+                    color = fg.copy(alpha = 0.85f),
+                    topLeft = Offset(inset, inset),
+                    size = Size(fillW, size.height - inset * 2f),
+                    cornerRadius = CornerRadius(0.8f * density),
+                )
+            }
+        }
+        Spacer(Modifier.width(3.dp))
+        Text(
+            text = "$percent%",
+            color = fg.copy(alpha = 0.7f),
+            fontSize = 10.sp,
+        )
+    }
+}
+
+/** 顶部栏（返回 + 书名/章节/来源 + 收藏 + 加书签 + 进度 + 电量） */
 @Composable
 internal fun BoxScope.ReaderTopBar(
     bookTitle: String,
@@ -116,6 +216,7 @@ internal fun BoxScope.ReaderTopBar(
     onOpenContentSearch: () -> Unit,
     onBack: () -> Unit,
 ) {
+    val batteryPercent = rememberBatteryPercent()
     Row(
         modifier = Modifier
             .align(Alignment.TopStart)
@@ -151,16 +252,18 @@ internal fun BoxScope.ReaderTopBar(
                 style = MaterialTheme.typography.bodySmall,
             )
         }
-        IconButton(onClick = onOpenContentSearch) {
+        // 顶栏要塞下「返回 + 书名 + 3 图标 + 进度 + 电量」，48dp 的默认触摸盒把书名挤成「千…」，
+        // 收到 40dp（仍在可点范围内），把宽度还给标题。
+        IconButton(onClick = onOpenContentSearch, modifier = Modifier.size(40.dp)) {
             Icon(Icons.Filled.Search, contentDescription = "正文搜索", tint = textColor)
         }
-        IconButton(onClick = onAddBookmark) {
+        IconButton(onClick = onAddBookmark, modifier = Modifier.size(40.dp)) {
             // 加书签用「书签 + 加号」，与右边的「加入书架」区分开：
             // 此前两个按钮都画 Bookmark / BookmarkBorder，并排放在一起
             // 用户根本分不出哪个是收藏、哪个是加书签。
             Icon(Icons.Filled.BookmarkAdd, contentDescription = "添加书签", tint = textColor)
         }
-        IconButton(onClick = onToggleCollect) {
+        IconButton(onClick = onToggleCollect, modifier = Modifier.size(40.dp)) {
             Icon(
                 // 收藏 = 加入书架，用星标而不是书签：书签的语义在阅读场景里
                 // 天然指「记住这一页」，两者共用一个图标必然有歧义。
@@ -170,7 +273,10 @@ internal fun BoxScope.ReaderTopBar(
             )
         }
         if (chapterCount > 0) {
-            Column(horizontalAlignment = Alignment.End, modifier = Modifier.padding(end = 8.dp)) {
+            Column(
+                horizontalAlignment = Alignment.End,
+                modifier = Modifier.padding(end = 6.dp),
+            ) {
                 Text(
                     text = "${chapterIndex + 1}/$chapterCount 章",
                     color = textColor.copy(alpha = 0.85f),
@@ -183,15 +289,23 @@ internal fun BoxScope.ReaderTopBar(
                 )
             }
         }
+        // 沉浸全屏把系统状态栏藏了，电量只能由顶栏自己报 —— 固定在**最右端**，
+        // 位置固定不随进度块宽度浮动，扫一眼就在同一个地方。
+        // 目录尚未回来（chapterCount = 0）时也照常显示，不让读数凭空消失。
+        BatteryBadge(batteryPercent, textColor)
+        Spacer(Modifier.width(8.dp))
     }
 }
 
 /**
- * 阅读页常驻顶部状态条：显示当前章节名。
+ * 阅读页常驻顶部状态条：左边章节名（居中）+ 最右电量。
  *
  * 阅读时（菜单收起）常驻于正文上方，随时可确认「本章名」；
  * 菜单展开时顶部栏已显示更完整的信息（书名 + 章节 + 来源 + 进度），
  * 此时本状态条由调用方隐藏，避免重复。
+ *
+ * v1.8.8.6：沉浸全屏默认打开后系统状态栏被隐藏，电量没地方看 ——
+ * 就钉在这条常驻状态条的最右端，不点屏幕也能看到剩余电量。
  */
 @Composable
 internal fun BoxScope.ReaderChapterStatusBar(
@@ -204,21 +318,31 @@ internal fun BoxScope.ReaderChapterStatusBar(
         if (bookTitle.isNotBlank()) append(bookTitle).append(" · ")
         append(chapterTitle)
     }
-    Text(
-        text = line,
-        color = textColor.copy(alpha = 0.5f),
-        style = MaterialTheme.typography.labelSmall,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        textAlign = TextAlign.Center,
+    val batteryPercent = rememberBatteryPercent()
+    Row(
         modifier = Modifier
             .align(Alignment.TopCenter)
             .fillMaxWidth()
             // 这里**不要**加 statusBarsPadding：正文区域本身已经避开了状态栏，
             // 这条常驻状态条正好落在「状态栏下沿」与「正文首行」之间的空隙里。
             // 加了 inset 反而把它往下推进正文标题上，两行字叠在一起。
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-    )
+            .padding(start = 16.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // weight + 居中：章节名占掉「扣掉电量」之后的整段，短标题也在视觉中心附近，
+        // 且不会像绝对定位那样被右侧电量压住尾巴
+        Text(
+            text = line,
+            color = textColor.copy(alpha = 0.5f),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(8.dp))
+        BatteryBadge(batteryPercent, textColor)
+    }
 }
 
 /** 底部菜单：进度条 + 章节导航 + 工具行 + 页签面板 */

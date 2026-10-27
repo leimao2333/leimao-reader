@@ -656,9 +656,9 @@ class PreferencesManager(private val context: Context) {
         }
     }
 
-    /** 沉浸式全屏 */
+    /** 沉浸式全屏（默认开启：阅读页本就该整屏都是正文） */
     val novelFullScreenFlow: Flow<Boolean> = context.dataStore.data
-        .map { it[KEY_NOVEL_FULLSCREEN] ?: false }
+        .map { it[KEY_NOVEL_FULLSCREEN] ?: true }
 
     suspend fun setNovelFullScreen(value: Boolean) {
         context.dataStore.edit { it[KEY_NOVEL_FULLSCREEN] = value }

@@ -443,7 +443,13 @@ fun NovelReaderScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(horizontal = sidePadding.dp, vertical = 48.dp),
+                            // 骨架屏与真实正文用同一套页边，避免「加载时疏、加载完变密」的跳动
+                            .padding(
+                                start = sidePadding.dp,
+                                end = sidePadding.dp,
+                                top = NovelPageTokens.TOP_DP.dp,
+                                bottom = NovelPageTokens.BOTTOM_DP.dp,
+                            ),
                     ) {
                         // 章节标题占位
                         SkeletonBar(0.45f, 20.dp, skeletonPulse, textColor)
@@ -745,6 +751,50 @@ private fun readerTextStyle(
     textAlign = TextAlign.Justify,
 )
 
+/* ===================== 正文页排版节奏（参照 xrn1997/android-ebook） ===================== */
+
+/**
+ * 正文页的垂直节奏，四套翻页实现（滚动 / Pager / 三页窗口 / Canvas 自绘）共用一套值。
+ *
+ * 参照 `xrn1997/android-ebook` 的 `ReaderPageCard`：
+ * - 页边只留薄薄一圈（它是 `padding(top = 5, bottom = 5)` + 系统栏 inset），
+ *   而不是原来那样上下各 48dp —— 那一圈 96dp 加上再额外扣的 1.8 行页码，
+ *   一屏凭空少掉两行半，底部看着就是**空出一大块**；
+ * - 页码**固定占一行高**（它是 30dp 常量），有无文字都不变，正文可用高度才稳定。
+ *
+ * 顶部比参考项目多一些：沉浸全屏下没有状态栏 inset 可避让，
+ * 而阅读页顶部常驻一条章节状态条（labelSmall + 6dp 内边距 ≈ 28dp），
+ * 正文必须让开它，否则两行字会叠在一起。
+ */
+private object NovelPageTokens {
+    /** 正文顶部留白（让开常驻章节状态条，再留一点呼吸） */
+    const val TOP_DP = 34f
+
+    /**
+     * 正文底部留白（页码行之下）。
+     *
+     * 不能像参考项目那样只留 5dp：它是 `windowInsetsPadding(systemBars)` 先把手势条让开了，
+     * 而本阅读器是沉浸全屏（systemBars 被隐藏），页码会被手势条的触摸区压住。
+     * 这里留 16dp：页码行 26dp 叠在上面，页码文字中心距底 ≈29dp，仍在手势条（≈24dp）之上。
+     */
+    const val BOTTOM_DP = 16f
+
+    /** 页码行固定高度：正文区与页码行同高，换页/加载都不跳动 */
+    const val PAGE_ROW_DP = 26f
+
+    /** 页码字号上限（参考项目固定 14sp，这里跟着正文字号走但收窄区间） */
+    const val PAGE_NUMBER_SP_MAX = 13f
+
+    /** 上下预留合计（dp）：`maxHeight - 这个值` 才是正文可用高度 */
+    const val VERTICAL_RESERVED_DP = TOP_DP + BOTTOM_DP + PAGE_ROW_DP
+
+    /** 章标题相对正文的字号比例（参考项目 14sp / 正文 18~20sp），并夹在合理区间 */
+    fun titleSp(size: Float): Float = (size * 0.72f).coerceIn(12f, 16f)
+
+    /** 页码字号：比正文小 6sp，但不超过 13sp、不低于 10sp */
+    fun pageNumberSp(size: Float): Float = (size - 6f).coerceIn(10f, PAGE_NUMBER_SP_MAX)
+}
+
 /* ===================== 滚动模式 ===================== */
 
 @Composable
@@ -871,22 +921,29 @@ private fun ScrollNovel(
                 },
             )
             .verticalScroll(scrollState)
-            .padding(horizontal = sidePadding.dp, vertical = 48.dp),
+            // v1.8.8.6：与分页模式同一套页边（顶部让开常驻章节状态条，底部只留一点呼吸）
+            .padding(
+                start = sidePadding.dp,
+                end = sidePadding.dp,
+                top = NovelPageTokens.TOP_DP.dp,
+                bottom = 16.dp,
+            ),
     ) {
         // 注意：Box 的子项会全部叠在同一位置，标题/下一章会压在正文上。
         // 必须用 Column 纵向排列，Box 只承担滚动与内边距。
         Column(modifier = Modifier.fillMaxWidth()) {
             if (!hideChapterTitle) {
+                // 与分页模式同一份标题样式：小字、0.7 透明度、单行省略
                 Text(
                     text = chapterTitle,
-                    fontSize = (fontSize + 2).sp,
+                    fontSize = NovelPageTokens.titleSp(fontSize).sp,
                     fontFamily = fontFamily,
-                    fontWeight = FontWeight.Bold,
-                    color = textColor,
-                    textAlign = TextAlign.Center,
+                    color = textColor.copy(alpha = 0.7f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(10.dp))
             }
             Text(
                 text = buildReaderText(content, fontSize, paragraphSpacing, indent),
@@ -959,10 +1016,11 @@ private fun HorizontalPagerNovel(
         val availWidthPx = (maxWidthDp - sidePadding * 2f).coerceAtLeast(1f) * density
         // 底部预留页码行高度，且分页测量与渲染同用 buildReaderText（段距占位行/首行缩进参与测量），
         // 否则渲染比测量高，末行会被裁掉一半
-        val fontPx = fontSize * density * androidx.compose.ui.platform.LocalDensity.current.fontScale
-        val textHeightPx = ((maxHeightDp - 96f).coerceAtLeast(1f) * density - fontPx * 1.8f).coerceAtLeast(1f)
+        // v1.8.8.6：页边收窄（见 NovelPageTokens）——原来是「上下各 48dp + 再扣 1.8 行给页码」
+        val textHeightPx = (maxHeightDp - NovelPageTokens.VERTICAL_RESERVED_DP)
+            .coerceAtLeast(1f) * density
         val paraSpacingPx = paragraphSpacing * density
-        val titleSpacerPx = 16f * density
+        val titleSpacerPx = 10f * density
 
         // v1.8.8.5：排版结果按章缓存（整个阅读页生命周期内复用），配合预分页做到切章不白屏。
         val pageCache = remember { mutableMapOf<Int, List<String>>() }
@@ -1360,12 +1418,11 @@ private fun HorizontalWindowNovel(
         val density = LocalDensity.current
         val densityDensity = density.density
         val availWidthPx = (maxWidthDp - sidePadding * 2f).coerceAtLeast(1f) * densityDensity
-        val fontPx = fontSize * densityDensity *
-            androidx.compose.ui.platform.LocalDensity.current.fontScale
-        val textHeightPx = ((maxHeightDp - 96f).coerceAtLeast(1f) * densityDensity -
-            fontPx * 1.8f).coerceAtLeast(1f)
+        // v1.8.8.6：页边收窄（见 NovelPageTokens）——原来是「上下各 48dp + 再扣 1.8 行给页码」
+        val textHeightPx = (maxHeightDp - NovelPageTokens.VERTICAL_RESERVED_DP)
+            .coerceAtLeast(1f) * densityDensity
         val paraSpacingPx = paragraphSpacing * densityDensity
-        val titleSpacerPx = 16f * densityDensity
+        val titleSpacerPx = 10f * densityDensity
 
         val pageCache = remember { mutableMapOf<Int, List<String>>() }
         val pagesOrNull = rememberPaginatedPagesCached(
@@ -1728,11 +1785,15 @@ private fun CanvasPagerNovel(
         val density = LocalDensity.current
         val d = density.density
         val availWidthPx = (maxWidthDp - sidePadding * 2f).coerceAtLeast(1f) * d
-        val fontPx = fontSize * d * androidx.compose.ui.platform.LocalDensity.current.fontScale
-        val textHeightPx = ((maxHeightDp - 96f).coerceAtLeast(1f) * d - fontPx * 1.8f)
-            .coerceAtLeast(1f)
+        // v1.8.8.6：页边收窄。原来是「上下各 48dp + 再扣 1.8 行给页码」，一屏凭空少两行半，
+        // 底部看着空一大块；现在只留 NovelPageTokens 的薄边 + 一条固定页码行。
+        val textHeightPx = (maxHeightDp - NovelPageTokens.VERTICAL_RESERVED_DP)
+            .coerceAtLeast(1f) * d
+        val topPx = NovelPageTokens.TOP_DP * d
+        val bottomPx = NovelPageTokens.BOTTOM_DP * d
+        val pageRowPx = NovelPageTokens.PAGE_ROW_DP * d
         val paraSpacingPx = paragraphSpacing * d
-        val titleSpacerPx = 16f * d
+        val titleSpacerPx = 10f * d
 
         val pageCache = remember { mutableMapOf<Int, List<String>>() }
         val pagesOrNull = rememberPaginatedPagesCached(
@@ -1771,6 +1832,12 @@ private fun CanvasPagerNovel(
         }
         var moving by remember { mutableStateOf(false) }
         var cur by remember { mutableIntStateOf(0) }
+        // v1.8.8.6：连点翻页的**累计目标页** + 上一次翻页时间。
+        // 不能 `remember(chapterIndex)`：切章会新建 State 对象，而 Canvas 的 pointerInput
+        // 闭包 / 自动翻页协程仍握着旧对象 → 写入无效（这是 H/V 版本踩过的老坑）。
+        // 生命周期覆盖整个阅读页，切章时在下面的定位 effect 里手动重置。
+        var turnTarget by remember { androidx.compose.runtime.mutableIntStateOf(-1) }
+        var lastTurnAt by remember { androidx.compose.runtime.mutableLongStateOf(0L) }
         val turnThresholdPx = with(density) { 30.dp.toPx() }
         val touchSlop = androidx.compose.ui.platform.LocalViewConfiguration.current.touchSlop
 
@@ -1802,6 +1869,9 @@ private fun CanvasPagerNovel(
             cur = target
             dragX = 0f
             moving = false
+            // v1.8.8.6：切章 / 重新分页后，累计目标归位到恢复页；首次点击恢复正常动画
+            turnTarget = target
+            lastTurnAt = 0L
         }
 
         LaunchedEffect(cur, pageCount) {
@@ -1837,41 +1907,66 @@ private fun CanvasPagerNovel(
             }
             m
         }
-        // 章名单独排一次（只画在第 0 页）
-        val titleLayout = remember(chapterTitle, style, textConstraints, fontSize) {
+        // 章名单独排一次（只画在第 0 页）。
+        // v1.8.8.6：对齐参考项目 —— 14sp 级别小字、0.7 透明度、单行省略、左对齐。
+        // 原来是「正文 +2sp 居中加粗」，压在正文上方很抢戏，首屏也因此少排一行。
+        val titleLayout = remember(chapterTitle, style, textConstraints, fontSize, textColor) {
             if (chapterTitle.isBlank()) null
             else measurer.measure(
                 text = chapterTitle,
                 style = style.copy(
-                    fontSize = (fontSize + 2).sp,
-                    fontWeight = FontWeight.Bold,
+                    fontSize = NovelPageTokens.titleSp(fontSize).sp,
+                    fontWeight = FontWeight.Normal,
+                    color = textColor.copy(alpha = 0.7f),
                 ),
                 constraints = textConstraints,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
 
+        // v1.8.8.6：连点翻页修复（此前「点不快」的真正原因）。
+        // 旧实现 `val target = cur + delta`：`cur` 只有动画结束(onEnd)才提交，动画进行中
+        // 再点，target 仍等于正在飞向的那一页 → 第二下被「吃掉」；而且每次新手势的 down
+        // 又会 `animJob?.cancel()` 掐掉上一段动画，于是连点时 `cur` 永远提交不了，几下之后
+        // 仍停在第一页 —— 看起来就是「连点翻不动」。
+        // 现在改用**独立的累计目标 turnTarget**（每一下基于上一次目标累加，与动画无关），
+        // 连点（间隔 < 250ms）直接瞬跳，不等动画、不排队。
         fun turn(delta: Int) {
             if (pageCount <= 0) return
-            val target = cur + delta
-            if (target < 0) {
-                onReachFirst()
-                return
+            val last = pageCount - 1
+            val base = if (turnTarget in 0..last) turnTarget else cur
+            var target = base + delta
+            if (target !in 0..last) {
+                // 越界：只有实际页面真的停在边界才算「到头」。
+                // 连点时目标累加得比页面快，几下就会越过末页；那种情况钳在边界照常翻，
+                // 绝不因此切章（用户要的是连点翻页，不是快速下一章）。
+                val atEdge = if (delta > 0) cur >= last else cur <= 0
+                if (atEdge) {
+                    if (delta > 0) onNextChapter() else onReachFirst()
+                    return
+                }
+                target = target.coerceIn(0, last)
             }
-            if (target > pageCount - 1) {
-                onNextChapter()
-                return
-            }
-            if (moving) {
-                // 连点：取消进行中的动画，直接落页
+            turnTarget = target
+            if (target == cur) return
+
+            val now = android.os.SystemClock.uptimeMillis()
+            val rapid = now - lastTurnAt < 250L
+            lastTurnAt = now
+
+            if (rapid || moving || kotlin.math.abs(target - cur) > 1) {
+                // 连点 / 动画未结束 / 一次跨多页：直接瞬跳，保证每一下都立刻前进
                 animJob?.cancel()
                 cur = target
                 dragX = 0f
                 moving = false
                 return
             }
+            // 单击（相邻页、且非连点）：走一页位移动画
             startAnim(
                 target = if (delta > 0) -widthPx else widthPx,
-                durationMs = 200,
+                durationMs = 180,
                 onEnd = {
                     cur = target
                     dragX = 0f
@@ -1916,6 +2011,8 @@ private fun CanvasPagerNovel(
                             lastX = pointerX
                             if (!moved && kotlin.math.abs(pointerX - startX) > touchSlop) {
                                 moved = true
+                                // v1.8.8.6：进入拖动视为全新交互，累计目标归位到当前页
+                                turnTarget = cur
                             }
                             if (moved) {
                                 change.consume()
@@ -1954,6 +2051,8 @@ private fun CanvasPagerNovel(
                                     if (success && toPrev) cur = (cur - 1).coerceAtLeast(0)
                                     if (success && toNext) cur = (cur + 1).coerceAtMost(pageCount - 1)
                                     dragX = 0f
+                                    // v1.8.8.6：拖动落页后把累计目标对齐到实际页，避免下一次点击基于旧目标
+                                    turnTarget = cur
                                 },
                             )
                             if (success) {
@@ -1966,7 +2065,6 @@ private fun CanvasPagerNovel(
         ) {
             val dx = dragX
             val padPx = sidePadding * d
-            val topPx = 48f * d
 
             /** 画一页：背景 + （第 0 页的章名）+ 正文 + 页码 */
             fun drawPage(idx: Int, offsetX: Float) {
@@ -1986,22 +2084,25 @@ private fun CanvasPagerNovel(
                             drawText(layout, topLeft = Offset(padPx, y))
                         }
                     }
-                    // 页码：画在正文区下方、底部留白里，始终可见
-                    // 页码：注意这里必须写 ${pages.size}（带花括号）。
+                    // 页码：画在正文下方那条**固定高度页码行**的正中（对齐参考项目的 ReaderPageCard）。
+                    // 以前是「正文底 + 6dp」贴着正文画，底部那一整块 48dp 边距就白空着；
+                    // 现在页边只剩 4dp，页码行 26dp 独占，位置稳定、不随页内容多少上下漂。
+                    // 注意这里必须写 ${pages.size}（带花括号）。
                     // 写成 `$pages.size` 时 Kotlin 只把 `$pages` 当变量，尾巴 `.size` 变字面量，
                     // 结果画出来是「整个列表的 toString() + .size」那一长串乱码。
                     val pageText = "${idx + 1}/${pages.size}"
                     val pageLayout = measurer.measure(
                         text = pageText,
-                        style = style.copy(fontSize = (fontSize - 6).sp),
+                        style = style.copy(fontSize = NovelPageTokens.pageNumberSp(fontSize).sp),
                     )
                     drawText(
                         pageLayout,
                         topLeft = Offset(
                             (widthPx - pageLayout.size.width) / 2f,
-                            topPx + textHeightPx + 6f * d,
+                            topPx + textHeightPx + bottomPx +
+                                (pageRowPx - pageLayout.size.height) / 2f,
                         ),
-                        alpha = 0.55f,
+                        alpha = 0.45f,
                     )
                 }
             }
@@ -2060,10 +2161,11 @@ private fun VerticalPagerNovel(
         val availWidthPx = (maxWidthDp - sidePadding * 2f).coerceAtLeast(1f) * density
         // 底部预留页码行高度，且分页测量与渲染同用 buildReaderText（段距占位行/首行缩进参与测量），
         // 否则渲染比测量高，末行会被裁掉一半
-        val fontPx = fontSize * density * androidx.compose.ui.platform.LocalDensity.current.fontScale
-        val textHeightPx = ((maxHeightDp - 96f).coerceAtLeast(1f) * density - fontPx * 1.8f).coerceAtLeast(1f)
+        // v1.8.8.6：页边收窄（见 NovelPageTokens）——原来是「上下各 48dp + 再扣 1.8 行给页码」
+        val textHeightPx = (maxHeightDp - NovelPageTokens.VERTICAL_RESERVED_DP)
+            .coerceAtLeast(1f) * density
         val paraSpacingPx = paragraphSpacing * density
-        val titleSpacerPx = 16f * density
+        val titleSpacerPx = 10f * density
 
         // v1.8.8.5：排版结果按章缓存（整个阅读页生命周期内复用），配合预分页做到切章不白屏。
         val pageCache = remember { mutableMapOf<Int, List<String>>() }
@@ -2388,19 +2490,26 @@ private fun PageContent(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = sidePadding.dp, vertical = 48.dp),
+            // v1.8.8.6：页边收窄到 NovelPageTokens（原上下各 48dp，底部还额外空 1.8 行给页码）
+            .padding(
+                start = sidePadding.dp,
+                end = sidePadding.dp,
+                top = NovelPageTokens.TOP_DP.dp,
+                bottom = NovelPageTokens.BOTTOM_DP.dp,
+            ),
     ) {
         if (page == 0 && !hideChapterTitle) {
+            // 与 CanvasPagerNovel 的 titleLayout 同一份样式：小字、0.7 透明度、单行省略、左对齐
             Text(
                 text = chapterTitle,
-                fontSize = (fontSize + 2).sp,
+                fontSize = NovelPageTokens.titleSp(fontSize).sp,
                 fontFamily = fontFamily,
-                fontWeight = FontWeight.Bold,
-                color = textColor,
-                textAlign = TextAlign.Center,
+                color = textColor.copy(alpha = 0.7f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(10.dp))
         }
         // v1.7.1.0：缓存 AnnotatedString —— 以前任何一次父级重组都会重建整页文本（含逐段 split）
         val pageText = remember(pages, page, fontSize, paragraphSpacing, indent) {
@@ -2417,13 +2526,21 @@ private fun PageContent(
             textAlign = TextAlign.Justify,
         )
         Spacer(Modifier.weight(1f))
-        Text(
-            text = "${page + 1}/${pages.size}",
-            fontSize = (fontSize - 6).sp,
-            color = textColor.copy(alpha = 0.4f),
-            modifier = Modifier.fillMaxWidth(),
-            textAlign = TextAlign.End,
-        )
+        // 页码固定占一行高、居中（对齐参考项目 ReaderPageCard 的 pageNumberRowHeight 契约）：
+        // 有没有文字都占同样的高度，正文可用高度才不会随页码行塌陷而漂移
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(NovelPageTokens.PAGE_ROW_DP.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = "${page + 1}/${pages.size}",
+                fontSize = NovelPageTokens.pageNumberSp(fontSize).sp,
+                color = textColor.copy(alpha = 0.45f),
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }
 
@@ -2596,10 +2713,17 @@ private fun paginateByMeasurement(
 
     val titleHeight: Float = if (showTitle && chapterTitle.isNotBlank()) {
         runCatching {
+            // 必须与渲染端（CanvasPagerNovel.titleLayout / PageContent 标题）同一份字号与行数：
+            // 测量说「标题占 A 高」、渲染占 B 高，首屏就会多切或少切一行。
             measurer.measure(
                 text = AnnotatedString(chapterTitle),
-                style = style.copy(fontSize = (style.fontSize.value + 2).sp, fontWeight = FontWeight.Bold),
+                style = style.copy(
+                    fontSize = NovelPageTokens.titleSp(style.fontSize.value).sp,
+                    fontWeight = FontWeight.Normal,
+                ),
                 constraints = constraints,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             ).size.height.toFloat() + titleSpacerPx
         }.getOrDefault(0f)
     } else 0f

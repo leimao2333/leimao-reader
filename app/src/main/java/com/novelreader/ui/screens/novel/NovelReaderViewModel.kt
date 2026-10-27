@@ -257,7 +257,8 @@ class NovelReaderViewModel(
     val indent: StateFlow<Boolean> = stateOf(preferences.novelIndentFlow, true)
     val letterSpacing: StateFlow<Float> = stateOf(preferences.novelLetterSpacingFlow, 0f)
     val brightness: StateFlow<Float> = stateOf(preferences.novelBrightnessFlow, PreferencesManager.DEFAULT_BRIGHTNESS)
-    val fullScreen: StateFlow<Boolean> = stateOf(preferences.novelFullScreenFlow, false)
+    // 初值同步成 true：DataStore 差一步才回来，留 false 会让阅读页首帧先「非全屏」闪一下
+    val fullScreen: StateFlow<Boolean> = stateOf(preferences.novelFullScreenFlow, true)
     val volumeUpPrev: StateFlow<Boolean> = stateOf(preferences.novelVolumeUpPrevFlow, true)
     val readSeconds: StateFlow<Long> = stateOf(preferences.novelReadSecondsFlow, 0L)
     val replaceRules: StateFlow<List<ReplaceRule>> =

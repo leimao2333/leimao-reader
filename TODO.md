@@ -411,6 +411,16 @@
 
 ---
 
+- [ ] **47. 标签页显示每个标签的已收录数 + 标签搜索先出「已收录」再补「未收录」**
+  - 需求（用户提出）：① 标签页每个标签上显示「已收录 N 部」；② 标签搜索时先把本地已收录的结果秒出来，再开始对未收录的源做网络召回。
+  - 现状：`TagInstanceDao.itemCount(type)` 只有「按类型」的去重总数，没有按标签的计数；标签页的标签来自标签池，chip 上不带任何数量信息。标签搜索目前是「召回 → 判定 → 展示」一条线，本地索引只服务打标 / 重建，不参与首屏。
+  - 实现方向：
+    - **计数**：`TagInstanceDao` 新增 `@Query("SELECT tag, COUNT(DISTINCT sourceId || '|' || itemId) AS n FROM tag_instances WHERE itemType = :type GROUP BY tag")`，返回 `List<TagCount>`（tag + n）。`TagIndexRepository` 包一层并加内存缓存 —— 标签页会一次性铺几十上百个 chip，不能每个都查一次库。chip 上显示 `N`（为 0 不显示，避免视觉噪音）。
+    - **搜索首屏**：`TagSearchViewModel.search()` 开头先按选中标签组内 OR 查本地，**立即 emit 一版结果**，状态文案标成「已收录 N 部 · 正在补充新内容」；随后再发起原有网络召回，回来的条目增量追加、去重、不打乱已看到顺序。
+    - **判定复用**：本地条目本来就是按标签收录的，可以跳过标题过滤直接进结果；只有网络新回来的条目才走 v1.8.9.1 的判定链。
+    - **别踩 #46 的坑**：首屏本地结果不能打断 `PagingContext` 的前置建立，否则「继续上滑翻页」会失效；`paging` 必须在召回前就位。
+  - 涉及：`data/database/TagInstanceDao.kt`（新查询）、`data/repository/TagIndexRepository.kt`（计数 + 缓存）、`ui/screens/tag/TagSearchViewModel.kt`（search 首屏）、`ui/screens/tag/TagSearchScreen.kt`（chip 角标 + 首屏状态文案）。
+
 ## 五、RSS
 
 - [x] **16. RSS 源批量管理** ✅ v1.8.3.0

@@ -31,6 +31,72 @@ class SettingsViewModel(
     private val ttsController: com.novelreader.core.tts.TtsController? = null,
 ) : ViewModel() {
 
+    /** 自定义字体路径（v1.9.1.0）：空 = 未导入 */
+    val customFontPath: StateFlow<String> = preferencesManager.customFontPathFlow
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    /** 字体导入结果（提示文案），UI 弹一次后清空 */
+    private val _fontImportResult = MutableStateFlow<String?>(null)
+    val fontImportResult: StateFlow<String?> = _fontImportResult.asStateFlow()
+
+    /**
+     * 导入本地字体文件（v1.9.1.0）。
+     *
+     * 复制到 `filesDir/fonts/` 而不是直接用 content Uri —— Uri 的读取权限是临时的，
+     * 重启后就失效了，字体得跟着 App 一起长期可用。
+     *
+     * 用 `Typeface.createFromFile` 先试读一遍：用户很可能选错文件（选成 zip / 图片），
+     * 存下来再发现渲染成豆腐块就晚了。
+     */
+    fun importFont(uri: android.net.Uri) {
+        viewModelScope.launch {
+            val ctx = appContext ?: return@launch
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val dir = java.io.File(ctx.filesDir, "fonts").apply { mkdirs() }
+                    val displayName = runCatching {
+                        ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                            val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                            if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
+                        }
+                    }.getOrNull() ?: "font.ttf"
+                    val target = java.io.File(dir, "custom_${System.currentTimeMillis()}_$displayName")
+                    ctx.contentResolver.openInputStream(uri)?.use { input ->
+                        target.outputStream().use { input.copyTo(it) }
+                    } ?: error("无法读取文件")
+                    val tf = android.graphics.Typeface.createFromFile(target)
+                    if (tf == null) {
+                        target.delete()
+                        error("不是有效的字体文件")
+                    }
+                    target.absolutePath
+                }
+            }
+            result.onSuccess { path ->
+                preferencesManager.setCustomFontPath(path)
+                preferencesManager.setAppFont(PreferencesManager.APP_FONT_CUSTOM)
+                _fontImportResult.value = "已导入：${java.io.File(path).name}"
+            }.onFailure { e ->
+                _fontImportResult.value = "导入失败：${e.message ?: "文件不可读"}"
+            }
+        }
+    }
+
+    fun removeCustomFont() {
+        viewModelScope.launch {
+            val path = customFontPath.value
+            if (path.isNotBlank()) {
+                withContext(Dispatchers.IO) { runCatching { java.io.File(path).delete() } }
+            }
+            preferencesManager.setCustomFontPath(null)
+            preferencesManager.setAppFont(PreferencesManager.APP_FONT_SYSTEM)
+        }
+    }
+
+    fun consumeFontImportResult() {
+        _fontImportResult.value = null
+    }
+
     /** 界面字体（v1.9.0.5）：0 系统 / 1 衬线 / 2 等宽 / 3 手写 */
     val appFont: StateFlow<Int> = preferencesManager.appFontFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, 0)

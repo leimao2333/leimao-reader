@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.9.0.9"
+    const val CURRENT_VERSION = "1.9.1.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,14 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.9.1.0",
+            date = "2026-10-28",
+            changes = listOf(
+                "**界面字体可以自己加了**：设置 → 全局 → 自定义字体 → 添加，从文件管理器选一个 ttf / otf，导入后整个界面立刻换过去。字体文件会复制到 App 私有目录长期保存，不会因为重启失效。",
+                "**导入时会先校验**：不是字体文件（选错成图片、压缩包）会直接提示失败，不会存下来之后渲染成一堆方块。",
+            ),
+        ),
         VersionEntry(
             version = "1.9.0.9",
             date = "2026-10-28",

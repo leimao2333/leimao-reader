@@ -75,7 +75,14 @@ class MainActivity : ComponentActivity() {
             // v1.9.0.5：界面字体（设置 → 外观）
             val appFont by app.container.preferencesManager.appFontFlow
                 .collectAsState(initial = 0)
-            NovelReaderTheme(darkTheme = darkTheme, appFont = appFont) {
+            // v1.9.1.0：用户导入的字体文件（appFont == 4 时生效）
+            val customFontPath by app.container.preferencesManager.customFontPathFlow
+                .collectAsState(initial = "")
+            NovelReaderTheme(
+                darkTheme = darkTheme,
+                appFont = appFont,
+                customFontPath = customFontPath,
+            ) {
                 // 系统栏图标明暗跟随**应用**主题（v1.8.8.2）。
                 //
                 // enableEdgeToEdge() 在 onCreate 里按**系统**深色模式设过一次图标颜色，而本应用

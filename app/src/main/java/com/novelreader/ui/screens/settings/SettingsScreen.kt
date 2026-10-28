@@ -75,6 +75,17 @@ fun SettingsScreen(
     // v1.9.0.2 开发者选项：详细日志开关 + 导出结果提示
     val debugLogging by viewModel.debugLogging.collectAsState()
     val appFont by viewModel.appFont.collectAsState()
+    // v1.9.1.0 自定义字体
+    val customFontPath by viewModel.customFontPath.collectAsState()
+    val fontImportResult by viewModel.fontImportResult.collectAsState()
+    val fontPicker = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri -> uri?.let { viewModel.importFont(it) } }
+    LaunchedEffect(fontImportResult) {
+        val msg = fontImportResult ?: return@LaunchedEffect
+        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+        viewModel.consumeFontImportResult()
+    }
     val debugExportResult by viewModel.debugExportResult.collectAsState()
     LaunchedEffect(debugExportResult) {
         val r = debugExportResult ?: return@LaunchedEffect
@@ -244,6 +255,27 @@ fun SettingsScreen(
                             label = { Text(label) },
                             modifier = Modifier.padding(start = 4.dp),
                         )
+                    }
+                }
+            }
+            // 自定义字体（v1.9.1.0）：从文件管理器选 ttf / otf，复制进 filesDir 后长期可用
+            SettingRow(
+                title = "自定义字体",
+                subtitle = if (customFontPath.isBlank()) {
+                    "从文件管理器选一个 ttf / otf 字体文件，导入后自动切换过去"
+                } else {
+                    "当前：" + customFontPath.substringAfterLast('/').substringAfter("custom_").substringAfter('_')
+                },
+            ) {
+                Row {
+                    TextButton(
+                        onClick = {
+                            // 有些文件管理器不给字体 MIME，放开到 */* 再靠 Typeface 校验
+                            fontPicker.launch(arrayOf("*/*"))
+                        },
+                    ) { Text(if (customFontPath.isBlank()) "添加" else "更换") }
+                    if (customFontPath.isNotBlank()) {
+                        TextButton(onClick = { viewModel.removeCustomFont() }) { Text("移除") }
                     }
                 }
             }

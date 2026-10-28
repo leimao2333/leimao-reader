@@ -41,6 +41,8 @@ class PreferencesManager(private val context: Context) {
         /** 详细日志开关（v1.9.0.2）：设置 → 开发者选项，默认关 */
         /** 界面字体档位（v1.9.0.5）：0 系统 / 1 衬线 / 2 等宽 / 3 手写 */
         val KEY_APP_FONT = intPreferencesKey("app_font")
+        /** 自定义字体的文件路径（v1.9.1.0），空 = 没用自定义 */
+        val KEY_CUSTOM_FONT_PATH = stringPreferencesKey("custom_font_path")
         val KEY_DEBUG_LOGGING = booleanPreferencesKey("debug_logging")
         val KEY_NOVEL_BG_INDEX = intPreferencesKey("novel_bg_index")
         val KEY_NOVEL_NIGHT = booleanPreferencesKey("novel_night")
@@ -133,6 +135,8 @@ class PreferencesManager(private val context: Context) {
         const val APP_FONT_SERIF = 1
         const val APP_FONT_MONO = 2
         const val APP_FONT_CURSIVE = 3
+        /** 用户导入的字体（v1.9.1.0）：实际路径存在 custom_font_path */
+        const val APP_FONT_CUSTOM = 4
         const val FONT_FAMILY_DEFAULT = 0
         const val FONT_FAMILY_SERIF = 1
         const val FONT_FAMILY_MONO = 2
@@ -624,12 +628,23 @@ class PreferencesManager(private val context: Context) {
     }
 
     /** 字体族：0=系统默认 1=衬线 2=等宽 */
+    /** 自定义字体路径（v1.9.1.0）：用户从文件管理器导入的 ttf / otf */
+    val customFontPathFlow: Flow<String> = context.dataStore.data
+        .map { it[KEY_CUSTOM_FONT_PATH] ?: "" }
+
+    suspend fun setCustomFontPath(path: String?) {
+        context.dataStore.edit { prefs ->
+            if (path.isNullOrBlank()) prefs.remove(KEY_CUSTOM_FONT_PATH)
+            else prefs[KEY_CUSTOM_FONT_PATH] = path
+        }
+    }
+
     /** 界面字体（v1.9.0.5）：整个 App 的 UI 字体，不含阅读页正文 */
     val appFontFlow: Flow<Int> = context.dataStore.data
         .map { it[KEY_APP_FONT] ?: APP_FONT_SYSTEM }
 
     suspend fun setAppFont(value: Int) {
-        context.dataStore.edit { it[KEY_APP_FONT] = value.coerceIn(0, 3) }
+        context.dataStore.edit { it[KEY_APP_FONT] = value.coerceIn(0, 4) }
     }
 
     /** 详细日志（v1.9.0.2）：打开后关键路径写进内存环形缓冲，可在设置里导出 */

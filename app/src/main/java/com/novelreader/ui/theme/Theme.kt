@@ -3,6 +3,8 @@ package com.novelreader.ui.theme
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
+import androidx.compose.runtime.remember
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -129,15 +131,34 @@ private fun Typography.withFontFamily(family: FontFamily): Typography = Typograp
 @Composable
 fun NovelReaderTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    /** 界面字体档位（v1.9.0.5）：0 系统 / 1 衬线 / 2 等宽 / 3 手写 */
+    /** 界面字体档位（v1.9.0.5）：0 系统 / 1 衬线 / 2 等宽 / 3 手写 / 4 自定义 */
     appFont: Int = APP_FONT_SYSTEM,
+    /** 自定义字体文件路径（v1.9.1.0）：仅在 appFont == 4 时生效 */
+    customFontPath: String = "",
     content: @Composable () -> Unit,
 ) {
     val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
-    val typography = when (appFont) {
-        APP_FONT_SERIF -> Typography().withFontFamily(FontFamily.Serif)
-        APP_FONT_MONO -> Typography().withFontFamily(FontFamily.Monospace)
-        APP_FONT_CURSIVE -> Typography().withFontFamily(FontFamily.Cursive)
+    // 自定义字体：每次路径变化都重建 FontFamily（Compose 按 FontFamily 缓存字形，
+    // 复用旧实例会拿到旧字体）。文件读不到时回落到系统字体，不让整个界面变成豆腐块。
+    val customFamily = remember(customFontPath) {
+        if (customFontPath.isBlank()) {
+            null
+        } else {
+            runCatching {
+                val file = java.io.File(customFontPath)
+                if (file.exists() && file.length() > 0) {
+                    FontFamily(Font(file))
+                } else {
+                    null
+                }
+            }.getOrNull()
+        }
+    }
+    val typography = when {
+        appFont == 4 && customFamily != null -> Typography().withFontFamily(customFamily)
+        appFont == APP_FONT_SERIF -> Typography().withFontFamily(FontFamily.Serif)
+        appFont == APP_FONT_MONO -> Typography().withFontFamily(FontFamily.Monospace)
+        appFont == APP_FONT_CURSIVE -> Typography().withFontFamily(FontFamily.Cursive)
         else -> Typography()
     }
 

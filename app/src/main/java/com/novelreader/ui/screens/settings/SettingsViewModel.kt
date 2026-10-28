@@ -6,7 +6,9 @@ import com.novelreader.core.preferences.PreferencesManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -28,6 +30,36 @@ class SettingsViewModel(
     /** 朗读控制器（v1.8.7.3）：设置页「试听」用，与阅读页共用同一个引擎实例 */
     private val ttsController: com.novelreader.core.tts.TtsController? = null,
 ) : ViewModel() {
+
+    /** 详细日志开关（v1.9.0.2）：设置 → 开发者选项 */
+    val debugLogging: StateFlow<Boolean> = preferencesManager.debugLoggingFlow
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** 导出结果（文件路径或错误文案），UI 弹一次后清空 */
+    private val _debugExportResult = MutableStateFlow<String?>(null)
+    val debugExportResult: StateFlow<String?> = _debugExportResult.asStateFlow()
+
+    fun setDebugLogging(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setDebugLogging(value) }
+    }
+
+    fun exportDebugLog() {
+        viewModelScope.launch {
+            val dir = appContext?.getExternalFilesDir(null)?.resolve("debug")
+            val file = withContext(Dispatchers.IO) {
+                com.novelreader.core.util.DebugLog.export(dir)
+            }
+            _debugExportResult.value = file?.absolutePath ?: "导出失败"
+        }
+    }
+
+    fun consumeDebugExportResult() {
+        _debugExportResult.value = null
+    }
+
+    fun clearDebugLog() {
+        com.novelreader.core.util.DebugLog.clear()
+    }
 
     /** 备份 / 恢复结果提示（UI 展示后自动消失） */
     private val _backupMessage = MutableStateFlow<String?>(null)

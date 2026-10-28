@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.9.0.0"
+    const val CURRENT_VERSION = "1.9.0.2"
 
     /**
      * 更新日志。
@@ -25,6 +25,20 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.9.0.2",
+            date = "2026-10-28",
+            changes = listOf(
+                "**设置里新增「开发者选项」**：常驻的排查入口，不用再为每个问题临时插日志、重新打包。打开「详细日志」后关键路径会记进内存（最多 600 条，只含位移量 / 条数 / 耗时这类结构信息），复现一次问题再点「导出诊断日志」，文件写到 Android/data/com.novelreader/files/debug/，直接分享出来即可定位。",
+            ),
+        ),
+        VersionEntry(
+            version = "1.9.0.1",
+            date = "2026-10-28",
+            changes = listOf(
+                "**修上滑翻页仍然不响应**：列表到底后继续上滑，位移被 Android 12+ 的边缘拉伸效果吃掉了，手势检测拿到的剩余位移恒为 0，怎么滑都攒不满阈值。现在标签搜索页关掉了这层拉伸，到底后的上滑能被正常识别。",
+            ),
+        ),
         VersionEntry(
             version = "1.9.0.0",
             date = "2026-10-28",

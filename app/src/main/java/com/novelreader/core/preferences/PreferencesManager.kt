@@ -38,6 +38,8 @@ class PreferencesManager(private val context: Context) {
 
         // ===== 小说阅读 =====
         val KEY_NOVEL_FONT_SIZE = floatPreferencesKey("novel_font_size")
+        /** 详细日志开关（v1.9.0.2）：设置 → 开发者选项，默认关 */
+        val KEY_DEBUG_LOGGING = booleanPreferencesKey("debug_logging")
         val KEY_NOVEL_BG_INDEX = intPreferencesKey("novel_bg_index")
         val KEY_NOVEL_NIGHT = booleanPreferencesKey("novel_night")
         /** 翻页方式：0=上下滚动，1=左右翻页 */
@@ -615,6 +617,14 @@ class PreferencesManager(private val context: Context) {
     }
 
     /** 字体族：0=系统默认 1=衬线 2=等宽 */
+    /** 详细日志（v1.9.0.2）：打开后关键路径写进内存环形缓冲，可在设置里导出 */
+    val debugLoggingFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_DEBUG_LOGGING] ?: false }
+
+    suspend fun setDebugLogging(value: Boolean) {
+        context.dataStore.edit { it[KEY_DEBUG_LOGGING] = value }
+    }
+
     val novelFontFamilyFlow: Flow<Int> = context.dataStore.data
         .map { it[KEY_NOVEL_FONT_FAMILY] ?: FONT_FAMILY_DEFAULT }
 

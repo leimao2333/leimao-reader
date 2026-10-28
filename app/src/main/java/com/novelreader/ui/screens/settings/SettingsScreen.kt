@@ -72,6 +72,18 @@ fun SettingsScreen(
     val backupMessage by viewModel.backupMessage.collectAsState()
     val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
     val context = androidx.compose.ui.platform.LocalContext.current
+    // v1.9.0.2 开发者选项：详细日志开关 + 导出结果提示
+    val debugLogging by viewModel.debugLogging.collectAsState()
+    val debugExportResult by viewModel.debugExportResult.collectAsState()
+    LaunchedEffect(debugExportResult) {
+        val r = debugExportResult ?: return@LaunchedEffect
+        android.widget.Toast.makeText(
+            context,
+            if (r.startsWith("/")) "已导出：$r" else r,
+            android.widget.Toast.LENGTH_LONG,
+        ).show()
+        viewModel.consumeDebugExportResult()
+    }
 
     // 备份导出（SAF CREATE_DOCUMENT）
     val exportLauncher = rememberLauncherForActivityResult(
@@ -1135,6 +1147,35 @@ fun SettingsScreen(
             Spacer(Modifier.height(24.dp))
 
             // ===== 关于 =====
+            Spacer(Modifier.height(24.dp))
+
+            // ===== 开发者选项（v1.9.0.2）=====
+            // 排查问题的常驻入口。以前每次都要「临时插日志 → 重新打包 → 复现 → 抓 logcat」，
+            // 一圈十几分钟；现在打开开关、复现一次、导出文件，直接发过来就能定位。
+            SectionTitle("开发者选项")
+            SettingRow(
+                title = "详细日志",
+                subtitle = "记录关键路径到内存（最多 600 条，只含位移量 / 条数 / 耗时这类结构信息）。\n" +
+                    "排查问题：打开 → 复现一次 → 导出诊断日志",
+            ) {
+                Switch(
+                    checked = debugLogging,
+                    onCheckedChange = { viewModel.setDebugLogging(it) },
+                )
+            }
+            SettingRow(
+                title = "导出诊断日志",
+                subtitle = "写到 Android/data/com.novelreader/files/debug/，可直接分享",
+            ) {
+                TextButton(onClick = { viewModel.exportDebugLog() }) { Text("导出") }
+            }
+            SettingRow(
+                title = "清空日志",
+                subtitle = "清掉当前缓冲区（已经导出的文件不受影响）",
+            ) {
+                TextButton(onClick = { viewModel.clearDebugLog() }) { Text("清空") }
+            }
+
             SectionTitle("关于")
             SettingRow(
                 title = "当前版本",

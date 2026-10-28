@@ -65,6 +65,13 @@ class MainActivity : ComponentActivity() {
                     androidx.compose.foundation.isSystemInDarkTheme()
                 else -> false
             }
+            // v1.9.0.2：详细日志开关（设置 → 开发者选项）同步到 DebugLog。
+            // 打开后关键路径会写进内存环形缓冲，用户可在设置里一键导出。
+            val debugLogging by app.container.preferencesManager.debugLoggingFlow
+                .collectAsState(initial = false)
+            LaunchedEffect(debugLogging) {
+                com.novelreader.core.util.DebugLog.enabled = debugLogging
+            }
             NovelReaderTheme(darkTheme = darkTheme) {
                 // 系统栏图标明暗跟随**应用**主题（v1.8.8.2）。
                 //

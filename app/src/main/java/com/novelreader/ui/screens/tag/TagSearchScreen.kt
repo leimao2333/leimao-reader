@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+
 package com.novelreader.ui.screens.tag
 
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -758,6 +760,12 @@ fun TagSearchScreen(
                         }
                 }
                 Box(Modifier.fillMaxSize()) {
+                    // v1.9.0.1：关掉 overscroll。Android 12+ 的拉伸效果会把「列表已经到底、
+                    // 用户还在往上推」的那段位移吃掉，nestedScroll 的 available 恒为 0，
+                    // 上滑检测自然永远攒不满阈值。
+                    androidx.compose.runtime.CompositionLocalProvider(
+                        androidx.compose.foundation.LocalOverscrollConfiguration provides null,
+                    ) {
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(columns),
                         // nestedScroll 只挂在**外层 Box** 上：两处都挂会收到两份
@@ -792,6 +800,7 @@ fun TagSearchScreen(
                                 onLoadMore = { viewModel.loadMore() },
                             )
                         }
+                    }
                     }
                     // 侧边滚动条（v1.8.2.0）：网格页翻到哪儿了看不出来
                     com.novelreader.ui.components.VerticalScrollbar(
@@ -1324,6 +1333,14 @@ private class SwipeContinueConnection(
         available: Offset,
         source: NestedScrollSource,
     ): Offset {
+        // 诊断：只在设置里打开「详细日志」时才记（v1.9.0.2），
+        // 用户复现后自己导出，不用再临时改代码打包
+        if (available.y != 0f) {
+            com.novelreader.core.util.DebugLog.d(
+                "SwipeContinue",
+                "post avail=${available.y.toInt()} acc=${accumulated.toInt()} on=${enabled()}",
+            )
+        }
         // 不满足条件时**不清零**：加载中那几百毫秒里用户往往还在继续滑，
         // 清零会让他觉得「白滑了」。真正的复位交给下面的「往回拉」分支。
         if (!enabled()) return Offset.Zero

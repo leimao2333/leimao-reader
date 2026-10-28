@@ -43,6 +43,22 @@ object DebugLog {
         Log.d(tag, message)
     }
 
+    /**
+     * 强制记一条（忽略开关）。
+     *
+     * 只给「必须确认到底有没有被调用」的诊断点用 —— 比如上滑手势的连接器：
+     * 如果用户没打开开关，`d()` 什么都不记，就分不清「没收到事件」还是「位移为 0」。
+     * 这类点本身调用频率很低（滑动时才触发），常开不会刷屏。
+     */
+    fun forceD(tag: String, message: String) {
+        val line = "${stamp.format(Date())} [$tag] $message"
+        synchronized(buffer) {
+            if (buffer.size >= CAPACITY) buffer.removeFirst()
+            buffer.addLast(line)
+        }
+        Log.d(tag, message)
+    }
+
     /** 当前缓冲区内容（按时间正序） */
     fun snapshot(): String = synchronized(buffer) { buffer.joinToString("\n") }
 

@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.9.0.2"
+    const val CURRENT_VERSION = "1.9.0.3"
 
     /**
      * 更新日志。
@@ -25,6 +25,13 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.9.0.3",
+            date = "2026-10-28",
+            changes = listOf(
+                "**修上滑翻页彻底不响应**：v1.8.9.8 把滚动监听从列表上删掉、改说「只挂外层容器」，但外层容器本来就没挂 —— 结果两边都没有，滑动手势从来没被接住，怎么滑都不响应。现在补回来了。",
+            ),
+        ),
         VersionEntry(
             version = "1.9.0.2",
             date = "2026-10-28",

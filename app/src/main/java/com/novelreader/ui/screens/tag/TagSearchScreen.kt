@@ -759,7 +759,10 @@ fun TagSearchScreen(
                             if (hasMore && total > 0 && last >= total - 3) viewModel.loadMore()
                         }
                 }
-                Box(Modifier.fillMaxSize()) {
+                // v1.9.0.3：nestedScroll 必须挂在这里。v1.8.9.8 从 LazyVerticalGrid 上删掉
+                // 之后说「只挂外层 Box」，但外层压根没挂过 —— 结果两边都没有，
+                // onPostScroll 从来没被调用，上滑自然永远不响应。
+                Box(Modifier.fillMaxSize().nestedScroll(swipeContinue)) {
                     // v1.9.0.1：关掉 overscroll。Android 12+ 的拉伸效果会把「列表已经到底、
                     // 用户还在往上推」的那段位移吃掉，nestedScroll 的 available 恒为 0，
                     // 上滑检测自然永远攒不满阈值。
@@ -1327,18 +1330,22 @@ private class SwipeContinueConnection(
 ) : NestedScrollConnection {
     private var accumulated = 0f
     private var lastTriggerAt = 0L
+    private var lastLogAt = 0L
 
     override fun onPostScroll(
         consumed: Offset,
         available: Offset,
         source: NestedScrollSource,
     ): Offset {
-        // 诊断：只在设置里打开「详细日志」时才记（v1.9.0.2），
-        // 用户复现后自己导出，不用再临时改代码打包
-        if (available.y != 0f) {
-            com.novelreader.core.util.DebugLog.d(
+        // 诊断（强制记录，不受开关影响）：区分「onPostScroll 没被调用」和
+        // 「调用了但 available 恒为 0」—— 这两种情况表现一样，靠开关日志分不出来。
+        val nowMs = System.currentTimeMillis()
+        if (nowMs - lastLogAt >= 120) {
+            lastLogAt = nowMs
+            com.novelreader.core.util.DebugLog.forceD(
                 "SwipeContinue",
-                "post avail=${available.y.toInt()} acc=${accumulated.toInt()} on=${enabled()}",
+                "avail=${available.y.toInt()} consumed=${consumed.y.toInt()} " +
+                    "acc=${accumulated.toInt()} on=${enabled()}",
             )
         }
         // 不满足条件时**不清零**：加载中那几百毫秒里用户往往还在继续滑，

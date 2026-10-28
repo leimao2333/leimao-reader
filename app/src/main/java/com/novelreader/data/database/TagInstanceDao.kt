@@ -68,7 +68,6 @@ interface TagInstanceDao {
            WHERE itemType = :type AND tagName IN (:names) AND confidence >= :minConfidence
              AND (:category IS NULL OR category = :category)
              AND (:excludeAdult = 0 OR category <> '成人')
-             AND origin <> :searchOrigin
            GROUP BY sourceId, itemId""",
     )
     suspend fun refsWithAny(
@@ -77,14 +76,6 @@ interface TagInstanceDao {
         minConfidence: Int,
         category: String?,
         excludeAdult: Int,
-        /**
-         * 「搜索命中」来源的标签在召回时**整体排除**（v1.8.9.9）。
-         *
-         * 这类标签只是为了让「已收录 N 部」跟得上搜索结果，证据很弱（标题里出现而已）。
-         * 一旦让它们参与召回，搜一次就把整批结果钉成「本地已收录」，之后每次搜索都绕过
-         * 判定直接合并进结果 —— 越搜越脏。传 [com.novelreader.core.util.TagTagger.ORIGIN_SEARCH]。
-         */
-        searchOrigin: String,
     ): List<ScoredRef>
 
     /** 某部作品当前的标签行（行为回流 / 视觉合并时读全量行） */

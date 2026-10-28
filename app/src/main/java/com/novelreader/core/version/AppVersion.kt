@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.8.9.6"
+    const val CURRENT_VERSION = "1.9.0.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,14 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.9.0.0",
+            date = "2026-10-28",
+            changes = listOf(
+                "**搜索命中的标签也参与本地召回**：上一版只让它们计数，下次搜同一个词还得重新联网。现在它们也会被本地召回（45 分，排在分类页证据后面），搜过一次之后再搜就是秒出。",
+                "**代价说明**：标题里带这个词、但实际不属于这个标签的作品，会一直留在本地结果里。它们排在列表末尾，下次联网召回带来的高质量结果会把前面的位置占掉。",
+            ),
+        ),
         VersionEntry(
             version = "1.8.9.9",
             date = "2026-10-28",

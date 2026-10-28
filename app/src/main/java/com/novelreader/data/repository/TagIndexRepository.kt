@@ -224,6 +224,8 @@ class TagIndexRepository(
                 minConfidence = minConfidence,
                 category = clause.category,
                 excludeAdult = if (hideAdult) 1 else 0,
+                // 「搜索命中」的弱证据只计数、不召回（v1.8.9.9）
+                searchOrigin = com.novelreader.core.util.TagTagger.ORIGIN_SEARCH,
             ).map { TagHit(it.sourceId, it.itemId, it.confidence) }
         }
         var ranked = TagRanking.intersect(groups)
@@ -237,6 +239,7 @@ class TagIndexRepository(
                 minConfidence = 0,
                 category = null,
                 excludeAdult = 0,
+                searchOrigin = com.novelreader.core.util.TagTagger.ORIGIN_SEARCH,
             ).mapTo(HashSet()) { it.sourceId to it.itemId }
             ranked = ranked.filterNot { (it.sourceId to it.itemId) in banned }
         }

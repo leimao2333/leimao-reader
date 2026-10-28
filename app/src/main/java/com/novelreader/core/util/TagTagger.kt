@@ -43,10 +43,23 @@ object TagTagger {
     const val ORIGIN_BEHAVIOR = "行为"
     const val ORIGIN_VISUAL = "视觉"
 
+    /**
+     * 「搜索命中」来源（v1.8.9.9）：用户在标签页搜了某个词，结果里标题命中的那批。
+     *
+     * 它和「站方 / 文本」的区别在于**证据强度**：标题里出现某个词，不等于作品真的
+     * 属于这个标签。所以这类标签只用来**计数**（让「已收录 N 部」跟得上搜索结果），
+     * **不参与本地召回** —— `refsWithAny` 会显式排除这个来源，否则搜一次就把整批
+     * 结果钉成「本地已收录」，之后每次搜索都绕过判定直接合并，越搜越脏。
+     */
+    const val ORIGIN_SEARCH = "搜索"
+
     /** 站方自己声明的题材：最可信 */
     private const val CONF_STATION = 100
     /** 文本关键词命中：字面命中，语义只是相关 */
     private const val CONF_TEXT = 60
+
+    /** 搜索命中：只够用来计数，不足以证明归属（低于文本匹配的 60） */
+    private const val CONF_SEARCH = 45
 
     /**
      * 影视标题里最多补几个文本标签（v1.8.7.1）。
@@ -76,6 +89,17 @@ object TagTagger {
         val confidence: Int,
         val origin: String = ORIGIN_STATION,
     )
+
+    /**
+     * 搜索命中用的上下文标签（v1.8.9.9）。
+     *
+     * 用户在标签页搜了某个词，标题命中的结果就该在「这个标签收录了多少部」里体现出来 ——
+     * 否则搜到 500 部、标签上还写着 350，看起来就像打标没生效。
+     * 但这类标签**证据很弱**（标题里出现 ≠ 真的属于），所以给低置信度并标记来源，
+     * 由 `refsWithAny` 在召回时整体排除：**只计数，不进本地召回**。
+     */
+    fun searchContext(tags: Collection<String>): List<Pair<String, Int>> =
+        tags.map { TagAlias.canonicalOf(it) to CONF_SEARCH }
 
     /**
      * 给一部作品打标签。

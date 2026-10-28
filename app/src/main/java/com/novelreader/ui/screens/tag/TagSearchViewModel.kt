@@ -1042,9 +1042,19 @@ class TagSearchViewModel(
         // 分组本身是纯内存计算（快），真正的打标与写库在 [TagIndexRepository.indexItems]
         // 里切到 IO；这里再包一层是为了让「一组一组写」与最后的计数在同一个后台协程里。
         withContext(Dispatchers.IO) {
-            groups.forEach { (tags, group) ->
-                val context = tags.map { TagAlias.canonicalOf(it) to CONTEXT_PAGE_CONFIDENCE }
-                runCatching { repo.indexItems(type, group, context) }
+            groups.forEach { (provenTags, group) ->
+                // v1.8.9.9：分类页证明过的 → 高置信度「站方」证据；
+                // 只是关键词命中的 → 低置信度「搜索」标签，只用来让收录数跟上搜索结果，
+                // 不参与本地召回（refsWithAny 会把 ORIGIN_SEARCH 整体排除）。
+                val isProven = provenTags.isNotEmpty()
+                val context = if (isProven) {
+                    provenTags.map { TagAlias.canonicalOf(it) to CONTEXT_PAGE_CONFIDENCE }
+                } else {
+                    // 当前这一轮搜索用的标签（`_activeTags` 在结果落地前就已赋值）
+                    TagTagger.searchContext(_activeTags.value)
+                }
+                val origin = if (isProven) TagTagger.ORIGIN_STATION else TagTagger.ORIGIN_SEARCH
+                runCatching { repo.indexItems(type, group, context, origin) }
             }
             refreshIndexStats(repo)
         }

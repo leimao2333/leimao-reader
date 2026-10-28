@@ -40,6 +40,8 @@ class PreferencesManager(private val context: Context) {
         val KEY_NOVEL_FONT_SIZE = floatPreferencesKey("novel_font_size")
         /** 详细日志开关（v1.9.0.2）：设置 → 开发者选项，默认关 */
         /** 界面字体档位（v1.9.0.5）：0 系统 / 1 衬线 / 2 等宽 / 3 手写 */
+        /** 桌面图标方案（v1.9.0.7）：0 童年 / 1 少女 / 2 青年 / 3 成熟 */
+        val KEY_APP_ICON = intPreferencesKey("app_icon")
         val KEY_APP_FONT = intPreferencesKey("app_font")
         val KEY_DEBUG_LOGGING = booleanPreferencesKey("debug_logging")
         val KEY_NOVEL_BG_INDEX = intPreferencesKey("novel_bg_index")
@@ -624,6 +626,14 @@ class PreferencesManager(private val context: Context) {
     }
 
     /** 字体族：0=系统默认 1=衬线 2=等宽 */
+    /** 桌面图标方案（v1.9.0.7）：切换走 activity-alias，见 AppIconManager */
+    val appIconFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_APP_ICON] ?: 3 }
+
+    suspend fun setAppIcon(value: Int) {
+        context.dataStore.edit { it[KEY_APP_ICON] = value.coerceIn(0, 3) }
+    }
+
     /** 界面字体（v1.9.0.5）：整个 App 的 UI 字体，不含阅读页正文 */
     val appFontFlow: Flow<Int> = context.dataStore.data
         .map { it[KEY_APP_FONT] ?: APP_FONT_SYSTEM }

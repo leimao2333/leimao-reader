@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.9.0.5"
+    const val CURRENT_VERSION = "1.9.0.7"
 
     /**
      * 更新日志。
@@ -25,6 +25,21 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.9.0.7",
+            date = "2026-10-28",
+            changes = listOf(
+                "**桌面图标可以换了**：设置 → 全局 → 应用图标，四套（童年 / 少女 / 青年 / 成熟），都是同一个角色的不同年龄段。切换后如果桌面没变化，重启桌面或重新添加图标即可 —— 部分桌面不会主动刷新。",
+                "**说明**：Android 的主图标只能是编译期资源，所以没法让用户自己塞一张图进去当桌面图标。要自定义只能用第三方桌面。",
+            ),
+        ),
+        VersionEntry(
+            version = "1.9.0.6",
+            date = "2026-10-28",
+            changes = listOf(
+                "**换新图标**：沿用原来的橙发小女孩形象，构图改成和磊毛TV 一致的纯色底半身像（去掉书堆、星星和渐变背景）。两个 App 摆在一起是同一套风格，靠底色区分。",
+            ),
+        ),
         VersionEntry(
             version = "1.9.0.5",
             date = "2026-10-28",

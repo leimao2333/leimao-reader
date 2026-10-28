@@ -230,7 +230,7 @@ class TagSearchViewModel(
             _indexMessage.value = "准备视觉模型…"
             try {
                 val count = repo.runVisualTagging(type) { message -> _indexMessage.value = message }
-                _indexCount.value = repo.count(type)
+                refreshIndexStats(repo)
                 _indexMessage.value = if (count > 0) {
                     "视觉打标完成：$count 部封面已入库"
                 } else {
@@ -299,7 +299,7 @@ class TagSearchViewModel(
                 val payload = repo.downloadCloudTable(target)
                 _indexMessage.value = "合并中（云端 ${payload.items.size} 条）…"
                 val count = repo.importTagTable(payload, type)
-                _indexCount.value = repo.count(type)
+                refreshIndexStats(repo)
                 _indexMessage.value = "导入完成：$count 部作品已合并进本地标签层"
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
@@ -1046,7 +1046,7 @@ class TagSearchViewModel(
                 val context = tags.map { TagAlias.canonicalOf(it) to CONTEXT_PAGE_CONFIDENCE }
                 runCatching { repo.indexItems(type, group, context) }
             }
-            _indexCount.value = repo.count(type)
+            refreshIndexStats(repo)
         }
     }
 

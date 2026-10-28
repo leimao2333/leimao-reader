@@ -727,8 +727,16 @@ fun TagSearchScreen(
             searchGrid -> {
                 val gridState = rememberLazyGridState()
                 // 到底之后继续上滑 = 再往前问一页（v1.8.9.6，替代原来的「继续往下翻」按钮）
-                val canSwipeContinue = remember {
-                    derivedStateOf { !hasMore && !loadingMore && results.isNotEmpty() }
+                val canSwipeContinue = remember(gridState) {
+                    derivedStateOf {
+                        // 判「到底」而不是判「没有更多」：以前要求 !hasMore，
+                        // 一旦 hasMore 还是 true、自动触底加载又没跑起来（正在加载、
+                        // 或最后几项判断没命中），列表就滑不动、上滑也不响应 —— 彻底卡死。
+                        // 现在只要列表不能再往前滚、且不在加载中，上滑就当作「再问一页」。
+                        results.isNotEmpty() && !loadingMore &&
+                            gridState.layoutInfo.totalItemsCount > 0 &&
+                            !gridState.canScrollForward
+                    }
                 }
                 val density = LocalDensity.current
                 val swipeContinue = remember(density) {
@@ -752,9 +760,9 @@ fun TagSearchScreen(
                 Box(Modifier.fillMaxSize()) {
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(columns),
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .nestedScroll(swipeContinue),
+                        // nestedScroll 只挂在**外层 Box** 上：两处都挂会收到两份
+                        // onPostScroll，位移被重复累加，阈值形同虚设
+                        modifier = Modifier.fillMaxSize(),
                         state = gridState,
                         contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -798,8 +806,12 @@ fun TagSearchScreen(
             else -> {
                 val listState = rememberLazyListState()
                 // 列表态同宫格态：到底之后上滑即翻页（v1.8.9.6）
-                val canSwipeContinue = remember {
-                    derivedStateOf { !hasMore && !loadingMore && results.isNotEmpty() }
+                val canSwipeContinue = remember(listState) {
+                    derivedStateOf {
+                        results.isNotEmpty() && !loadingMore &&
+                            listState.layoutInfo.totalItemsCount > 0 &&
+                            !listState.canScrollForward
+                    }
                 }
                 val density = LocalDensity.current
                 val swipeContinue = remember(density) {
@@ -817,11 +829,9 @@ fun TagSearchScreen(
                             if (hasMore && total > 0 && last >= total - 3) viewModel.loadMore()
                         }
                 }
-                Box(Modifier.fillMaxSize()) {
+                Box(Modifier.fillMaxSize().nestedScroll(swipeContinue)) {
                     LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .nestedScroll(swipeContinue),
+                        modifier = Modifier.fillMaxSize(),
                         state = listState,
                         contentPadding = PaddingValues(vertical = 8.dp),
                     ) {
@@ -1314,10 +1324,9 @@ private class SwipeContinueConnection(
         available: Offset,
         source: NestedScrollSource,
     ): Offset {
-        if (!enabled()) {
-            accumulated = 0f
-            return Offset.Zero
-        }
+        // 不满足条件时**不清零**：加载中那几百毫秒里用户往往还在继续滑，
+        // 清零会让他觉得「白滑了」。真正的复位交给下面的「往回拉」分支。
+        if (!enabled()) return Offset.Zero
         if (available.y < 0f) {
             // y < 0 = 内容继续往上走（用户想看更下面的东西），但列表已经到底了
             accumulated += -available.y
@@ -1335,7 +1344,7 @@ private class SwipeContinueConnection(
 }
 
 /** 上滑触发翻页需要累积的位移（dp）：太小会误触，太大要滑很久 */
-private const val SWIPE_CONTINUE_THRESHOLD_DP = 72f
+private const val SWIPE_CONTINUE_THRESHOLD_DP = 56f
 
 /** 两次上滑翻页之间的冷却，防止一次甩动连续开好几页 */
-private const val SWIPE_CONTINUE_COOLDOWN_MS = 900L
+private const val SWIPE_CONTINUE_COOLDOWN_MS = 700L

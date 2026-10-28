@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.9.0.8"
+    const val CURRENT_VERSION = "1.9.0.9"
 
     /**
      * 更新日志。
@@ -25,6 +25,13 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.9.0.9",
+            date = "2026-10-28",
+            changes = listOf(
+                "**彻底恢复原图标**：上一版回退时漏了一个 `ic_launcher_round.png` —— 那是我做测试图标时新增的文件，原项目里根本没有，所以圆形桌面上还显示着测试图。现在删掉了，并从最初的提交恢复了全部图标资源。",
+            ),
+        ),
         VersionEntry(
             version = "1.9.0.8",
             date = "2026-10-28",

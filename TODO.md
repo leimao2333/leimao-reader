@@ -542,7 +542,7 @@
   - 统一入口 `startTagImport(TagImportSource.Cloud/Url/Local)`，云端 / URL / 本地三个导入共用同一套进度与取消。
   - 涉及：`SettingsViewModel.kt`、`SettingsScreen.kt`、`TagIndexRepository.kt`、`HttpClient.kt`。
 
-- [ ] **38. 修：标签导入大型文件直接报错（导入不了）**
+- [x] **38. 修：标签导入大型文件直接报错（导入不了）** ✅ v1.8.8.3（边读边解析 + 分块落库，内存与文件大小解耦）
   - 现象：设置页「标签导入」选本地大型 tag_table.json（十几 MB 起）后立即失败，只弹「标签导入失败：…」；云端 / URL 导入是同一条链路，小表能过、大表必挂。
   - 根因方向（待复现实锤）：整条链路把全表在内存里复制了 3~4 份 ——
     ① `SettingsViewModel.loadTableText` 本地分支 `stream.readBytes().toString(UTF_8)`（`SettingsViewModel.kt:332-337`），byte[] 与 String 各一份；

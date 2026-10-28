@@ -39,6 +39,8 @@ class PreferencesManager(private val context: Context) {
         // ===== 小说阅读 =====
         val KEY_NOVEL_FONT_SIZE = floatPreferencesKey("novel_font_size")
         /** 详细日志开关（v1.9.0.2）：设置 → 开发者选项，默认关 */
+        /** 界面字体档位（v1.9.0.5）：0 系统 / 1 衬线 / 2 等宽 / 3 手写 */
+        val KEY_APP_FONT = intPreferencesKey("app_font")
         val KEY_DEBUG_LOGGING = booleanPreferencesKey("debug_logging")
         val KEY_NOVEL_BG_INDEX = intPreferencesKey("novel_bg_index")
         val KEY_NOVEL_NIGHT = booleanPreferencesKey("novel_night")
@@ -126,6 +128,11 @@ class PreferencesManager(private val context: Context) {
         }
 
         // 字体族常量
+        /** 界面字体档位（v1.9.0.5） */
+        const val APP_FONT_SYSTEM = 0
+        const val APP_FONT_SERIF = 1
+        const val APP_FONT_MONO = 2
+        const val APP_FONT_CURSIVE = 3
         const val FONT_FAMILY_DEFAULT = 0
         const val FONT_FAMILY_SERIF = 1
         const val FONT_FAMILY_MONO = 2
@@ -617,6 +624,14 @@ class PreferencesManager(private val context: Context) {
     }
 
     /** 字体族：0=系统默认 1=衬线 2=等宽 */
+    /** 界面字体（v1.9.0.5）：整个 App 的 UI 字体，不含阅读页正文 */
+    val appFontFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_APP_FONT] ?: APP_FONT_SYSTEM }
+
+    suspend fun setAppFont(value: Int) {
+        context.dataStore.edit { it[KEY_APP_FONT] = value.coerceIn(0, 3) }
+    }
+
     /** 详细日志（v1.9.0.2）：打开后关键路径写进内存环形缓冲，可在设置里导出 */
     val debugLoggingFlow: Flow<Boolean> = context.dataStore.data
         .map { it[KEY_DEBUG_LOGGING] ?: false }

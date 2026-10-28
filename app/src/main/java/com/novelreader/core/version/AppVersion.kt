@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.9.0.4"
+    const val CURRENT_VERSION = "1.9.0.5"
 
     /**
      * 更新日志。
@@ -25,6 +25,13 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.9.0.5",
+            date = "2026-10-28",
+            changes = listOf(
+                "**设置里可以改界面字体了**：设置 → 全局 → 界面字体，四档（系统 / 衬线 / 等宽 / 手写）。影响的是菜单、列表、设置这些界面文字；阅读页正文的字体在阅读菜单里单独调，两者互不干扰。",
+            ),
+        ),
         VersionEntry(
             version = "1.9.0.4",
             date = "2026-10-28",

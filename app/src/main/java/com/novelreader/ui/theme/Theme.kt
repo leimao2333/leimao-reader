@@ -2,6 +2,8 @@ package com.novelreader.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Typography
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -93,16 +95,56 @@ object ReaderBackgrounds {
     val fontSizeSteps = listOf(14f, 16f, 18f, 20f, 22f, 24f, 26f)
 }
 
+/** 界面字体档位（v1.9.0.5）：与设置页的选项一一对应 */
+const val APP_FONT_SYSTEM = 0
+const val APP_FONT_SERIF = 1
+const val APP_FONT_MONO = 2
+const val APP_FONT_CURSIVE = 3
+
+/**
+ * 把整套排版样式换一个字体族。
+ *
+ * Material3 的 [Typography] 有十五个独立样式，没有批量替换的方法 —— 只能逐个 copy。
+ * 手写一遍虽然啰嗦，但比在根节点用 `LocalTextStyle` 覆盖可靠：后者只影响没显式指定
+ * style 的 Text，Material 组件（按钮、列表项、对话框）内部都写死了自己的 style。
+ */
+private fun Typography.withFontFamily(family: FontFamily): Typography = Typography(
+    displayLarge = displayLarge.copy(fontFamily = family),
+    displayMedium = displayMedium.copy(fontFamily = family),
+    displaySmall = displaySmall.copy(fontFamily = family),
+    headlineLarge = headlineLarge.copy(fontFamily = family),
+    headlineMedium = headlineMedium.copy(fontFamily = family),
+    headlineSmall = headlineSmall.copy(fontFamily = family),
+    titleLarge = titleLarge.copy(fontFamily = family),
+    titleMedium = titleMedium.copy(fontFamily = family),
+    titleSmall = titleSmall.copy(fontFamily = family),
+    bodyLarge = bodyLarge.copy(fontFamily = family),
+    bodyMedium = bodyMedium.copy(fontFamily = family),
+    bodySmall = bodySmall.copy(fontFamily = family),
+    labelLarge = labelLarge.copy(fontFamily = family),
+    labelMedium = labelMedium.copy(fontFamily = family),
+    labelSmall = labelSmall.copy(fontFamily = family),
+)
+
 @Composable
 fun NovelReaderTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    /** 界面字体档位（v1.9.0.5）：0 系统 / 1 衬线 / 2 等宽 / 3 手写 */
+    appFont: Int = APP_FONT_SYSTEM,
     content: @Composable () -> Unit,
 ) {
     val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
+    val typography = when (appFont) {
+        APP_FONT_SERIF -> Typography().withFontFamily(FontFamily.Serif)
+        APP_FONT_MONO -> Typography().withFontFamily(FontFamily.Monospace)
+        APP_FONT_CURSIVE -> Typography().withFontFamily(FontFamily.Cursive)
+        else -> Typography()
+    }
 
     CompositionLocalProvider(LocalAppDarkTheme provides darkTheme) {
         MaterialTheme(
             colorScheme = colorScheme,
+            typography = typography,
             content = content,
         )
     }

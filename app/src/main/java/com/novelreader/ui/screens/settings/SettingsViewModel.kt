@@ -31,6 +31,14 @@ class SettingsViewModel(
     private val ttsController: com.novelreader.core.tts.TtsController? = null,
 ) : ViewModel() {
 
+    /** 界面字体（v1.9.0.5）：0 系统 / 1 衬线 / 2 等宽 / 3 手写 */
+    val appFont: StateFlow<Int> = preferencesManager.appFontFlow
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+
+    fun setAppFont(value: Int) {
+        viewModelScope.launch { preferencesManager.setAppFont(value) }
+    }
+
     /** 详细日志开关（v1.9.0.2）：设置 → 开发者选项 */
     val debugLogging: StateFlow<Boolean> = preferencesManager.debugLoggingFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)

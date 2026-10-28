@@ -72,7 +72,10 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(debugLogging) {
                 com.novelreader.core.util.DebugLog.enabled = debugLogging
             }
-            NovelReaderTheme(darkTheme = darkTheme) {
+            // v1.9.0.5：界面字体（设置 → 外观）
+            val appFont by app.container.preferencesManager.appFontFlow
+                .collectAsState(initial = 0)
+            NovelReaderTheme(darkTheme = darkTheme, appFont = appFont) {
                 // 系统栏图标明暗跟随**应用**主题（v1.8.8.2）。
                 //
                 // enableEdgeToEdge() 在 onCreate 里按**系统**深色模式设过一次图标颜色，而本应用

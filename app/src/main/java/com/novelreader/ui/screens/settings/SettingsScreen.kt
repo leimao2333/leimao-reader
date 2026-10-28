@@ -74,6 +74,7 @@ fun SettingsScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     // v1.9.0.2 开发者选项：详细日志开关 + 导出结果提示
     val debugLogging by viewModel.debugLogging.collectAsState()
+    val appFont by viewModel.appFont.collectAsState()
     val debugExportResult by viewModel.debugExportResult.collectAsState()
     LaunchedEffect(debugExportResult) {
         val r = debugExportResult ?: return@LaunchedEffect
@@ -225,6 +226,27 @@ fun SettingsScreen(
         ) {
             // ===== 全局 =====
             SectionTitle("全局")
+            // 界面字体（v1.9.0.5）：整 App 的 UI 字体，阅读页正文另有自己的设置
+            SettingRow(
+                title = "界面字体",
+                subtitle = "菜单、列表、设置这些界面文字的字体（阅读页正文字体在阅读菜单里单独调）",
+            ) {
+                Row {
+                    listOf(
+                        "系统" to PreferencesManager.APP_FONT_SYSTEM,
+                        "衬线" to PreferencesManager.APP_FONT_SERIF,
+                        "等宽" to PreferencesManager.APP_FONT_MONO,
+                        "手写" to PreferencesManager.APP_FONT_CURSIVE,
+                    ).forEach { (label, mode) ->
+                        FilterChip(
+                            selected = appFont == mode,
+                            onClick = { viewModel.setAppFont(mode) },
+                            label = { Text(label) },
+                            modifier = Modifier.padding(start = 4.dp),
+                        )
+                    }
+                }
+            }
             // 深色模式：关闭 / 开启 / 跟随系统（#36，三选一，跟随系统可随日夜自动切换）
             SettingRow(
                 title = "夜间模式",

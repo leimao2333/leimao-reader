@@ -51,10 +51,15 @@ class TagContext private constructor(
     /**
      * 判定顺序（改动前先读一遍，每条都各有原因）：
      * 1. **分类页证据优先** —— 站方归类最可信，不拿标题去否它；
-     * 2. **源不可用 → unknown** —— 超时是「不知道」，绝不是「没有」；
-     * 3. **标题命中 → matched**；
+     * 2. **标题命中 → matched** —— 白纸黑字写在标题里的，比「源的状态」可信；
+     * 3. **源不可用 → unknown** —— 超时是「不知道」，绝不是「没有」；
      * 4. **分级 / 状态词 + 成人源 → unknown**；
      * 5. 其余才是 [TagVerdict.MISMATCHED]。
+     *
+     * v1.9.1.1：第 2、3 条换了位置。以前「源超时」排在「标题命中」之前，于是同一个源
+     * 只要有一个入口超时，它**已经抓回来、标题明明白白带着标签词**的结果也一起被降级成
+     * UNKNOWN —— 这些条目随后不算 proven，在 proven 充足时整批被隐藏。真机上表现就是
+     * 「搜着搜着少了一大批」。超时只能说明「可能还有更多」，不能反过来否定已知命中。
      *
      * [adultSource] 是第 4 条的前提，不能省：分级词（无码 / 有码 / 里番 / 成人）
      * 几乎不会写进标题，所以在**做这类内容的源**上「标题没写」等于「不确定」。
@@ -68,8 +73,8 @@ class TagContext private constructor(
         adultSource: Boolean = true,
     ): TagVerdict {
         if (provenByCategory) return TagVerdict.MATCHED
-        if (sourceOutcome != null && sourceOutcome.isUnknown) return TagVerdict.UNKNOWN
         if (matchesNormalized(normalizedTitle)) return TagVerdict.MATCHED
+        if (sourceOutcome != null && sourceOutcome.isUnknown) return TagVerdict.UNKNOWN
         if (isExplicitAdult && adultSource) return TagVerdict.UNKNOWN
         return TagVerdict.MISMATCHED
     }
@@ -141,7 +146,27 @@ object TagResultPolicy {
         val proven: Boolean get() = verdicts.isNotEmpty() && matchedCount == verdicts.size
     }
 
-    fun rank(candidates: List<Candidate>, minResults: Int = MIN_RESULTS): List<MediaItem> {
+    /**
+     * 取舍 + 排序。
+     *
+     * v1.9.1.1 新增 [keep]：**已经上过屏的条目永不撤回**。
+     *
+     * 以前的版本是「纯函数式」取舍 —— 每次拿当前候选集重新分区，proven 一旦攒够
+     * [minResults] 条就把其余的全部砍掉。流式搜索里这意味着：屏幕上明明已经有 60 条，
+     * 下一批数据到货让 proven 从 19 变成 20，整个列表瞬间缩成 20 条。用户看到的就是
+     * 「搜着搜着突然变少」。
+     *
+     * 收敛（结果集随召回单调变全）是搜索的基本预期，所以这里把「已展示」当成一种状态：
+     * 调用方把上过屏的 key 记下来，这里保证它们始终在输出里（排在 proven 之后）。
+     * 结果就是**数量只增不减**，而「无关内容不要堆在前面」的产品意图由排序继续保证。
+     *
+     * @param keep 该条目是否已经展示过；为 true 时无论取舍档位如何都保留
+     */
+    fun rank(
+        candidates: List<Candidate>,
+        minResults: Int = MIN_RESULTS,
+        keep: (MediaItem) -> Boolean = { false },
+    ): List<MediaItem> {
         if (candidates.isEmpty()) return emptyList()
         val (proven, rest) = candidates.partition { it.proven }
         val ordered = proven
@@ -149,13 +174,23 @@ object TagResultPolicy {
                 compareByDescending<Candidate> { it.matchedCount }.thenBy { it.unknownCount },
             )
             .map { it.item }
-        if (ordered.size >= minResults) return ordered
-        // 证据不足：把「没被否掉但也没证实」的按召回顺序补上。
-        // **明确不匹配的不补**（v1.8.9.2）：它们是「已经判定为无关」的，补在后面
-        // 正是真机反馈的「下面还是一堆和标签没关系的东西」。以前连它们一起补，
-        // 于是 20 条以下的结果页有半屏都是判定层自己已经否掉的内容。
-        val unproven = rest.filter { it.allKnown }.map { it.item }
-        if (ordered.isNotEmpty() || unproven.isNotEmpty()) return ordered + unproven
+        // 已经上过屏的不再撤回。它们可能因为「源后来超时」从 proven 掉到 rest，
+        // 但那只是判定口径变了，用户眼里那条内容并没有消失的理由。
+        val sticky = rest.filter { keep(it.item) }.map { it.item }
+        val supplement = if (ordered.size >= minResults) {
+            emptyList()
+        } else {
+            // 证据不足：把「没被否掉但也没证实」的按召回顺序补上。
+            // **明确不匹配的不补**（v1.8.9.2）：它们是「已经判定为无关」的，补在后面
+            // 正是真机反馈的「下面还是一堆和标签没关系的东西」。
+            rest.filter { it.allKnown && !keep(it.item) }.map { it.item }
+        }
+        val merged = ArrayList<MediaItem>(ordered.size + sticky.size + supplement.size)
+        val seen = HashSet<String>(ordered.size + sticky.size + supplement.size)
+        (ordered + sticky + supplement).forEach { item ->
+            if (seen.add("${item.sourceId}:${item.id}")) merged += item
+        }
+        if (merged.isNotEmpty()) return merged
         // 一条确凿的、一条不确定的都没有：才退回明确不匹配的那批，
         // 至少别甩一个空结果页（这时用户更需要知道「确实没搜到」）。
         return rest.sortedBy { it.mismatchedCount }.map { it.item }

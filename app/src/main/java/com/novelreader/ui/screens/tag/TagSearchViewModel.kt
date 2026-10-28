@@ -515,6 +515,24 @@ class TagSearchViewModel(
      */
     private var dropUnproven = false
 
+    /**
+     * 本次搜索**已经上过屏**的条目（`sourceId:id`，v1.9.1.1）。
+     *
+     * 取舍层 `TagResultPolicy.rank` 用它在重新分区时保住这些条目，保证结果集
+     * 「只增不减」。以前每次流式上屏都是拿当前候选重算一遍再覆盖列表，proven 一旦
+     * 攒够 20 条，其余内容整批被隐藏 —— 那就是「搜着搜着突然变少」的直接原因。
+     */
+    private val shownKeys = HashSet<String>()
+
+    /**
+     * 本次搜索的「隐藏成人内容」开关（v1.9.1.1）。
+     *
+     * 以前是流式阶段不过滤、收尾时 `filterAdults` 一次性砍掉成人源条目，
+     * 用户先看到一片内容再整批消失。现在搜索开始时读一次，流式与收尾用同一个值。
+     */
+    @Volatile
+    private var hideAdultForSearch = true
+
     /** 本轮因超时/报错而「不知道有没有」的源数量 */
     private val _slowSourceCount = MutableStateFlow(0)
     val slowSourceCount: StateFlow<Int> = _slowSourceCount.asStateFlow()
@@ -819,6 +837,10 @@ class TagSearchViewModel(
      */
     fun loadMore(force: Boolean = false) {
         if (_loadingMore.value) return
+        // 首屏召回还没收尾时不许翻页（v1.9.1.1）：`paging` / `_hasMore` 在召回前就位，
+        // 而结果累加器要等收尾才接管。这中间触底会把半截列表换成本页内容。
+        // 收尾完成后 UI 的触底监听会自然再触发一次，不会漏掉。
+        if (_searching.value) return
         if (!_hasMore.value && !force) return
         val ctx = paging ?: return
         val generation = searchGeneration
@@ -967,8 +989,10 @@ class TagSearchViewModel(
             }
             val items = result.responses.flatMap { it.items }
                 .distinctBy { "${it.sourceId}:${it.id}" }
-            // 翻页同样要过判定层：不过的话第 2 页起又会把无关内容原样追加回来
-            PageResult(rankOffMain(items, ctx.tags, proven, pagingMinResults()), proven)
+            // 翻页同样要过判定层：不过的话第 2 页起又会把无关内容原样追加回来。
+            // 成人源口径也要跟着走（v1.9.1.1）：首页隐藏了，翻页不该又冒出来。
+            val rankedPage = rankOffMain(items, ctx.tags, proven, pagingMinResults())
+            PageResult(applyAdultFilter(rankedPage, ctx.tags), proven)
         }
         // 有标签在源里没有真实分类页 → 组合筛选在数据层不成立，退回各集并集。
         // 取舍交给判定层，不再用一刀切的标题过滤把这些内容砍掉。
@@ -976,14 +1000,15 @@ class TagSearchViewModel(
             val result = recallEntries(ctx.entriesPerTag, page = page)
             val items = result.responses.flatMap { it.items }
                 .distinctBy { "${it.sourceId}:${it.id}" }
-            PageResult(rankOffMain(items, ctx.tags, emptyMap(), pagingMinResults()))
+            val ranked = rankOffMain(items, ctx.tags, emptyMap(), pagingMinResults())
+            PageResult(applyAdultFilter(ranked, ctx.tags))
         }
         else -> {
             val categoryEntries = ctx.entriesPerTag.map { list ->
                 list.filter { it.kind == EntryKind.CATEGORY }
             }
-            val strict = strictIntersection(categoryEntries, page, {}, ctx.union)
-            PageResult(strict.matched, provenOf(strict, ctx.tags))
+            val strict = strictIntersection(categoryEntries, page, { _, _ -> }, ctx.union)
+            PageResult(applyAdultFilter(strict.matched, ctx.tags), provenOf(strict, ctx.tags))
         }
     }
 
@@ -1082,15 +1107,33 @@ class TagSearchViewModel(
      */
     private fun appendResultsCounted(items: List<MediaItem>): Pair<Int, Int> {
         if (items.isEmpty()) return 0 to 0
+        // 累加器还没接管本轮结果时先以「屏上已有内容」为基线（v1.9.1.1）。
+        // 否则用户中途触底 / 点进详情再返回时，这里的「追加」会变成「替换」——
+        // 半截列表瞬间只剩这一页的几条，是「搜着搜着变少」的第二条路径。
+        if (!resultsAccReady) {
+            resultsAcc.reset(_results.value)
+            resultsAccReady = true
+        }
         val idsBefore = resultsAcc.uniqueCount
         val rowsBefore = _results.value.size
         _results.value = resultsAcc.addAll(items)
+        shownKeys.addAll(items.map(::itemKey))
         return (_results.value.size - rowsBefore).coerceAtLeast(0) to
             (resultsAcc.uniqueCount - idsBefore).coerceAtLeast(0)
     }
 
     /** 结果累加器：翻页只处理新到的一页，不重算整个列表 */
     private val resultsAcc = SearchResultMerge.Accumulator()
+
+    /**
+     * 累加器是否已经接管本轮结果（v1.9.1.1）。
+     *
+     * 首屏召回开始前 [paging] 就建好了，但累加器要到收尾 `reset(final)` 才装数据。
+     * 这段空窗期里任何一次「追加」（用户触底、点进详情再返回）都会把屏幕换成本页内容。
+     * 有了这个标记，[appendResultsCounted] 会先用屏上内容喂给累加器，把「替换」降级成
+     * 真正的「追加」。
+     */
+    private var resultsAccReady = false
 
     /**
      * 执行标签搜索（单标签 / 复合标签通用）。
@@ -1211,7 +1254,7 @@ class TagSearchViewModel(
                         .flatMap { spec -> TagAlias.searchTermsFor(spec.name) + spec.name }
                         .map(TagQuery::normalizeTitle)
                         .filter { it.isNotEmpty() }
-                    val network = withoutExcluded(filterAdults(ranked, ctx.tags), excludeTerms)
+                    val network = withoutExcluded(applyAdultFilter(ranked, ctx.tags), excludeTerms)
                     appendResultsCounted(network)
                     indexProvenance(network, proven)
                 }
@@ -1244,6 +1287,10 @@ class TagSearchViewModel(
             _progress.value = null
             _emptyPage.value = 0
             repeatPages = 0
+            // v1.9.1.1：新一轮搜索重置「上过屏」集合；累加器还没接管本轮结果，
+            // 首屏收尾 `reset(final)` 时才置 true（这之前任何追加都先接管屏上内容）。
+            shownKeys.clear()
+            resultsAccReady = false
 
             try {
                 // v1.8.8.4：按用户设置重建本次搜索的并发额度。放在 ensurePlan 之前，
@@ -1303,31 +1350,15 @@ class TagSearchViewModel(
                 // 网络搜索照跑，新结果合并进来、再回写索引，越搜越全。
                 // v1.8.1.3：索引查询带上大类 / 排除 / 成人整类过滤，并返回置信度排序。
                 // v1.8.9.7（待办 #47）：顺带刷新各标签的收录数，chip 角标与结果同步。
+                // ===== 成人 / 分级口径先就位（v1.9.1.1）=====
+                // 以前这两项在本地索引之后才算，于是索引结果先原样上屏、收尾时才被
+                // filterAdults / dropNonAdultForExplicitTags 砍掉 —— 又是一次「先看见再消失」。
+                // 现在提前算好，本地索引、流式上屏、收尾三条路径共用同一个口径。
                 val indexedTotal = tagIndexRepository?.let { repo ->
                     refreshIndexStats(repo)
                     _indexCount.value
                 } ?: 0
-                var localItems: List<MediaItem> = emptyList()
-                if (indexedTotal > 0 && clauses.isNotEmpty()) {
-                    val hideAdult = preferencesManager?.hideAdultFlow?.first() ?: true
-                    val explicitAdult = tags.any(TagAlias::isExplicitAdultIntent) ||
-                        uniqueSpecs.any { (spec, _) -> spec.category == TagTagger.CATEGORY_ADULT }
-                    localItems = tagIndexRepository?.search(
-                        type = type,
-                        clauses = clauses,
-                        excludeTags = excludeNames,
-                        hideAdult = hideAdult && !explicitAdult,
-                    ).orEmpty()
-                    if (localItems.isNotEmpty()) {
-                        _results.value = localItems
-                    }
-                    // 待办 #47：这些就是「已收录」的，标记出来供卡片显示角标
-                    _indexedKeys.value = localItems.map { "${it.sourceId}|${it.id}" }.toSet()
-                } else {
-                    _indexedKeys.value = emptySet()
-                }
-
-                // 分级 / 属性类标签的判定要用：哪些源本身是成人源
+                hideAdultForSearch = preferencesManager?.hideAdultFlow?.first() ?: true
                 adultSourceIds = runCatching {
                     sourceRepository?.getSourcesByType(type)
                         ?.filter { it.isAdult }
@@ -1335,6 +1366,30 @@ class TagSearchViewModel(
                         ?.toSet()
                         .orEmpty()
                 }.getOrDefault(emptySet())
+                val explicitAdultIntent = tags.any(TagAlias::isExplicitAdultIntent) ||
+                    uniqueSpecs.any { (spec, _) -> spec.category == TagTagger.CATEGORY_ADULT }
+
+                var localItems: List<MediaItem> = emptyList()
+                if (indexedTotal > 0 && clauses.isNotEmpty()) {
+                    localItems = tagIndexRepository?.search(
+                        type = type,
+                        clauses = clauses,
+                        excludeTags = excludeNames,
+                        hideAdult = hideAdultForSearch && !explicitAdultIntent,
+                    ).orEmpty()
+                        // 索引自身只按大类过滤，源级的成人口径在这里补齐，免得收尾再砍一遍
+                        .let { applyAdultFilter(it, tags) }
+                        .let { withoutExcluded(it, excludeTerms) }
+                    if (localItems.isNotEmpty()) {
+                        _results.value = localItems
+                        shownKeys.addAll(localItems.map(::itemKey))
+                    }
+                    // 待办 #47：这些就是「已收录」的，标记出来供卡片显示角标
+                    _indexedKeys.value = localItems.map { "${it.sourceId}|${it.id}" }.toSet()
+                } else {
+                    _indexedKeys.value = emptySet()
+                }
+
                 val enabledIds = enabledSourceIds()
                 if (enabledIds != null && enabledIds.isEmpty()) {
                     _activeTags.value = emptyList()
@@ -1382,22 +1437,43 @@ class TagSearchViewModel(
                 //    是 O(n²)，246 个请求会把主线程占死。最后一批不推也没关系，
                 //    搜索收尾时会用累加器整体刷一次。
                 var lastEmitMs = 0L
-                val updatePartialResults: suspend (List<MediaItem>) -> Unit = { partial ->
-                    val now = android.os.SystemClock.uptimeMillis()
-                    if (generation == searchGeneration &&
-                        now - lastEmitMs >= STREAM_EMIT_INTERVAL_MS
-                    ) {
-                        lastEmitMs = now
-                        val visible = withContext(Dispatchers.Default) {
-                            val ranked = rankByVerdict(partial, known, emptyMap())
-                            // 索引里已经查到的要先并进来：流式上屏是**覆盖**写 results，
-                            // 光用网络这批会把眼前已有的本地结果顶掉，看着像「越搜越少」。
-                            if (localItems.isEmpty()) ranked
-                            else SearchResultMerge.merge(localItems, ranked)
+                // v1.9.1.1：流式上屏的三条纪律 ——
+                // 1. **证据与收尾同口径**：分类页抓到的作品才算「属于这个标签」。以前这里
+                //    传空表，只靠标题猜，收尾又换成真实证据，于是同一页会「多 → 骤少 → 又多」；
+                // 2. **只增不减**：上过屏的条目记进 [shownKeys]，判定层不会再把它撤回；
+                // 3. **过滤前移**：成人 / 排除词在这里就过掉，别让内容先出现再消失。
+                val updatePartialResults:
+                    suspend (List<MediaItem>, Map<String, Set<String>>) -> Unit = { partial, proven ->
+                        val now = android.os.SystemClock.uptimeMillis()
+                        if (generation == searchGeneration &&
+                            now - lastEmitMs >= STREAM_EMIT_INTERVAL_MS
+                        ) {
+                            lastEmitMs = now
+                            // 先在主线程把「已展示」快照下来：下面要切到 Default 线程做判定，
+                            // 直接在里面读 HashSet 会和主线程的 addAll 撞（并发读写）。
+                            val shownSnapshot = HashSet(shownKeys)
+                            val visible = withContext(Dispatchers.Default) {
+                                val ranked = rankByVerdict(
+                                    items = partial,
+                                    tags = known,
+                                    proven = proven,
+                                    keep = { shownSnapshot.contains(itemKey(it)) },
+                                )
+                                val filtered = withoutExcluded(
+                                    applyAdultFilter(ranked, tags),
+                                    excludeTerms,
+                                )
+                                // 索引里已经查到的是「按标签命中」的，永远排在最前，
+                                // 也不会被网络批次顶掉。
+                                if (localItems.isEmpty()) filtered
+                                else SearchResultMerge.merge(localItems, filtered)
+                            }
+                            if (visible.isNotEmpty()) {
+                                shownKeys.addAll(visible.map(::itemKey))
+                                _results.value = visible
+                            }
                         }
-                        if (visible.isNotEmpty()) _results.value = visible
                     }
-                }
                 val translatedNotice = tags.mapIndexedNotNull { i, tag ->
                     val variants = variantsPerTag[i]
                     val self = TagQuery.normalizeTitle(tag)
@@ -1491,7 +1567,12 @@ class TagSearchViewModel(
                 val outcome: CompoundOutcome
                 if (knownEntries.size == 1) {
                     val only = known.firstOrNull()
-                    val result = recallEntries(knownEntries, page = 1, onItems = updatePartialResults)
+                    val result = recallEntries(
+                        knownEntries,
+                        page = 1,
+                        tagNames = known,
+                        onItems = updatePartialResults,
+                    )
                     // 分类页入口的结果才算「这部作品属于该标签」的证据
                     val proven = mutableMapOf<String, MutableSet<String>>()
                     result.responses.forEach { response ->
@@ -1516,27 +1597,37 @@ class TagSearchViewModel(
                 // 按作品身份键再去重一次，避免结果里出现两条「同一部」。
                 // **取舍只走判定层**（[rankByVerdict]）：分级词 unknown 保留、
                 // 题材词按标题校验、数量不足自动兜底，不再有「整轮标题硬过滤」的开关。
-                val ranked = rankOffMain(searchResult, known, outcome.proven)
+                // v1.9.1.1：带上 [shownKeys] —— 收尾这一次重排只能补、不能删，
+                // 否则用户已经浏览过的内容会在最后一刻消失。
+                val shownAtFinish = HashSet(shownKeys)
+                val ranked = rankOffMain(
+                    searchResult,
+                    known,
+                    outcome.proven,
+                    keep = { shownAtFinish.contains(itemKey(it)) },
+                )
                 // 条数变少 = 判定层挡掉了「没证据」的那批 → 翻页沿用同一口径
                 dropUnproven = ranked.size < searchResult.size
                 val network = withoutExcluded(
-                    // 先按相关性排序，再把成人源内容沉底 —— 顺序反了的话
-                    // [TagResultPolicy.rank] 会按命中数重排，成人沉底就白做了。
-                    filterAdults(ranked, tags),
+                    // 成人源内容在这里一次处理完（隐藏 / 沉底），流式阶段用的是同一个函数
+                    applyAdultFilter(ranked, tags),
                     excludeTerms,
                 )
                 // 索引里的是「按真实题材命中」的，不再过标题过滤；与网络结果合并去重。
                 // v1.8.4.1：先按 `sourceId:id` 收敛再按标题收敛 —— 同一部作品在索引里
                 // 存的是旧标题、网络返回的是新标题时，只按标题去重会留下两条同一个 id，
                 // 列表（LazyColumn key = sourceId:id）会直接崩。
+                // localItems 已在查询时过完成人 / 排除词口径，这里不再二次过滤。
                 val final = withoutExcluded(
-                    SearchResultMerge.merge(dropNonAdultForExplicitTags(localItems, tags), network),
+                    SearchResultMerge.merge(localItems, network),
                     excludeTerms,
                 )
                 if (generation != searchGeneration) return@launch
                 _activeTags.value = known.map(TagAlias::canonicalOf).distinct()
                 // 用累加器接管当前结果：之后翻页只增量处理新到的一页（v1.8.4.1）
                 _results.value = resultsAcc.reset(final)
+                shownKeys.addAll(final.map(::itemKey))
+                resultsAccReady = true
                 // 边搜边标记（v1.8.1.2）+ **证据化**打标（v1.8.4.1）。
                 // 以前是「整批同一个上下文」：只要每个标签都有分类页入口，就把所有结果
                 // 一起打上这些标签。但同一次搜索里往往混着关键词入口，那些结果只是
@@ -1645,7 +1736,8 @@ class TagSearchViewModel(
      */
     private suspend fun recall(
         tasks: List<RecallTask>,
-        onItems: suspend (List<MediaItem>) -> Unit = {},
+        tagNames: List<String> = emptyList(),
+        onItems: suspend (List<MediaItem>, Map<String, Set<String>>) -> Unit = { _, _ -> },
         onBatch: (suspend (RecallBatch) -> Unit)? = null,
     ): RecallResult {
         if (tasks.isEmpty()) return RecallResult(emptyList(), emptyMap())
@@ -1665,17 +1757,42 @@ class TagSearchViewModel(
         )
         addProgressTotal(tasks.size)
         val collected = mutableListOf<MediaItem>()
+        // 分类页证据随批次累积（v1.9.1.1）：流式上屏必须和收尾用**同一套证据**，
+        // 否则同一个页面会在「多 → 骤少 → 又多」之间来回跳。
+        val proofByKey = HashMap<String, MutableSet<String>>()
         val lock = Any()
         val result = scheduler.run(tasks) { batch ->
             repeat(batch.responses.size) { stepProgress() }
-            val fresh = batch.responses.flatMap { it.items }
-            if (fresh.isNotEmpty()) {
-                val snapshot = synchronized(lock) {
-                    collected.addAll(fresh)
-                    collected.distinctBy { "${it.sourceId}:${it.id}" }
+            // 「这个源给过回答」要立刻记下，不能等整轮结束（v1.9.1.1）。
+            // 判定层用它区分「源不可用」和「源的某一种写法超时」；晚填会让流式阶段的
+            // 判定把「明明返回过内容」的源当成 unknown，连带把它已经返回的结果降级。
+            batch.responses.forEach { response ->
+                if (response.outcome == RecallOutcome.SUCCESS ||
+                    response.outcome == RecallOutcome.EMPTY
+                ) {
+                    sourceReturned.add(response.task.sourceId)
                 }
-                onItems(snapshot)
             }
+            val payload = synchronized(lock) {
+                var touched = false
+                batch.responses.forEach { response ->
+                    val tag = tagNames.getOrNull(response.task.tagIndex)
+                    if (tag != null && response.task.kind == EntryKind.CATEGORY) {
+                        response.items.forEach { item ->
+                            proofByKey.getOrPut(itemKey(item)) { mutableSetOf() }.add(tag)
+                            touched = true
+                        }
+                    }
+                    if (response.items.isNotEmpty()) {
+                        collected.addAll(response.items)
+                        touched = true
+                    }
+                }
+                if (!touched) null
+                else collected.distinctBy { "${it.sourceId}:${it.id}" } to
+                    proofByKey.mapValues { it.value.toSet() }
+            }
+            payload?.let { (items, proof) -> onItems(items, proof) }
             onBatch?.invoke(batch)
         }
         // 诊断日志（v1.8.9.1）：排查「为什么这一屏长这样」时，一眼看出是源没返回、
@@ -1722,11 +1839,12 @@ class TagSearchViewModel(
     private suspend fun recallEntries(
         entriesPerTag: List<List<TagEntry>>,
         page: Int,
-        onItems: suspend (List<MediaItem>) -> Unit = {},
+        tagNames: List<String> = emptyList(),
+        onItems: suspend (List<MediaItem>, Map<String, Set<String>>) -> Unit = { _, _ -> },
         onBatch: (suspend (RecallBatch) -> Unit)? = null,
     ): RecallResult {
         val tasks = entriesPerTag.flatMapIndexed { index, entries -> tasksOf(entries, index, page) }
-        val result = recall(tasks, onItems = onItems, onBatch = onBatch)
+        val result = recall(tasks, tagNames = tagNames, onItems = onItems, onBatch = onBatch)
         // 只有第一页决定 phase：翻页不会把已经 DONE 的搜索打回 STREAMING
         if (page == 1) {
             _phase.value = if (result.partial) SearchPhase.DONE_PARTIAL else SearchPhase.DONE_COMPLETE
@@ -1751,6 +1869,7 @@ class TagSearchViewModel(
         tags: List<String>,
         proven: Map<String, Set<String>>,
         minResults: Int = TagResultPolicy.MIN_RESULTS,
+        keep: (MediaItem) -> Boolean = { false },
     ): List<MediaItem> {
         if (items.isEmpty() || tags.isEmpty()) return items
         // 写法归一化 / 分级词判定每个标签只算一次，逐条时只剩字符串包含
@@ -1776,7 +1895,7 @@ class TagSearchViewModel(
                 },
             )
         }
-        return TagResultPolicy.rank(candidates, minResults)
+        return TagResultPolicy.rank(candidates, minResults, keep)
     }
 
     /** 把判定 + 排序挪到后台线程：主线程只负责把结果丢给 Compose */
@@ -1785,8 +1904,9 @@ class TagSearchViewModel(
         tags: List<String>,
         proven: Map<String, Set<String>>,
         minResults: Int = TagResultPolicy.MIN_RESULTS,
+        keep: (MediaItem) -> Boolean = { false },
     ): List<MediaItem> = if (items.isEmpty() || tags.isEmpty()) items
-    else withContext(Dispatchers.Default) { rankByVerdict(items, tags, proven, minResults) }
+    else withContext(Dispatchers.Default) { rankByVerdict(items, tags, proven, minResults, keep) }
 
     /** 翻页用的阈值：首页已经够多确凿结果时（0）只留确凿的，否则（20）照样兜底全给 */
     private fun pagingMinResults(): Int =
@@ -1797,27 +1917,6 @@ class TagSearchViewModel(
         SourceType.NOVEL -> "小说"
         SourceType.COMIC -> "漫画"
         SourceType.VIDEO -> "视频"
-    }
-
-    /**
-     * 本地索引结果的**成人源过滤**（v1.8.9.2）。
-     *
-     * 索引那批不过判定层 —— 它们靠自身标签命中，标题里通常没有标签词，拿标题去否
-     * 会把整个本地索引否光。但分级 / 属性类标签是例外：一般向源的条目根本不可能
-     * 属于这类题材。而索引里的标签有可能来自早期一次误判（某些站的分类页把整站
-     * 目录挂在任意分类下），写进索引后会**自我强化** —— 每次搜索都作为「本地命中」
-     * 直接合并进结果，绕过所有判定，用户看到的就是「下面还是一堆无关的」。
-     * 这里按源挡一道，成人源缺失时不动（宁可少过滤，也不把索引清空）。
-     */
-    private fun dropNonAdultForExplicitTags(
-        items: List<MediaItem>,
-        tags: List<String>,
-    ): List<MediaItem> {
-        if (items.isEmpty()) return items
-        if (tags.none(TagAlias::isExplicitAdultIntent)) return items
-        val adultIds = adultSourceIds
-        if (adultIds.isEmpty()) return items
-        return items.filter { it.sourceId in adultIds }
     }
 
     /** 收尾提示：有源没回话时如实说明「可能不全」，别让用户以为这就是全部。 */
@@ -1891,7 +1990,7 @@ class TagSearchViewModel(
     private suspend fun searchCompound(
         entriesPerTag: List<List<TagEntry>>,
         tags: List<String>,
-        onPartial: suspend (List<MediaItem>) -> Unit,
+        onPartial: suspend (List<MediaItem>, Map<String, Set<String>>) -> Unit,
     ): CompoundOutcome {
         if (entriesPerTag.isEmpty() || entriesPerTag.any { it.isEmpty() }) return CompoundOutcome.EMPTY
         val sources = entriesPerTag.flatMap { entries -> entries.map { it.sourceId } }.distinct()
@@ -1905,7 +2004,7 @@ class TagSearchViewModel(
             // 有标签在源里根本没有分类页 → 「组合筛选」在数据层不成立。
             // 如实展示各标签单独搜到的内容，不再用一刀切的标题过滤把它们砍掉，
             // 取舍交给判定层（分级词 unknown 保留 / 题材词按标题校验）。
-            val result = recallEntries(entriesPerTag, page = 1, onItems = onPartial)
+            val result = recallEntries(entriesPerTag, page = 1, tagNames = tags, onItems = onPartial)
             val union = result.responses.flatMap { it.items }.distinctBy { "${it.sourceId}:${it.id}" }
             if (union.isEmpty()) return CompoundOutcome.EMPTY
             return CompoundOutcome(
@@ -1950,7 +2049,7 @@ class TagSearchViewModel(
     private suspend fun strictIntersection(
         entriesPerTag: List<List<TagEntry>>,
         page: Int,
-        onPartial: suspend (List<MediaItem>) -> Unit,
+        onPartial: suspend (List<MediaItem>, Map<String, Set<String>>) -> Unit,
         carry: List<LinkedHashMap<String, MediaItem>>? = null,
     ): StrictResult {
         val unionPerTag = carry ?: MutableList(entriesPerTag.size) {
@@ -1986,28 +2085,39 @@ class TagSearchViewModel(
                 }
                 snapshot?.let { snap ->
                     val matched = withContext(Dispatchers.Default) { TagQuery.intersect(snap) }
-                    onPartial(matched)
+                    // 求交阶段还没有「这条属于哪个标签」的单条证据（交集本身就是证据），
+                    // 传空表让判定层按标题放行；数量上的单调性由调用方的 keep 保证。
+                    onPartial(matched, emptyMap())
                 }
             },
         )
         val matched = TagQuery.intersect(unionPerTag.map { it.values.toList() })
-        onPartial(matched)
+        onPartial(matched, emptyMap())
         return StrictResult(matched, unionPerTag, provenKeys)
     }
 
-    /** 成人源内容默认隐藏；用户明确选择成人/修饰标签时视为本次主动请求。 */
-    private suspend fun filterAdults(items: List<MediaItem>, tags: List<String>): List<MediaItem> {
+    /**
+     * 成人源口径（v1.9.1.1 起是**纯函数**，本地索引 / 流式 / 收尾 / 补召回共用）。
+     *
+     * 以前这里是 `suspend`：每次都要查一遍源表与偏好设置，代价大到只能放在收尾调一次，
+     * 于是流式阶段干脆不过滤 —— 用户先看到一片成人源内容，收尾时整批消失。
+     * 现在数据来自 [adultSourceIds] 与 [hideAdultForSearch]（搜索开始时各读一次），
+     * 每批上屏都能廉价地过一遍，画面就不会再「先出现再消失」。
+     *
+     * 两个方向的语义都在这里收口，避免再多一个 `dropNonAdultForExplicitTags`：
+     * - 明确搜成人题材 → **只留成人源**（一般向源不可能属于这类题材）；
+     * - 默认隐藏 → 剔掉成人源；用户关掉隐藏 → 沉底而不剔除。
+     */
+    private fun applyAdultFilter(items: List<MediaItem>, tags: List<String>): List<MediaItem> {
         if (items.isEmpty()) return items
-        val adultIds = sourceRepository?.getSourcesByType(type)
-            ?.filter { it.isAdult }
-            ?.map { it.id }
-            ?.toSet()
-            .orEmpty()
+        val adultIds = adultSourceIds
         if (adultIds.isEmpty()) return items
-        val hide = preferencesManager?.hideAdultFlow?.first() ?: true
-        val explicitlyRequested = tags.any(TagAlias::isExplicitAdultIntent)
-        return if (hide && !explicitlyRequested) items.filterNot { it.sourceId in adultIds }
-        else items.sortedBy { it.sourceId in adultIds }
+        val explicit = tags.any(TagAlias::isExplicitAdultIntent)
+        return when {
+            explicit -> items.filter { it.sourceId in adultIds }
+            hideAdultForSearch -> items.filterNot { it.sourceId in adultIds }
+            else -> items.sortedBy { it.sourceId in adultIds }
+        }
     }
 
     companion object {

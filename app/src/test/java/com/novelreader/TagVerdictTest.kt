@@ -223,4 +223,57 @@ class TagVerdictTest {
             ctx.verdict("某部作品", provenByCategory = true, sourceOutcome = RecallOutcome.SUCCESS, adultSource = true),
         )
     }
+
+    // ===== v1.9.1.1：结果集「只增不减」 =====
+
+    @Test
+    fun `标题命中比源超时更可信`() {
+        // 同一个源只要有一个入口超时，以前会把标题明明白白带着标签词的结果也降级成
+        // UNKNOWN，这些条目随后不算确凿、在 proven 充足时整批被隐藏。
+        assertEquals(
+            TagVerdict.MATCHED,
+            TagVerdicts.of("全彩 某部作品", "全彩", false, RecallOutcome.TIMEOUT),
+        )
+    }
+
+    @Test
+    fun `已经上过屏的条目不会被后续批次撤回`() {
+        val proven = (1..25).map {
+            TagResultPolicy.Candidate(item("p$it", "全彩 作品$it"), listOf(TagVerdict.MATCHED))
+        }
+        val unproven = (1..3).map {
+            TagResultPolicy.Candidate(item("u$it", "未知$it"), listOf(TagVerdict.UNKNOWN))
+        }
+        // 不带 keep：确凿结果够 20 条，没证据的不显示（产品口径不变）
+        assertEquals(25, TagResultPolicy.rank(proven + unproven).size)
+        // 带 keep（这三条刚才已经显示过）：必须留着，且排在确凿结果之后
+        val kept = TagResultPolicy.rank(proven + unproven, keep = { it.id.startsWith("u") })
+        assertEquals(28, kept.size)
+        assertTrue(kept.takeLast(3).all { it.id.startsWith("u") })
+    }
+
+    @Test
+    fun `确凿结果越过阈值时结果数只增不减`() {
+        // 现场就是这一步出问题：前几批 proven 只有 3 条，20 条「未知」全被补上；
+        // 下一批 proven 涨到 23 条，越过 20 这个阈值，那 20 条「未知」被整批砍掉。
+        val unproven = (1..20).map {
+            TagResultPolicy.Candidate(item("u$it", "未知$it"), listOf(TagVerdict.UNKNOWN))
+        }
+        val earlyProven = (1..3).map {
+            TagResultPolicy.Candidate(item("p$it", "全彩 作品$it"), listOf(TagVerdict.MATCHED))
+        }
+        val firstPass = TagResultPolicy.rank(earlyProven + unproven)
+        assertEquals(23, firstPass.size)
+
+        val shown = firstPass.map { it.id }.toSet()
+        val later = earlyProven + unproven + (1..20).map {
+            TagResultPolicy.Candidate(item("q$it", "全彩 新作品$it"), listOf(TagVerdict.MATCHED))
+        }
+        val secondPass = TagResultPolicy.rank(later, keep = { it.id in shown })
+        assertTrue(
+            "第二次取舍不能比第一次少：${secondPass.size} < ${firstPass.size}",
+            secondPass.size >= firstPass.size,
+        )
+        assertTrue(secondPass.all { it.id in shown || it.id.startsWith("q") })
+    }
 }

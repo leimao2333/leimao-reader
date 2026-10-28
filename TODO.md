@@ -648,6 +648,27 @@
 
 ---
 
+## 九、主题与外观
+
+- [ ] **48. 主题设置：软件字体 / 小说字体 / 小说背景 / 软件图标 / 软件背景**
+  - 需求（用户提出）：设置里单独一个「主题」板块，能改五样 —— 软件字体（整个 App 的 UI 字体）、小说字体、小说背景、软件图标（桌面图标）、软件背景（App 背景图）。
+  - 现状：只有 `darkThemeModeFlow`（深色模式三态）和 `novelFontFamilyFlow`（0/1/2 三档：系统 / 衬线 / 无衬线）。没有全局字体、没有背景图、没有图标切换。
+  - 分阶段（按投入产出排序，建议按顺序做，每阶段可独立发版）：
+    - **阶段 1 · 小说字体列表化 + 小说背景预设色**（小，风险低）
+      - 字体：现有三档扩成「可选列表」——内置几款开源字体 + 支持导入本地 ttf/otf（复制到 `filesDir/fonts/`，用 `Font(File)` 加载）。阅读页 `fontFamily` 已经是参数传入，改动集中在设置与加载层。
+      - 背景：除现有主题色外，加预设（纸黄 / 护眼绿 / 深灰 / 纯黑）与「跟随主题」；文字颜色按背景亮度自动切换，避免深底黑字。
+    - **阶段 2 · 软件字体**（中）
+      - 打包 2~3 款开源字体（子集化控制体积，单款尽量 < 2MB），在 `ui/theme` 里建 `AppTypography`，`MaterialTheme(typography = ...)` 在根节点切换；切换后需要整树重组（换 key 或重启 Activity 生效）。
+      - 坑：Compose 的 `Font` 是按 `FontFamily` 缓存的，切换字体要换一个新的 `FontFamily` 实例，否则拿到的还是旧字形。
+    - **阶段 3 · 软件背景**（中）
+      - 选图（相册 `PickVisualMedia`）→ 复制到 `filesDir/background/` → 全局背景层（`Box` 底层 + `ContentScale.Crop`）。
+      - 必须有**可读性兜底**：图片上叠一层按主题明暗的遮罩（浅色主题 40%~55% 白、深色主题 50%~65% 黑），否则列表文字看不清。阅读页有自己的背景，不叠全局背景。
+    - **阶段 4 · 软件图标**（中，坑最多）
+      - 做法：manifest 里为每套图标定义 `activity-alias`（指向 `MainActivity`，各带自己的 `android:icon`），切换时用 `PackageManager.setComponentEnabledSetting` 启用目标、禁用其它。**注意**：同一时刻只能有一个 alias 处于启用状态，`MainActivity` 本身不能带 LAUNCHER intent-filter。
+      - 坑：部分桌面（尤其国产 ROM）不会立刻刷新图标，需要提示用户「若图标未变化，请重启桌面或重新添加」；卸载重装会回到默认图标；云备份/恢复不该带上这个状态。
+      - 需要准备 3~4 套 mipmap（每套 5 个密度 + 自适应图标前景/背景）。
+  - 涉及：`core/preferences/PreferencesManager.kt`（新 key：`app_font`、`novel_bg`、`app_bg`、`app_icon`）、`ui/screens/settings/SettingsScreen.kt` + `SettingsViewModel.kt`（主题分区）、`ui/theme/`（Typography、全局背景层）、`ui/screens/novel/NovelReaderScreen.kt`（字体与背景解析）、`AndroidManifest.xml` + `res/mipmap-*`（多套图标）、`MainActivity.kt`（根布局背景）。
+
 ## 备注
 
 - 改动涉及 `books` 表结构或 `RssFeedEntity` 时，必须写 Room 迁移（`AppDatabase.kt`）并自增数据库版本。

@@ -1,9 +1,6 @@
 package com.novelreader.ui.screens.settings
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.border
-import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -54,7 +51,6 @@ import com.novelreader.core.preferences.PreferencesManager
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.novelreader.ui.theme.ReaderBackgrounds
 
 /**
@@ -79,7 +75,6 @@ fun SettingsScreen(
     // v1.9.0.2 开发者选项：详细日志开关 + 导出结果提示
     val debugLogging by viewModel.debugLogging.collectAsState()
     val appFont by viewModel.appFont.collectAsState()
-    val appIcon by viewModel.appIcon.collectAsState()
     val debugExportResult by viewModel.debugExportResult.collectAsState()
     LaunchedEffect(debugExportResult) {
         val r = debugExportResult ?: return@LaunchedEffect
@@ -249,44 +244,6 @@ fun SettingsScreen(
                             label = { Text(label) },
                             modifier = Modifier.padding(start = 4.dp),
                         )
-                    }
-                }
-            }
-            // 应用图标（v1.9.0.7）：切 activity-alias，同一时刻只启用一个
-            SettingRow(
-                title = "应用图标",
-                subtitle = "切换桌面图标。改完如果桌面没变化，重启桌面或重新添加图标即可",
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(
-                        "童年" to 0, "少女" to 1, "青年" to 2, "成熟" to 3,
-                    ).forEach { (label, idx) ->
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.clickable { viewModel.setAppIcon(idx) },
-                        ) {
-                            Image(
-                                painter = painterResource(appIconRes(idx)),
-                                contentDescription = label,
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(CircleShape)
-                                    .border(
-                                        width = if (appIcon == idx) 2.dp else 1.dp,
-                                        color = if (appIcon == idx) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.outlineVariant
-                                        },
-                                        shape = CircleShape,
-                                    ),
-                            )
-                            Text(
-                                label,
-                                fontSize = 10.sp,
-                                modifier = Modifier.padding(top = 2.dp),
-                            )
-                        }
                     }
                 }
             }
@@ -1403,14 +1360,6 @@ fun SettingsScreen(
             )
         }
     }
-}
-
-/** 图标方案下标 → 资源（v1.9.0.7），顺序与 AppIconManager.ALIASES 一致 */
-private fun appIconRes(index: Int): Int = when (index) {
-    0 -> com.novelreader.R.mipmap.ic_child
-    1 -> com.novelreader.R.mipmap.ic_teen
-    2 -> com.novelreader.R.mipmap.ic_young
-    else -> com.novelreader.R.mipmap.ic_mature
 }
 
 @Composable

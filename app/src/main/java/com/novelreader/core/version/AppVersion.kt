@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.9.0.7"
+    const val CURRENT_VERSION = "1.9.0.8"
 
     /**
      * 更新日志。
@@ -25,6 +25,13 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.9.0.8",
+            date = "2026-10-28",
+            changes = listOf(
+                "**回退图标切换功能**：设置页一进去就闪退（`painterResource` 读不了自适应图标的 XML），而且把默认图标换成了测试用的图。现在恢复原来的图标，图标切换整个撤掉，设置页恢复正常。",
+            ),
+        ),
         VersionEntry(
             version = "1.9.0.7",
             date = "2026-10-28",

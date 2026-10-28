@@ -31,17 +31,6 @@ class SettingsViewModel(
     private val ttsController: com.novelreader.core.tts.TtsController? = null,
 ) : ViewModel() {
 
-    /** 桌面图标方案（v1.9.0.7）：0 童年 / 1 少女 / 2 青年 / 3 成熟 */
-    val appIcon: StateFlow<Int> = preferencesManager.appIconFlow
-        .stateIn(viewModelScope, SharingStarted.Eagerly, 3)
-
-    fun setAppIcon(value: Int) {
-        viewModelScope.launch {
-            preferencesManager.setAppIcon(value)
-            appContext?.let { com.novelreader.core.util.AppIconManager.apply(it, value) }
-        }
-    }
-
     /** 界面字体（v1.9.0.5）：0 系统 / 1 衬线 / 2 等宽 / 3 手写 */
     val appFont: StateFlow<Int> = preferencesManager.appFontFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, 0)

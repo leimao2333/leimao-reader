@@ -29,6 +29,10 @@
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode"
             android:supportsPictureInPicture="true"
             android:theme="@style/Theme.NovelReader">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
             <!-- 调试/自动化深链：novelreader://search?keyword=xxx 直达小说搜索 -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -56,58 +60,6 @@
                 <data android:mimeType="application/pdf" />
             </intent-filter>
         </activity>
-        <!-- 图标方案 IconChild（v1.9.0.7）：同一时刻只能启用一个，由 AppIconManager 切换 -->
-        <activity-alias
-            android:name=".IconChild"
-            android:enabled="false"
-            android:exported="true"
-            android:icon="@mipmap/ic_child"
-            android:roundIcon="@mipmap/ic_child_round"
-            android:targetActivity=".MainActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
-        <!-- 图标方案 IconTeen（v1.9.0.7）：同一时刻只能启用一个，由 AppIconManager 切换 -->
-        <activity-alias
-            android:name=".IconTeen"
-            android:enabled="false"
-            android:exported="true"
-            android:icon="@mipmap/ic_teen"
-            android:roundIcon="@mipmap/ic_teen_round"
-            android:targetActivity=".MainActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
-        <!-- 图标方案 IconYoung（v1.9.0.7）：同一时刻只能启用一个，由 AppIconManager 切换 -->
-        <activity-alias
-            android:name=".IconYoung"
-            android:enabled="false"
-            android:exported="true"
-            android:icon="@mipmap/ic_young"
-            android:roundIcon="@mipmap/ic_young_round"
-            android:targetActivity=".MainActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
-        <!-- 图标方案 IconMature（v1.9.0.7）：同一时刻只能启用一个，由 AppIconManager 切换 -->
-        <activity-alias
-            android:name=".IconMature"
-            android:enabled="true"
-            android:exported="true"
-            android:icon="@mipmap/ic_mature"
-            android:roundIcon="@mipmap/ic_mature_round"
-            android:targetActivity=".MainActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
 
         <!-- 更新包下载前台 Service（v1.8.3.0 待办 #19） -->
         <service

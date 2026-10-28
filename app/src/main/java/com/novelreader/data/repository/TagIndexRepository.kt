@@ -189,6 +189,16 @@ class TagIndexRepository(
     suspend fun count(type: SourceType): Int = tagInstanceDao.itemCount(type.name)
 
     /**
+     * 每个标签各收录了多少部（待办 #47）。
+     *
+     * 一次 `GROUP BY` 把全表的计数拿回来，调用方按 tag 查表即可 ——
+     * **不要做成「每个 chip 查一次」**：标签页一屏几十个 chip，逐个查库会明显卡顿。
+     * 表在几千行量级，单次查询毫秒级，不需要额外缓存。
+     */
+    suspend fun tagCounts(type: SourceType): Map<String, Int> =
+        tagInstanceDao.tagCounts(type.name).associate { it.tag to it.count }
+
+    /**
      * 复合标签查询（v1.8.1.2；v1.8.1.3 加入大类过滤与置信度排序）。
      *
      * @param clauses 每个条件是一组等价写法，**组内 OR、组间 AND**（对应 bool 的 should + must）

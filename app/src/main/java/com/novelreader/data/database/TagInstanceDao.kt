@@ -29,6 +29,31 @@ interface TagInstanceDao {
     suspend fun itemCount(type: String): Int
 
     /**
+     * 每个标签各收录了多少部（v1.8.9.7，待办 #47）。
+     *
+     * 标签页要在每个 chip 上显示「已收录 N 部」。注意去重口径必须和 [itemCount] 一致
+     * （`sourceId || '|' || itemId`）—— 一部作品在同一标签下可能有「站方 + 行为」两行，
+     * 直接 COUNT(*) 会翻倍。
+     */
+    @Query(
+        """SELECT tagName AS tag, COUNT(DISTINCT sourceId || '|' || itemId) AS count
+           FROM tag_instances WHERE itemType = :type GROUP BY tagName""",
+    )
+    suspend fun tagCounts(type: String): List<TagCount>
+
+    /**
+     * 判断一批 (sourceId, itemId) 里哪些已在本地收录（v1.8.9.7，待办 #47）。
+     *
+     * 标签搜索结果回来后用它标记「已收录」并排到前面。`refsWithAny` 是「按标签查条目」，
+     * 这里反过来「按条目查是否在索引里」，两者用途不同。
+     */
+    @Query(
+        """SELECT DISTINCT sourceId || '|' || itemId FROM tag_instances
+           WHERE itemType = :type AND (sourceId || '|' || itemId) IN (:keys)""",
+    )
+    suspend fun indexedKeys(type: String, keys: List<String>): List<String>
+
+    /**
      * 组内 OR：命中该组**任一**标签的条目（[minConfidence] 以下的猜测不计）。
      *
      * 组间 AND 不在 SQL 里做 —— 多组交集要在应用侧把结果集求交，
@@ -79,6 +104,9 @@ interface TagInstanceDao {
 
 /** (sourceId, itemId) + 置信度：标签查询的中间结果，求交与排序用 */
 data class ScoredRef(val sourceId: String, val itemId: String, val confidence: Int)
+
+/** 单个标签的收录数（待办 #47：标签页 chip 角标） */
+data class TagCount(val tag: String, val count: Int)
 
 /** 单条标签行（行为加权 / 视觉合并的读模型） */
 data class TagRow(

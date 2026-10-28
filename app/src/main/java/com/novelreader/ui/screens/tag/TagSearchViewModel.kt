@@ -99,6 +99,31 @@ class TagSearchViewModel(
     val indexCount: StateFlow<Int> = _indexCount.asStateFlow()
 
     /**
+     * 每个标签各收录了多少部（待办 #47）。
+     *
+     * 标签页在 chip 上显示「已收录 N 部」。一次 GROUP BY 拿全表，UI 按 tag 查表 ——
+     * 不要做成「每个 chip 查一次库」。索引状态变化与每次搜索后刷新。
+     */
+    private val _tagCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val tagCounts: StateFlow<Map<String, Int>> = _tagCounts.asStateFlow()
+
+    /**
+     * 本轮结果里「本地索引已收录」的条目键（`sourceId|itemId`，待办 #47）。
+     *
+     * 直接由本地查询结果 `localItems` 推出来，不再查库 —— 网络结果里也可能有已收录的，
+     * 但那种「标签没完全匹配、却被索引收录」的情况很少，不值得为此多打一次 IN 查询
+     * （SQLite 的 IN 参数还有 999 上限，大结果集得分批）。
+     */
+    private val _indexedKeys = MutableStateFlow<Set<String>>(emptySet())
+    val indexedKeys: StateFlow<Set<String>> = _indexedKeys.asStateFlow()
+
+    /** 收录总数 + 各标签计数一起刷新（两者同源，分开查会读到不一致的中间态） */
+    private suspend fun refreshIndexStats(repo: com.novelreader.data.repository.TagIndexRepository) {
+        _indexCount.value = runCatching { repo.count(type) }.getOrDefault(0)
+        _tagCounts.value = runCatching { repo.tagCounts(type) }.getOrDefault(emptyMap())
+    }
+
+    /**
      * 视觉模型总开关（v1.8.7.2，默认关）：关着时视觉打标按钮禁用。
      *
      * 必须声明在 `init` 之前 —— Kotlin 的属性初始化与 init 块按书写顺序执行，
@@ -125,7 +150,7 @@ class TagSearchViewModel(
                     _indexing.value = state.running
                     _indexPaused.value = state.paused
                     _indexMessage.value = state.message.takeIf { it.isNotBlank() }
-                    if (!state.running) _indexCount.value = repo.count(type)
+                    if (!state.running) refreshIndexStats(repo)
                 }
             }
         }
@@ -1267,8 +1292,11 @@ class TagSearchViewModel(
                 // 先看本地索引里已经收录的，有就立刻显示 —— 但**不 return**，
                 // 网络搜索照跑，新结果合并进来、再回写索引，越搜越全。
                 // v1.8.1.3：索引查询带上大类 / 排除 / 成人整类过滤，并返回置信度排序。
-                val indexedTotal = tagIndexRepository?.count(type) ?: 0
-                _indexCount.value = indexedTotal
+                // v1.8.9.7（待办 #47）：顺带刷新各标签的收录数，chip 角标与结果同步。
+                val indexedTotal = tagIndexRepository?.let { repo ->
+                    refreshIndexStats(repo)
+                    _indexCount.value
+                } ?: 0
                 var localItems: List<MediaItem> = emptyList()
                 if (indexedTotal > 0 && clauses.isNotEmpty()) {
                     val hideAdult = preferencesManager?.hideAdultFlow?.first() ?: true
@@ -1283,6 +1311,10 @@ class TagSearchViewModel(
                     if (localItems.isNotEmpty()) {
                         _results.value = localItems
                     }
+                    // 待办 #47：这些就是「已收录」的，标记出来供卡片显示角标
+                    _indexedKeys.value = localItems.map { "${it.sourceId}|${it.id}" }.toSet()
+                } else {
+                    _indexedKeys.value = emptySet()
                 }
 
                 // 分级 / 属性类标签的判定要用：哪些源本身是成人源

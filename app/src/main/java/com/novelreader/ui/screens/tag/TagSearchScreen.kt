@@ -141,6 +141,10 @@ fun TagSearchScreen(
     val sources by viewModel.sources.collectAsState()
     val selectedSourceIds by viewModel.selectedSourceIds.collectAsState()
     val indexCount by viewModel.indexCount.collectAsState()
+    // 待办 #47：每个标签的已收录数（chip 角标）
+    val tagCounts by viewModel.tagCounts.collectAsState()
+    // 待办 #47：本轮结果里哪些是本地已收录的（卡片角标）
+    val indexedKeys by viewModel.indexedKeys.collectAsState()
     val indexing by viewModel.indexing.collectAsState()
     // 视觉模型总开关（v1.8.7.2，默认关）：关着时「封面视觉打标」按钮禁用
     val visualTaggingEnabled by viewModel.visualTaggingEnabled.collectAsState()
@@ -457,6 +461,7 @@ fun TagSearchScreen(
                             HotTagChip(
                                 tag = tag,
                                 active = tag in activeTags,
+                                count = tagCounts[tag] ?: 0,
                                 onClick = {
                                     // 点已选 = 移除；点未选 = 追加并搜索
                                     if (tag in activeTags) viewModel.removeTag(tag)
@@ -758,6 +763,7 @@ fun TagSearchScreen(
                         items(displayResults, key = { "${it.sourceId}:${it.id}" }) { item ->
                             TagPosterCard(
                                 item = item,
+                                indexed = "${item.sourceId}|${item.id}" in indexedKeys,
                                 // 进详情前先放掉后台召回：它占着全应用共用的 JS 线程，
                                 // 详情页的 info 会被排到 30 秒超时（v1.8.9.2）
                                 onClick = {
@@ -856,6 +862,7 @@ fun TagSearchScreen(
         AllHotTagsSheet(
             tags = tagsByCoverage,
             activeTags = activeTags,
+            tagCounts = tagCounts,
             onPick = { tag ->
                 if (tag in activeTags) viewModel.removeTag(tag)
                 else viewModel.addTag(tag)
@@ -884,6 +891,7 @@ fun TagSearchScreen(
 private fun AllHotTagsSheet(
     tags: List<String>,
     activeTags: List<String>,
+    tagCounts: Map<String, Int>,
     onPick: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -922,6 +930,7 @@ private fun AllHotTagsSheet(
                     HotTagChip(
                         tag = tag,
                         active = tag in activeTags,
+                        count = tagCounts[tag] ?: 0,
                         onClick = { onPick(tag) },
                     )
                 }
@@ -977,14 +986,17 @@ private const val TAG_SHEET_PAGE = 150
 private fun HotTagChip(
     tag: String,
     active: Boolean,
+    count: Int = 0,
     onClick: () -> Unit,
 ) {
+    // 待办 #47：带上该标签的已收录数。为 0 时只显示标签本身，避免满屏的「· 0」。
+    val label = if (count > 0) "$tag · $count" else tag
     if (active) {
         AssistChip(
             onClick = onClick,
             label = {
                 Text(
-                    tag,
+                    label,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -1007,7 +1019,7 @@ private fun HotTagChip(
             onClick = onClick,
             label = {
                 Text(
-                    tag,
+                    label,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -1142,7 +1154,11 @@ private fun highlightMatch(tag: String, word: String): AnnotatedString {
 
 /** 标签搜索结果的海报卡（视频）：2:3 封面 + 标题 + 来源名 */
 @Composable
-private fun TagPosterCard(item: MediaItem, onClick: () -> Unit) {
+private fun TagPosterCard(
+    item: MediaItem,
+    indexed: Boolean = false,
+    onClick: () -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1165,6 +1181,26 @@ private fun TagPosterCard(item: MediaItem, onClick: () -> Unit) {
                 modifier = Modifier.fillMaxSize(),
                 fallback = { CoverPlaceholderLetter(Modifier.fillMaxSize(), item.title) },
             )
+            // 待办 #47：本地索引已收录的标一个角标 —— 用户一眼能看出哪些是「搜过、存过」的
+            if (indexed) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(5.dp)
+                        .background(
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.92f),
+                            RoundedCornerShape(4.dp),
+                        )
+                        .padding(horizontal = 5.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        "已收录",
+                        fontSize = 9.sp,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        maxLines = 1,
+                    )
+                }
+            }
         }
         Spacer(Modifier.height(4.dp))
         Text(

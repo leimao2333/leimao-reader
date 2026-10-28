@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.9.0.3"
+    const val CURRENT_VERSION = "1.9.0.4"
 
     /**
      * 更新日志。
@@ -25,6 +25,16 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.9.0.4",
+            date = "2026-10-28",
+            changes = listOf(
+                "**标签同义词表扩充**：补了「娇小 / 傲娇 / 病娇 / 三无 / 天然呆 / 女教师 / 伪娘 / 异装 / 妹控 / 姐控 / 露出 / 时间停止 / 机械」等十几组，每组都带简体、繁体、日文、英文、韩文写法。以前这几个高频词根本没有别名组，不同源各写各的，搜一个词只能打到收录它那几个源。",
+                "**「萝莉」补繁体**：蘿莉 / ロリ / loli / lolita / 로리 现在是一组。",
+                "**「娇妻」并进「人妻」**：这两个是同一维度（已婚），以前分在两个组里各搜各的。",
+                "**「娇小」单独成组**：它是体型描述（petite / 小柄），和「萝莉」那种年龄向不是一回事，硬并进一组会让搜体型的人搜到一堆不相干的结果。",
+            ),
+        ),
         VersionEntry(
             version = "1.9.0.3",
             date = "2026-10-28",

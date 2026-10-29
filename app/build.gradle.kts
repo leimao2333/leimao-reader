@@ -109,6 +109,20 @@ android {
     }
 }
 
+// release 变体不跑本机单元测试（只跑 debug）。
+// Robolectric 跑 Compose UI 测试要一个在 AndroidManifest 里声明过的 Activity，
+// 这条声明由 `androidx.compose.ui:ui-test-manifest` 提供，而它只挂在 debugImplementation
+// 上（打进 release 会污染生产包）。于是 release 变体的合并 manifest 里没有
+// `androidx.activity.ComponentActivity`，`createComposeRule()` 一律抛
+// "Unable to resolve activity for Intent ... ComponentActivity" —— 3 个测试类共 8 个用例必红。
+// 单元测试覆盖的代码两个变体完全一致，没有 release 单独跑的必要；
+// 关掉它，`./gradlew test` 才不会每次都挂着 8 个假失败。
+androidComponents {
+    beforeVariants(selector().withBuildType("release")) { variant ->
+        variant.enableUnitTest = false
+    }
+}
+
 dependencies {
     // ---- Compose 核心 ----
     val composeBom = platform("androidx.compose:compose-bom:2024.09.03")

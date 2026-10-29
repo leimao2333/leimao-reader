@@ -433,6 +433,26 @@
   - 实现：`AllHotTagsSheet` 里把「组别系列」整段挪到「普通标签」之前，并给普通标签补一个小标题；两段仍各自分批展开（`TAG_GROUP_PAGE` / `TAG_SHEET_PAGE`），不做全量渲染。
   - 涉及：`ui/screens/tag/TagSearchScreen.kt`（`AllHotTagsSheet`）。
 
+- [x] **51. 修：搜组内单个写法时，已选标签上的「（组 N）」数字不涨** ✅ v1.9.2.2
+  - 现象（用户提出）：搜组下的成员词（如「彩绘」）时，它所在组那一行的组收录数一动不动。
+  - 根因：v1.9.2.0 起索引按 `TagAlias.indexNameOf` 入库 —— **组内成员保留原词**，只有「整组写法」才归到组首词。而 chip 上的整组数直接取 `tagCounts[groupHeadOf(tag)]`，组首词那一行只统计了「用组首词打标」的那部分，成员搜出来的结果落在成员自己名下，组首词的计数自然不动。
+  - 实现：新增「按组并集去重」口径，不再读组首词单行。
+    - `TagInstanceDao.distinctItemCount(type, names)`：`COUNT(DISTINCT sourceId || '|' || itemId) ... tagName IN (:names)`，同一部作品被组内多个写法命中只算一次。
+    - `TagIndexRepository.groupCounts(type, heads)`：按 `TagAlias.membersOfGroup(head)` 展开组内全部写法再查并集，key 仍是组首词；只算传进来的几个组（组总数上百，每次全量算纯属浪费）。
+    - `TagSearchViewModel` 新增 `groupCounts` StateFlow + `observeGroupCounts()`：`combine(_activeTags, countsTick)` 收集，`collectLatest` 收敛连续触发；`refreshIndexStats` 末尾 `countsTick++`，让「索引写入新行但已选标签没变」也能重算。
+    - `TagSearchScreen.selectedChipLabel(tag, counts, groupCounts)`：整组数改从 `groupCounts` 取，与自身数不同才显示「（组 N）」。
+  - 涉及：`data/database/TagInstanceDao.kt`、`data/repository/TagIndexRepository.kt`、`ui/screens/tag/TagSearchViewModel.kt`、`ui/screens/tag/TagSearchScreen.kt`。
+
+- [x] **52. 热门推荐行按组出条目（排序算上组别，名字带「组」）** ✅ v1.9.2.2
+  - 需求（用户提出）：「推荐的标签排序算上组别，名字得带组」。
+  - 现状：推荐行（`_hotTags`）取的是扁平标签列表的前 12 个 —— 同一个同义组的几个写法各占一个坑，看着像几个不相干的词（其实点哪个都在搜同一批），而真正好用的「整组」入口（`组首词 + 组`）根本不在推荐里。
+  - 实现：
+    - 新增 `HotTagEntry(tag, count, isGroup)` + `hotEntries` StateFlow；一个多写法组只出一条「组首词 + `TagAlias.GROUP_SUFFIX`」，收录数取**整组并集去重**（复用 v1.9.2.2 的 `groupCounts`），与普通标签同榜按数排。
+    - **别对全部组各打一次 COUNT**（组总数上百、而只要 top 12）：先用「组内各写法计数之和」当上界降序排（并集 ≤ 和），边解析边比，凑满名额且后面候选的上界追不上第 N 名就 `break`；再叠加 `groupUnionCache`（键 = 成员计数之和），索引每写一批新行时只有真正涨了的组会重算。
+    - 触发：新增 `planTick`（`applyTagPlan` 里 +1）+ 复用 `countsTick`，`observeHotTags()` 用 `combine(...).collectLatest` 收敛；**必须放在 `_activeTags` 之后那个 init 里**（同 #51 的坑）。
+    - 顺带修一处闪退：`observeGroupCounts()` 最初写在类顶部 init，`_activeTags` 尚未初始化 → `combine` 里 NPE 直接闪退（装机实测），已挪到 `_activeTags` 之后的 init。
+  - 涉及：`ui/screens/tag/TagSearchViewModel.kt`、`ui/screens/tag/TagSearchScreen.kt`（推荐行改读 `hotEntries`，chip 直接用条目自带的 count）。
+
 ## 五、RSS
 
 - [x] **16. RSS 源批量管理** ✅ v1.8.3.0

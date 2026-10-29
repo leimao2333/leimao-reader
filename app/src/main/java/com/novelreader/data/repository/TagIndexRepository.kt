@@ -199,6 +199,26 @@ class TagIndexRepository(
         tagInstanceDao.tagCounts(type.name).associate { it.tag to it.count }
 
     /**
+     * 整组收录数（v1.9.2.2）：组内全部写法**并集去重**，key = 组首词。
+     *
+     * 只算传进来的这几个组 —— 组总数上百个，每次搜索都全量算一遍纯属浪费。
+     * 调用方（标签页）只关心「已选标签」所在的那一两个组，外加面板里正在展示的卡片。
+     *
+     * @param heads 组首词（规范名）；成员由 [com.novelreader.core.util.TagAlias.membersOfGroup] 解析
+     */
+    suspend fun groupCounts(type: SourceType, heads: Collection<String>): Map<String, Int> =
+        withContext(Dispatchers.IO) {
+            heads.distinct().mapNotNull { head ->
+                val names = com.novelreader.core.util.TagAlias.membersOfGroup(head)
+                if (names.isEmpty()) return@mapNotNull null
+                val n = runCatching {
+                    tagInstanceDao.distinctItemCount(type.name, names)
+                }.getOrDefault(0)
+                head to n
+            }.toMap()
+        }
+
+    /**
      * 删掉某个标签的全部收录记录（v1.9.2.0「编辑标签 → 删除」）。
      *
      * 标签池那边的删除由 [com.novelreader.data.repository.TagRepository.deleteTags] 负责；

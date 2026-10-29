@@ -136,7 +136,8 @@ fun TagSearchScreen(
     onItemClick: (MediaItem) -> Unit,
     onBack: () -> Unit,
 ) {
-    val hotTags by viewModel.hotTags.collectAsState()
+    // v1.9.2.2：推荐行带收录数，组别条目（「全彩组」）也算在里面
+    val hotEntries by viewModel.hotEntries.collectAsState()
     val allTags by viewModel.allTags.collectAsState() // v1.6.2.0：用于总数显示
     // v1.9.2.0：「更多」面板 = 普通标签 + 组别卡片（按收录数排序）
     val sheetPlainTags by viewModel.sheetPlainTags.collectAsState()
@@ -155,6 +156,8 @@ fun TagSearchScreen(
     val indexCount by viewModel.indexCount.collectAsState()
     // 待办 #47：每个标签的已收录数（chip 角标）
     val tagCounts by viewModel.tagCounts.collectAsState()
+    // v1.9.2.2：整组收录数（并集去重），已选标签 chip 的「（组 N）」用这个
+    val groupCounts by viewModel.groupCounts.collectAsState()
     // v1.9.2.0：已选「整组」标签的组内成员（点一个 = 单标签搜索）
     val groupMembers by viewModel.groupMembers.collectAsState()
     // v1.9.2.0：当前处于「单标签搜索」的标签（成员 → 所属组首词）
@@ -438,7 +441,7 @@ fun TagSearchScreen(
         // v1.6.2.0：行内只显示前 HOT_TAG_VISIBLE 个 + 「更多 ▾ N」入口；
         // v1.6.5.0：「更多」面板 [AllHotTagsSheet] 展示**全部**标签
         //         （按收录数排序，组别系列一并展开），不再有 HOT_TAG_LIMIT 硬顶。
-        if (hotTags.isNotEmpty() || collecting) {
+        if (hotEntries.isNotEmpty() || collecting) {
             Column {
                 Row(
                     modifier = Modifier
@@ -459,7 +462,7 @@ fun TagSearchScreen(
                         )
                     }
                 }
-                if (hotTags.isEmpty() && collecting) {
+                if (hotEntries.isEmpty() && collecting) {
                     Text(
                         text = "正在收集标签…",
                         style = MaterialTheme.typography.bodySmall,
@@ -474,17 +477,17 @@ fun TagSearchScreen(
                     ) {
                         // 前 8 个可见
                         items(
-                            hotTags.take(HOT_TAG_VISIBLE),
-                            key = { "hot_$it" },
-                        ) { tag ->
+                            hotEntries.take(HOT_TAG_VISIBLE),
+                            key = { "hot_${it.tag}" },
+                        ) { entry ->
                             HotTagChip(
-                                tag = tag,
-                                active = tag in activeTags,
-                                count = tagCounts[tag] ?: 0,
+                                tag = entry.tag,
+                                active = entry.tag in activeTags,
+                                count = entry.count,
                                 onClick = {
                                     // 点已选 = 移除；点未选 = 追加并搜索
-                                    if (tag in activeTags) viewModel.removeTag(tag)
-                                    else viewModel.addTag(tag)
+                                    if (entry.tag in activeTags) viewModel.removeTag(entry.tag)
+                                    else viewModel.addTag(entry.tag)
                                 },
                             )
                         }
@@ -602,7 +605,7 @@ fun TagSearchScreen(
                         // 这个标签到底能搜出多少，得点进去才看得出来。
                         // v1.9.2.0：整组写法（「全彩组」）不是真实标签，计数按组首词取。
                         // v1.9.2.0：自己的收录数 + （属于分组时）额外带上整组的收录数
-                        val label = selectedChipLabel(tag, tagCounts)
+                        val label = selectedChipLabel(tag, tagCounts, groupCounts)
                         AssistChip(
                             onClick = { viewModel.removeTag(tag) },
                             // 数字始终显示（含 0）：之前为 0 就只写名字，新标签看起来
@@ -1216,18 +1219,34 @@ private fun GroupCard(
 }
 
 /**
- * 「已选标签」chip 的文案（v1.9.2.0）。
+ * 「已选标签」chip 的文案（v1.9.2.0；v1.9.2.2 修整组数的取法）。
  *
  * 先给自己的收录数；如果它属于某个分组，再**额外**带上整组的收录数：
  * 「彩绘 · 12（组 2832）」。搜组内某个写法时，用户既想知道这个词自己收了多少，
  * 也想知道它所在的那一组一共多大 —— 两个数字一起给，不做替换。
  *
- * 自身计数与整组相同时（组首词、整组写法）不重复显示括号。
+ * 整组数取自 [groupCounts]（组内全部写法**并集去重**），不能退回 [counts] 里的组首词：
+ * v1.9.2.0 起成员按原词入库，组首词那一行只统计它自己，拿它当整组数的话
+ * 搜「彩绘」时这个数字永远不动 —— 真机反馈「组下的标签搜索时组的数字不会变」。
+ * 自身计数与整组相同时（组首词）不重复显示括号；**整组写法**（「全彩组」）只给一个数，
+ * 且那个数就是整组并集（见函数体里的特判）。
  */
-private fun selectedChipLabel(tag: String, counts: Map<String, Int>): String {
+private fun selectedChipLabel(
+    tag: String,
+    counts: Map<String, Int>,
+    groupCounts: Map<String, Int>,
+): String {
+    // 整组写法（「无码组」）本身就是整组：数字取整组并集，不再额外挂「（组 N）」。
+    // 不这么特判的话，`groupHeadOf` 对带「组」后缀的写法返回 null（它不是成员词），
+    // 会退回组首词单行的数 —— chip 上写 1259、推荐行同一个组写 8302，两处对不上。
+    val groupQuery = TagAlias.groupQueryHeadOf(tag)
+    if (groupQuery != null) {
+        val n = groupCounts[groupQuery] ?: counts[TagAlias.planTagOf(tag)] ?: 0
+        return "$tag · $n"
+    }
     val own = counts[TagAlias.planTagOf(tag)] ?: 0
     val head = TagAlias.groupHeadOf(tag)
-    val group = head?.let { counts[it] ?: 0 }
+    val group = head?.let { groupCounts[it] }
     return if (group != null && group != own) "$tag · $own（组 $group）" else "$tag · $own"
 }
 

@@ -35,6 +35,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -107,6 +109,22 @@ class TagSearchViewModel(
     private val _tagCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
     val tagCounts: StateFlow<Map<String, Int>> = _tagCounts.asStateFlow()
 
+    /**
+     * 整组收录数：组首词 → 组内全部写法并集去重后的作品数（v1.9.2.2）。
+     *
+     * 已选标签 chip 上的「（组 N）」必须用这个，不能拿 [tagCounts] 里的组首词凑数 ——
+     * v1.9.2.0 起成员按原词入库，组首词那一行只统计它自己，搜组内其它写法时数字不动。
+     * 只算**已选标签**所在的组（0~3 个），组总数上百个，全量算纯属浪费。
+     */
+    private val _groupCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val groupCounts: StateFlow<Map<String, Int>> = _groupCounts.asStateFlow()
+
+    /** 收录数刷新信号：驱动 [groupCounts] / [hotEntries] 重算（已选标签没变、但索引写入了新行时也要更新） */
+    private val countsTick = MutableStateFlow(0)
+
+    /** 标签池换了一份的信号：推荐行要跟着重排（组别条目就是从池子里认出来的） */
+    private val planTick = MutableStateFlow(0)
+
     // ===== 标签列表（v1.9.2.0：按收录数排序；全部在 init 之前声明）=====
     //
     // 必须声明在 init 之前：init 里 `repo.indexState.collect` 是 Main.immediate 上的
@@ -130,6 +148,43 @@ class TagSearchViewModel(
     /** 热门推荐标签：按收录数倒序取 top [HOT_TAG_LIMIT] */
     private val _hotTags = MutableStateFlow<List<String>>(emptyList())
     val hotTags: StateFlow<List<String>> = _hotTags.asStateFlow()
+
+    /**
+     * 热门推荐行条目（v1.9.2.2）：**组别也参与排序**，名字带「组」。
+     *
+     * 以前推荐行把同义组的各个写法各占一个坑（「全彩」「彩绘」「彩色」并排出现，
+     * 看着像三个不相干的词，其实点哪个都在搜同一批东西），而「整组」这个真正好用的
+     * 入口反倒不在推荐里。现在一组只出一条：文案是组首词 + [TagAlias.GROUP_SUFFIX]
+     * （「全彩组」），收录数是**整组并集去重**，与普通标签放在同一个榜里按数排。
+     */
+    private val _hotEntries = MutableStateFlow<List<HotTagEntry>>(emptyList())
+    val hotEntries: StateFlow<List<HotTagEntry>> = _hotEntries.asStateFlow()
+
+    /** 推荐行的一条：普通标签给自己，组别给「组首词 + 组」；[head] 只有组别条目才有 */
+    data class HotTagEntry(
+        val tag: String,
+        val count: Int,
+        val head: String? = null,
+    ) {
+        val isGroup: Boolean get() = head != null
+    }
+
+    /**
+     * 整组并集计数缓存：组首词 → (成员计数之和, 并集数)。
+     *
+     * 键取「成员计数之和」：索引每写一批新行 [countsTick] 都会 +1，一次搜索能刷十几次，
+     * 没有缓存就得每次都把上百个组各打一次 COUNT。而实际上绝大多数组的和压根没变 ——
+     * 和没变就说明这批新行跟它无关，直接复用上次的并集数。
+     */
+    private val groupUnionCache = HashMap<String, Pair<Int, Int>>()
+
+    /**
+     * 推荐行的次序是否已经按**收录数**排过（v1.9.2.2）。
+     *
+     * 标签池通常比收录数先到，那一次只能按覆盖源数兜底排；等计数第一次到位要补排一次。
+     * 之后每轮搜索写新行只刷数字、不再重排 —— 否则 chip 在手指底下换位置。
+     */
+    private var hotRankedWithCounts = false
 
     /**
      * 「全部标签」面板：**不属于任何分组**的标签（按收录数倒序）（v1.9.2.0）。
@@ -176,11 +231,39 @@ class TagSearchViewModel(
         val hadCounts = _tagCounts.value.isNotEmpty()
         _indexCount.value = runCatching { repo.count(type) }.getOrDefault(0)
         _tagCounts.value = runCatching { repo.tagCounts(type) }.getOrDefault(emptyMap())
+        // v1.9.2.2：整组收录数跟着一起刷 —— 已选标签的「（组 N）」靠它
+        countsTick.value++
         // v1.9.2.0：**计数第一次到位时**必须重排一次 —— 标签池往往先于计数加载完，
         // 那一次排的是「覆盖源数」兜底顺序；不补这一下，热门行就一直是兜底顺序。
         // 之后搜索会不断写新行、计数每轮都在变，这时**不再**重排：热门推荐那一行
         // 会在用户手指底下不停换位置（实测连点三次点到三个不同的标签）。
         if (!hadCounts || _tagsByCount.value.isEmpty()) refreshOrderedTags()
+    }
+
+    /**
+     * 重算已选标签所在组的收录数（v1.9.2.2）。
+     *
+     * 触发源有两个：已选标签变了（[countsTick] 之外单独收集），
+     * 以及索引写入了新行（[refreshIndexStats] 里 tick +1）。
+     * 用 `collectLatest` 收敛：连续触发时只跑最后一次，不会排队打一堆 COUNT 查询。
+     */
+    private fun observeGroupCounts() {
+        val repo = tagIndexRepository ?: return
+        viewModelScope.launch {
+            combine(_activeTags, countsTick) { tags, _ -> tags }
+                .collectLatest { tags ->
+                    // 整组写法（「无码组」）要算它代表的那个组，成员词算自己所在的组
+                    val heads = tags.mapNotNull {
+                        TagAlias.groupHeadOf(it) ?: TagAlias.groupQueryHeadOf(it)
+                    }.distinct()
+                    if (heads.isEmpty()) {
+                        _groupCounts.value = emptyMap()
+                        return@collectLatest
+                    }
+                    _groupCounts.value = runCatching { repo.groupCounts(type, heads) }
+                        .getOrDefault(emptyMap())
+                }
+        }
     }
 
     /**
@@ -193,7 +276,6 @@ class TagSearchViewModel(
         val tags = _allTags.value
         if (tags.isEmpty()) {
             _tagsByCount.value = emptyList()
-            _hotTags.value = emptyList()
             _sheetPlainTags.value = emptyList()
             _sheetGroups.value = emptyList()
             _sheetTotal.value = 0
@@ -208,8 +290,144 @@ class TagSearchViewModel(
             byCoverage.sortedWith(compareByDescending<String> { counts[it] ?: 0 })
         }
         _tagsByCount.value = ordered
-        _hotTags.value = ordered.take(HOT_TAG_LIMIT)
+        // 推荐行单独算（v1.9.2.2）：它要把同义组折成一条「XX组」，与这里的扁平列表不同口径
         applySheetSections(ordered)
+    }
+
+    /**
+     * 重算推荐行（v1.9.2.2）：**组别作为独立条目参与排序**，名字带「组」。
+     *
+     * 三条规则：
+     * 1. 组内写法不再各占一个坑 —— 一个多写法组只出一条「组首词 + 组」，点它就是整组搜索；
+     * 2. 组的收录数是**整组并集去重**（同一部作品带组内多个写法只算一部），不能拿组首词
+     *    那一行凑数（v1.9.2.0 起成员按原词入库，那一行只统计它自己）；
+     * 3. 排序仍以收录数为主、覆盖源数次之，与普通标签同榜。
+     *
+     * **次序只在「标签池换了一份」或「收录数第一次到位」时定**，之后 [countsTick] 只刷数字
+     * （`rerank = false`）：搜索过程每轮都在写新行，跟着重排会让 chip 在手指底下换位置
+     * —— v1.9.2.0 实测「连点三次点到三个不同的标签」。
+     *
+     * **别对全部组各打一次 COUNT**：组总数上百个，而这里只要 top [HOT_TAG_LIMIT]。
+     * 先用「成员计数之和」当上界（并集绝不会超过它）降序排，边解析边比 ——
+     * 一旦已凑满且后面候选的上界都追不上当前第 N 名，直接收工。配合 [groupUnionCache]，
+     * 一次搜索刷十几次计数通常只会新增个位数查询。
+     */
+    private suspend fun refreshHotEntries(rerank: Boolean) {
+        val tags = _allTags.value
+        if (tags.isEmpty()) {
+            _hotEntries.value = emptyList()
+            _hotTags.value = emptyList()
+            hotRankedWithCounts = false
+            return
+        }
+        val counts = _tagCounts.value
+        // 次序已定 → 只刷数字，位置不动
+        if (!rerank && hotRankedWithCounts && _hotEntries.value.isNotEmpty()) {
+            val refreshed = _hotEntries.value.map { it.copy(count = hotEntryCount(it, counts)) }
+            _hotEntries.value = refreshed
+            _hotTags.value = refreshed.map { it.tag }
+            return
+        }
+        // 并列时的次序：覆盖源数（hotTags(0) 已按覆盖数排好）
+        val coverageRank = HashMap<String, Int>(256)
+        tagPlan.hotTags(0).forEachIndexed { i, tag -> coverageRank[tag] = i }
+
+        // 认出池子里出现过的多写法组（与「全部标签」面板同口径）
+        val headOf = HashMap<String, String>(256)
+        val membersByHead = LinkedHashMap<String, List<String>>()
+        tags.forEach { tag ->
+            val head = TagAlias.groupHeadOf(tag) ?: return@forEach
+            val members = TagAlias.membersOfGroup(head)
+            if (members.size <= 1) return@forEach
+            headOf[tag] = head
+            membersByHead.getOrPut(head) { members }
+        }
+
+        val candidates = ArrayList<Candidate>(tags.size)
+        tags.forEach { tag ->
+            if (headOf.containsKey(tag)) return@forEach // 组内写法归到组那一条
+            candidates += Candidate(
+                tag = tag,
+                bound = counts[tag] ?: 0,
+                head = null,
+                rank = coverageRank[tag] ?: Int.MAX_VALUE,
+            )
+        }
+        membersByHead.forEach { (head, members) ->
+            candidates += Candidate(
+                tag = head + TagAlias.GROUP_SUFFIX,
+                // 上界：成员计数之和（并集 ≤ 和），只用来排序与提前收工，不显示
+                bound = members.sumOf { counts[it] ?: 0 },
+                head = head,
+                rank = members.minOf { coverageRank[it] ?: Int.MAX_VALUE },
+            )
+        }
+        // 上界降序 + 覆盖源数次序
+        candidates.sortWith(compareByDescending<Candidate> { it.bound }.thenBy { it.rank })
+
+        val repo = tagIndexRepository
+        val picked = ArrayList<HotTagEntry>(HOT_TAG_LIMIT)
+        for (c in candidates) {
+            // 已凑满且后面候选的上界都追不上第 N 名 → 再算也不会有变化，收工
+            if (picked.size >= HOT_TAG_LIMIT && c.bound < picked.last().count) break
+            val exact = when {
+                c.head == null -> c.bound
+                repo == null || counts.isEmpty() -> c.bound
+                else -> groupUnionCount(repo, c.head, c.bound)
+            }
+            picked += HotTagEntry(c.tag, exact, head = c.head)
+            picked.sortWith(compareByDescending<HotTagEntry> { it.count })
+            while (picked.size > HOT_TAG_LIMIT) picked.removeAt(picked.size - 1)
+        }
+        _hotEntries.value = picked
+        _hotTags.value = picked.map { it.tag }
+        hotRankedWithCounts = counts.isNotEmpty()
+    }
+
+    /** 推荐行单条的当前收录数：普通标签查表，组别走整组并集（带缓存） */
+    private suspend fun hotEntryCount(entry: HotTagEntry, counts: Map<String, Int>): Int {
+        val head = entry.head ?: return counts[entry.tag] ?: 0
+        val repo = tagIndexRepository ?: return 0
+        val memberSum = TagAlias.membersOfGroup(head).sumOf { counts[it] ?: 0 }
+        return groupUnionCount(repo, head, memberSum)
+    }
+
+    /** 推荐行的排序候选：`bound` 是收录数（普通标签精确、组为上界） */
+    private data class Candidate(
+        val tag: String,
+        val bound: Int,
+        val head: String?,
+        val rank: Int,
+    )
+
+    /** 整组并集收录数，带 [groupUnionCache] 缓存（键 = 成员计数之和） */
+    private suspend fun groupUnionCount(
+        repo: com.novelreader.data.repository.TagIndexRepository,
+        head: String,
+        memberSum: Int,
+    ): Int {
+        groupUnionCache[head]?.let { (sum, n) -> if (sum == memberSum) return n }
+        val n = runCatching { repo.groupCounts(type, listOf(head))[head] ?: 0 }.getOrDefault(0)
+        groupUnionCache[head] = memberSum to n
+        return n
+    }
+
+    /**
+     * 推荐行重算的触发：标签池换了一份（[planTick]，要重排）或索引写入了新行（[countsTick]，只刷数字）。
+     *
+     * 「收录数第一次到位」也要重排一次 —— 标签池往往先于计数加载完，那一次排的是
+     * 覆盖源数兜底顺序（[hotRankedWithCounts] 负责这件事）。
+     */
+    private fun observeHotTags() {
+        viewModelScope.launch {
+            var lastPlan = Int.MIN_VALUE
+            combine(planTick, countsTick) { plan, _ -> plan }
+                .collectLatest { plan ->
+                    val rerank = plan != lastPlan
+                    lastPlan = plan
+                    refreshHotEntries(rerank)
+                }
+        }
     }
 
     /**
@@ -244,6 +462,8 @@ class TagSearchViewModel(
         tagPlan = plan
         _allTags.value = plan.tags
         refreshOrderedTags()
+        // 推荐行（组别条目是从池子里认出来的）跟着重排
+        planTick.value++
     }
 
     /**
@@ -577,6 +797,13 @@ class TagSearchViewModel(
     }
 
     /**
+     * 标签池快照。构造期是 [TagPlan.EMPTY]，真值由 [collectTags] 异步落地。
+     *
+     * 必须声明在下面那个 init **之前**：init 里启动的推荐行计算会读它。
+     */
+    private var tagPlan: TagPlan = TagPlan.EMPTY
+
+    /**
      * 已选标签变化 → 刷新「组内标签」行（v1.9.2.0）。
      *
      * **必须写在 [_activeTags] 等 StateFlow 声明之后**：Kotlin 按书写顺序初始化属性，
@@ -588,9 +815,13 @@ class TagSearchViewModel(
         viewModelScope.launch {
             _activeTags.collect { refreshGroupEntries(it) }
         }
+        // v1.9.2.2：已选标签的「（组 N）」要跟着索引变化走（搜组内成员时整组数也会涨）。
+        // 同样依赖 [_activeTags]，必须留在这个 init 里 —— 挪到类顶部的 init 会 NPE 闪退。
+        observeGroupCounts()
+        // v1.9.2.2：推荐行里组别条目要算整组收录数（[tagPlan] 已在上面声明，不会读到 null）
+        observeHotTags()
     }
 
-    private var tagPlan: TagPlan = TagPlan.EMPTY
     private var searchJob: kotlinx.coroutines.Job? = null
     private var searchGeneration = 0L
 

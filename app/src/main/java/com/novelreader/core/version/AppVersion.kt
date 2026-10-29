@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.9.2.1"
+    const val CURRENT_VERSION = "1.9.2.2"
 
     /**
      * 更新日志。
@@ -25,6 +25,14 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.9.2.2",
+            date = "2026-10-29",
+            changes = listOf(
+                "**修「已选标签的组内数字不变化」**：chip 上的「（组 N）」以前取的是组首词自己那一行的收录数，而上一版起组内写法是按**原词**入库的 —— 搜「彩绘」时作品记在「彩绘」名下，不算进组首词，于是那个数字一直不动。现在按**组内全部写法的并集去重**来算，搜组里任何一个写法，整组数都会跟着涨；去重口径与别处一致，同一部作品带两个写法只算一部。",
+                "**热门推荐行改为按「组」出条目，名字带「组」**：以前推荐行把同一个同义组的各个写法各占一个坑，并排出现看着像几个不相干的词，其实点哪个都在搜同一批东西；真正好用的整组入口反倒不在推荐里。现在一个多写法组只出一条「组首词 + 组」（如「全彩组」），点它就是整组搜索；收录数取整组并集去重，与普通标签放在同一个榜里按数排。",
+            ),
+        ),
         VersionEntry(
             version = "1.9.2.1",
             date = "2026-10-29",

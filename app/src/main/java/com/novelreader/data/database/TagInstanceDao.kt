@@ -52,6 +52,23 @@ interface TagInstanceDao {
     suspend fun tagCounts(type: String): List<TagCount>
 
     /**
+     * 一组标签（同义组里的全部写法）**并集**收录了多少部（v1.9.2.2）。
+     *
+     * 为什么不能拿组首词那一行凑数：v1.9.2.0 起组内成员按**原词**入库
+     * （`TagAlias.indexNameOf`），「彩绘」的作品记在「彩绘」名下，不算进「全彩」。
+     * 于是 `tagCounts[组首词]` 只是组首词自己那行的数 —— 搜组内其它写法时
+     * 它一动不动，chip 上的「（组 N）」看着像坏了。
+     *
+     * 去重口径与 [itemCount] / [tagCounts] 一致（`sourceId || '|' || itemId`）：
+     * 同一部作品同时带「彩绘」「全彩色」两个写法只算一部。
+     */
+    @Query(
+        """SELECT COUNT(DISTINCT sourceId || '|' || itemId) FROM tag_instances
+           WHERE itemType = :type AND tagName IN (:names)""",
+    )
+    suspend fun distinctItemCount(type: String, names: List<String>): Int
+
+    /**
      * 判断一批 (sourceId, itemId) 里哪些已在本地收录（v1.8.9.7，待办 #47）。
      *
      * 标签搜索结果回来后用它标记「已收录」并排到前面。`refsWithAny` 是「按标签查条目」，

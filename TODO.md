@@ -775,6 +775,20 @@
   - 教训：**宿主侧给源打的补丁，验证必须落在真机上**（或至少确认运行时 key 与补丁表 key 同源）。探针与真机的 key 推导路径不同，探针通过不等于装机通过。
   - 涉及：`source/venera/VeneraSourceId.kt`、`source/venera/SourceRepairs.kt`。
 
+## 十一、文案与合规
+
+- [x] **61. 清理更新日志里的站点 / 平台名（内容红线回溯）** ✅ v1.9.2.9
+  - 背景：红线（2026-10-21 定）要求对外文案不得出现能定位到具体对象的名词，`CHANGELOG.md` 与 `AppVersion.kt` 的历史条目里仍残留约 40 处站点名。
+  - 范围：`AppVersion.kt` 的应用内更新日志 + `CHANGELOG.md`；`README.md` 复扫本来就干净。
+  - 做法：逐句改写而不是简单替换词 —— 保留技术信息（选择器、规则语法、接口字段、错误码、根因），把「某站点做了什么」改写成「某源 / 某站点 / 某平台」。典型几类：
+    - 「修复 6 个失效 legado 源（6 个站点逐一点名）」→ 按症状归纳成「1 个章节倒序 / 1 个站点改版 / 1 个相对地址 / 其余 3 个引擎语法」；
+    - 「（某站名）」式署名 → 「（某源）」；
+    - 源修复表条目里连带的默认域名 / 备选域名 → 去掉域名，只留「默认主域名 403、备选域名正常」的事实；
+    - 「5 个都叫某站名的源不会被误合」→ 「站点不同但同名的源不会被误合」。
+  - 复查：`CHANGELOG.md` / `AppVersion.kt` / `README.md` 三份对外文案按 60+ 关键词全量扫描 0 命中；GitHub 上 174 个历史 Release 说明同步复查 0 命中（本轮另修 v1.9.2.3 的 `JCOMIC_TRAPS_` 与 3 个老版本残留）。
+  - **保留项**：学术出版方名称与 DOI 前缀（Nature / Science / ACS 等）属于「订阅 + PDF 直链」功能的必要技术事实，未改写；开源技术组件名（Venera、legado、OkHttp、Coil…）按红线例外保留。
+  - 涉及：`app/src/main/java/com/novelreader/core/version/AppVersion.kt`、`CHANGELOG.md`。
+
 ## 备注
 - 改动涉及 `books` 表结构或 `RssFeedEntity` 时，必须写 Room 迁移（`AppDatabase.kt`）并自增数据库版本。
 - 新增设置项统一走 `core/preferences/PreferencesManager.kt`，不要各自散落存 SharedPreferences。

@@ -39,4 +39,18 @@ object VeneraSourceId {
             ?: return null
         return if (base.startsWith(PREFIX)) base else PREFIX + base
     }
+
+    /**
+     * 去掉 `venera_` 前缀，得到「裸名」（`venera_jcomic` → `jcomic`）。
+     *
+     * v1.9.2.8：`SourceRepairs` 的两张表（源码补丁 / 设置修复）历史上是按**裸名**
+     * 写的（`"jcomic"` / `"baozi"`），而运行时传进来的 key 是**带前缀**的 id
+     * （`"venera_jcomic"`）—— 直接 `CODE_FIXES[key]` 永远查不到，补丁在真机上
+     * **一次都没生效过**，而探针按文件名取裸名、一直是生效的，于是出现
+     * 「探针正常、装机不生效」这种最费解的现象。查表前统一过一遍这个函数。
+     */
+    fun bareName(id: String): String = id.removePrefix(PREFIX)
+
+    /** 补上 `venera_` 前缀（幂等），给按 id 存的设置项用 */
+    fun withPrefix(id: String): String = if (id.startsWith(PREFIX)) id else PREFIX + id
 }

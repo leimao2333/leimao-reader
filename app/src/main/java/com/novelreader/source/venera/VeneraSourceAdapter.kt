@@ -288,7 +288,11 @@ class VeneraSourceAdapter(
         val json = engine.call(key, "content", comicId, epId)
         val obj = JsonParser.parseString(json).asJsonObject
         val images = obj.getAsJsonArray("images")?.mapNotNull { el ->
-            el.takeIf { it.isJsonPrimitive }?.asString
+            // v1.9.2.8：空串要在这里就丢掉，不能留到下游。源侧 onImageLoad 逐张解析失败时
+            // 会产出 `""`，数组本身非空 → 下面的「0 张图」判定不触发；到了阅读页再被
+            // `filter { it.isNotBlank() }` 滤成 0 张，结果既不报错也不出图，用户只看到
+            // 一句「本章暂无可用图片」，毫无线索。
+            el.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
         } ?: emptyList()
         val headers = obj.getAsJsonObject("headers")?.entrySet()
             ?.associate { (k, v) -> k to (if (v.isJsonPrimitive) v.asString else v.toString()) }

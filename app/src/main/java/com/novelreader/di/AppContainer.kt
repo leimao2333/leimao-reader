@@ -91,6 +91,10 @@ class AppContainer(context: Context) {
         com.novelreader.source.venera.VeneraEngine(appContext).also { engine ->
             // 已知失效配置的一次性修复（如包子漫画的默认域名），见 SourceRepairs 注释
             com.novelreader.source.venera.SourceRepairs.applyAll(engine)
+            // v1.9.2.8：图片加载（Coil）与源请求是两套 OkHttpClient，前者没有 CookieJar。
+            // 部分图床把站点会话 Cookie 当鉴权，缺了它一律 403 拦截页 → 封面与正文图全空。
+            // 这里把源引擎的 Cookie 只读地借给图片层，见 ImageCookies。
+            com.novelreader.core.image.ImageCookies.register { url -> engine.cookieHeaderFor(url) }
         }
     }
 

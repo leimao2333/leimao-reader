@@ -315,7 +315,10 @@ const CODE_FIXES = loadCodeFixes();
 
 /** 与 SourceRepairs.patchCode 等价：字面量替换，未命中只告警 */
 function applyCodeFixes(key, code) {
-    const fixes = CODE_FIXES.get(key);
+    // 与 VeneraEngine 的调用口径一致：真机传的是带 `venera_` 前缀的源 id，
+    // 而补丁表历史上按裸名写。两边都查 —— 曾经因为只查裸名/只查前缀对不上，
+    // 补丁在真机上「一次都没生效过」，探针却一直是好的（见 TODO #60）。
+    const fixes = CODE_FIXES.get(key) || CODE_FIXES.get(key.replace(/^venera_/, ''));
     if (!fixes || !fixes.length) return code;
     let out = code;
     for (const fix of fixes) {
@@ -574,7 +577,10 @@ async function main() {
         process.exit(2);
     }
     const srcPath = path.resolve(srcArg);
-    const key = path.basename(srcPath, '.js');
+    // 与 `VeneraSourceId.fromFileName` 一致：真机上的源 id 是 `venera_<文件名>`。
+    // 探针以前用裸文件名当 key，与真机不同源 —— 补丁键对不上这种问题就查不出来。
+    const bareKey = path.basename(srcPath, '.js').replace(/^venera_/, '');
+    const key = 'venera_' + bareKey;
 
     const host = makeHost(srcPath, key);
     if (SEED) {
@@ -586,8 +592,11 @@ async function main() {
             if (colon < 0) continue;
             const k = left.slice(0, colon);
             const n = left.slice(colon + 1);
-            host.store.set(`venera:setting:${k}:${n}`, item.slice(eq + 1));
-            console.log(`预置设置 ${k}.${n} = ${item.slice(eq + 1)}`);
+            // 与 `SourceRepairs.applyAll` 一致：设置项一律按带前缀的源 id 存。
+            // 裸名（`jcomic:domains=…`）照样接受，自动补前缀。
+            const settingKey = k.startsWith('venera_') ? k : 'venera_' + k;
+            host.store.set(`venera:setting:${settingKey}:${n}`, item.slice(eq + 1));
+            console.log(`预置设置 ${settingKey}.${n} = ${item.slice(eq + 1)}`);
         }
     }
     const reg = host.register();

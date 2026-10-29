@@ -207,6 +207,20 @@ class VeneraEngine(private val context: Context) {
             .build()
     }
 
+    /**
+     * 某个地址可用的 Cookie 头（v1.9.2.8）。
+     *
+     * 只读查询，供**图片加载**使用：封面与正文图由 Coil 加载，走的是另一套
+     * OkHttpClient，本身没有 CookieJar；而部分图床把站点会话 Cookie 当鉴权的一环，
+     * 缺了它一律回 403 拦截页。详见 [com.novelreader.core.image.ImageCookies]。
+     *
+     * 不做任何写操作，也绝不抛异常 —— 查询失败就是「没有 Cookie」，图片照常尝试。
+     */
+    fun cookieHeaderFor(url: String): String = runCatching {
+        val httpUrl = url.toHttpUrlOrNull() ?: return@runCatching ""
+        cookieJar.loadForRequest(httpUrl).joinToString("; ") { "${it.name}=${it.value}" }
+    }.getOrDefault("")
+
     /** 注册（或覆盖）一个源的源码。调用方：导入 / 启动恢复 */
     fun putSource(key: String, code: String) {
         // 本地源码补丁（v1.9.2.3，见 [SourceRepairs]）：上游逻辑已失效时在这里替换掉
@@ -924,7 +938,15 @@ class VeneraEngine(private val context: Context) {
                     }
                 }
             } catch (e: IOException) {
-                if (attempt >= maxAttempts || !isTransient(e)) throw e
+                // v1.9.2.8：超时类故障单独限次。一次读超时就是 10s，按 GET 的 3 次上限
+                // 重试会顶穿 search 的 CALL_TIMEOUT_MS(30s) —— 变成「源其实能返回，
+                // 却被外层先判超时」，比不重试更糟。
+                val cap = if (e is java.net.SocketTimeoutException) {
+                    HTTP_TIMEOUT_MAX_ATTEMPTS
+                } else {
+                    maxAttempts
+                }
+                if (attempt >= cap || !isTransient(e)) throw e
                 Log.w(
                     LOG_TAG,
                     "HTTP 瞬时失败，重试 $attempt/${maxAttempts - 1}：${request.url} → " +
@@ -937,13 +959,17 @@ class VeneraEngine(private val context: Context) {
 
     /** 是否属于「再打一次大概率就好」的网络故障 */
     private fun isTransient(e: IOException): Boolean {
-        // 用户主动取消 / 外层超时放弃：重试只会拖住 JS 线程
+        // v1.9.2.8：**先**判 SocketTimeoutException。
+        // 它是 InterruptedIOException 的子类，而下面那条「主动取消 / callTimeout 不重试」
+        // 正好会把它一起吞掉 —— 于是 `is SocketTimeoutException -> true` 这一支从来没
+        // 生效过，读超时永远不重试（真机日志里满屏 `GET 10004ms ... [失败]`）。
+        if (e is java.net.SocketTimeoutException) return true
+        // 用户主动取消 / 外层 callTimeout 放弃：重试只会拖住 JS 线程
         if (e is java.io.InterruptedIOException) return false
         if (e.message?.contains("Canceled", ignoreCase = true) == true) return false
         return when (e) {
             is javax.net.ssl.SSLException,
             is java.net.SocketException,
-            is java.net.SocketTimeoutException,
             is java.net.ConnectException,
             -> true
             else -> false
@@ -1088,12 +1114,26 @@ class VeneraEngine(private val context: Context) {
         }
 
         override fun loadForRequest(url: HttpUrl): List<Cookie> {
-            val list = store[url.host] ?: return emptyList()
             val now = System.currentTimeMillis()
-            return synchronized(list) {
-                list.removeAll { it.expiresAt < now }
-                list.filter { it.matches(url) }
+            // v1.9.2.8：除了精确 host，还要取**父域**上的 Cookie。
+            //
+            // 图床普遍是独立子域（`images.example.com`），站点在 `example.com` 上设的
+            // 会话 Cookie（`Domain=.example.com`）在浏览器里对子域同样生效。此前这里
+            // 只查 `store[url.host]`，子域请求一条都取不到 —— 而部分图床把这条会话
+            // Cookie 当鉴权：缺了它一律回 403 拦截页（不是 404、不是解码失败）。
+            // 结果就是「封面全空白、正文图全不出来」，且 Coil 静默吞掉、日志无痕。
+            val hosts = store.keys.filter { it == url.host || url.host.endsWith(".$it") }
+                // 父域在前、子域在后：同名 Cookie 以后者为准（更具体的作用域优先）
+                .sortedBy { it.length }
+            val out = LinkedHashMap<String, Cookie>()
+            hosts.forEach { host ->
+                val list = store[host] ?: return@forEach
+                synchronized(list) {
+                    list.removeAll { it.expiresAt < now }
+                    list.filter { it.matches(url) }.forEach { out[it.name] = it }
+                }
             }
+            return out.values.toList()
         }
 
         fun clear(url: HttpUrl) {
@@ -1146,6 +1186,15 @@ class VeneraEngine(private val context: Context) {
          */
         private const val HTTP_MAX_ATTEMPTS = 3
         private const val HTTP_RETRY_BACKOFF_MS = 300L
+
+        /**
+         * 读超时类故障的尝试次数（含首次，v1.9.2.8）。
+         *
+         * 单独限到 2 次：一次读超时是 10s，两次 + 退避约 20.3s，仍在 search 的
+         * `CALL_TIMEOUT_MS`(30s) 之内；用 GET 的 3 次上限会到 30.6s，外层先超时，
+         * 重试等于白做。详见 [isTransient]。
+         */
+        private const val HTTP_TIMEOUT_MAX_ATTEMPTS = 2
 
         /**
          * 单次调用（含 init / dynamic loader）的执行上界。

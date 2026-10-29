@@ -15,6 +15,7 @@ import okhttp3.Response
  * 2. 缺失时按需补齐：
  *    - `User-Agent`：Coil 默认发 `okhttp/x.y`，不少图床按 UA 拒绝；
  *    - `Referer`：退化为图片自身站点（同站点图床常据此防盗链）；
+ *    - `Cookie`：向源引擎的 CookieJar 只读查询（v1.9.2.8，见 [ImageCookies]）；
  *    - `Accept`：声明可接受的图片类型，避免 CDN 因 Accept 不匹配返回错误页。
  *
  * 对本地文件（file://）等非 HTTP 请求不会走到 OkHttp，天然无影响。
@@ -37,6 +38,13 @@ class CoverDefaultsInterceptor : Interceptor {
             ImageReferer.of(request.url.toString())?.let { builder.header("Referer", it) }
         }
         if ("accept" !in declared) builder.header("Accept", IMAGE_ACCEPT)
+        // v1.9.2.8：Cookie 兜底。图片走的是与源请求**不同的** OkHttpClient
+        // （没有 CookieJar），而部分图床把「站点会话 Cookie」当成鉴权的一环：
+        // 只补 Referer 仍会被 WAF 拦成 403 拦截页，Coil 把它当解码失败静默吞掉，
+        // 表现就是封面全空白、正文一张图都出不来。详见 [ImageCookies]。
+        if ("cookie" !in declared) {
+            ImageCookies.headerFor(request.url.toString())?.let { builder.header("Cookie", it) }
+        }
         return chain.proceed(builder.build())
     }
 

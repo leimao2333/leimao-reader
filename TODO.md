@@ -725,6 +725,7 @@
   - 附带修：`ComicReaderScreen` 的「回顶」`LaunchedEffect` 原本 key 里带了 `images`，任何一次图片列表变动（单张换址 / 整章重解析）都会把读者弹回第一页，现改为只按 `chapterIndex` 触发。
   - 参考位置：`ui/screens/comic/ComicReaderViewModel.kt` 的 `onImageFailed` / `maybeRefreshChapter` / `loadContent`。
   - 上游（venera 官方）同样没处理这个，属于源站设计导致，不是我们的 bug。
+  - **2026-10-29 更正**：实测预签名地址在 `X-Amz-Expires=60` 之后 **75 秒仍然返回 200**（带会话 Cookie + Referer），所以「60 秒必失效」这一条不成立，真正的 403 来源是**图片请求没带站点会话 Cookie**（见 #58）。`maybeRefreshChapter()` 保留作为兜底，不必再把它当主要修复。
 
 - [x] **55. 修：绅士漫画进得去但「无法获取章节」** ✅ v1.9.2.4
   - 现象：绅士漫画（wnacg）详情页打得开，目录一直空 / 提示无法获取章节。
@@ -748,6 +749,31 @@
   - 实测：jcomic 14 张 / 绅士漫画 38 张均 `lazy = 0`（全部一次解析完）。
   - 附带：`onImageFailed` 对惰性占位补一条明确日志（「源未返回可用地址」），并**不再**对惰性占位触发整章重解析（重算出的 token 与原来逐字节相同，只会白打一次 `content`）。
   - 涉及：`assets/venera/runtime.js`、`ui/screens/comic/ComicReaderViewModel.kt`。
+
+- [x] **58. 修：封面空白 / 正文图全不出来（图片请求缺站点会话 Cookie）** ✅ v1.9.2.8
+  - 现象（用户反馈）：「封面没有，进入章节里面直接提示本章暂无可用图片」；v1.9.2.7 补了 Referer 之后正文图能拿到 27 条地址，但封面仍然空白。
+  - 证据链（PC 侧用探针 + 直接打图床，2026-10-29）：
+    - `images.<站点>` 一律返回 `403 text/html` + Cloudflare 封禁页（`server: cloudflare`，正文「Sorry, you have been blocked」），与请求头无关（裸请求 / 桌面 UA / 完整 `Sec-Fetch-*` 全是 403）；
+    - **带站点会话 Cookie + Referer → `200 image/jpeg 117254B`**；不带 Cookie 只带 Referer → 403。**决定性差异就在 Cookie**；
+    - 预签名 `X-Amz-Expires=60` 实测 **75 秒后仍 200**，过期不是问题（推翻 #54 里「60 秒后直链 403」的推断，重解析机制保留作兜底即可）。
+  - 根因：封面与正文图由 `NovelReaderApp.newImageLoader()` 的 OkHttpClient 加载，它**没有 CookieJar**（`CookieJar.NO_COOKIES`）；源脚本的页面请求走 `VeneraEngine` 那套（带 `SimpleCookieJar`）。两套客户端互不相干 → 图片请求永远不带站点登录态 → 被图床当未授权请求拦成 HTML 页 → Coil 当「解码失败」静默吞掉，日志无痕。
+  - 落地：
+    1. 新增 `core/image/ImageCookies.kt`：全局只读查询（图片地址 → 该地址可用的 Cookie 头），`AppContainer` 创建源引擎时注册 `engine.cookieHeaderFor(url)`；
+    2. `CoverDefaultsInterceptor` 在源没声明 `Cookie` 时兜底带上（封面与正文图共用这一条链路）；
+    3. `SimpleCookieJar.loadForRequest` 补**父域继承**：原来只查 `store[url.host]` 精确匹配，站点在 `example.com` 上设的会话 Cookie 对 `images.example.com` 不生效。现按域名层级查找（父域在前、子域在后，同名以后者为准）。
+  - 涉及：`core/image/ImageCookies.kt`（新）、`core/image/CoverDefaultsInterceptor.kt`、`source/venera/VeneraEngine.kt`、`di/AppContainer.kt`。
+
+- [x] **59. 修：读超时重试从未生效 + 空图片地址被当成「有图」** ✅ v1.9.2.8
+  - `VeneraEngine.isTransient()` 里 `SocketTimeoutException` 那一支是**死代码**：它是 `InterruptedIOException` 的子类，先被「用户主动取消 / callTimeout 不重试」那条吞掉，于是读超时永远不重试。真机现象：`GET 10004ms 19 字符 [失败]`，19 字符正是 `{"error":"timeout"}`。修法：先判 `SocketTimeoutException` → 可重试；再把超时重试单独限到 2 次（3 次 × 10s 会顶穿 search 的 `CALL_TIMEOUT_MS` 30s）。
+  - `VeneraSourceAdapter.content` 的 `images` 原来只过滤非字符串元素，空串会留下 → 数组非空 → 跳过「0 张图」判定 → 到阅读页被 `filter { it.isNotBlank() }` 滤成 0 张，既不报错也不出图。现在在源头剔除空串。
+  - 涉及：`source/venera/VeneraEngine.kt`、`source/venera/VeneraSourceAdapter.kt`。
+
+- [x] **60. 修：源码补丁表按裸名索引、运行时传带前缀 id，补丁从未生效** ✅ v1.9.2.8
+  - 现象：jcomic 章节 `content images=27` 但阅读页一张图都不出；探针对同一话返回 27 条**真实**地址，真机却是 0 张（v1.9.2.8 加了空串过滤后直接变 `images=0`）。
+  - 根因：`SourceRepairs.CODE_FIXES` 的键是裸名（`"jcomic"`），而 `VeneraEngine.putSource(key, code)` 传进来的 `key` 是 `VeneraSourceId` 推导出的**带前缀 id**（`"venera_jcomic"`）。`CODE_FIXES[key]` 直接返回 null → 补丁在真机上**一次都没应用过**，`img.attributes["src"]` 全是空串。探针是按文件名取裸名跑的，所以一直正常 —— 这就是「自测 27 张、装机 0 张」的来源。同一处写法问题也导致 `FIXES`（包子漫画默认域名）的 `ensureSetting(key, …)` 写到了 `venera:setting:baozi:domains`，而运行时按 `venera:setting:venera_baozi:domains` 读，同样从未生效。
+  - 落地：`VeneraSourceId` 新增 `bareName()` / `withPrefix()`；`patchCode` 先查 `CODE_FIXES[key]` 再查 `CODE_FIXES[bareName(key)]`；`applyAll` 写设置项前统一 `withPrefix`。
+  - 教训：**宿主侧给源打的补丁，验证必须落在真机上**（或至少确认运行时 key 与补丁表 key 同源）。探针与真机的 key 推导路径不同，探针通过不等于装机通过。
+  - 涉及：`source/venera/VeneraSourceId.kt`、`source/venera/SourceRepairs.kt`。
 
 ## 备注
 - 改动涉及 `books` 表结构或 `RssFeedEntity` 时，必须写 Room 迁移（`AppDatabase.kt`）并自增数据库版本。

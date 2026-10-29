@@ -73,7 +73,10 @@ object SourceRepairs {
     /** 应用全部修复（幂等，可重复调用） */
     fun applyAll(engine: VeneraEngine) {
         FIXES.forEach { (key, settings) ->
-            settings.forEach { (name, value) -> engine.ensureSetting(key, name, value) }
+            // v1.9.2.8：表里的 key 是**裸名**（"baozi"），而设置项按**源 id**
+            // （"venera_baozi"）存 —— 直接拿裸名写进去，运行时按 id 读，永远读不到。
+            val sourceKey = VeneraSourceId.withPrefix(key)
+            settings.forEach { (name, value) -> engine.ensureSetting(sourceKey, name, value) }
         }
     }
 
@@ -84,7 +87,11 @@ object SourceRepairs {
      * 正则化只会让它更难维护。
      */
     fun patchCode(key: String, code: String): String {
-        val fixes = CODE_FIXES[key] ?: return code
+        // v1.9.2.8：表里按裸名索引（"jcomic"），运行时 key 是带前缀的 id
+        // （"venera_jcomic"）。此前直接 `CODE_FIXES[key]` 命中不了，补丁在真机上
+        // **一次都没生效过**；而探针是按文件名取裸名跑的，所以「探针正常、装机不生效」。
+        // 两种写法都接受，谁先命中用谁。
+        val fixes = CODE_FIXES[key] ?: CODE_FIXES[VeneraSourceId.bareName(key)] ?: return code
         var out = code
         for (fix in fixes) {
             if (out.contains(fix.to)) continue // 已经打过了（同一份源码被反复 putSource）

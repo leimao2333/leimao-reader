@@ -36,6 +36,13 @@ object AppVersion {
             ),
         ),
         VersionEntry(
+            version = "1.9.1.1",
+            date = "2026-10-29",
+            changes = listOf(
+                "**已选标签也显示收录数**：以前「已选标签」那排只有名字，想知道这个标签能搜出多少得点进去看。现在和热门标签一样带数字。",
+            ),
+        ),
+        VersionEntry(
             version = "1.9.1.0",
             date = "2026-10-28",
             changes = listOf(

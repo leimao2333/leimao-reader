@@ -581,9 +581,12 @@ fun TagSearchScreen(
                     contentPadding = PaddingValues(end = 12.dp),
                 ) {
                     items(activeTags, key = { it }) { tag ->
+                        // v1.9.1.1：已选标签也带收录数 —— 只写名字的话，用户不知道
+                        // 这个标签到底能搜出多少，得点进去才看得出来
+                        val count = tagCounts[tag] ?: 0
                         AssistChip(
                             onClick = { viewModel.removeTag(tag) },
-                            label = { Text(tag) },
+                            label = { Text(if (count > 0) "$tag · $count" else tag) },
                             trailingIcon = {
                                 Icon(
                                     Icons.Filled.Close,

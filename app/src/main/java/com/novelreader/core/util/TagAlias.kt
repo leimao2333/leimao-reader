@@ -196,12 +196,17 @@ object TagAlias {
         setOf("天然呆", "airhead", "天然ボケ", "천연"),
         setOf("女教师", "女教師", "female teacher", "여교사"),
         setOf("伪娘", "偽娘", "女装", "女裝", "男娘", "crossdressing", "otokonoko", "女装男子", "여장"),
-        setOf("异装", "異裝", "变装", "變裝", "cosplay", "コスプレ", "코스프레"),
+        // v1.9.2.0：cosplay / コスプレ 归下面的「角色扮演」组（那边首词就是 cosplay），
+        // 这里去掉重复 —— 跨组重复会让 groupOf 后写覆盖先写，规范名跟着漂移
+        setOf("异装", "異裝", "变装", "變裝", "코스프레"),
         setOf("妹控", "sister complex", "シスコン", "시스콘"),
-        setOf("姐控", "姊控", "sister complex older", "oneesan", "누나"),
+        // v1.9.2.0：oneesan / 누나 归「御姐」「姐姐」两组（语义在那边），这里不重复登记
+        setOf("姐控", "姊控", "sister complex older"),
         setOf("露出", "野外", "露出play", "exhibitionism", "露出プレイ", "노출"),
         setOf("时间停止", "時間停止", "time stop", "時間停止もの", "시간정지"),
-        setOf("机械", "機械", "mecha", "robot", "メカ", "로봇"),
+        // v1.9.2.0：去掉与「机甲」组重复的 mecha / robot / 로봇 —— 跨组重复会让
+        // groupOf「后写覆盖先写」，同一词在不同调用里落到不同组，组首词判定随之漂移。
+        setOf("机械", "機械", "メカ"),
         setOf("扶她", "扶他", "双性", "futanari", "futa", "ふたなり", "hermaphrodite"),
         setOf("肌肉", "肌肉男", "muscular", "muscle", "マッチョ", "근육"),
         setOf("触手", "tentacle", "tentacles", "触手責め", "촉수"),
@@ -332,7 +337,8 @@ object TagAlias {
             "ai插图", "ai插畫", "aiイラスト", "ai그림"),
         // ===== 情境（成人向标签的常见叫法）=====
         setOf("群交", "多人", "3p", "threesome", "group sex", "乱交", "亂交", "輪姦", "윤간"),
-        setOf("露出", "野外", "野外露出", "exhibitionism", "public sex", "露出プレイ"),
+        // v1.9.2.0：露出 / 野外 / exhibitionism / 露出プレイ 已归上面的「露出」组
+        setOf("野外露出", "public sex"),
         setOf("偷窥", "偷窺", "窥视", "窺視", "voyeur", "peeping", "のぞき",
             // v1.8.7.0（待办 #28）：「自拍偷拍」拆出来的是「偷拍」，与「偷窥」同一类内容
             "偷拍", "偷拍视频", "偷拍自拍"),
@@ -340,7 +346,8 @@ object TagAlias {
         setOf("怀孕", "懷孕", "妊娠", "pregnant", "pregnancy", "임신"),
         setOf("母乳", "乳汁", "lactation", "breast milk", "母乳プレイ"),
         setOf("睡眠", "睡着", "sleeping", "somno", "睡眠play"),
-        setOf("时间停止", "時間停止", "time stop", "time-stop"),
+        // v1.9.2.0：时间停止 / 時間停止 / time stop 已归上面的组，这里只补连字符写法
+        setOf("time-stop"),
         setOf("精神控制", "洗脑", "洗腦", "mind control", "brainwash"),
         setOf("监禁", "監禁", "囚禁", "confinement", "imprisonment"),
         setOf("卖春", "賣春", "援交", "风俗", "風俗", "prostitution", "solicitation"),
@@ -505,6 +512,11 @@ object TagAlias {
     fun canonicalOf(tag: String): String {
         val raw = tag.trim()
         if (raw.isEmpty()) return raw
+        // v1.9.2.0：整组写法（「全彩组」）落回组首词 —— 池子 / 索引 / 打标里并没有
+        // 「全彩组」这个标签，一切按首词的规范名走（否则会被当成新标签写进索引）
+        groupQueryHeadOf(raw)?.let { head ->
+            return canonicalKey[norm(head)] ?: head
+        }
         canonicalKey[norm(raw)]?.let { return it }
         // v1.8.4.0（待办 #11）：影视源把类型写成「动作片 / 爱情片 / 科幻片」，
         // 而受控词表的规范名是短词。剥掉影视后缀再查一次，两边才会落到同一个键上。
@@ -560,6 +572,161 @@ object TagAlias {
         val out = LinkedHashSet<String>()
         out.add(key)
         group.forEach { out.add(norm(it)) }
+        return out
+    }
+
+    // ===== 分组 / 组内成员（v1.9.2.0）=====
+    //
+    // 等价组原本的口径是「搜其中一个就等于搜全组」。这对「无码 / 無修正 / uncensored」
+    // 这类**同义改写**是对的，但对「全彩」这种**几十个写法的大组**就成了问题：
+    // 用户想搜的是「彩绘」这一种具体写法，结果把整组都拉进来，等于把「全彩」又看一遍。
+    //
+    // 现在的口径分两层，互不破坏：
+    // - **普通写法**（含组首词「全彩」、组内成员「彩绘」）＝ 只搜它自己，独立成一个条件；
+    // - **整组写法**（组首词 + [GROUP_SUFFIX]，如「全彩组」）＝ 整组搜索，
+    //   分组、分组计数、分组覆盖全部保留。
+    //
+    // 也就是说：分组没被拆掉，只是给它换了个明确的写法（「全彩组」），
+    // 而组里每个词（包括首词本身）都能单独搜。
+
+    /** 「整组搜索」的写法后缀：组首词 + 组，如「全彩组」「无码组」 */
+    const val GROUP_SUFFIX = "组"
+
+    /**
+     * 解析「整组写法」：`全彩组` / `彩绘组` → 该组首词（`全彩`）；不是整组写法返回 null。
+     *
+     * 前缀先按组首词解析，再退一步按组内成员解析 —— 用户写「彩绘组」也认，
+     * 免得这种写法被当成一个新标签自动新建出来。
+     */
+    fun groupQueryHeadOf(tag: String): String? {
+        val text = tag.trim()
+        if (text.length <= GROUP_SUFFIX.length || !text.endsWith(GROUP_SUFFIX)) return null
+        val prefix = text.dropLast(GROUP_SUFFIX.length).trim()
+        if (prefix.isEmpty()) return null
+        return groupHeadOf(prefix)
+    }
+
+    /** 是否是「整组搜索」写法（组首词 / 组内成员 + 「组」） */
+    fun isGroupQuery(tag: String): Boolean = groupQueryHeadOf(tag) != null
+
+    /**
+     * 该查询词落到标签池 / 索引上时用的**真实标签名**：整组写法取组首词，其余原样。
+     *
+     * 「全彩组」不是真实标签，池子里只有「全彩」—— 入口、计数、打标都必须用它。
+     */
+    fun planTagOf(tag: String): String {
+        val raw = tag.trim()
+        return groupQueryHeadOf(raw) ?: raw
+    }
+
+    /**
+     * 该查询词写进**本地索引**时用的标签名（v1.9.2.0）。
+     *
+     * 与 [planTagOf] 的差别只在组内成员：整组写法取组首词，成员保留**原词**。
+     * 否则搜「彩绘」时索引把结果记成「全彩」，这个标签自己的收录数永远是 0，
+     * chip 上就看不到数字（真机反馈：「已选标签的数字呢？」）。
+     */
+    fun indexNameOf(tag: String): String {
+        val raw = tag.trim()
+        val head = groupQueryHeadOf(raw)
+        return if (head != null) canonicalOf(head) else raw
+    }
+
+    /** 该标签所属等价组的组首词（规范名）；不在任何组里返回 null */
+    fun groupHeadOf(tag: String): String? {
+        val key = norm(tag)
+        val group = groupOf[key] ?: genreBaseOf(tag)?.let { groupOf[norm(it)] } ?: return null
+        return group.firstOrNull()
+    }
+
+    /** 是否是**组首词**（规范名）：它是「整组写法」的前缀（全彩 → 全彩组） */
+    fun isGroupHead(tag: String): Boolean {
+        val head = groupHeadOf(tag) ?: return false
+        return norm(head) == norm(tag)
+    }
+
+    /** 是否是「多标签分组里的非首词成员」 */
+    fun isGroupMember(tag: String): Boolean {
+        val head = groupHeadOf(tag) ?: return false
+        return norm(head) != norm(tag)
+    }
+
+    /**
+     * 组内全部写法（含组首词），保持声明顺序；不在组里返回空列表。
+     * 供 UI 展示「组内标签」用（点一个词 = 单独搜它）。
+     */
+    fun membersOfGroup(head: String): List<String> {
+        val key = norm(head)
+        val group = GROUPS.firstOrNull { aliases -> aliases.any { norm(it) == key } }
+            ?: return emptyList()
+        return group.toList()
+    }
+
+    /**
+     * 搜索口径的等价写法：
+     * - 整组写法（「全彩组」）→ 该组全部写法（[aliasesOf]）；
+     * - 其余（含组首词本身）→ 只有自己。
+     */
+    fun searchAliasesOf(tag: String): Set<String> {
+        val head = groupQueryHeadOf(tag)
+        if (head != null) return aliasesOf(head)
+        return setOf(norm(tag))
+    }
+
+    /** 搜索口径的写法列表（发请求用），口径同 [searchAliasesOf] */
+    fun searchTermsOf(tag: String): List<String> {
+        val raw = tag.trim()
+        if (raw.isEmpty()) return emptyList()
+        val head = groupQueryHeadOf(raw)
+        if (head != null) return searchTermsFor(head)
+        return listOf(raw)
+    }
+
+    /** 按源分配写法（口径同 [searchAliasesOf]）：普通写法只发它自己那一个 */
+    fun searchTermsOfSource(
+        tag: String,
+        sourceOrdinal: Int,
+        limit: Int = MAX_SEARCH_TERMS_PER_SOURCE,
+    ): List<String> {
+        val raw = tag.trim()
+        if (raw.isEmpty()) return emptyList()
+        val head = groupQueryHeadOf(raw)
+        if (head != null) return searchTermsForSource(head, sourceOrdinal, limit)
+        return listOf(raw)
+    }
+
+    /**
+     * 展示名：原样保留用户写的词。
+     *
+     * 「彩绘」显示成「全彩」会让人以为系统又把它并回整组；「全彩组」也要带着「组」字，
+     * 否则用户看不出这一条是整组条件。
+     */
+    fun displayNameOf(tag: String): String = tag.trim()
+
+    /**
+     * 搜索条件的身份键：整组写法 = 整组一个条件；其余各自独立。
+     *
+     * 复合搜索按「条件」求交，所以「全彩 彩绘」是两个条件（结果是两者的交集）。
+     */
+    fun conditionKeyOf(tag: String): String {
+        val head = groupQueryHeadOf(tag)
+        if (head != null) return "group:" + norm(head)
+        return "tag:" + norm(tag)
+    }
+
+    /**
+     * 按**搜索条件**去重（口径见 [conditionKeyOf]），保留首次出现。
+     *
+     * 与 [dedupeAliases] 的区别：那个按同义组判重，会把「彩绘 / 彩色」并成一个条件；
+     * 单标签搜索上线后它们是两件事，必须分开。
+     */
+    fun dedupeConditions(tags: List<String>): List<String> {
+        if (tags.size < 2) return tags
+        val out = ArrayList<String>(tags.size)
+        val seen = HashSet<String>()
+        for (tag in tags) {
+            if (seen.add(conditionKeyOf(tag))) out.add(tag)
+        }
         return out
     }
 

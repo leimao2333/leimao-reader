@@ -101,7 +101,7 @@ object TagTagger {
      * 由 `refsWithAny` 在召回时整体排除：**只计数，不进本地召回**。
      */
     fun searchContext(tags: Collection<String>): List<Pair<String, Int>> =
-        tags.map { TagAlias.canonicalOf(it) to CONF_SEARCH }
+        tags.map { TagAlias.indexNameOf(it) to CONF_SEARCH }
 
     /**
      * 给一部作品打标签。
@@ -167,10 +167,38 @@ object TagTagger {
         }
         // 4) 分类页上下文（v1.8.1.9）：从「全彩」这类分类页命中的作品，补上该分类标签。
         //    置信度按入口类型由调用方给（真实分类页高、纯关键词搜索低或不给）。
+        //    v1.9.2.0：组内成员按**原词**记（「彩绘」不再被并成「全彩」），否则
+        //    单标签搜索的收录数永远是 0，chip 上没有数字。
         context.forEach { ctx ->
-            val name = TagAlias.canonicalOf(ctx.name)
+            val raw = ctx.name.trim()
+            if (raw.isEmpty()) return@forEach
+            val name = if (TagAlias.isGroupMember(raw)) raw else TagAlias.canonicalOf(raw)
             if (name.isBlank()) return@forEach
             merge(out, Tag(name, categoryOf(name, video), ctx.confidence, ctx.origin))
+        }
+        return out.values.toList()
+    }
+
+    /**
+     * 组内成员写法对应的标签行（v1.9.2.0）。
+     *
+     * [tag] 只产出**规范名**（「彩绘」在归一那一步就被并成「全彩」），而单标签搜索
+     * 需要按原始写法精确命中。这里把原始写法里属于「组内成员」的那些捞回来，
+     * 大类 / 置信度 / 来源沿用对应规范名那一条 —— 证据强度与它完全一致，
+     * 只是多存一个可用于精确检索的键。
+     *
+     * @param tagged [tag] 的输出（规范名）
+     * @param rawNames 站方原始标签（[ItemTags.of] 的结果）
+     */
+    fun memberTags(tagged: List<Tag>, rawNames: Collection<String>): List<Tag> {
+        if (tagged.isEmpty() || rawNames.isEmpty()) return emptyList()
+        val byName = tagged.associateBy { it.name }
+        val out = LinkedHashMap<String, Tag>()
+        rawNames.forEach { raw ->
+            val name = raw.trim()
+            if (name.isEmpty() || !TagAlias.isGroupMember(name)) return@forEach
+            val base = byName[TagAlias.canonicalOf(name)] ?: return@forEach
+            out.putIfAbsent(name, Tag(name, base.category, base.confidence, base.origin))
         }
         return out.values.toList()
     }

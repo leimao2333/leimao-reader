@@ -20,9 +20,30 @@ data class TagPlan(
     val collectedAtMs: Long = 0L,
     /** 标签 → 各 (sourceId, 分类url)；LinkedHashMap 保持收集顺序 */
     val plan: Map<String, List<Pair<String, String>>> = emptyMap(),
+    /**
+     * 自动新建 / 搜索时收录的标签（v1.9.2.0）。
+     *
+     * 这些标签不是源站分类页，[plan] 里只有一条或多条「按关键词搜索」的伪入口。
+     * 重新收集标签池时源站不会再把它们带出来，所以要单独记一份，收集完再补回去 ——
+     * 否则用户搜过的生僻标签每刷新一次就消失一次。
+     */
+    val customTags: Set<String> = emptySet(),
+    /**
+     * 被用户删除（隐藏）的标签（v1.9.2.0）。
+     *
+     * 删除如果只从 [plan] 里删键，下次收集源分类又会把它捡回来 —— 用户眼里就是
+     * 「删了没用」。所以删除要记在这里：收集、自动新建、入口查找、列表展示全部跳过。
+     */
+    val hiddenTags: Set<String> = emptySet(),
 ) {
-    /** 标签名列表：同义词统一展示为中文规范名，保留首次出现顺序。 */
-    val tags: List<String> get() = plan.keys.map(TagAlias::canonicalOf).distinct()
+    /**
+     * 标签名列表。
+     *
+     * v1.9.2.0：**不再按同义组合并**。组内成员（如「彩绘」）现在是一个独立标签，
+     * 合并展示会让它从列表里彻底消失；组首词（「全彩」）本来就以规范名存着，
+     * 合并与否结果相同。收集侧已经统一写过规范名，这里原样返回即可。
+     */
+    val tags: List<String> get() = plan.keys.filterNot { it in hiddenTags }
 
     /**
      * 热门标签：按「覆盖源数」（每个标签下有多少 (sourceId, url) 对）倒序，
@@ -34,33 +55,46 @@ data class TagPlan(
      */
     fun hotTags(limit: Int): List<String> {
         if (plan.isEmpty()) return emptyList()
-        val merged = LinkedHashMap<String, LinkedHashSet<Pair<String, String>>>()
-        plan.forEach { (tag, entries) ->
-            merged.getOrPut(TagAlias.canonicalOf(tag)) { linkedSetOf() }.addAll(entries)
-        }
-        val capped = if (limit <= 0) merged.size else limit
-        return merged.entries
-            .sortedWith(compareByDescending<Map.Entry<String, LinkedHashSet<Pair<String, String>>>> {
+        val visible = plan.entries.filterNot { it.key in hiddenTags }
+        if (visible.isEmpty()) return emptyList()
+        val capped = if (limit <= 0) visible.size else limit
+        return visible
+            .sortedWith(compareByDescending<Map.Entry<String, List<Pair<String, String>>>> {
                 it.value.size
             }.thenBy { it.key })
             .map { it.key }
             .take(capped)
     }
 
-    /** 取标签及其规范名对应的全部入口；未命中再做包含匹配（如「热血」命中「热血漫画」）。 */
-    fun entriesFor(tag: String): List<Pair<String, String>> {
+    /**
+     * 取标签对应的全部入口。
+     *
+     * @param exact true = **只认这个标签自己的入口**（v1.9.2.0 单标签搜索用）：
+     *   组内成员「彩绘」不该因为同义关系拿到整组「全彩」的分类页，
+     *   否则单标签搜索又变成了整组搜索。false = 旧口径（同义组合并 + 宽松包含匹配）。
+     */
+    fun entriesFor(tag: String, exact: Boolean = false): List<Pair<String, String>> {
+        if (tag in hiddenTags) return emptyList()
+        if (exact) return plan[tag].orEmpty()
         val canonical = TagAlias.canonicalOf(tag)
         val equivalent = plan.entries
+            .filter { (candidate, _) -> candidate !in hiddenTags }
             .filter { (candidate, _) -> TagAlias.canonicalOf(candidate) == canonical }
             .flatMap { it.value }
             .distinct()
         if (equivalent.isNotEmpty()) return equivalent
         plan[tag]?.let { return it }
         // 宽松匹配：查询标签与缓存标签互相包含（取最短命中，语义最贴近）
-        val fuzzy = plan.entries.filter { it.key.contains(tag) || tag.contains(it.key) }
+        val fuzzy = plan.entries
+            .filter { (candidate, _) -> candidate !in hiddenTags }
+            .filter { it.key.contains(tag) || tag.contains(it.key) }
             .minByOrNull { it.key.length }
         return fuzzy?.value.orEmpty()
     }
+
+    /** 该标签是否已有可用入口（自动新建前的判断用；不做宽松匹配，避免把近似词当已有） */
+    fun hasTag(tag: String): Boolean =
+        tag !in hiddenTags && plan[tag]?.isNotEmpty() == true
 
     /**
      * 搜索入口扩展为该标签组的写法；源站真实分类入口保持不变。
@@ -74,16 +108,25 @@ data class TagPlan(
      * 用户侧就是「组里明明有这个词，却怎么也搜不到」。现在高价值写法（用户输入 /
      * 简繁互补 / 拉丁 / 日文）每个源照发，剩余名额按源序号错开，跨源覆盖整组，
      * 而**单源请求数不变**。
+     *
+     * v1.9.2.0：组内成员（[TagAlias.isGroupMember]）只发它自己那一个写法 ——
+     * 这是「分组保留、组内每个标签单独搜索」的落点：搜「彩绘」不再把整组拉进来。
+     *
+     * @param exact true = 只取该标签自己的入口（单标签搜索）
      */
-    fun searchEntriesFor(tag: String, query: String = tag): List<Pair<String, String>> {
-        val entries = entriesFor(tag)
+    fun searchEntriesFor(
+        tag: String,
+        query: String = tag,
+        exact: Boolean = false,
+    ): List<Pair<String, String>> {
+        val entries = entriesFor(tag, exact)
         // 源序号只用于错开轮转起点，取「该源在本次入口表里第一次出现的次序」
         val ordinals = LinkedHashMap<String, Int>()
         entries.forEach { (sourceId, _) ->
             if (sourceId !in ordinals) ordinals[sourceId] = ordinals.size
         }
         return entries.flatMap { (sourceId, url) ->
-            val terms = TagAlias.searchTermsForSource(query, ordinals[sourceId] ?: 0)
+            val terms = TagAlias.searchTermsOfSource(query, ordinals[sourceId] ?: 0)
             val category = TagEntryUrl.categoryOf(url)
             when {
                 TagEntryUrl.searchKeywordOf(url) != null ->
@@ -104,13 +147,20 @@ data class TagPlan(
         }.distinct()
     }
 
-    /** Gson 载体：Pair 不走反射构造，用两层字符串数组 */
-    private data class Dto(val collectedAtMs: Long, val plan: Map<String, List<List<String>>>)
+    /** Gson 载体：Pair 不走反射构造，用两层字符串数组；customTags / hiddenTags 兼容旧缓存（缺字段 = 空） */
+    private data class Dto(
+        val collectedAtMs: Long,
+        val plan: Map<String, List<List<String>>>,
+        val customTags: List<String>? = null,
+        val hiddenTags: List<String>? = null,
+    )
 
     fun toJson(): String {
         val dto = Dto(
             collectedAtMs = collectedAtMs,
             plan = plan.mapValues { (_, entries) -> entries.map { listOf(it.first, it.second) } },
+            customTags = customTags.toList(),
+            hiddenTags = hiddenTags.toList(),
         )
         return gson().toJson(dto)
     }
@@ -139,7 +189,18 @@ data class TagPlan(
                     plan.merge(tag, entries) { old, new -> (old + new).distinct() }
                 }
             }
-            TagPlan(collectedAtMs = dto.collectedAtMs, plan = plan)
+            TagPlan(
+                collectedAtMs = dto.collectedAtMs,
+                plan = plan,
+                customTags = dto.customTags.orEmpty()
+                    .map(::normalizeTag)
+                    .filter { it.isNotEmpty() }
+                    .toCollection(LinkedHashSet()),
+                hiddenTags = dto.hiddenTags.orEmpty()
+                    .map(::normalizeTag)
+                    .filter { it.isNotEmpty() }
+                    .toCollection(LinkedHashSet()),
+            )
         }.getOrNull()
 
         /**
@@ -279,7 +340,9 @@ class TagStore(private val dir: File) {
          * v8：标签视图按同义词合并展示，搜索入口合并同义项，并扩展无码/全彩的源覆盖。
          * v9：v1.8.7.1 视频开始补通用题材 / 属性词（此前 VIDEO 直接跳过），
          *     旧缓存里视频只有站方分类名，必须重新收集才能看到「无码」这类标签。
+         * v10：v1.9.2.0 组内成员单独成键（「彩绘」不再被并进「全彩」），
+         *     旧缓存里只有组首词，必须重新收集才能拿到成员各自的真实分类入口。
          */
-        const val LOGIC_VERSION = 9
+        const val LOGIC_VERSION = 10
     }
 }

@@ -47,8 +47,12 @@ object TagSuggestions {
      * - **正在输入的最后一段**在该词本身就是池子里一个完整标签时也视为已成立 ——
      *   否则打完「无码」后面还跟着「无码」「无码漫画」一整串同根词，白占一屏。
      *
-     * 判定口径：候选标签的规范名（[TagAlias.canonicalOf]）以任一已成立词开头即屏蔽，
-     * 这样「无码」能连带挡掉「无码漫画」，别名写法（無修正 ↔ 无码）也归到同一族。
+     * 判定口径：**按搜索条件**（[TagAlias.conditionKeyOf]）判定是否已成立，
+     * 前缀屏蔽只作用于「同名根词」（`无码` 挡掉 `无码漫画`）。
+     *
+     * v1.9.2.0：以前按规范名（[TagAlias.canonicalOf]）判定，选了「全彩」会把整组
+     * 成员（彩绘 / 彩色 / 全彩本…）全部屏蔽掉 —— 而那正是这次要放出来单搜的词。
+     * 现在「全彩」只屏蔽以「全彩」开头的同根词，「彩绘」照常提示。
      *
      * 排序：匹配类型（前缀命中 < 包含命中）→ 补全量更短（`tag.length - 词长度`，
      * 同分时词更短的先出）→ 池内顺序（调用方传按覆盖源数倒序的列表，冷门长尾
@@ -62,11 +66,11 @@ object TagSuggestions {
         val word = currentWord(query)
         if (word.isEmpty() || pool.isEmpty()) return emptyList()
 
-        // 已写进查询的其它条件：前几段，剥掉 `-` 排除与 `大类:` 前缀后取规范名
+        // 已写进查询的其它条件：前几段，剥掉 `-` 排除与 `大类:` 前缀后取展示名
         val committedUsed = query.split(' ')
             .filter { it.isNotBlank() }
             .dropLast(1)
-            .map { TagAlias.canonicalOf(it.substringAfter(':').trimStart('-')) }
+            .map { TagAlias.displayNameOf(it.substringAfter(':').trimStart('-')) }
             .filter { it.isNotEmpty() }
             .toHashSet()
 
@@ -76,15 +80,22 @@ object TagSuggestions {
         // 只要前面已经有条件就把**正在输入的词**也当成「已成立」——
         // 于是输「无码 全」时候选全被「全」这个前缀自己屏蔽掉，第二个标签的提示永远出不来。
         // 「前面有条件」和「这个词已经写完」是两件事，只有后者才该屏蔽。
-        val wordCanonical = TagAlias.canonicalOf(word)
-        val wordIsComplete = pool.any { TagAlias.canonicalOf(it) == wordCanonical }
+        val wordName = TagAlias.displayNameOf(word)
+        val wordIsComplete = pool.any { TagAlias.displayNameOf(it) == wordName }
         val used: Set<String> =
-            if (wordIsComplete) committedUsed + wordCanonical else committedUsed
+            if (wordIsComplete) committedUsed + wordName else committedUsed
 
         fun blockedBy(tag: String): Boolean {
             if (used.isEmpty()) return false
-            val canonical = TagAlias.canonicalOf(tag)
-            return used.any { canonical.startsWith(it) }
+            val name = TagAlias.displayNameOf(tag)
+            // 整组写法（「全彩组」）是同一组的另一个入口，不该被「全彩」的前缀屏蔽 ——
+            // 否则用户打完「全彩」就再也看不到整组搜索的入口（v1.9.2.0）
+            val groupHead = TagAlias.groupQueryHeadOf(name)
+            if (groupHead != null && used.any { TagAlias.displayNameOf(it) == groupHead }) {
+                return false
+            }
+            // 完全同名 → 已成立；同根词（「无码」挡「无码漫画」）→ 也不再堆一屏
+            return used.any { name == it || name.startsWith(it) }
         }
 
         val rank = HashMap<String, Int>(pool.size)
@@ -104,7 +115,9 @@ object TagSuggestions {
                 ),
             )
             .map { (tag, _) -> tag }
-            .distinctBy { TagAlias.canonicalOf(it) }
+            // v1.9.2.0：按展示名去重（不再按同义组）—— 组内成员是独立标签，
+            // 按 canonicalOf 去重会把「彩绘」「彩色」全并成「全彩」，一个都提示不出来。
+            .distinctBy { TagAlias.displayNameOf(it) }
             .take(limit.coerceAtLeast(0))
             .toList()
     }

@@ -80,9 +80,14 @@ class TagContext private constructor(
     }
 
     companion object {
+        /**
+         * v1.9.2.0：写法表改用 [TagAlias.searchTermsOf] —— 组内成员（如「彩绘」）只认
+         * 它自己那一个写法。用整组写法判定的话，单标签搜索会被标题里写着「全彩」的
+         * 作品混进来，判定层等于把召回层的精确性又抹平了。
+         */
         fun of(tag: String): TagContext = TagContext(
             tag = tag,
-            terms = TagAlias.searchTermsFor(tag)
+            terms = TagAlias.searchTermsOf(tag)
                 .map(TagVerdicts::normalizeTitle)
                 .filter { it.isNotEmpty() },
             isExplicitAdult = TagAlias.isExplicitAdultIntent(tag),
@@ -140,7 +145,8 @@ object TagResultPolicy {
          *
          * 两层口径不同，别混：
          * - **组内**（同一个标签的 27 个写法）任意一个命中就算 —— 由
-         *   [TagAlias.searchTermsFor] 展开的写法表负责，判定时 `terms.any` 即可；
+         *   [TagAlias.searchTermsOf] 展开的写法表负责（v1.9.2.0 起只有整组写法
+         *   「无码组」才展开整组，普通写法只有它自己），判定时 `terms.any` 即可；
          * - **组间**（「无码 恋爱」两个标签）必须都命中 —— 用户 2026-10-27 明确要求交集。
          */
         val proven: Boolean get() = verdicts.isNotEmpty() && matchedCount == verdicts.size

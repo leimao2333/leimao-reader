@@ -80,7 +80,7 @@ class TagStoreTest {
     }
 
     @Test
-    fun `searchEntriesFor 扩展同义搜索词但不改动真实分类入口`() {
+    fun `searchEntriesFor 组首词扩展整组 组内成员只搜自己`() {
         val plan = TagPlan(
             plan = linkedMapOf(
                 "无码" to listOf("search_source" to TagEntryUrl.search("无码")),
@@ -96,27 +96,40 @@ class TagStoreTest {
             ),
         )
 
-        val entries = plan.searchEntriesFor("无码", "無修正")
+        // 整组写法「无码组」= 整组搜索，行为与 v1.8.9.3 一致
+        val entries = plan.searchEntriesFor("无码", "无码组")
 
-        assertEquals("search::無修正", entries.first { it.first == "search_source" }.second)
+        assertEquals("search::无码", entries.first { it.first == "search_source" }.second)
         // v1.8.1.2：单源最多展开 MAX_SEARCH_TERMS_PER_SOURCE 个写法（此前整组二三十个全发，
         // 一次复合搜索能打出上千请求）。用户输入永远排第一，其余按组内顺序取。
         val searchUrls = entries.filter { it.first == "search_source" }
         assertEquals(TagAlias.MAX_SEARCH_TERMS_PER_SOURCE, searchUrls.size)
-        assertTrue(searchUrls.contains("search_source" to TagEntryUrl.search("無修正")))
         assertTrue(searchUrls.contains("search_source" to TagEntryUrl.search("无码")))
+        // 6 个名额里除了用户输入，其余必须都来自「无码」这一组
+        val groupTerms = TagAlias.searchTermsFor("无码").toSet()
+        assertTrue(searchUrls.all { (_, url) ->
+            TagEntryUrl.searchKeywordOf(url) in groupTerms
+        })
         assertTrue(entries.contains("category_source" to "https://example.com/category/uncensored"))
-        assertTrue(entries.contains(
-            "fallback_source" to TagEntryUrl.category(
-                name = "无修正",
-                param = "all",
-                keyword = "無修正",
-                kind = "search",
-            ),
-        ))
         assertEquals(1, entries.count {
             it == ("category_source" to "https://example.com/category/uncensored")
         })
+
+        // v1.9.2.0：组内成员「無修正」= 单标签搜索，只发它自己那一个写法，
+        // 并且只用自己的入口（不借用整组的分类页）
+        val individual = plan.searchEntriesFor("無修正", "無修正", exact = true)
+        assertEquals(
+            listOf(
+                "category_source" to "https://example.com/category/uncensored",
+                "fallback_source" to TagEntryUrl.category(
+                    name = "无修正",
+                    param = "all",
+                    keyword = "無修正",
+                    kind = "search",
+                ),
+            ),
+            individual,
+        )
     }
 
     @Test

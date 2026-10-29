@@ -22,6 +22,16 @@ interface TagInstanceDao {
     @Query("DELETE FROM tag_instances WHERE itemType = :type")
     suspend fun clear(type: String)
 
+    /**
+     * 删除某个标签的全部收录记录（v1.9.2.0「编辑标签 → 删除」）。
+     *
+     * 只删这个标签名，不动同一部作品身上的其它标签 —— 用户删的是标签，不是作品。
+     *
+     * @return 实际删掉的行数
+     */
+    @Query("DELETE FROM tag_instances WHERE itemType = :type AND tagName = :name")
+    suspend fun deleteTag(type: String, name: String): Int
+
     /** 已收录作品数（按 sourceId+itemId 去重） */
     @Query(
         "SELECT COUNT(DISTINCT sourceId || '|' || itemId) FROM tag_instances WHERE itemType = :type",

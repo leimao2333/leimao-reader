@@ -107,6 +107,60 @@ class TagSearchViewModel(
     private val _tagCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
     val tagCounts: StateFlow<Map<String, Int>> = _tagCounts.asStateFlow()
 
+    // ===== 标签列表（v1.9.2.0：按收录数排序；全部在 init 之前声明）=====
+    //
+    // 必须声明在 init 之前：init 里 `repo.indexState.collect` 是 Main.immediate 上的
+    // 同步首发射，会一路调到 [refreshIndexStats] → [refreshOrderedTags]。
+    // 这些 StateFlow 若写在 init 之后，读到的是 null，直接 NPE（v1.9.2.0 首版真机闪退）。
+
+    /** 全部可用标签（自动收集，未排序） */
+    private val _allTags = MutableStateFlow<List<String>>(emptyList())
+    val allTags: StateFlow<List<String>> = _allTags.asStateFlow()
+
+    /**
+     * 全部标签，**按收录数（本地索引里该标签命中多少部）倒序**（v1.9.2.0）。
+     *
+     * 以前按「覆盖源数」排 —— 那只是「多少源建了这个分类」，跟用户真正能不能搜出东西
+     * 关系不大：一个标签挂着 30 个源、但索引里一部都没有，排在第一位毫无意义。
+     * 现在按收录数排，收录数相同才回退到覆盖源数（[TagPlan.hotTags] 的次序）。
+     */
+    private val _tagsByCount = MutableStateFlow<List<String>>(emptyList())
+    val tagsByCount: StateFlow<List<String>> = _tagsByCount.asStateFlow()
+
+    /** 热门推荐标签：按收录数倒序取 top [HOT_TAG_LIMIT] */
+    private val _hotTags = MutableStateFlow<List<String>>(emptyList())
+    val hotTags: StateFlow<List<String>> = _hotTags.asStateFlow()
+
+    /**
+     * 「全部标签」面板：**不属于任何分组**的标签（按收录数倒序）（v1.9.2.0）。
+     *
+     * 组内写法不混在这里 —— 它们按组归到 [sheetGroups] 的卡片里，
+     * 否则几百个写法跟普通标签摊在同一排，看不出哪个词属于哪一组。
+     */
+    private val _sheetPlainTags = MutableStateFlow<List<String>>(emptyList())
+    val sheetPlainTags: StateFlow<List<String>> = _sheetPlainTags.asStateFlow()
+
+    /** 「全部标签」面板：组别卡片（组首词 → 组内全部写法），按收录数倒序 */
+    private val _sheetGroups = MutableStateFlow<List<TagGroupSection>>(emptyList())
+    val sheetGroups: StateFlow<List<TagGroupSection>> = _sheetGroups.asStateFlow()
+
+    /** 面板条目总数（普通标签 + 分组数），用于「更多 ▾ N」 */
+    private val _sheetTotal = MutableStateFlow(0)
+    val sheetTotal: StateFlow<Int> = _sheetTotal.asStateFlow()
+
+    /**
+     * 一个组别卡片（v1.9.2.0）。
+     *
+     * [members] 是该组在受控词表里的**全部写法**（含组首词），组内每个词都能单独搜；
+     * [head] + [TagAlias.GROUP_SUFFIX] 是整组搜索的入口。
+     */
+    data class TagGroupSection(
+        val head: String,
+        val members: List<String>,
+    ) {
+        val groupTag: String get() = head + TagAlias.GROUP_SUFFIX
+    }
+
     /**
      * 本轮结果里「本地索引已收录」的条目键（`sourceId|itemId`，待办 #47）。
      *
@@ -119,8 +173,77 @@ class TagSearchViewModel(
 
     /** 收录总数 + 各标签计数一起刷新（两者同源，分开查会读到不一致的中间态） */
     private suspend fun refreshIndexStats(repo: com.novelreader.data.repository.TagIndexRepository) {
+        val hadCounts = _tagCounts.value.isNotEmpty()
         _indexCount.value = runCatching { repo.count(type) }.getOrDefault(0)
         _tagCounts.value = runCatching { repo.tagCounts(type) }.getOrDefault(emptyMap())
+        // v1.9.2.0：**计数第一次到位时**必须重排一次 —— 标签池往往先于计数加载完，
+        // 那一次排的是「覆盖源数」兜底顺序；不补这一下，热门行就一直是兜底顺序。
+        // 之后搜索会不断写新行、计数每轮都在变，这时**不再**重排：热门推荐那一行
+        // 会在用户手指底下不停换位置（实测连点三次点到三个不同的标签）。
+        if (!hadCounts || _tagsByCount.value.isEmpty()) refreshOrderedTags()
+    }
+
+    /**
+     * 标签池 / 收录数变化后，重算「按收录数排序」的标签列表（v1.9.2.0）。
+     *
+     * 构造期会被 [refreshIndexStats] 调到（此时 [_allTags] 还是空表），
+     * 所以第一件事就是空表兜底 —— 不能在这个阶段碰 [tagPlan]，它还没初始化。
+     */
+    private fun refreshOrderedTags() {
+        val tags = _allTags.value
+        if (tags.isEmpty()) {
+            _tagsByCount.value = emptyList()
+            _hotTags.value = emptyList()
+            _sheetPlainTags.value = emptyList()
+            _sheetGroups.value = emptyList()
+            _sheetTotal.value = 0
+            return
+        }
+        val counts = _tagCounts.value
+        // 覆盖源数次序（hotTags(0) 已按覆盖数排好）作为收录数并列时的次序
+        val byCoverage = tagPlan.hotTags(0)
+        val ordered = if (counts.isEmpty()) {
+            byCoverage
+        } else {
+            byCoverage.sortedWith(compareByDescending<String> { counts[it] ?: 0 })
+        }
+        _tagsByCount.value = ordered
+        _hotTags.value = ordered.take(HOT_TAG_LIMIT)
+        applySheetSections(ordered)
+    }
+
+    /**
+     * 把排好序的标签分成「普通标签」与「组别卡片」两段（v1.9.2.0）。
+     *
+     * 组内写法全部归到它所属组的卡片里（哪怕它自己没被收集到池子里），
+     * 这样面板里「全彩」这一组的六十多个写法是一整块，不会散落在普通标签中间。
+     */
+    private fun applySheetSections(ordered: List<String>) {
+        val plain = ArrayList<String>(ordered.size)
+        val groups = ArrayList<TagGroupSection>()
+        val seenHeads = HashSet<String>()
+        ordered.forEach { tag ->
+            val head = TagAlias.groupHeadOf(tag)
+            val members = head?.let { TagAlias.membersOfGroup(it) }.orEmpty()
+            if (head == null || members.size <= 1) {
+                // 无分组 / 单写法组：就是普通标签
+                plain += tag
+                return@forEach
+            }
+            if (seenHeads.add(head)) {
+                groups += TagGroupSection(head = head, members = members)
+            }
+        }
+        _sheetPlainTags.value = plain
+        _sheetGroups.value = groups
+        _sheetTotal.value = plain.size + groups.size
+    }
+
+    /** 标签池换了一份：统一从这里落地，避免各处漏刷「按收录数排序」的派生列表 */
+    private fun applyTagPlan(plan: TagPlan) {
+        tagPlan = plan
+        _allTags.value = plan.tags
+        refreshOrderedTags()
     }
 
     /**
@@ -329,28 +452,6 @@ class TagSearchViewModel(
         if (_query.value.isNotBlank()) search()
     }
 
-    /** 全部可用标签（自动收集） */
-    private val _allTags = MutableStateFlow<List<String>>(emptyList())
-    val allTags: StateFlow<List<String>> = _allTags.asStateFlow()
-
-    /**
-     * 全部标签（按覆盖源数倒序）（v1.6.5.0）。
-     *
-     * 「更多」面板**直接展示所有标签**（不再只给热门 top N）——标签池动辄上百个，
-     * 只放热门等于大部分标签用户永远点不到。排序仍按覆盖源数，覆盖面广的在前。
-     */
-    private val _tagsByCoverage = MutableStateFlow<List<String>>(emptyList())
-    val tagsByCoverage: StateFlow<List<String>> = _tagsByCoverage.asStateFlow()
-
-    /**
-     * 热门推荐标签（v1.6.1.0）：按覆盖源数倒序，取 top [HOT_TAG_LIMIT]。
-     *
-     * 在搜索页顶部作为「一键选择」入口，用户点选即触发复合搜索（多次复用 + 自动追加）。
-     * 「覆盖源数」= 该标签下有多少 (sourceId, url) 对，越多说明越多源支持该分类。
-     */
-    private val _hotTags = MutableStateFlow<List<String>>(emptyList())
-    val hotTags: StateFlow<List<String>> = _hotTags.asStateFlow()
-
     /** 标签池是否正在收集（首次使用要逐源探测，视频源较慢） */
     private val _collecting = MutableStateFlow(false)
     val collecting: StateFlow<Boolean> = _collecting.asStateFlow()
@@ -393,8 +494,8 @@ class TagSearchViewModel(
      * 输入提示词（v1.8.6.0 待办 #27）。
      *
      * 输入框只是一个纯字符串，标签池上百个时用户只能凭记忆盲打，打错一个字就搜不到。
-     * 这里基于**本地标签池**（[tagsByCoverage] / [allTags]，不引任何网络请求）给出候选：
-     * 前缀优先、同分按覆盖源数排（[tagsByCoverage] 本身就是覆盖源数倒序）。
+     * 这里基于**本地标签池**（[tagsByCount] / [allTags]，不引任何网络请求）给出候选：
+     * 前缀优先、同分按收录数排（[tagsByCount] 本身就是收录数倒序）。
      * 多标签空格组合时只提示**正在输入的那一个词**，已写进查询的标签不再重复出现。
      */
     private val _suggestions = MutableStateFlow<List<String>>(emptyList())
@@ -431,6 +532,63 @@ class TagSearchViewModel(
         initialTag.trim().takeIf { it.isNotEmpty() }?.let(::listOf).orEmpty(),
     )
     val activeTags: StateFlow<List<String>> = _activeTags.asStateFlow()
+
+    /**
+     * 当前已选「整组写法」（如「全彩组」）的组内成员（v1.9.2.0）。
+     *
+     * 例：选了「全彩组」→ 这里给出这一组的全部写法（全彩 / 彩绘 / 彩色 / 全彩本…），
+     * 标签页在已选 chip 下面铺一行，点其中一个即改搜**那一个词**（单标签搜索），
+     * 而「全彩组」这个 chip 本身仍然是整组搜索 —— 分组一点没被破坏。
+     *
+     * 由 [_activeTags] 派生（init 里 collect），不额外维护赋值点。
+     */
+    private val _groupMembers = MutableStateFlow<List<String>>(emptyList())
+    val groupMembers: StateFlow<List<String>> = _groupMembers.asStateFlow()
+
+    /**
+     * 当前已选标签里**属于某个分组**的那些（普通写法）。
+     *
+     * 与 [groupMembers] 相反的方向：用户点了「彩绘」这种单标签后，界面上要能一键
+     * 改成整组搜索。每个元素是「当前写法 → 所属组首词」。
+     */
+    private val _individualTags = MutableStateFlow<List<Pair<String, String>>>(emptyList())
+    val individualTags: StateFlow<List<Pair<String, String>>> = _individualTags.asStateFlow()
+
+    private fun refreshGroupEntries(active: List<String>) {
+        val members = LinkedHashSet<String>()
+        val individuals = ArrayList<Pair<String, String>>()
+        active.forEach { tag ->
+            val name = tag.trim()
+            if (name.isEmpty()) return@forEach
+            val groupHead = TagAlias.groupQueryHeadOf(name)
+            if (groupHead != null) {
+                // 整组写法 → 铺开组内全部写法（含首词本身，它也能单搜）
+                members += TagAlias.membersOfGroup(groupHead)
+            } else {
+                // 只有「多写法分组」才值得提供整组入口；单写法组（如 time-stop）
+                // 整组与单标签是同一件事，给入口只会让人困惑
+                TagAlias.groupHeadOf(name)?.let { head ->
+                    if (TagAlias.membersOfGroup(head).size > 1) individuals += name to head
+                }
+            }
+        }
+        _groupMembers.value = members.toList()
+        _individualTags.value = individuals
+    }
+
+    /**
+     * 已选标签变化 → 刷新「组内标签」行（v1.9.2.0）。
+     *
+     * **必须写在 [_activeTags] 等 StateFlow 声明之后**：Kotlin 按书写顺序初始化属性，
+     * 把这段 collect 放进类顶部的 init 里会读到尚未赋值的 null，直接 NPE 闪退
+     * （v1.9.2.0 首次装机实测：`TagSearchViewModel.<init>` → NPE on MutableStateFlow.collect）。
+     * 与文件里 `progressDone` 那段注释是同一个坑，改动时别再往上面挪。
+     */
+    init {
+        viewModelScope.launch {
+            _activeTags.collect { refreshGroupEntries(it) }
+        }
+    }
 
     private var tagPlan: TagPlan = TagPlan.EMPTY
     private var searchJob: kotlinx.coroutines.Job? = null
@@ -648,9 +806,7 @@ class TagSearchViewModel(
         viewModelScope.launch {
             _collecting.value = true
             tagPlan = runCatching { tagRepository.tags(type) }.getOrDefault(TagPlan.EMPTY)
-            _allTags.value = tagPlan.tags
-            _hotTags.value = tagPlan.hotTags(HOT_TAG_LIMIT)
-            _tagsByCoverage.value = tagPlan.hotTags(0)
+            applyTagPlan(tagPlan)
             _collecting.value = false
             // 标签池刚到位时补算一次提示：用户可能在池子到之前就输入了一半
             _suggestions.value = computeSuggestions(_query.value)
@@ -672,9 +828,7 @@ class TagSearchViewModel(
             val removed = runCatching { tagRepository.clear(type) }.getOrDefault(false)
             // 内存里的展示状态一起复位，否则界面上还挂着旧的 929 个标签
             tagPlan = TagPlan.EMPTY
-            _allTags.value = emptyList()
-            _hotTags.value = emptyList()
-            _tagsByCoverage.value = emptyList()
+            applyTagPlan(TagPlan.EMPTY)
             _activeTags.value = emptyList()
             _suggestions.value = emptyList()
             _results.value = emptyList()
@@ -692,9 +846,7 @@ class TagSearchViewModel(
         viewModelScope.launch {
             _collecting.value = true
             tagPlan = runCatching { tagRepository.refresh(type) }.getOrDefault(TagPlan.EMPTY)
-            _allTags.value = tagPlan.tags
-            _hotTags.value = tagPlan.hotTags(HOT_TAG_LIMIT)
-            _tagsByCoverage.value = tagPlan.hotTags(0)
+            applyTagPlan(tagPlan)
             _collecting.value = false
             // 标签池刚到位时补算一次提示：用户可能在池子到之前就输入了一半
             _suggestions.value = computeSuggestions(_query.value)
@@ -740,8 +892,34 @@ class TagSearchViewModel(
      * 排序规则全部在 [TagSuggestions.of]，这里只负责喂「按覆盖源数倒序的池子」。
      */
     private fun computeSuggestions(raw: String): List<String> {
-        val pool = _tagsByCoverage.value.ifEmpty { _allTags.value }
-        return TagSuggestions.of(pool, raw)
+        val pool = _tagsByCount.value.ifEmpty { _allTags.value }
+        return TagSuggestions.of(suggestionPool(pool), raw)
+    }
+
+    /**
+     * 提示词池 = 标签池 + 受控词表里的全部同义写法（v1.9.2.0）。
+     *
+     * 标签池里只有「源站真的建了分类」的词；组内大量写法（彩绘 / 彩色 / 全彩本…）
+     * 并不在每个源上都有分类页，光靠池子它们永远不会出现在提示里，用户也就不知道
+     * 能单搜。补上词表后，输「彩」就能看到「彩绘」，选中即自动新建并搜索。
+     *
+     * 去重按原样（不按同义组）：组内成员是独立标签，按 canonicalOf 去重会全被并回组首词。
+     */
+    private fun suggestionPool(pool: List<String>): List<String> {
+        if (pool.isEmpty()) return pool
+        val seen = HashSet<String>(pool.size * 2 + 64)
+        val out = ArrayList<String>(pool.size + 256)
+        pool.forEach { if (seen.add(it)) out.add(it) }
+        TagAlias.GROUPS.forEach { group ->
+            group.forEach { name -> if (seen.add(name)) out.add(name) }
+            // v1.9.2.0：整组写法（「全彩组」）也进提示池，否则用户不知道有这个入口
+            val head = group.firstOrNull()
+            if (group.size > 1 && head != null) {
+                val groupTag = head + TagAlias.GROUP_SUFFIX
+                if (seen.add(groupTag)) out.add(groupTag)
+            }
+        }
+        return out
     }
 
     private fun logicalTagsInQuery(query: String): List<String> =
@@ -749,28 +927,31 @@ class TagSearchViewModel(
             ?: TagQuery.parse(query)
 
     /**
-     * 把一个语法条件展开成「一组等价写法」（v1.8.1.3）。
+     * 把一个语法条件展开成「一组等价写法」（v1.8.1.3；v1.9.2.0 区分分组与成员）。
      *
-     * - 普通标签：受控词表里的全部译名（[TagAlias.aliasesOf]）；
-     * - 通配：先在受控词表 + 标签池里匹配出真实标签，再各自展开译名 ——
+     * - **组首词**（「全彩」）：受控词表里的全部译名（[TagAlias.searchAliasesOf]），
+     *   与以前完全一致 —— 分组搜索、分组计数都不变；
+     * - **组内成员**（「彩绘」）：只取它自己，独立成一个搜索条件；
+     * - 通配：先在受控词表 + 标签池里匹配出真实标签，再各自按上面的口径展开 ——
      *   `魔法*` 会命中「魔法」「魔法少女」等，而不是拿星号去请求源站。
      */
     private fun expandClauseNames(spec: TagQuerySpec.Clause): Set<String> {
-        if (!spec.wildcard) return TagAlias.aliasesOf(spec.name)
+        if (!spec.wildcard) return TagAlias.searchAliasesOf(spec.name)
         val vocabulary = buildList {
             TagAlias.GROUPS.forEach { addAll(it) }
             addAll(tagPlan.tags)
             addAll(tagPlan.plan.keys)
         }
         return TagQuerySpec.expandWildcard(spec.name, vocabulary)
-            .flatMap { matched -> TagAlias.aliasesOf(matched) }
+            .flatMap { matched -> TagAlias.searchAliasesOf(matched) }
             .toSet()
     }
 
     /**
      * 排除条件：网络结果不带标签，只能按标题包含关系过滤（索引侧已由 SQL 整条剔除）。
      *
-     * 术语用 [TagAlias.searchTermsFor] 展开，`-无码` 也能排掉标题写着「無修正」的作品。
+     * 术语用 [TagAlias.searchTermsOf] 展开：`-无码组` 能排掉整组写法（含「無修正」），
+     * `-无码` 只排掉字面写着「无码」的作品（v1.9.2.0 的单标签口径）。
      */
     private fun withoutExcluded(
         items: List<MediaItem>,
@@ -792,14 +973,16 @@ class TagSearchViewModel(
     fun addTag(tag: String) {
         if (tag.isBlank()) return
         _suggestions.value = emptyList()
-        val current = TagAlias.dedupeAliases(logicalTagsInQuery(_query.value))
-        val next = TagAlias.dedupeAliases(current + tag)
+        // v1.9.2.0：按**搜索条件**去重，不再按同义组 ——
+        // 「全彩」是整组条件，「彩绘」是它组里的单标签条件，两者可以并存（求交）。
+        val current = TagAlias.dedupeConditions(logicalTagsInQuery(_query.value))
+        val next = TagAlias.dedupeConditions(current + tag)
         if (next.size == current.size) {
-            _activeTags.value = current.map(TagAlias::canonicalOf).distinct()
+            _activeTags.value = current.map(TagAlias::displayNameOf).distinct()
             return
         }
         _query.value = next.joinToString(" ")
-        _activeTags.value = next.map(TagAlias::canonicalOf).distinct()
+        _activeTags.value = next.map(TagAlias::displayNameOf).distinct()
         search()
     }
 
@@ -807,12 +990,11 @@ class TagSearchViewModel(
     fun removeTag(tag: String) {
         _suggestions.value = emptyList()
         val parsed = logicalTagsInQuery(_query.value)
-        val aliases = TagAlias.aliasesOf(tag)
-        val current = parsed.filterNot { candidate ->
-            TagAlias.aliasesOf(candidate).any { it in aliases }
-        }
+        // v1.9.2.0：按条件键移除。「全彩」只移除整组条件，不会把「彩绘」一起带走
+        val key = TagAlias.conditionKeyOf(tag)
+        val current = parsed.filterNot { TagAlias.conditionKeyOf(it) == key }
         _query.value = current.joinToString(" ")
-        _activeTags.value = TagAlias.dedupeAliases(current.map(TagAlias::canonicalOf))
+        _activeTags.value = TagAlias.dedupeConditions(current).map(TagAlias::displayNameOf)
         if (current.isEmpty()) {
             searchGeneration += 1
             searchJob?.cancel()
@@ -823,6 +1005,174 @@ class TagSearchViewModel(
         } else {
             search()
         }
+    }
+
+    /**
+     * 删除标签（v1.9.2.0「编辑标签」）。
+     *
+     * 三件事一起做：
+     * 1. 从标签池摘掉（[TagRepository.deleteTags]，同时记进隐藏名单，重新收集也不会回来）；
+     * 2. 清掉本地索引里它的收录记录（[TagIndexRepository.deleteTag]）；
+     * 3. 如果它正在当前查询里，一并从查询里摘掉，否则下一次搜索会把它自动建回来。
+     */
+    fun deleteTag(tag: String) {
+        val name = TagAlias.planTagOf(tag).trim()
+        if (name.isEmpty()) return
+        viewModelScope.launch {
+            val removed = runCatching { tagRepository.deleteTags(type, listOf(name)) }
+                .getOrDefault(emptyList())
+            val rows = runCatching { tagIndexRepository?.deleteTag(type, name) ?: 0 }
+                .getOrDefault(0)
+
+            // 从当前查询里摘掉（按条件键匹配，整组写法与普通写法各自独立）
+            val current = logicalTagsInQuery(_query.value)
+            val key = TagAlias.conditionKeyOf(tag)
+            val next = current.filterNot { TagAlias.conditionKeyOf(it) == key }
+            val queryChanged = next.size != current.size
+            if (queryChanged) {
+                _query.value = next.joinToString(" ")
+                _activeTags.value = TagAlias.dedupeConditions(next).map(TagAlias::displayNameOf)
+            }
+
+            applyTagPlan(runCatching { tagRepository.tags(type) }.getOrDefault(TagPlan.EMPTY))
+            tagIndexRepository?.let { refreshIndexStats(it) }
+            _notice.value = buildString {
+                append("已删除标签「").append(name).append("」")
+                if (rows > 0) append("，清掉 $rows 条收录记录")
+                if (removed.isEmpty()) append("（标签池里本来没有它，已记入隐藏名单）")
+            }
+
+            if (queryChanged) {
+                if (next.isEmpty()) {
+                    searchGeneration += 1
+                    searchJob?.cancel()
+                    _results.value = emptyList()
+                    _searching.value = false
+                    _progress.value = null
+                } else {
+                    search()
+                }
+            }
+        }
+    }
+
+    /**
+     * 把「整组搜索」换成组内某个词的**单标签搜索**（v1.9.2.0）。
+     *
+     * 用户点「全彩组」得到的是整组结果；点组内标签行里的「彩绘」时，把查询里的
+     * 「全彩组」原地替换成「彩绘」，语义就从「整组」变成「只要这个词」。
+     */
+    fun searchIndividual(member: String) {
+        val name = member.trim()
+        if (name.isEmpty()) return
+        val head = TagAlias.groupHeadOf(name) ?: return
+        val current = logicalTagsInQuery(_query.value)
+        var replaced = false
+        val next = current.map { tag ->
+            val sameGroup = TagAlias.groupQueryHeadOf(tag) == head ||
+                TagAlias.groupHeadOf(tag) == head
+            if (sameGroup && !replaced) {
+                replaced = true
+                name
+            } else {
+                tag
+            }
+        }
+        val result = if (replaced) next else next + name
+        _suggestions.value = emptyList()
+        _query.value = TagAlias.dedupeConditions(result).joinToString(" ")
+        _activeTags.value = TagAlias.dedupeConditions(result).map(TagAlias::displayNameOf)
+        search()
+    }
+
+    /**
+     * 把某个普通写法改成**整组搜索**（v1.9.2.0）：单标签结果不满意时的退路。
+     *
+     * 整组写法 = 组首词 + 「组」（「全彩」→「全彩组」），这样首词本身也能留给单标签搜索。
+     */
+    fun searchGroupOf(member: String) {
+        val head = TagAlias.groupHeadOf(member) ?: return
+        val groupTag = head + TagAlias.GROUP_SUFFIX
+        val current = logicalTagsInQuery(_query.value)
+        val key = TagAlias.conditionKeyOf(member)
+        val next = current.map { tag ->
+            if (TagAlias.conditionKeyOf(tag) == key) groupTag else tag
+        }
+        _suggestions.value = emptyList()
+        _query.value = TagAlias.dedupeConditions(next).joinToString(" ")
+        _activeTags.value = TagAlias.dedupeConditions(next).map(TagAlias::displayNameOf)
+        search()
+    }
+
+    /**
+     * 查询里的标签如果池子里没有，**自动新建并绑定搜索入口**（v1.9.2.0）。
+     *
+     * 以前这种情况会停在「未找到标签」，用户只能换个写法再试一次；现在直接建一个
+     * 只有关键词入口的标签，把这次搜索跑完，并把标签留在池子里（下次点得到）。
+     *
+     * @return 本次新建的标签名（空 = 全都已存在，无需刷新标签池）
+     */
+    private suspend fun ensureQueryTags(): List<String> {
+        val specs = TagQuerySpec.parse(_query.value)
+            .filterNot { it.exclude || it.wildcard }
+        val names = specs.map { it.name.trim() }
+            .filter { it.isNotEmpty() && it.length <= MAX_DISCOVERED_TAG_LENGTH }
+            // 整组写法（「全彩组」）不是新标签 —— 它落到组首词上，不该被新建
+            .filterNot { TagAlias.isGroupQuery(it) }
+            .map { TagAlias.planTagOf(it) }
+            .distinct()
+        if (names.isEmpty()) return emptyList()
+        val missing = names.filterNot { tagPlan.hasTag(it) }
+        if (missing.isEmpty()) return emptyList()
+        return runCatching { tagRepository.ensureTags(type, missing) }
+            .getOrElse { error ->
+                android.util.Log.w("TagSearch", "自动新建标签失败：$missing", error)
+                emptyList()
+            }
+    }
+
+    /**
+     * 搜索结果里出现、但标签池里还没有的标签**同步收录**（v1.9.2.0）。
+     *
+     * 收录口径：结果自带的标签（发现分类上下文）+ 详情派生标签（[ItemTags]）。
+     * 只收「像标签」的词，且每次搜索最多 [MAX_DISCOVERED_TAGS] 个 ——
+     * 否则一次搜索就能把标题里的碎片词全灌进标签池。
+     *
+     * 扫描只在前 [MAX_DISCOVERY_SCAN] 条上做，并且丢到 Default 线程：
+     * [ItemTags.of] 要对标题 / 简介跑词典匹配，几千条放在主线程就是一次可见卡顿。
+     */
+    private suspend fun collectDiscoveredTags(items: List<MediaItem>) {
+        if (items.isEmpty()) return
+        val known = tagPlan.plan.keys
+        val discovered = withContext(Dispatchers.Default) {
+            val found = LinkedHashSet<String>()
+            for (item in items.take(MAX_DISCOVERY_SCAN)) {
+                val candidates = item.tags + com.novelreader.core.util.ItemTags.of(item)
+                for (raw in candidates) {
+                    val clean = TagPlan.normalizeTag(raw)
+                    if (clean.isEmpty() || clean.length > MAX_DISCOVERED_TAG_LENGTH) continue
+                    if (TagPlan.isNoiseTag(clean)) continue
+                    if (clean in known || clean in found) continue
+                    found += clean
+                    if (found.size >= MAX_DISCOVERED_TAGS) break
+                }
+                if (found.size >= MAX_DISCOVERED_TAGS) break
+            }
+            found.toList()
+        }
+        if (discovered.isEmpty()) return
+        val added = runCatching { tagRepository.ensureTags(type, discovered) }
+            .getOrDefault(emptyList())
+        if (added.isEmpty()) return
+        // 池子变了：标签列表 / 热门 / 组内行都要跟着刷新，否则新标签要等下次进页面才出现
+        tagPlan = runCatching { tagRepository.tags(type) }.getOrDefault(tagPlan)
+        applyTagPlan(tagPlan)
+        val summary = added.take(5).joinToString("、") +
+            if (added.size > 5) " 等 ${added.size} 个" else ""
+        _notice.value = listOfNotNull(
+            _notice.value,
+            "已收录新标签：$summary",
+        ).joinToString("；")
     }
 
     /**
@@ -1073,7 +1423,9 @@ class TagSearchViewModel(
                 // 不参与本地召回（refsWithAny 会把 ORIGIN_SEARCH 整体排除）。
                 val isProven = provenTags.isNotEmpty()
                 val context = if (isProven) {
-                    provenTags.map { TagAlias.canonicalOf(it) to CONTEXT_PAGE_CONFIDENCE }
+                    // v1.9.2.0：组内成员按原词记（[TagAlias.indexNameOf]），
+                    // 否则单标签搜索的收录数会算到组首词头上
+                    provenTags.map { TagAlias.indexNameOf(it) to CONTEXT_PAGE_CONFIDENCE }
                 } else {
                     // 当前这一轮搜索用的标签（`_activeTags` 在结果落地前就已赋值）
                     TagTagger.searchContext(_activeTags.value)
@@ -1251,7 +1603,7 @@ class TagSearchViewModel(
                     // 否则补回来的这批会把用户明确排除的内容又放进来
                     val excludeTerms = TagQuerySpec.parse(_query.value)
                         .filter { it.exclude }
-                        .flatMap { spec -> TagAlias.searchTermsFor(spec.name) + spec.name }
+                        .flatMap { spec -> TagAlias.searchTermsOf(spec.name) + spec.name }
                         .map(TagQuery::normalizeTitle)
                         .filter { it.isNotEmpty() }
                     val network = withoutExcluded(applyAdultFilter(ranked, ctx.tags), excludeTerms)
@@ -1310,6 +1662,14 @@ class TagSearchViewModel(
                 dropUnproven = false
                 _phase.value = SearchPhase.STREAMING
                 ensurePlan()
+                // v1.9.2.0：池子里没有的标签**自动新建**（「没有这个标签就自动新建并搜索」）。
+                // 以前这一步会停在「未找到标签」，用户只能换个写法重来；现在直接建一个
+                // 只有关键词入口的标签，把本次搜索跑完，并把它留在池子里供下次点选。
+                val autoCreated = ensureQueryTags()
+                if (autoCreated.isNotEmpty()) {
+                    tagPlan = runCatching { tagRepository.tags(type) }.getOrDefault(tagPlan)
+                    applyTagPlan(tagPlan)
+                }
                 // v1.8.1.3 查询语法：-排除 / 大类:标签 / 通配 *
                 val specs = TagQuerySpec.parse(_query.value)
                 val positiveSpecs = specs.filterNot { it.exclude }
@@ -1341,7 +1701,7 @@ class TagSearchViewModel(
                     .flatMap(::expandClauseNames)
                     .toSet()
                 val excludeTerms = specs.filter { it.exclude }
-                    .flatMap { spec -> TagAlias.searchTermsFor(spec.name) + spec.name }
+                    .flatMap { spec -> TagAlias.searchTermsOf(spec.name) + spec.name }
                     .map(TagQuery::normalizeTitle)
                     .filter { it.isNotEmpty() }
 
@@ -1397,17 +1757,26 @@ class TagSearchViewModel(
                     _notice.value = "没有已启用的源，先去源管理里打开一个"
                     return@launch
                 }
-                val variantsPerTag = uniqueSpecs.map { (spec, names) ->
-                    names.flatMap { name -> TagAlias.matchesInPool(name, tagPlan.tags) }
-                        .distinct()
-                        .ifEmpty { listOf(spec.name) }
+                val variantsPerTag = uniqueSpecs.map { (spec, _) ->
+                    // v1.9.2.0：整组写法（「全彩组」）只取组首词一个变体 ——
+                    // 池子里现在同时有「全彩」「彩绘」「彩色」等成员键，若按全部写法展开，
+                    // 同一个源会被派上几十个关键词请求；[TagPlan.entriesFor] 本身已经按
+                    // 同义组合并入口，一个首词就够覆盖整组。
+                    // 普通写法（含首词「全彩」与成员「彩绘」）是单标签搜索，变体只能是它自己。
+                    if (TagAlias.isGroupQuery(spec.name)) {
+                        listOf(TagAlias.planTagOf(spec.name))
+                    } else {
+                        listOf(spec.name)
+                    }
                 }
                 // 按源搜索：选了某个源就只保留它的入口（优先级高于「已启用源」集合）
                 val allowedIds = _selectedSourceIds.value.takeIf { it.isNotEmpty() } ?: enabledIds
                 val entriesPerTag: List<List<TagEntry>> = uniqueSpecs.mapIndexed { index, (spec, _) ->
+                    // 单标签搜索只取该标签自己的入口，不借用整组的分类页
+                    val exact = !TagAlias.isGroupQuery(spec.name)
                     variantsPerTag[index]
                         .flatMapIndexed { variantIndex, variant ->
-                            tagPlan.searchEntriesFor(variant, spec.name).map { (sourceId, url) ->
+                            tagPlan.searchEntriesFor(variant, spec.name, exact).map { (sourceId, url) ->
                                 TagEntry(
                                     sourceId = sourceId,
                                     url = url,
@@ -1477,9 +1846,15 @@ class TagSearchViewModel(
                 val translatedNotice = tags.mapIndexedNotNull { i, tag ->
                     val variants = variantsPerTag[i]
                     val self = TagQuery.normalizeTitle(tag)
-                    val terms = TagAlias.searchTermsFor(tag)
+                    // v1.9.2.0：普通写法只按它自己那一个词检索，提示也要如实这么说，
+                    // 否则用户会以为「彩绘」也把整组都搜了一遍
+                    val terms = TagAlias.searchTermsOf(tag)
                     val hasKeywordEntries = entriesPerTag[i].any { it.kind == EntryKind.KEYWORD }
                     when {
+                        TagAlias.isGroupQuery(tag) ->
+                            "「$tag」按整组搜索（${terms.size} 个写法）"
+                        TagAlias.groupHeadOf(tag) != null ->
+                            "「$tag」按单标签搜索（不含同组其他写法）"
                         terms.size > 1 && hasKeywordEntries ->
                             "搜索「${tag}」时同时检索：${terms.joinToString("、")}"
                         variants.any { TagQuery.normalizeTitle(it) != self } ->
@@ -1491,10 +1866,15 @@ class TagSearchViewModel(
                 // 复合搜索把「大集」**完整**摊开显示（v1.8.1.0 起不再只给前 5 个）：
                 // 用户能一眼确认每一组到底包含哪些转译写法，也就明白结果是
                 // 「每组各命中一个」而不是「随便命中一个」。
+                // v1.9.2.0：普通写法是一个独立条件（只有它自己），单独标出来。
                 val compoundNote = if (tags.size > 1) {
                     tags.joinToString("  ∩  ") { tag ->
-                        val group = TagAlias.searchTermsFor(tag).ifEmpty { listOf(tag) }
-                        "「$tag」组 ${group.size} 个写法：${group.joinToString("、")}"
+                        if (TagAlias.isGroupQuery(tag)) {
+                            val group = TagAlias.searchTermsOf(tag).ifEmpty { listOf(tag) }
+                            "「$tag」整组 ${group.size} 个写法：${group.joinToString("、")}"
+                        } else {
+                            "「$tag」单标签"
+                        }
                     }
                 } else {
                     null
@@ -1504,7 +1884,7 @@ class TagSearchViewModel(
                     // 网络侧一个可搜入口都没有：只要索引命中就直接展示，
                     // 不再像旧版那样把已经查到的结果一起清空。
                     if (localItems.isNotEmpty()) {
-                        _activeTags.value = tags.map(TagAlias::canonicalOf).distinct()
+                        _activeTags.value = tags.map(TagAlias::displayNameOf).distinct()
                         _results.value = localItems
                         _notice.value = "本地索引命中 ${localItems.size} 部；网络源没有这些标签的入口"
                         return@launch
@@ -1536,6 +1916,10 @@ class TagSearchViewModel(
                     .takeIf { it.isNotBlank() }
                 val headNote = listOfNotNull(
                     syntaxNote,
+                    // v1.9.2.0：新建过标签就明说一句，用户才知道「这个词现在能点了」
+                    autoCreated.takeIf { it.isNotEmpty() }?.let { added ->
+                        "已新建标签并开始搜索：" + added.joinToString("、")
+                    },
                     compoundNote ?: translatedNotice.takeIf { it.isNotBlank() },
                 ).joinToString("；").takeIf { it.isNotBlank() }
 
@@ -1623,11 +2007,15 @@ class TagSearchViewModel(
                     excludeTerms,
                 )
                 if (generation != searchGeneration) return@launch
-                _activeTags.value = known.map(TagAlias::canonicalOf).distinct()
+                _activeTags.value = known.map(TagAlias::displayNameOf).distinct()
                 // 用累加器接管当前结果：之后翻页只增量处理新到的一页（v1.8.4.1）
                 _results.value = resultsAcc.reset(final)
                 shownKeys.addAll(final.map(::itemKey))
                 resultsAccReady = true
+                // v1.9.2.0：搜索结果里冒出来的新标签同步收录（组别里没有的也收）。
+                // 单独起一个协程：收录要写盘，别把「收尾提示 / 预取下一页」拖在后面。
+                val discoveredSource = final
+                viewModelScope.launch { collectDiscoveredTags(discoveredSource) }
                 // 边搜边标记（v1.8.1.2）+ **证据化**打标（v1.8.4.1）。
                 // 以前是「整批同一个上下文」：只要每个标签都有分类页入口，就把所有结果
                 // 一起打上这些标签。但同一次搜索里往往混着关键词入口，那些结果只是
@@ -1682,9 +2070,7 @@ class TagSearchViewModel(
     private suspend fun ensurePlan() {
         if (tagPlan.plan.isNotEmpty()) return
         tagPlan = tagRepository.tags(type)
-        _allTags.value = tagPlan.tags
-        _hotTags.value = tagPlan.hotTags(HOT_TAG_LIMIT)
-        _tagsByCoverage.value = tagPlan.hotTags(0)
+        applyTagPlan(tagPlan)
         _suggestions.value = computeSuggestions(_query.value)
     }
 
@@ -2123,6 +2509,20 @@ class TagSearchViewModel(
     companion object {
         /** 分类页上下文打标的置信度（v1.8.1.9）：低于站方自述 100，高于文本猜的 60 */
         private const val CONTEXT_PAGE_CONFIDENCE = 90
+
+        /**
+         * 一次搜索最多**同步收录**多少个新标签（v1.9.2.0）。
+         *
+         * 收录是「搜索结果里出现的、池子里还没有的标签」进标签池。没有上限的话，
+         * 一次搜索就能把几百个标题碎片词灌进去，热门推荐和「全部标签」当场变垃圾场。
+         */
+        private const val MAX_DISCOVERED_TAGS = 12
+
+        /** 同步收录的标签长度上限：超过这个长度基本是句子 / 描述，不是标签 */
+        private const val MAX_DISCOVERED_TAG_LENGTH = 24
+
+        /** 同步收录只扫描前多少条结果（词典匹配有成本，不做全量） */
+        private const val MAX_DISCOVERY_SCAN = 300
 
         /**
          * Venera 源的并发上限（v1.8.9.2 从 10 收回 4）。

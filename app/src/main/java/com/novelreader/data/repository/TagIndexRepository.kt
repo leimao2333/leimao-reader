@@ -199,6 +199,20 @@ class TagIndexRepository(
         tagInstanceDao.tagCounts(type.name).associate { it.tag to it.count }
 
     /**
+     * 删掉某个标签的全部收录记录（v1.9.2.0「编辑标签 → 删除」）。
+     *
+     * 标签池那边的删除由 [com.novelreader.data.repository.TagRepository.deleteTags] 负责；
+     * 两边都要清，否则 chip 上还会挂着一个已经删掉的计数，本地搜索也还会命中它。
+     *
+     * @return 实际删掉的行数
+     */
+    suspend fun deleteTag(type: SourceType, name: String): Int = withContext(Dispatchers.IO) {
+        val clean = com.novelreader.data.cache.TagPlan.normalizeTag(name)
+        if (clean.isEmpty()) return@withContext 0
+        tagInstanceDao.deleteTag(type.name, clean)
+    }
+
+    /**
      * 复合标签查询（v1.8.1.2；v1.8.1.3 加入大类过滤与置信度排序）。
      *
      * @param clauses 每个条件是一组等价写法，**组内 OR、组间 AND**（对应 bool 的 should + must）
@@ -300,6 +314,23 @@ class TagIndexRepository(
                         updatedAt = now,
                     )
                 }
+                // v1.9.2.0：组内成员（「彩绘」之于「全彩」）单独存一行。
+                // [TagTagger.tag] 只产出规范名，原始写法在那一步就被归一掉了；
+                // 单标签搜索要按原始写法精确命中，所以这里把成员写法补回来
+                // （大类 / 置信度 / 来源沿用规范名那一条，证据强度不变）。
+                TagTagger.memberTags(tagged, com.novelreader.core.util.ItemTags.of(item))
+                    .forEach { tag ->
+                        tags += TagInstanceEntity(
+                            sourceId = item.sourceId,
+                            itemId = item.id,
+                            itemType = type.name,
+                            tagName = tag.name,
+                            category = tag.category,
+                            confidence = tag.confidence,
+                            origin = tag.origin,
+                            updatedAt = now,
+                        )
+                    }
             }
             if (rows.isNotEmpty()) localTagDao.upsertAll(rows)
             if (tags.isNotEmpty()) tagInstanceDao.upsertAll(tags)
@@ -646,14 +677,18 @@ class TagIndexRepository(
         val total = rowsAll.size
         onProgress(0, total)
         val items = rowsAll.mapIndexed { index, row ->
-            val tags = tagInstanceDao.tagsOf(type.name, row.sourceId, row.itemId).map { row2 ->
-                TagTable.Entry(
-                    name = row2.tagName,
-                    category = row2.category,
-                    confidence = row2.confidence,
-                    origin = row2.origin,
-                )
-            }
+            // v1.9.2.0：与 [exportTagTable] 同口径 —— 组内成员行是本地单标签搜索的内部数据，
+            // 不进对外的打标表（否则同一部作品会挂「全彩 / 彩绘 / 彩色」三条同义记录）
+            val tags = tagInstanceDao.tagsOf(type.name, row.sourceId, row.itemId)
+                .filterNot { TagAlias.isGroupMember(it.tagName) }
+                .map { row2 ->
+                    TagTable.Entry(
+                        name = row2.tagName,
+                        category = row2.category,
+                        confidence = row2.confidence,
+                        origin = row2.origin,
+                    )
+                }
             onProgress(index + 1, total)
             TagTable.Item(
                 sourceId = row.sourceId,
@@ -711,6 +746,10 @@ class TagIndexRepository(
             // 一次读出该类型的全部标签实例，按作品索引：导出两万条也不会变成两万次查询
             val byItem = HashMap<Pair<String, String>, MutableList<TagInstanceEntity>>()
             tagInstanceDao.allOfType(type.name).forEach { row ->
+                // v1.9.2.0：组内成员行是本地单标签搜索用的内部数据，不进云端打标表 ——
+                // 导出表是给 PC 打标工具做「同名标签取高置信度」合并的，多一份成员写法
+                // 只会让云端表里同一部作品挂着「全彩」「彩绘」「彩色」三条同义记录。
+                if (TagAlias.isGroupMember(row.tagName)) return@forEach
                 byItem.getOrPut(row.sourceId to row.itemId) { mutableListOf() }.add(row)
             }
             var offset = 0
@@ -827,6 +866,24 @@ class TagIndexRepository(
                     origin = merged.origin.ifBlank { TagTagger.ORIGIN_TEXT },
                     updatedAt = now,
                 )
+                // v1.9.2.0：组内成员（「彩绘」之于「全彩」）单独存一行。
+                // 以前只存规范名，单标签搜索查「彩绘」会把整组「全彩」的作品全捞出来；
+                // 有了这一行，单标签命中才是真的按这个词命中，chip 上的收录数也是它自己的。
+                // 主键是 (sourceId, itemId, tagName)，同一部作品两行互不影响；
+                // 分组搜索按「全部同义写法」查，两行都会被命中，MAX(confidence) 去重后结果不变。
+                val raw = com.novelreader.data.cache.TagPlan.normalizeTag(entry.name)
+                if (raw.isNotEmpty() && raw != canonical) {
+                    rows[raw] = TagInstanceEntity(
+                        sourceId = item.sourceId,
+                        itemId = item.itemId,
+                        itemType = type.name,
+                        tagName = raw,
+                        category = merged.category.ifBlank { TagTagger.CATEGORY_GENRE },
+                        confidence = merged.confidence.coerceIn(0, 100),
+                        origin = merged.origin.ifBlank { TagTagger.ORIGIN_TEXT },
+                        updatedAt = now,
+                    )
+                }
             }
             val mergedTags = rows.values.toList()
             localRows += LocalTagEntity(
@@ -981,6 +1038,20 @@ class TagIndexRepository(
                 origin = merged.origin.ifBlank { TagTagger.ORIGIN_TEXT },
                 updatedAt = now,
             )
+            // v1.9.2.0：与 [indexItems] 同口径，组内成员单独留一行（单标签搜索用）
+            val raw = com.novelreader.data.cache.TagPlan.normalizeTag(entry.name)
+            if (raw.isNotEmpty() && raw != canonical) {
+                rows[raw] = TagInstanceEntity(
+                    sourceId = item.sourceId,
+                    itemId = item.itemId,
+                    itemType = typeName,
+                    tagName = raw,
+                    category = merged.category.ifBlank { TagTagger.CATEGORY_GENRE },
+                    confidence = merged.confidence.coerceIn(0, 100),
+                    origin = merged.origin.ifBlank { TagTagger.ORIGIN_TEXT },
+                    updatedAt = now,
+                )
+            }
         }
         val mergedTags = rows.values.toList()
         bucket.localRows += LocalTagEntity(

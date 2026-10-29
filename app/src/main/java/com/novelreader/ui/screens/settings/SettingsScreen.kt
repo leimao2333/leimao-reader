@@ -123,6 +123,7 @@ fun SettingsScreen(
     val comicEdgeGesture by viewModel.comicEdgeGesture.collectAsState()
     val searchConcurrency by viewModel.searchConcurrency.collectAsState()
     val tagSearchConcurrency by viewModel.tagSearchConcurrency.collectAsState()
+    val tagSingleSearchSources by viewModel.tagSingleSearchSources.collectAsState()
     val videoFullscreenDefault by viewModel.videoFullscreenDefault.collectAsState()
     val videoLongPressSpeed by viewModel.videoLongPressSpeed.collectAsState()
     val videoLongPressRewind by viewModel.videoLongPressRewind.collectAsState()
@@ -500,6 +501,39 @@ fun SettingsScreen(
                 valueRange = 1f..40f,
                 steps = 38,
             )
+            Spacer(Modifier.height(8.dp))
+            // v1.9.2.1：单标签搜索源数。
+            // 组内成员（「彩绘」）与池外自动新建的标签没有源站分类页，只能按关键词搜；
+            // v1.9.2.0 写死 8 个源，于是「整组搜全部源、单标签只搜 8 个」，
+            // 同一组词两种口径，看着像丢结果。默认改成全部，怕慢的用户可以调小。
+            Text(
+                text = "单标签搜索源数：" +
+                    if (tagSingleSearchSources <= 0) "全部" else "$tagSingleSearchSources 个",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = "只影响「按关键词搜」的标签（组内写法、标签池里没有的新词）—— " +
+                    "源站自带分类页的标签本来就有多少源问多少源。" +
+                    "调小更快但覆盖变窄；改完下一次进标签页会自动重建标签池",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    "全部" to PreferencesManager.TAG_SINGLE_SEARCH_SOURCES_ALL,
+                    "32 个" to 32,
+                    "24 个" to 24,
+                    "16 个" to 16,
+                    "8 个" to 8,
+                ).forEach { (label, count) ->
+                    FilterChip(
+                        selected = tagSingleSearchSources == count,
+                        onClick = { viewModel.setTagSingleSearchSources(count) },
+                        label = { Text(label) },
+                    )
+                }
+            }
             Spacer(Modifier.height(8.dp))
             SettingRow(
                 title = "长按搜索结果加入书架",

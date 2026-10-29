@@ -749,6 +749,16 @@ class SettingsViewModel(
         MutableStateFlow(PreferencesManager.DEFAULT_TAG_SEARCH_CONCURRENCY)
     val tagSearchConcurrency: StateFlow<Int> = _tagSearchConcurrency.asStateFlow()
 
+    /**
+     * 单标签搜索源数（v1.9.2.1）：0 = 全部可搜索源（默认）。
+     *
+     * 组内成员 / 池外自动新建的标签没有源站分类页，只能按关键词挨个源搜。
+     * v1.9.2.0 写死 8 个，与整组搜索（全部源）口径分裂，这里改成可调。
+     */
+    private val _tagSingleSearchSources =
+        MutableStateFlow(PreferencesManager.DEFAULT_TAG_SINGLE_SEARCH_SOURCES)
+    val tagSingleSearchSources: StateFlow<Int> = _tagSingleSearchSources.asStateFlow()
+
     /** 隐藏成人内容（v1.7.5.0，默认开启） */
     private val _hideAdult = MutableStateFlow(true)
     val hideAdult: StateFlow<Boolean> = _hideAdult.asStateFlow()
@@ -1071,6 +1081,11 @@ class SettingsViewModel(
             }
         }
         viewModelScope.launch {
+            preferencesManager.tagSingleSearchSourcesFlow.collect {
+                _tagSingleSearchSources.value = it
+            }
+        }
+        viewModelScope.launch {
             preferencesManager.videoFullscreenDefaultFlow.collect { _videoFullscreenDefault.value = it }
         }
         viewModelScope.launch {
@@ -1245,6 +1260,16 @@ class SettingsViewModel(
     /** 标签搜索并发（v1.8.8.4）：下一次标签搜索生效 */
     fun setTagSearchConcurrency(value: Int) {
         viewModelScope.launch { preferencesManager.setTagSearchConcurrency(value) }
+    }
+
+    /**
+     * 单标签搜索源数（v1.9.2.1）：0 = 全部可搜索源。
+     *
+     * 改完不需要手动清缓存 —— 快照里记了当时用的值，
+     * `TagRepository.tags()` 比对不上会自己重建一次标签池。
+     */
+    fun setTagSingleSearchSources(value: Int) {
+        viewModelScope.launch { preferencesManager.setTagSingleSearchSources(value) }
     }
 
     // ===== 视频播放（v1.3.2.0） =====

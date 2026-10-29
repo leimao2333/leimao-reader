@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.9.2.0"
+    const val CURRENT_VERSION = "1.9.2.1"
 
     /**
      * 更新日志。
@@ -25,6 +25,14 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.9.2.1",
+            date = "2026-10-29",
+            changes = listOf(
+                "**单标签搜索改成覆盖全部可搜索源（可调）**：组内写法、标签池里没有的新词都没有源站分类页，只能按关键词挨个源搜。上一版把这类标签写死成只问 8 个源，于是「整组搜索覆盖全部源、点单个写法只剩 8 个源」，同一组词两种口径，看着就像点单标签丢结果。现在默认问**全部**可搜索源，设置里新增「单标签搜索源数：全部 / 32 / 24 / 16 / 8」，嫌慢可以调小；改完下次进标签页会自动重建标签池，不用手动清缓存。",
+                "**「全部标签」面板把组别系列挪到普通标签上面**：几百个普通标签排在前面时，要翻很久才看得到分组卡片，而分组恰恰是最常点的。现在组别系列置顶，普通标签在下并加了小标题；两段仍各自分批展开，不会一次性渲染全部。",
+            ),
+        ),
         VersionEntry(
             version = "1.9.2.0",
             date = "2026-10-29",

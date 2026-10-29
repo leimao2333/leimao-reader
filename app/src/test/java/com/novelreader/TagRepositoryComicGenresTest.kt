@@ -95,9 +95,11 @@ class TagRepositoryComicGenresTest {
     private fun repo(
         withCategories: List<Pair<SourceInfo, List<ExploreCategory>>>,
         searchable: List<String>,
+        singleSourceLimit: Int = 0,
     ): TagRepository = TagRepository(
         contentRepository = FakeContent(withCategories, searchable),
         store = TagStore(tmp.newFolder()),
+        singleSourceLimit = { singleSourceLimit },
     )
 
     @Test
@@ -136,14 +138,21 @@ class TagRepositoryComicGenresTest {
     }
 
     @Test
-    fun `题材词绑定源数受上限约束`() = runBlocking {
+    fun `题材词默认绑定全部可搜索源`() = runBlocking {
         val many = (1..40).map { "venera_$it" }
         val r = repo(withCategories = emptyList(), searchable = many)
         val plan = r.refresh(SourceType.COMIC)
-        assertEquals(
-            ComicGenres.MAX_SOURCES_PER_GENRE,
-            plan.entriesFor("热血").size,
-        )
+        // v1.9.2.1：默认（0 = 全部）不再截到 8 个 —— 否则单标签搜索的源数
+        // 会比整组搜索少一大截，同一组词两种口径
+        assertEquals(many.size, plan.entriesFor("热血").size)
+    }
+
+    @Test
+    fun `题材词绑定源数受设置值约束`() = runBlocking {
+        val many = (1..40).map { "venera_$it" }
+        val r = repo(withCategories = emptyList(), searchable = many, singleSourceLimit = 16)
+        val plan = r.refresh(SourceType.COMIC)
+        assertEquals(16, plan.entriesFor("热血").size)
     }
 
     @Test

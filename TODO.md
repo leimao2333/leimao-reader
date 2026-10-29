@@ -1,7 +1,7 @@
 # 待完成清单（Roadmap）
 
 > 基线版本：**v1.8.7.8**
-> 记录时间：2026-10-19（最后更新 2026-10-23）
+> 记录时间：2026-10-19（最后更新 2026-10-29）
 > 说明：本文件只记录待开工的需求，做完后把对应条目的 `- [ ]` 改成 `- [x]` 并在该行末尾补上落地版本号，随后从清单里移除或折叠进 CHANGELOG。
 
 图例：`- [ ]` 待做 / `- [x]` 已完成（末尾标注版本）
@@ -420,6 +420,18 @@
     - **判定复用**：本地条目本来就是按标签收录的，可以跳过标题过滤直接进结果；只有网络新回来的条目才走 v1.8.9.1 的判定链。
     - **别踩 #46 的坑**：首屏本地结果不能打断 `PagingContext` 的前置建立，否则「继续上滑翻页」会失效；`paging` 必须在召回前就位。
   - 涉及：`data/database/TagInstanceDao.kt`（新查询）、`data/repository/TagIndexRepository.kt`（计数 + 缓存）、`ui/screens/tag/TagSearchViewModel.kt`（search 首屏）、`ui/screens/tag/TagSearchScreen.kt`（chip 角标 + 首屏状态文案）。
+
+- [x] **49. 单标签搜索只搜 8 个源（应覆盖全部，且可调）** ✅ v1.9.2.1
+  - 需求（用户提出）：v1.9.2.0 上线双层搜索后，搜组内单个写法只问 8 个源，而整组搜索覆盖全部源 —— 同一组词两种口径，看着像单标签丢结果。
+  - 根因：`TagRepository.AUTO_CREATE_SOURCES = 8`（自动新建标签）与 `ComicGenres.MAX_SOURCES_PER_GENRE = 8`（题材词轮转绑定）两处写死。宽标签（漫画无码 / 全彩、视频属性词）走的是 `pool.size` 分支，所以只有普通单标签被截到 8。
+  - 实现：两处上限合并成一个设置项 `tag_single_search_sources`（0 = 全部可搜索源，默认），`TagRepository` 通过 `singleSourceLimit: suspend () -> Int` 注入读取（数据层不依赖 DataStore，单测给常量即可）；`TagPlan.keywordSourceLimit` 记录收集时用的值，`tags()` 比对不一致就自动重建标签池；`TagStore.LOGIC_VERSION` 10 → 11 让旧缓存一次性失效。设置页「标签搜索并发」下面加「单标签搜索源数：全部 / 32 / 24 / 16 / 8」。
+  - 代价：漫画可搜索源约 36 个，默认并发 24 下约 2 轮；怕慢的用户可调小。
+  - 涉及：`core/preferences/PreferencesManager.kt`、`data/repository/TagRepository.kt`、`data/cache/TagStore.kt`、`di/AppContainer.kt`、`ui/screens/settings/SettingsViewModel.kt`、`SettingsScreen.kt`、`core/util/ComicGenres.kt`（常量降级为历史档位）、`TagRepositoryComicGenresTest.kt`。
+
+- [x] **50. 「全部标签」面板把组别系列提到普通标签上面** ✅ v1.9.2.1
+  - 需求（用户提出）：组别排在几百个普通标签后面，翻起来太费劲。
+  - 实现：`AllHotTagsSheet` 里把「组别系列」整段挪到「普通标签」之前，并给普通标签补一个小标题；两段仍各自分批展开（`TAG_GROUP_PAGE` / `TAG_SHEET_PAGE`），不做全量渲染。
+  - 涉及：`ui/screens/tag/TagSearchScreen.kt`（`AllHotTagsSheet`）。
 
 ## 五、RSS
 

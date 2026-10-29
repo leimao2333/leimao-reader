@@ -263,6 +263,16 @@ class PreferencesManager(private val context: Context) {
          */
         val KEY_TAG_SEARCH_CONCURRENCY = intPreferencesKey("tag_search_concurrency")
 
+        /**
+         * 单标签搜索绑定多少个源（v1.9.2.1）。
+         *
+         * 0 = **全部可搜索源**（默认）。组内成员与「池外自动新建」的标签没有源站分类页，
+         * 只能按关键词挨个源搜；v1.9.2.0 写死 8 个，于是同一组词出现两种口径 ——
+         * 「全彩组」走宽标签分支覆盖全部源，点单个写法「彩绘」却只问 8 个源，
+         * 用户看到的就是「单标签结果比整组少一大截」。想压请求量再调小。
+         */
+        val KEY_TAG_SINGLE_SEARCH_SOURCES = intPreferencesKey("tag_single_search_sources")
+
         // ===== 搜索结果展示（v1.8.6.0 待办 #26） =====
         // 四个模块各自独立记忆：同一个用户可能想「小说看列表（要看清作者/字数）、
         // 漫画看宫格（认封面）」，共用一个开关会互相打架。
@@ -380,6 +390,19 @@ class PreferencesManager(private val context: Context) {
         const val MIN_TAG_SEARCH_CONCURRENCY = 1
         /** 标签搜索并发上限：再多也压不过 OkHttp 的 maxRequests(64) 和站点限流 */
         const val MAX_TAG_SEARCH_CONCURRENCY = 40
+
+        /**
+         * 单标签搜索源数（v1.9.2.1）：0 = 全部可搜索源。
+         *
+         * 默认就是全部 —— 单标签与整组搜索必须同口径，否则「整组能搜到、单标签搜不到」
+         * 会被当成丢结果的 bug。担心弱网 / 站点限流的用户可在设置里调小。
+         */
+        const val TAG_SINGLE_SEARCH_SOURCES_ALL = 0
+        const val DEFAULT_TAG_SINGLE_SEARCH_SOURCES = TAG_SINGLE_SEARCH_SOURCES_ALL
+        /** 下限：0（全部）到 1（只问一个源）都允许，小值只影响覆盖率不影响正确性 */
+        const val MIN_TAG_SINGLE_SEARCH_SOURCES = 0
+        /** 上限与并发上限同口径：源数再多也只是排队 */
+        const val MAX_TAG_SINGLE_SEARCH_SOURCES = 40
         /** 默认漫画预加载张数 */
         const val DEFAULT_COMIC_PRELOAD_COUNT = 4
         /** 默认漫画预加载话数（v1.6.0.0） */
@@ -1035,6 +1058,25 @@ class PreferencesManager(private val context: Context) {
         context.dataStore.edit {
             it[KEY_TAG_SEARCH_CONCURRENCY] =
                 value.coerceIn(MIN_TAG_SEARCH_CONCURRENCY, MAX_TAG_SEARCH_CONCURRENCY)
+        }
+    }
+
+    /**
+     * 单标签搜索源数（v1.9.2.1）：0 = 全部可搜索源（默认）。
+     *
+     * 这个值在**收集标签池**时生效（[TagRepository] 按它给组内成员 / 自动新建标签
+     * 绑关键词入口）。改完下一次收集才看得到变化，所以设置页提示语要写清楚。
+     */
+    val tagSingleSearchSourcesFlow: Flow<Int> = context.dataStore.data
+        .map {
+            (it[KEY_TAG_SINGLE_SEARCH_SOURCES] ?: DEFAULT_TAG_SINGLE_SEARCH_SOURCES)
+                .coerceIn(MIN_TAG_SINGLE_SEARCH_SOURCES, MAX_TAG_SINGLE_SEARCH_SOURCES)
+        }
+
+    suspend fun setTagSingleSearchSources(value: Int) {
+        context.dataStore.edit {
+            it[KEY_TAG_SINGLE_SEARCH_SOURCES] =
+                value.coerceIn(MIN_TAG_SINGLE_SEARCH_SOURCES, MAX_TAG_SINGLE_SEARCH_SOURCES)
         }
     }
 

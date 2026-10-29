@@ -35,6 +35,14 @@ data class TagPlan(
      * 「删了没用」。所以删除要记在这里：收集、自动新建、入口查找、列表展示全部跳过。
      */
     val hiddenTags: Set<String> = emptySet(),
+    /**
+     * 收集这份快照时用的「单标签搜索源数」设置值（v1.9.2.1；0 = 全部可搜索源）。
+     *
+     * 关键词入口是**收集时**就绑进 [plan] 的，设置改了不能只比对时间戳 ——
+     * 记下当时的值，[com.novelreader.data.repository.TagRepository.tags] 一比对
+     * 不一致就重建。默认 -1 表示「旧快照没记过」，升级后必然重建一次。
+     */
+    val keywordSourceLimit: Int = -1,
 ) {
     /**
      * 标签名列表。
@@ -153,6 +161,8 @@ data class TagPlan(
         val plan: Map<String, List<List<String>>>,
         val customTags: List<String>? = null,
         val hiddenTags: List<String>? = null,
+        /** v1.9.2.1：收集时用的「单标签搜索源数」设置值，null = 旧快照 */
+        val keywordSourceLimit: Int? = null,
     )
 
     fun toJson(): String {
@@ -161,6 +171,7 @@ data class TagPlan(
             plan = plan.mapValues { (_, entries) -> entries.map { listOf(it.first, it.second) } },
             customTags = customTags.toList(),
             hiddenTags = hiddenTags.toList(),
+            keywordSourceLimit = keywordSourceLimit,
         )
         return gson().toJson(dto)
     }
@@ -200,6 +211,8 @@ data class TagPlan(
                     .map(::normalizeTag)
                     .filter { it.isNotEmpty() }
                     .toCollection(LinkedHashSet()),
+                // null（旧快照）→ -1：与任何设置值都不等，[tags] 会重建一次
+                keywordSourceLimit = dto.keywordSourceLimit ?: -1,
             )
         }.getOrNull()
 
@@ -342,7 +355,9 @@ class TagStore(private val dir: File) {
          *     旧缓存里视频只有站方分类名，必须重新收集才能看到「无码」这类标签。
          * v10：v1.9.2.0 组内成员单独成键（「彩绘」不再被并进「全彩」），
          *     旧缓存里只有组首词，必须重新收集才能拿到成员各自的真实分类入口。
+         * v11：v1.9.2.1 单标签的关键词入口改由设置决定（默认全部可搜索源）。
+         *     v10 的缓存里每个标签只绑了 8 个源，不重建的话用户改了设置也看不出变化。
          */
-        const val LOGIC_VERSION = 10
+        const val LOGIC_VERSION = 11
     }
 }

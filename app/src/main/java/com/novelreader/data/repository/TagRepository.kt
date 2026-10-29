@@ -42,6 +42,13 @@ import kotlinx.coroutines.withContext
 class TagRepository(
     private val contentRepository: ContentRepository,
     private val store: TagStore,
+    /**
+     * 单标签搜索源数（v1.9.2.1）：0 = 全部可搜索源。
+     *
+     * 用 lambda 而不是直接注入 `PreferencesManager` —— 数据层不依赖 DataStore，
+     * 单测里给个常量就能跑；调用点每收集一次读一次，改设置后下次收集即生效。
+     */
+    private val singleSourceLimit: suspend () -> Int = { SINGLE_SOURCES_ALL },
 ) {
 
     private val memCache = HashMap<SourceType, TagPlan>()
@@ -54,12 +61,18 @@ class TagRepository(
      *   分类结构基本不变，太频繁收集只会白耗流量（视频源要真发请求）。
      */
     suspend fun tags(type: SourceType, maxAgeMs: Long = DEFAULT_MAX_AGE_MS): TagPlan {
-        memCache[type]?.let { return it }
+        // v1.9.2.1：设置里的「单标签搜索源数」改了要立刻生效。
+        // 缓存里的关键词入口是按旧值绑的，光比对时间戳发现不了 ——
+        // 所以把当时用的设置值记进快照，对不上就重建一次（每类型最多一次）。
+        val wanted = wantedSourceLimit()
+        memCache[type]?.let { if (it.keywordSourceLimit == wanted) return it }
         store.load(type.name)?.let { cached ->
-            memCache[type] = cached
-            return cached
+            if (cached.keywordSourceLimit == wanted) {
+                memCache[type] = cached
+                return cached
+            }
         }
-        // 无任何缓存：现场收集一次（首次使用，UI 应有 loading）
+        // 无任何缓存 / 设置已变：现场收集一次（首次使用，UI 应有 loading）
         return refresh(type)
     }
 
@@ -127,10 +140,12 @@ class TagRepository(
             }
         }
         // 通用题材词和同人原著词绑定到搜索入口，避免依赖源恰好配置分类页
-        attachSearchTags(type, plan, pool, hidden)
+        val wanted = wantedSourceLimit()
+        val keywordLimit = effectiveLimit(pool, wanted)
+        attachSearchTags(type, plan, pool, keywordLimit, hidden)
         // v1.9.2.0：把用户搜过、自动新建的标签补回来（源站分类里没有它们）
         val custom = previous?.customTags.orEmpty().filterNot { it in hidden }.toSet()
-        restoreCustomTags(plan, custom, pool, hidden)
+        restoreCustomTags(plan, custom, pool, keywordLimit, hidden)
         // 兜底：任何路径（含题材词绑定）都不该把已删除的标签带回来
         hidden.forEach { plan.remove(it) }
         val snapshot = TagPlan(
@@ -138,6 +153,8 @@ class TagRepository(
             plan = plan,
             customTags = custom,
             hiddenTags = hidden,
+            // 记下这次用的设置值，设置一改 [tags] 就能发现并重建
+            keywordSourceLimit = wanted,
         )
         if (snapshot.plan.isNotEmpty()) {
             memCache[type] = snapshot
@@ -157,6 +174,20 @@ class TagRepository(
     }.distinct()
 
     /**
+     * 单个标签最多绑多少个源的**关键词**入口（v1.9.2.1）。
+     *
+     * 设置里给 0（默认）或给到比池子还大 → 全部可搜索源；否则取该值。
+     * 只约束「没有源站分类页、只能按关键词搜」的标签；有真分类的标签照旧
+     * 有多少源收多少源，不受这个上限影响。
+     */
+    private suspend fun wantedSourceLimit(): Int =
+        runCatching { singleSourceLimit() }.getOrDefault(SINGLE_SOURCES_ALL).coerceAtLeast(0)
+
+    /** 把设置值换算成实际可用的源数：0 / 超池 → 全部 */
+    private fun effectiveLimit(pool: List<String>, wanted: Int): Int =
+        if (wanted <= 0 || wanted >= pool.size) pool.size else wanted
+
+    /**
      * 重新收集后把**自动新建的标签**补回池子（v1.9.2.0）。
      *
      * 这类标签没有源站分类页，只有「按关键词搜索」入口。不补的话，用户搜过的
@@ -166,13 +197,14 @@ class TagRepository(
         plan: LinkedHashMap<String, MutableList<Pair<String, String>>>,
         custom: Set<String>,
         pool: List<String>,
+        limit: Int,
         hidden: Set<String> = emptySet(),
     ) {
         if (custom.isEmpty() || pool.isEmpty()) return
         for (name in custom) {
             if (name in hidden) continue
             if (plan[name]?.isNotEmpty() == true) continue
-            plan[name] = pool.take(AUTO_CREATE_SOURCES)
+            plan[name] = pool.take(limit)
                 .map { it to TagEntryUrl.search(name) }
                 .toMutableList()
         }
@@ -204,6 +236,7 @@ class TagRepository(
                 // 会盖掉「下次进页面重新收集」的完整池子，只剩这几个新建标签。
                 if (current.plan.isEmpty()) return@withContext emptyList()
                 val pool = searchablePool(type)
+                val limit = effectiveLimit(pool, wantedSourceLimit())
                 val plan = LinkedHashMap(current.plan)
                 val custom = current.customTags.toMutableSet()
                 val added = ArrayList<String>()
@@ -220,7 +253,7 @@ class TagRepository(
                         }
                     if (coveredByGroup) continue
                     if (pool.isEmpty()) break
-                    plan[name] = pool.take(AUTO_CREATE_SOURCES)
+                    plan[name] = pool.take(limit)
                         .map { it to TagEntryUrl.search(name) }
                     custom += name
                     added += name
@@ -290,8 +323,11 @@ class TagRepository(
      * v1.7.6.3：原来只给「没有分类能力的前 8 个源」绑定，绝大多数漫画源拿不到
      * 新增题材词（用户实测标签池里没有「精灵」之类）。现在改为**全源轮转**：
      * 用游标在全部可搜索漫画源之间依次分配，每个题材词最多绑
-     * [ComicGenres.MAX_SOURCES_PER_GENRE] 个源 —— 每个源都能分到大量题材词，
+     * [effectiveLimit] 个源 —— 每个源都能分到大量题材词，
      * 而单个标签的搜索源数仍有上界（不会把标签搜索拖到几十秒）。
+     *
+     * v1.9.2.1：这个上界不再写死 8，改由设置决定（默认 = 全部可搜索源）。
+     * 写死 8 的那版让「整组搜全部源、单标签只搜 8 个源」，同一组词两种口径。
      *
      * 「无码」和「全彩」是用户明确要求的跨源入口，不受普通标签源数上限限制，
      * 覆盖全部可搜索源；标签页执行时仍只请求已启用的源，并受并发限制。
@@ -303,6 +339,7 @@ class TagRepository(
         type: SourceType,
         plan: LinkedHashMap<String, MutableList<Pair<String, String>>>,
         pool: List<String>,
+        limit: Int,
         hidden: Set<String> = emptySet(),
     ) {
         val searchTags = when (type) {
@@ -329,7 +366,10 @@ class TagRepository(
                 // 视频的属性标签（无码 / 有码 / 里番 / 成人）同样覆盖全部可搜索源：
                 // 这类词在不同站上写法差异极大，只绑 8 个源等于只看到一半结果
                 type == SourceType.VIDEO && label in WIDE_VIDEO_TAG_NAMES -> pool.size
-                else -> ComicGenres.MAX_SOURCES_PER_GENRE
+                // v1.9.2.1：普通题材词改由设置决定（默认全部源）。
+                // 以前写死 [ComicGenres.MAX_SOURCES_PER_GENRE]（8），导致单标签搜索
+                // 与整组搜索口径不一致 —— 整组覆盖全部源，单标签只剩 8 个。
+                else -> limit
             }
             // 该题材已有足够入口（通常是多个源的真分类）→ 不再补搜索入口
             if (already.size >= sourceLimit) continue
@@ -359,11 +399,13 @@ class TagRepository(
         private const val DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000L
 
         /**
-         * 自动新建标签时绑定多少个源（v1.9.2.0）。
+         * 单标签搜索源数的默认值：0 = 全部可搜索源（v1.9.2.1）。
          *
-         * 与 [ComicGenres.MAX_SOURCES_PER_GENRE] 同口径：新标签没有源站分类页，
-         * 只能按关键词去搜，绑太多源会把一次搜索拖到几十秒。
+         * v1.9.2.0 这里写死 8，本意是「新标签没有分类页，只能按关键词搜，
+         * 绑太多源会把一次搜索拖到几十秒」。但它和整组搜索的口径分裂了：
+         * 整组（宽标签）覆盖全部源，单标签只剩 8 个，看起来就是「点单个写法丢结果」。
+         * 现在默认全给，真要压请求量由设置项下调。
          */
-        private const val AUTO_CREATE_SOURCES = 8
+        private const val SINGLE_SOURCES_ALL = 0
     }
 }

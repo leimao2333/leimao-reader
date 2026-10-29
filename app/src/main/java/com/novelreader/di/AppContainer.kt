@@ -10,6 +10,7 @@ import com.novelreader.data.repository.BookmarkRepositoryImpl
 import com.novelreader.data.repository.ChapterCacheRepositoryImpl
 import com.novelreader.data.repository.ContentRepositoryImpl
 import com.novelreader.data.repository.ProgressRepositoryImpl
+import kotlinx.coroutines.flow.first
 import com.novelreader.data.repository.SourceRepositoryImpl
 import com.novelreader.domain.repository.BookRepository
 import com.novelreader.domain.repository.BookmarkRepository
@@ -127,7 +128,15 @@ class AppContainer(context: Context) {
 
     /** 标签仓库（v1.5.10.0，自动收集各源发现分类为标签池） */
     val tagRepository: com.novelreader.data.repository.TagRepository by lazy {
-        com.novelreader.data.repository.TagRepository(contentRepository, tagStore)
+        com.novelreader.data.repository.TagRepository(
+            contentRepository = contentRepository,
+            store = tagStore,
+            // v1.9.2.1：单标签关键词入口绑多少个源由设置决定（0 = 全部可搜索源）。
+            // 每次收集读一次，用户在设置里改完、标签池下次重建即生效。
+            singleSourceLimit = {
+                preferencesManager.tagSingleSearchSourcesFlow.first()
+            },
+        )
     }
 
     val sourceManager: SourceManager by lazy {

@@ -1071,42 +1071,17 @@ private fun AllHotTagsSheet(
                 modifier = Modifier.padding(top = 2.dp, bottom = 12.dp),
             )
 
-            // ===== 普通标签（不属于任何分组）=====
-            if (shownTags.isNotEmpty()) {
-                androidx.compose.foundation.layout.FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    shownTags.forEach { tag ->
-                        HotTagChip(
-                            tag = tag,
-                            active = tag in activeTags,
-                            count = tagCounts[tag] ?: 0,
-                            deletable = editMode,
-                            onClick = { onPick(tag) },
-                        )
-                    }
-                }
-                if (shownTags.size < plainTags.size) {
-                    androidx.compose.material3.TextButton(
-                        onClick = { visibleTags += TAG_SHEET_PAGE },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("显示更多标签（还剩 ${plainTags.size - shownTags.size} 个）")
-                    }
-                }
-            }
-
-            // ===== 组别系列（v1.9.2.0）=====
+            // ===== 组别系列（v1.9.2.0；v1.9.2.1 提到普通标签**上面**）=====
             // 每个分组一张卡片：组首词 + 整组入口 + 组内全部写法。
             // 以前这些写法跟普通标签摊在同一排，几百个词混在一起，看不出谁属于哪一组。
+            // 位置也调过：放在普通标签下面时，几百个普通标签要翻半天才能看到分组，
+            // 而分组恰恰是最常点的一类，所以置顶。
             if (groups.isNotEmpty()) {
                 Text(
                     text = "组别系列",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(top = 16.dp, bottom = 2.dp),
+                    modifier = Modifier.padding(bottom = 2.dp),
                 )
                 Text(
                     text = "每个分组一张卡片；组内写法都能单独搜，点右上角「…组」搜整组",
@@ -1129,6 +1104,42 @@ private fun AllHotTagsSheet(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text("显示更多分组（还剩 ${groups.size - shownGroups.size} 个）")
+                    }
+                }
+            }
+
+            // ===== 普通标签（不属于任何分组）=====
+            if (shownTags.isNotEmpty()) {
+                Text(
+                    text = "普通标签",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(
+                        top = if (groups.isNotEmpty()) 16.dp else 0.dp,
+                        bottom = 8.dp,
+                    ),
+                )
+                androidx.compose.foundation.layout.FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    shownTags.forEach { tag ->
+                        HotTagChip(
+                            tag = tag,
+                            active = tag in activeTags,
+                            count = tagCounts[tag] ?: 0,
+                            deletable = editMode,
+                            onClick = { onPick(tag) },
+                        )
+                    }
+                }
+                if (shownTags.size < plainTags.size) {
+                    androidx.compose.material3.TextButton(
+                        onClick = { visibleTags += TAG_SHEET_PAGE },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("显示更多标签（还剩 ${plainTags.size - shownTags.size} 个）")
                     }
                 }
             }

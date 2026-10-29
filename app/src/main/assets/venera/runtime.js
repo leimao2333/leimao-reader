@@ -276,6 +276,173 @@
         this.domain = o.domain;
     }
 
+    // ==================== 请求缓存 / 同址串行（v1.9.2.3）====================
+    //
+    // Venera 的 Network 认两个**伪请求头**，它们不进网络、由运行时消化：
+    //   - `cache-time: long | no`：GET 结果缓存。long = 6 小时内直接用缓存，
+    //     no = 丢掉缓存重新拉；不给值 = 5 秒内复用（够挡「同一页被连点两次」）。
+    //   - `prevent-parallel: true`：同一个 URL 同时只允许一个在飞，其余的等它回来。
+    //
+    // 为什么要补这块：图库类源（ehentai 最典型）的 `onImageLoad` 是**逐张**解析的，
+    // 里面每次都会重新取缩略图页 + `showkey` 页。没有缓存时一章 72 页要打 270 次请求、
+    // 60 秒以上，上层早就超时了 —— 用户侧就是「章节一直转圈 / 加载不出图」。
+    // 有缓存后同样的章节只剩「一次缩略图页 + 一次 key 页 + 每图一次接口」。
+    //
+    // 口径对齐 venera 的 `NetworkCacheManager`（lib/network/cache.dart）：
+    // 只缓存 GET、按 URL+请求头区分、总容量 8MB、命中时给响应补 `venera-cache: true`。
+
+    /** 缓存总容量上限（字符数近似字节；与 venera 的 10MB 同量级） */
+    var HTTP_CACHE_MAX_CHARS = 8 * 1024 * 1024;
+
+    /** cache-time: long 的有效期 */
+    var HTTP_CACHE_LONG_MS = 6 * 60 * 60 * 1000;
+
+    /** 不带 cache-time 时的默认复用窗口（venera 是 5 秒） */
+    var HTTP_CACHE_DEFAULT_MS = 5 * 1000;
+
+    /** key -> { at, json, size }（Map 的插入顺序天然可做 LRU） */
+    var httpCache = new Map();
+    var httpCacheChars = 0;
+
+    /** URL+方法+头 -> 正在飞的 Promise（prevent-parallel 用） */
+    var httpInFlight = new Map();
+
+    /** 这些头只影响缓存判定，不能发给服务器 */
+    function isPseudoHeader(name) {
+        var n = String(name).toLowerCase();
+        return n === 'cache-time' || n === 'prevent-parallel';
+    }
+
+    /** 拆出伪头：返回 { headers（可直接发）, cacheTime, preventParallel } */
+    /**
+     * 请求体归一化（v1.9.2.3）。
+     *
+     * 官方把 body 原样交给 Dio（`lib/network/app_dio.dart` 的 `data: data`），
+     * Dio 遇到 Map / List 会**自动 JSON 编码**并补 `Content-Type: application/json`。
+     * 我们的原生桥只能传字符串，对象原样过去会被 `String()` 成 `"[object Object]"`。
+     *
+     * 这不是理论问题：上游有源就是直接把对象当 body 传的（某图站的
+     * `imagedispatch` / `showpage` 接口），表现为「接口回了别的 JSON」→ 源里再取
+     * 字段时 `reg[1]` 抛 `Cannot read properties of null` → 整章图片全失败。
+     *
+     * @returns {{ data: *, isJson: boolean }}
+     */
+    function normalizeBody(data) {
+        if (data === null || data === undefined) return { data: data, isJson: false };
+        if (typeof data === 'string') return { data: data, isJson: false };
+        if (typeof data === 'number' || typeof data === 'boolean') {
+            return { data: String(data), isJson: false };
+        }
+        try {
+            return { data: JSON.stringify(data), isJson: true };
+        } catch (e) {
+            return { data: String(data), isJson: false };
+        }
+    }
+
+    /** 头里是否已有 content-type（大小写不敏感） */
+    function hasHeader(headers, name) {
+        for (var k in headers) {
+            if (Object.prototype.hasOwnProperty.call(headers, k) && k.toLowerCase() === name) return true;
+        }
+        return false;
+    }
+
+    function splitHeaders(headers) {
+        var clean = {};
+        var cacheTime = null;
+        var preventParallel = false;
+        if (headers) {
+            for (var k in headers) {
+                if (!Object.prototype.hasOwnProperty.call(headers, k)) continue;
+                var lk = String(k).toLowerCase();
+                if (lk === 'cache-time') {
+                    cacheTime = String(headers[k]);
+                } else if (lk === 'prevent-parallel') {
+                    preventParallel = String(headers[k]) === 'true';
+                } else {
+                    clean[k] = headers[k];
+                }
+            }
+        }
+        return { headers: clean, cacheTime: cacheTime, preventParallel: preventParallel };
+    }
+
+    /** 缓存键：方法 + URL + 头（头排序，避免顺序不同算成两份） */    function cacheKeyOf(method, url, headers) {
+        var keys = Object.keys(headers || {}).sort();
+        var parts = [];
+        for (var i = 0; i < keys.length; i++) {
+            parts.push(keys[i].toLowerCase() + '=' + String(headers[keys[i]]));
+        }
+        return String(method).toUpperCase() + ' ' + url + '\n' + parts.join('&');
+    }
+
+    function cacheGet(key, cacheTime) {
+        var hit = httpCache.get(key);
+        if (!hit) return null;
+        var ttl = cacheTime === 'long' ? HTTP_CACHE_LONG_MS : HTTP_CACHE_DEFAULT_MS;
+        if (Date.now() - hit.at > ttl) {
+            httpCache.delete(key);
+            httpCacheChars -= hit.size;
+            return null;
+        }
+        return hit.json;
+    }
+
+    function cachePut(key, json) {
+        var size = json.length;
+        if (size > HTTP_CACHE_MAX_CHARS / 4) return; // 单个超大响应不进缓存
+        var old = httpCache.get(key);
+        if (old) {
+            httpCacheChars -= old.size;
+            httpCache.delete(key);
+        }
+        while (httpCacheChars + size > HTTP_CACHE_MAX_CHARS && httpCache.size > 0) {
+            var firstKey = httpCache.keys().next().value;
+            var first = httpCache.get(firstKey);
+            httpCacheChars -= first ? first.size : 0;
+            httpCache.delete(firstKey);
+        }
+        httpCache.set(key, { at: Date.now(), json: json, size: size });
+        httpCacheChars += size;
+    }
+
+    /** 命中缓存时给响应打标（与 venera 一致），源可以据此判断「这是缓存」 */
+    function withCacheFlag(json) {
+        try {
+            var obj = JSON.parse(json);
+            if (obj && typeof obj === 'object') {
+                var h = obj.headers || (obj.headers = {});
+                h['venera-cache'] = 'true';
+                return JSON.stringify(obj);
+            }
+        } catch (e) { /* 非 JSON 就原样返回 */ }
+        return json;
+    }
+
+    /**
+     * 同址共享：同一个缓存键同时只跑一次，后来者直接复用那个 Promise。
+     *
+     * 比 venera 的「排队等前一个跑完再自己跑」更省 —— 反正结果一样，
+     * 而 ehentai 那种一章几十张图的源，重复请求正是它慢的主因。
+     */
+    function shareInFlight(key, run) {
+        var existing = httpInFlight.get(key);
+        if (existing) return existing;
+        var p;
+        try {
+            p = Promise.resolve(run());
+        } catch (e) {
+            return Promise.reject(e);
+        }
+        httpInFlight.set(key, p);
+        var clear = function () {
+            if (httpInFlight.get(key) === p) httpInFlight.delete(key);
+        };
+        p.then(clear, clear);
+        return p;
+    }
+
     // ==================== Network ====================
     // 全部经原生发起：不受同源策略限制，Cookie / 字符集由原生统一处理。
 
@@ -461,29 +628,85 @@
 
     var Network = {
         sendRequest: function (method, url, headers, data) {
-            if (!wantAsync()) {
-                // 同步回落：返回裸对象，与改动前的行为完全一致
-                var sync = JSON.parse(httpSyncRaw(method, url, headers, data, false));
-                if (sync.error) throw new Error(sync.error);
-                return { status: sync.status, headers: sync.headers || {}, body: sync.body, url: sync.url || url };
+            var sp = splitHeaders(headers);
+            // 对象 / 数组 body → JSON 串（对齐 Dio 的行为），并补 content-type
+            var nb = normalizeBody(data);
+            data = nb.data;
+            if (nb.isJson && !hasHeader(sp.headers, 'content-type')) {
+                sp.headers['content-type'] = 'application/json';
             }
-            return httpAsyncCall(method, url, headers, data, false).then(function (raw) {
-                var res = JSON.parse(raw);
-                if (res.error) throw new Error(res.error);
-                return { status: res.status, headers: res.headers || {}, body: res.body, url: res.url || url };
+            var isGet = String(method || 'GET').toUpperCase() === 'GET';
+            var key = cacheKeyOf(method, url, sp.headers);
+            if (isGet) {
+                if (sp.cacheTime === 'no') {
+                    // 明确要求重拉：先清掉旧缓存
+                    var stale = httpCache.get(key);
+                    if (stale) {
+                        httpCacheChars -= stale.size;
+                        httpCache.delete(key);
+                    }
+                } else {
+                    var hit = cacheGet(key, sp.cacheTime);
+                    // 命中直接给**裸对象**：await 一个对象与 await 一个 Promise 等价，
+                    // 而同步写法的源（不 await 直接取 .body）也能正常拿到。
+                    // 注意 withCacheFlag 返回的是 JSON 串（缓存里存的就是串），要解回来。
+                    if (hit) return JSON.parse(withCacheFlag(hit));
+                }
+            }
+            var run = function () {
+                if (!wantAsync()) {
+                    // 同步回落：返回裸对象，与改动前的行为完全一致
+                    var sync = JSON.parse(httpSyncRaw(method, url, sp.headers, data, false));
+                    if (sync.error) throw new Error(sync.error);
+                    return { status: sync.status, headers: sync.headers || {}, body: sync.body, url: sync.url || url };
+                }
+                return httpAsyncCall(method, url, sp.headers, data, false).then(function (raw) {
+                    var res = JSON.parse(raw);
+                    if (res.error) throw new Error(res.error);
+                    return { status: res.status, headers: res.headers || {}, body: res.body, url: res.url || url };
+                });
+            };
+            // prevent-parallel：同一 URL 同时只跑一次，后来者共享同一个 Promise。
+            // 只在异步桥下做 —— 同步桥返回的是裸对象，没有「在飞」的概念。
+            var task = (sp.preventParallel && wantAsync()) ? shareInFlight(key, run) : run();
+            if (!isGet) return task;
+            // 同步桥（sync-style 源）返回的是裸对象：就地缓存后原样返回，
+            // 绝不能包成 Promise —— 那些源是直接取 `.body` 的，包了就全坏。
+            if (!task || typeof task.then !== 'function') {
+                if (task && task.status >= 200 && task.status < 300 && typeof task.body === 'string') {
+                    cachePut(key, JSON.stringify(task));
+                }
+                return task;
+            }
+            return task.then(function (res) {
+                // 只缓存成功的 GET（4xx/5xx 缓存下来会把「临时抽风」变成 6 小时打不开）
+                if (res && res.status >= 200 && res.status < 300 && typeof res.body === 'string') {
+                    cachePut(key, JSON.stringify(res));
+                }
+                return res;
             });
         },
         fetchBytes: function (method, url, headers, data) {
-            if (!wantAsync()) {
-                var syncB = JSON.parse(httpSyncRaw(method, url, headers, data, true));
-                if (syncB.error) throw new Error(syncB.error);
-                return { status: syncB.status, headers: syncB.headers || {}, body: b64ToBytes(syncB.bodyBase64 || '').buffer, url: syncB.url || url };
+            var sp = splitHeaders(headers);
+            var nb = normalizeBody(data);
+            data = nb.data;
+            if (nb.isJson && !hasHeader(sp.headers, 'content-type')) {
+                sp.headers['content-type'] = 'application/json';
             }
-            return httpAsyncCall(method, url, headers, data, true).then(function (raw) {
-                var res = JSON.parse(raw);
-                if (res.error) throw new Error(res.error);
-                return { status: res.status, headers: res.headers || {}, body: b64ToBytes(res.bodyBase64 || '').buffer, url: res.url || url };
-            });
+            var run = function () {
+                if (!wantAsync()) {
+                    var syncB = JSON.parse(httpSyncRaw(method, url, sp.headers, data, true));
+                    if (syncB.error) throw new Error(syncB.error);
+                    return { status: syncB.status, headers: syncB.headers || {}, body: b64ToBytes(syncB.bodyBase64 || '').buffer, url: syncB.url || url };
+                }
+                return httpAsyncCall(method, url, sp.headers, data, true).then(function (raw) {
+                    var res = JSON.parse(raw);
+                    if (res.error) throw new Error(res.error);
+                    return { status: res.status, headers: res.headers || {}, body: b64ToBytes(res.bodyBase64 || '').buffer, url: res.url || url };
+                });
+            };
+            // 二进制不走缓存（图片 / 索引文件太大，且源自己会按 range 精确取）
+            return sp.preventParallel ? shareInFlight(cacheKeyOf(method, url, sp.headers), run) : run();
         },
         get: function (url, headers) {
             return this.sendRequest('GET', url, headers);
@@ -1200,6 +1423,13 @@
     function chaptersOf(d) {
         var pairs = chaptersToPairs(d && d.chapters);
         if (pairs.length === 0) pairs = galleryFallbackChapters(d);
+        // v1.9.2.3：`chapters` 为 null / undefined 时，venera 把这部作品当**单话**处理
+        // （不写章节表的图源，如紳士漫畫的非系列作品）。以前这里返回空数组，
+        // App 详情页就是「0 话」，根本点不进去。
+        // 注意只兜 null/undefined：`{}` / `[]` 是源**明确说没有章节**，不能凭空造一话。
+        if (pairs.length === 0 && d && (d.chapters === null || d.chapters === undefined)) {
+            pairs = [['', '全一话']];
+        }
         return pairs;
     }
 
@@ -1275,9 +1505,19 @@
         // 一个 `await` 接一个 `await` 的串行循环，一章要跑上百次请求、好几分钟，
         // 上层早就超时了，用户侧就是「章节一直转圈 / 加载不出内容」。
         // 现在按 [IMAGE_RESOLVE_CONCURRENCY] 并发解析，顺序保持不变（结果按下标回填）。
+        //
+        // **但不再全量预解析**（v1.9.2.3）：官方是在**图片真正要加载时**才调
+        // `onImageLoad`（`lib/network/images.dart:143` 的 `getImageLoadingConfig`），
+        // 而这里以前是一次性把整章都解析完。图库类源一章动辄几百页 —— 实测某图站
+        // 一个 429 页的章节，光是预解析就要发 429 次 POST，直接撞上调用硬上限，
+        // 用户侧就是「章节打不开」；就算不超时，也会因为瞬时请求量被源站限流。
+        // 现在只预解析前 [IMAGE_EAGER_RESOLVE_LIMIT] 张（覆盖首屏 + 若干页滚动），
+        // 其余的交给 `retryImage` 按需解析（见 [lazyImageToken]）。
         var onLoad = src.comic && src.comic.onImageLoad;
         if (typeof onLoad === 'function' && urls.length) {
-            urls = await mapLimit(urls, IMAGE_RESOLVE_CONCURRENCY, async function (orig) {
+            // 未解析前的原始 key（页码 / 原始地址），惰性解析时要原样还给源
+            var rawUrls = urls.slice();
+            var resolveOne = async function (orig) {
                 var finalUrl = orig;
                 try {
                     var r = await onLoad.call(src, orig, comicId, epId);
@@ -1305,13 +1545,97 @@
                     log('warning', 'onImageLoad', String(e));
                 }
                 return finalUrl;
-            });
+            };
+            // 分批推进 + **时间预算**（v1.9.2.4）。此前只按张数卡（前 24 张），
+            // 但 `onImageLoad` 的成本因源而异：
+            //   - 只补 referer / 拼地址的源（jcomic、wnacg 这类）零网络开销，
+            //     整章几十张瞬间就能解析完，根本不需要惰性 —— 强行惰性只会让
+            //     第 25 张之后全部落到按需解析那条路上，一旦那条路出问题，
+            //     用户看到的就是「后半章一直转圈」；
+            //   - 真正要逐张发请求的源（几百页的图库）才是惰性要救的对象。
+            // 所以改成「预算内尽量多解析，超预算再惰性」：免费的一次解析完整章，
+            // 昂贵的自然在 [IMAGE_EAGER_BUDGET_MS] 处停下。
+            var resolved = [];
+            var cursor = 0;
+            var eagerStart = Date.now();
+            while (cursor < rawUrls.length && cursor < IMAGE_EAGER_RESOLVE_LIMIT) {
+                if (cursor > 0 && Date.now() - eagerStart > IMAGE_EAGER_BUDGET_MS) break;
+                var batchEnd = Math.min(cursor + IMAGE_RESOLVE_BATCH, rawUrls.length);
+                var part = await mapLimit(
+                    rawUrls.slice(cursor, batchEnd),
+                    IMAGE_RESOLVE_CONCURRENCY,
+                    resolveOne
+                );
+                for (var pi = 0; pi < part.length; pi++) resolved.push(part[pi]);
+                cursor = batchEnd;
+            }
+            urls = resolved;
+            // 预算外 / 硬上限外的图片改成占位地址，进视口时再解析
+            for (var lj = cursor; lj < rawUrls.length; lj++) {
+                urls.push(lazyImageToken(comicId, epId, rawUrls[lj]));
+            }
         }
         return { images: urls, headers: headers, scripts: scripts };
     }
 
     /** 逐张解析图片地址的并发度：够快，又不至于把 HTTP 闸门（24）挤满 */
     var IMAGE_RESOLVE_CONCURRENCY = 8;
+
+    /**
+     * 章节打开时**最多预解析**多少张图的真实地址（v1.9.2.3 引入，v1.9.2.4 放宽）。
+     *
+     * 这是**硬上限**，不是常态闸门 —— 常态由 [IMAGE_EAGER_BUDGET_MS] 的预算控制。
+     * 早期这里取 24（≈ 首屏 + 上下滚动余量），但「张数」并不能反映 `onImageLoad`
+     * 的成本：只补 referer / 拼地址的源零开销，一张 43 页的章节解析完整章也就几毫秒，
+     * 却因为卡在 24 张被迫让后 19 张走按需解析 —— 那条路一旦出问题，用户看到的就是
+     * 「后半章一直转圈」。现在放宽到 300 只是兜底防呆，真正决定停在哪的是时间预算。
+     *
+     * 为什么必须有上限：官方是「加载哪张解析哪张」，我们是「打开章节就把整章解析完」。
+     * 实测某图站 429 页的章节，全量预解析要 429 次 POST，直接撞上 90s 的调用硬上限
+     * —— 章节根本打不开；即便不超时，瞬时几百次请求也容易被限流。
+     */
+    var IMAGE_EAGER_RESOLVE_LIMIT = 300;
+
+    /**
+     * 预解析的时间预算（v1.9.2.4）。
+     *
+     * 分批推进，每批开始前看一眼已耗时：超预算就停、剩下的转惰性。
+     * 免费型 `onImageLoad`（jcomic / wnacg 这类只补 referer 的）整章都在预算内跑完；
+     * 逐张发请求的图库型源自然在 1.5s 左右停下，与 v1.9.2.3 的 24 张量级相当。
+     */
+    var IMAGE_EAGER_BUDGET_MS = 1500;
+
+    /** 预解析的批次大小：每批做完检查一次预算，避免预算判断被单批拖长 */
+    var IMAGE_RESOLVE_BATCH = 8;
+
+    /** 惰性图片占位地址的前缀（见 [lazyImageToken]） */
+    var LAZY_IMAGE_PREFIX = 'venera-image:';
+
+    /**
+     * 生成一张「还没解析真实地址」的占位地址。
+     *
+     * 这个串会作为图片 URL 一路传到 UI：Coil 打不开（未知 scheme，本地立刻失败，
+     * 不会发网络请求）→ 上层 `onLoadFailed` → `retryImage` 收到它 → 这里解析出
+     * 真实地址并回填。等于借用「备用镜像」那条现成链路做按需解析，不必改 UI 主流程。
+     */
+    function lazyImageToken(comicId, epId, key) {
+        var payload = JSON.stringify([comicId === undefined ? null : comicId,
+            epId === undefined ? null : epId, key]);
+        return LAZY_IMAGE_PREFIX + encodeURIComponent(payload);
+    }
+
+    /** 解析惰性占位地址；不是占位地址时返回 null */
+    function parseLazyImageToken(token) {
+        var s = String(token || '');
+        if (s.indexOf(LAZY_IMAGE_PREFIX) !== 0) return null;
+        try {
+            var parts = JSON.parse(decodeURIComponent(s.slice(LAZY_IMAGE_PREFIX.length)));
+            if (!parts || parts.length < 3) return null;
+            return { comicId: parts[0], epId: parts[1], key: parts[2] };
+        } catch (e) {
+            return null;
+        }
+    }
 
     /**
      * 按并发上限跑一个异步映射，**结果顺序与原数组一致**。
@@ -1540,7 +1864,31 @@
                 return { ok: true, name: src.name, version: src.version };
 
             // 图片加载失败 → 向源要下一个镜像地址（v1.7.1.0，见 IMG_RETRY 说明）
+            // v1.9.2.3：也负责**惰性解析**——章节打开时没预解析的图片会带一个
+            // `venera-image:` 占位地址进来，这里现解析（见 lazyImageToken）。
             case 'retryImage': {
+                var lazy = parseLazyImageToken(args[0]);
+                if (lazy) {
+                    var lazyOnLoad = src.comic && src.comic.onImageLoad;
+                    if (typeof lazyOnLoad !== 'function') return null;
+                    var lr;
+                    try {
+                        lr = await lazyOnLoad.call(src, lazy.key, lazy.comicId, lazy.epId);
+                    } catch (e) {
+                        log('warning', 'onImageLoad', String(e));
+                        return null;
+                    }
+                    var lazyUrl = typeof lr === 'string' ? lr : (lr && lr.url);
+                    if (!lazyUrl) return null;
+                    var lazyHeaders = (lr && typeof lr === 'object' && lr.headers) ? lr.headers : {};
+                    // 乱序还原脚本必须一并回传，否则按需解析出来的图会显示成乱序
+                    var lazyScript = (lr && typeof lr === 'object' && typeof lr.modifyImage === 'string')
+                        ? lr.modifyImage : null;
+                    if (lr && typeof lr === 'object' && typeof lr.onLoadFailed === 'function') {
+                        IMG_RETRY[lazyUrl] = lr.onLoadFailed;
+                    }
+                    return { url: lazyUrl, headers: lazyHeaders, script: lazyScript };
+                }
                 var retryFn = IMG_RETRY[args[0]];
                 if (typeof retryFn !== 'function') return null;
                 var nr = null;
@@ -1557,7 +1905,7 @@
                 // 于是「第 2、3…个镜像」还能接着回退（否则一次就到底）。
                 IMG_RETRY[nr.url] = retryFn;
                 delete IMG_RETRY[args[0]];
-                return { url: nr.url, headers: nr.headers || {} };
+                return { url: nr.url, headers: nr.headers || {}, script: null };
             }
 
             case 'search': {
@@ -1705,12 +2053,15 @@
             case 'content': {
                 var loadEp = (src.comic && src.comic.loadEp) || (src.comic && src.comic.loadChapter);
                 if (typeof loadEp !== 'function') throw new Error('该源没有实现章节图片加载（comic.loadEp）');
-                var res = await loadEp.call(src, args[0], args[1]);
+                // 单话作品（见 chaptersOf 的兜底）用的是空 epId，源那边按「没有章节」处理，
+                // 统一传 null —— 不少源写的是 `if (epId) …`，空串在部分源里会被当成真值。
+                var epArg = (args[1] === '' || args[1] === undefined) ? null : args[1];
+                var res = await loadEp.call(src, args[0], epArg);
                 var imgs = res && (res.images || res);
                 // v1.7.1.0：把 loadEp 的顶层 headers 一并下传（见 serializeImages 的说明）
                 var topHeaders = res && res.headers && typeof res.headers === 'object'
                     ? res.headers : null;
-                return await serializeImages(imgs, src, args[0], args[1], topHeaders);
+                return await serializeImages(imgs, src, args[0], epArg, topHeaders);
             }
 
             // ===== 账号（v1.3.0：源管理页登录按钮）=====

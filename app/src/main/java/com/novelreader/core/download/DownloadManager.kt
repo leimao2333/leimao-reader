@@ -51,7 +51,20 @@ data class ComicCacheSummary(
  * 负责将内容（小说正文 / 漫画图片 / 视频）下载到应用私有目录，
  * 避免申请外部存储权限。带实时进度反馈。
  */
-class DownloadManager(private val context: Context) {
+class DownloadManager(
+    private val context: Context,
+    /**
+     * 惰性图片解析（v1.9.2.3）。
+     *
+     * 图库类源一章几百页时，运行时只预解析最前面若干张，其余图片下发
+     * `venera-image:` 占位地址（见 [com.novelreader.core.image.LazyImage]）——
+     * 阅读页靠「进入视口 → 加载失败 → 现场解析」补齐，但**下载是整章一次性抓完**，
+     * 必须在这里先把占位地址换成真实地址，否则会下载到一堆打不开的占位。
+     *
+     * 返回 null 表示解析失败（由调用方决定报错）。
+     */
+    private val resolveLazyImage: suspend (sourceId: String, url: String) -> String? = { _, _ -> null },
+) {
 
     /** 下载根目录：应用私有外部目录（无需权限） */
     private val downloadRoot: File
@@ -84,8 +97,25 @@ class DownloadManager(private val context: Context) {
         }
     }.flowOn(Dispatchers.IO)
 
-    /** 下载小说正文（保存为 txt） */
-    private fun downloadNovel(item: MediaItem, content: ContentResult): File {
+    /**
+     * 把惰性占位地址换成真实地址（v1.9.2.3）。
+     *
+     * 没有占位地址时原样返回，零额外开销（绝大多数源都不走惰性解析）。
+     * 解析失败的保留占位地址 —— 后续下载会失败并报出具体是第几张，
+     * 比整章静默少几张更容易排查。
+     */
+    private suspend fun resolveLazy(item: MediaItem, images: List<String>): List<String> {
+        if (images.none { com.novelreader.core.image.LazyImage.isLazy(it) }) return images
+        return images.map { url ->
+            if (!com.novelreader.core.image.LazyImage.isLazy(url)) {
+                url
+            } else {
+                runCatching { resolveLazyImage(item.sourceId, url) }.getOrNull() ?: url
+            }
+        }
+    }
+
+    /** 下载小说正文（保存为 txt） */    private fun downloadNovel(item: MediaItem, content: ContentResult): File {
         val text = content.novelText
             ?: throw IllegalStateException("正文内容为空")
         val dir = File(downloadRoot, "novel")
@@ -97,9 +127,10 @@ class DownloadManager(private val context: Context) {
     }
 
     /** 下载漫画（多张图片保存到以标题命名的目录） */
-    private fun downloadComic(item: MediaItem, content: ContentResult): File {
-        val images = content.comicImages ?: emptyList()
-        if (images.isEmpty()) throw IllegalStateException("漫画图片为空")
+    private suspend fun downloadComic(item: MediaItem, content: ContentResult): File {
+        val raw = content.comicImages ?: emptyList()
+        if (raw.isEmpty()) throw IllegalStateException("漫画图片为空")
+        val images = resolveLazy(item, raw)
         val dir = File(downloadRoot, "comic/${sanitize(item.title)}")
         dir.mkdirs()
         images.forEachIndexed { index, url ->
@@ -172,9 +203,20 @@ class DownloadManager(private val context: Context) {
      * 先写临时目录、全部成功后原子改名 —— 中途取消/失败不会留下半章坏数据。
      * 图片解密与乱序还原与整部下载完全一致。
      */
-    fun downloadChapterToCache(item: MediaItem, chapter: ChapterItem, content: ContentResult): File {
-        val images = content.comicImages?.filter { it.isNotBlank() }
+    /**
+     * 把一章下载进 `comic_cache/`（v1.9.2.3 起改为 suspend）。
+     *
+     * 变 suspend 的原因：惰性占位地址要现场向源解析，那是一次真实的网络往返 ——
+     * 不能再是纯阻塞函数。
+     */
+    suspend fun downloadChapterToCache(
+        item: MediaItem,
+        chapter: ChapterItem,
+        content: ContentResult,
+    ): File {
+        val raw = content.comicImages?.filter { it.isNotBlank() }
             ?: throw IllegalStateException("漫画图片为空")
+        val images = resolveLazy(item, raw)
         val dir = comicChapterCacheDir(item, chapter.index)
         val tmp = File(dir.parentFile, dir.name + ".tmp")
         tmp.deleteRecursively()

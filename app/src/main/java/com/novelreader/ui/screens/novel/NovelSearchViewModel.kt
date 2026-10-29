@@ -86,6 +86,21 @@ class NovelSearchViewModel(
 
     private var searchJob: Job? = null
 
+    // ===== 关键词搜索翻页（v1.9.2.6）=====
+    // 与漫画 / 视频搜索同一套口径：此前 `search()` 固定 `page = 1`，没有「加载更多」，
+    // 单源搜索时看到的永远是该源首页那二三十条。
+    private var searchPage = 1
+
+    private val _hasMore = MutableStateFlow(false)
+    val hasMore: StateFlow<Boolean> = _hasMore.asStateFlow()
+
+    private val _loadingMore = MutableStateFlow(false)
+    val loadingMore: StateFlow<Boolean> = _loadingMore.asStateFlow()
+
+    private val resultsAcc = com.novelreader.core.util.SearchResultMerge.Accumulator()
+
+    private var repeatPages = 0
+
     /** 搜索收尾后验证结果章节数的任务（剔除 0 章失效结果） */
     private var verifyJob: Job? = null
 
@@ -171,6 +186,10 @@ class NovelSearchViewModel(
 
         // 取消上一次未完成的搜索
         searchJob?.cancel()
+        searchPage = 1
+        repeatPages = 0
+        _hasMore.value = false
+        _loadingMore.value = false
 
         searchJob = viewModelScope.launch {
             // 读取当前并发线程数与模糊搜索开关
@@ -192,10 +211,63 @@ class NovelSearchViewModel(
                     _state.value = s
                     // 搜索收尾：后台验证结果章节数，剔除 0 章（目录为空）的失效结果
                     if (!s.isSearching && s.results.isNotEmpty()) {
+                        resultsAcc.reset(s.results)
+                        searchPage = 1
+                        _hasMore.value = s.error == null
                         verifyResults(s.results)
                     }
                 }
         }
+    }
+
+    /**
+     * 加载下一页（v1.9.2.6）。口径与漫画 / 视频搜索一致：
+     * 同一关键词、同一批源，页码 +1；连续 [REPEAT_PAGE_TOLERANCE] 页没新增才判定到底。
+     *
+     * 注意**不重复跑 [verifyResults]**：那一步是「剔除 0 章死链」的辅助校验，
+     * 每页都跑等于把翻页变成两倍请求量；第一页验过就够了。
+     */
+    fun loadMore() {
+        if (_loadingMore.value || !_hasMore.value) return
+        val keyword = _query.value.trim()
+        if (keyword.isEmpty()) return
+        val next = searchPage + 1
+        _loadingMore.value = true
+        viewModelScope.launch {
+            try {
+                val concurrency = preferencesManager.searchConcurrencyFlow.first()
+                val fuzzy = preferencesManager.fuzzySearchFlow.first()
+                var pageResults: List<com.novelreader.domain.model.MediaItem> = emptyList()
+                contentRepository.searchWithProgress(
+                    SourceType.NOVEL, keyword, next, concurrency, fuzzy,
+                    sourceIds = _selectedSourceIds.value.takeIf { it.isNotEmpty() },
+                ).catch { /* 单页失败就当这页没有 */ }
+                    .collect { s -> if (!s.isSearching) pageResults = s.results }
+                if (pageResults.isEmpty()) {
+                    _hasMore.value = false
+                    return@launch
+                }
+                val idsBefore = resultsAcc.uniqueCount
+                val merged = resultsAcc.addAll(pageResults)
+                _state.value = _state.value.copy(results = merged)
+                val newIds = resultsAcc.uniqueCount - idsBefore
+                if (newIds > 0) {
+                    repeatPages = 0
+                    searchPage = next
+                } else {
+                    repeatPages++
+                    if (repeatPages >= REPEAT_PAGE_TOLERANCE) _hasMore.value = false
+                    else searchPage = next
+                }
+            } finally {
+                _loadingMore.value = false
+            }
+        }
+    }
+
+    private companion object {
+        /** 连续多少页「整页没有任何新东西」才判定到底（与漫画 / 视频搜索同口径） */
+        const val REPEAT_PAGE_TOLERANCE = 5
     }
 
     /**

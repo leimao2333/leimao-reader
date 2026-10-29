@@ -203,12 +203,22 @@ class ComicReaderViewModel(
     /** 已尝试过备用镜像的地址（每地址只回退一次，避免失败循环） */
     private val fallbackTried = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
+    /** 整章重解析（v1.9.2.4）：自上次重解析以来的失败张数 */
+    private val failedSinceRefresh = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** 本章已重解析次数（每章上限，防死循环） */
+    private var refreshCount = 0
+
+    /** 上次重解析时刻（elapsedRealtime），用于限频 */
+    private var lastRefreshAt = 0L
+
     /**
-     * 图片加载失败 → 向源要备用镜像地址并替换该图（v1.7.1.0）。
+     * 图片加载失败 → 向源要可用地址并替换该图（v1.7.1.0，v1.9.2.3 扩展）。
      *
-     * 禁漫天堂等源在 `onImageLoad` 里给出 `onLoadFailed`（内置 5 条备用域名），
-     * 官方 App 会自动换域名重试；我们这边此前完全没接 ——
-     * 第一个域名被墙就等于整章图片全加载不出来。
+     * 覆盖两种情形（见 [com.novelreader.domain.model.ImageFallback]）：
+     * 1. 源声明了备用镜像（禁漫天堂等有 5 条线路），第一个域名被墙不再等于整章看不了；
+     * 2. 图片是惰性占位地址（`venera-image:`）—— 图库类源一章几百页时只预解析前若干张，
+     *    其余在这里按需解析。等于「滚动到哪解析到哪」，与官方行为一致。
      */
     fun onImageFailed(url: String) {
         val item = currentItem ?: return
@@ -216,15 +226,32 @@ class ComicReaderViewModel(
         if (!fallbackTried.add(url)) return
         viewModelScope.launch {
             val fb = runCatching { contentRepository.fallbackImage(item.sourceId, url) }
-                .getOrNull() ?: return@launch
-            val next = fb.first
-            val extraHeaders = fb.second
-            if (next.isBlank() || next == url) return@launch
+                .getOrNull()
+            val next = fb?.url
+            if (next.isNullOrBlank() || next == url) {
+                // 惰性占位解析不出来是最要命的一种：那张图会永远停在加载占位，
+                // 用户看到的就是「后半章一直转圈」。这条日志用来区分
+                // 「源没给新地址」与「地址拿到了但加载仍失败」。
+                if (com.novelreader.core.image.LazyImage.isLazy(url)) {
+                    android.util.Log.w(
+                        "ComicReader",
+                        "惰性占位解析失败（源未返回可用地址），该图会一直显示加载中",
+                    )
+                    // 整章重解析对惰性占位没用：重算出来的 token 与原来逐字节相同，
+                    // 只会白白多打一次 content。这里直接返回。
+                    return@launch
+                }
+                // 单张救不回来 → 可能是**整批地址一起失效**（预签名 / 一次性令牌），
+                // 这时换一张没用，得整章重新解析（见 [maybeRefreshChapter]）
+                maybeRefreshChapter()
+                return@launch
+            }
+            val extraHeaders = fb.headers
             val list = _images.value
             val idx = list.indexOf(url)
             if (idx < 0) return@launch
             // 乱序还原脚本按地址查，换址要一并搬过去，否则新地址的图会显示成乱序
-            val script = _imageScripts.value[url]
+            val script = _imageScripts.value[url] ?: fb.script
             _images.value = list.toMutableList().also { it[idx] = next }
             if (!script.isNullOrBlank()) {
                 _imageScripts.value = (_imageScripts.value - url) + (next to script)
@@ -233,6 +260,54 @@ class ComicReaderViewModel(
                 _imageHeaders.value = _imageHeaders.value + extraHeaders
             }
         }
+    }
+
+    /**
+     * 整章重新解析图片地址（v1.9.2.4）。
+     *
+     * 有些源的图片地址是**带时效的一次性签名**（S3 预签名、CDN 防盗链令牌），
+     * 一次 `loadEp` 给出的几十个地址会在同一时刻集体过期 —— 此后单张「换备用镜像」
+     * 拿到的仍是同一批已失效地址，读者看到的就是「进章节一直转圈 / 图全裂」。
+     *
+     * 这里在「同一章连续 [REFRESH_THRESHOLD] 张失败」时，重跑一次 `content`
+     * 拿一批**新签名**，并按**下标**回填：已经能显示的图保持不动（不闪、不乱序），
+     * 只替换掉失败的与新地址。每章最多重解析 [MAX_REFRESH_PER_CHAPTER] 次，
+     * 且两次之间至少间隔 [REFRESH_MIN_INTERVAL_MS]，避免源彻底坏掉时打成死循环。
+     */
+    private suspend fun maybeRefreshChapter() {
+        val chapter = currentChapter ?: return
+        if (refreshCount >= MAX_REFRESH_PER_CHAPTER) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastRefreshAt < REFRESH_MIN_INTERVAL_MS) return
+        if (failedSinceRefresh.incrementAndGet() < REFRESH_THRESHOLD) return
+        // 先占位，防止并发失败回调同时触发多次重解析
+        refreshCount++
+        lastRefreshAt = now
+        failedSinceRefresh.set(0)
+        val result = runCatching { contentRepository.content(chapter) }.getOrNull() ?: return
+        val fresh = result.comicImages?.filter { it.isNotBlank() } ?: return
+        if (fresh.isEmpty()) return
+        val old = _images.value
+        if (old.isEmpty()) {
+            _images.value = fresh
+            _imageHeaders.value = result.comicHeaders
+            _imageScripts.value = result.comicImageScripts
+            return
+        }
+        // 按下标回填：换掉失败的那几张，其余保持原样
+        val merged = old.mapIndexed { i, cur ->
+            if (cur in fallbackTried) fresh.getOrElse(i) { cur } else cur
+        }
+        if (merged == old) return
+        _images.value = merged
+        _imageHeaders.value = _imageHeaders.value + result.comicHeaders
+        _imageScripts.value = _imageScripts.value + result.comicImageScripts
+        // 新地址重新获得一次回退机会
+        fallbackTried.clear()
+        android.util.Log.i(
+            "ComicReader",
+            "整章重解析图片地址：第 ${refreshCount} 次，共 ${fresh.size} 张",
+        )
     }
 
     fun loadContent(chapter: ChapterItem) {
@@ -244,6 +319,9 @@ class ComicReaderViewModel(
         _imageScripts.value = emptyMap()
         // 换章后重置图片回退记录，避免同一地址在别的话里被误判为「已回退过」
         fallbackTried.clear()
+        failedSinceRefresh.set(0)
+        refreshCount = 0
+        lastRefreshAt = 0L
         syncPosition()
         viewModelScope.launch {
             _loading.value = true
@@ -420,5 +498,16 @@ class ComicReaderViewModel(
                 totalChapter = _chapters.value.size,
             )
         }
+    }
+
+    private companion object {
+        /** 同章连续失败多少张才认定「整批地址失效」 */
+        const val REFRESH_THRESHOLD = 3
+
+        /** 每章最多重解析次数 */
+        const val MAX_REFRESH_PER_CHAPTER = 3
+
+        /** 两次重解析的最小间隔 */
+        const val REFRESH_MIN_INTERVAL_MS = 5_000L
     }
 }

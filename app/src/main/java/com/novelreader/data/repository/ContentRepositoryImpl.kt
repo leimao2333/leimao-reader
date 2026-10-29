@@ -429,11 +429,11 @@ class ContentRepositoryImpl(
                 .getOrDefault(ContentResult())
         }
 
-    /** 图片失败回退：目前只有 Venera 源支持（onImageLoad → onLoadFailed 多镜像） */
+    /** 图片失败回退：目前只有 Venera 源支持（onImageLoad → onLoadFailed 多镜像 / 惰性解析） */
     override suspend fun fallbackImage(
         sourceId: String,
         url: String,
-    ): Pair<String, Map<String, String>>? = withContext(Dispatchers.IO) {
+    ): com.novelreader.domain.model.ImageFallback? = withContext(Dispatchers.IO) {
         val adapter = resolveAdapter(sourceId)
         if (adapter is com.novelreader.source.venera.VeneraSourceAdapter) {
             runCatching { adapter.fallbackImage(url) }.getOrNull()

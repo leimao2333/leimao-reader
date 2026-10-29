@@ -701,8 +701,55 @@
       - 需要准备 3~4 套 mipmap（每套 5 个密度 + 自适应图标前景/背景）。
   - 涉及：`core/preferences/PreferencesManager.kt`（新 key：`app_font`、`novel_bg`、`app_bg`、`app_icon`）、`ui/screens/settings/SettingsScreen.kt` + `SettingsViewModel.kt`（主题分区）、`ui/theme/`（Typography、全局背景层）、`ui/screens/novel/NovelReaderScreen.kt`（字体与背景解析）、`AndroidManifest.xml` + `res/mipmap-*`（多套图标）、`MainActivity.kt`（根布局背景）。
 
-## 备注
+## 十、Venera 源适配
 
+- [x] **53. 参照 venera 官方对五个源做专项优化** ✅ v1.9.2.3
+  - 需求（用户提出）：「参照 venera 官方仓库对 ehentai 源、绅士漫画源、jcomic.net 源、goda 漫画源、hitomi.la 源进行专项优化」。
+  - 做法：源脚本本身是运行时从 venera-configs 拉的，所以**优化只能落在宿主侧**（`runtime.js` / `VeneraEngine` / `SourceRepairs`），逐条对齐官方 Dart 宿主的实现。
+  - 逐项落地：
+    1. **默认 UA 对齐官方**（修绅士漫画搜索 0 条）。官方 `lib/network/app_dio.dart` 用 `venera/v${version}`（**非移动端**），我们原来塞的是 Android 移动版 Chrome UA；源站按 `Mobile` 分词分流到移动版 DOM，而源里选择器全是照桌面版写的 —— 实测搜索页 `<p class="result">` / `gallary_wrap` / `<ul class="cc">` 命中数 0/0/0，换成官方串后 2/1/1。图片请求另有官方 `webUA`（桌面版 Chrome），一并对齐。新增 `core/network/UserAgents.kt` 统一两套口径，替换散在三处的硬编码。
+    2. **对象 / 数组请求体自动 JSON 编码**（修 ehentai 整章图片全失败）。官方把 body 直接交给 Dio，Dio 遇到 Map 自动 JSON 编码；我们的桥只能传字符串，对象被 `String()` 成 `[object Object]` → 接口回错误 JSON → 源里 `reg[1]` 抛 `Cannot read properties of null`。现在 `normalizeBody()` 统一序列化并补 `content-type`。
+    3. **`onImageLoad` 改为按需解析**（大章节打不开 / 被限流）。官方是在**图片真正加载时**才调（`lib/network/images.dart:143`），我们原来打开章节就把整章解析完 —— 实测某图站 1931 页的章节，全量预解析要 170+ 次请求、直接撞 90s 硬上限。现在只预解析前 `IMAGE_EAGER_RESOLVE_LIMIT`（24）张，其余下发 `venera-image:` 占位地址，进视口加载失败时经 `retryImage` 现场解析（复用「备用镜像」那条现成链路，`ImageFallback` 带 `script` 保证乱序还原不丢）。实测 1931 页：92s 超时 → **13.8s / 28 请求**。
+    4. **瞬时网络故障重试**（goda）。`godamh.com` 偶发 TLS 握手失败 / 连接重置，一次失败就整页 0 条。`executeWithRetry()` 对 GET/HEAD 的 `SSLException` / `SocketException` / 超时类错误重试 3 次（退避 300/600ms），取消与 POST 不重试。
+    5. **源码级补丁机制 + 修 jcomic 图片地址**。`SourceRepairs` 新增 `CODE_FIXES`（原文片段 → 替换），在 `putSource` 入库时应用，未命中只记日志、原样返回。jcomic 1.0.0 只读 `img.attributes["src"]`（空串），真实地址在 `data-locked="JCOMIC_TRAPS_…"`，按站点自己的算法 `strip 前缀 → 反转 → base64` 解出 —— 50 张图从全空变成全部拿到地址。
+  - 工具侧同步升级 `tools/venera-source-probe.js`（不装机就能定位「哪个源哪一步坏了」）：
+    - HTTP 从 curl 换成 Node 自带 fetch —— Windows 的 curl 是 **schannel** 后端，对 wnacg.com / godamh.com 会 `SEC_E_ILLEGAL_MESSAGE`，制造「探针报错、真机正常」的假故障；
+    - 常驻工作池（NDJSON，默认 24 并发 = 真机 `MAX_CONCURRENT_HTTP`）—— Windows 上 Node 启动要 ~380ms，「一请求一进程」光启动就吃掉十几秒，hitomi 一次搜索 34 个请求实测 41.7s → 15.3s；
+    - 源码补丁表直接从 `SourceRepairs.kt` 解析，保证「测的就是发出去的那份」；`images` 场景会统计惰性占位张数并实调一次 `retryImage` 验证。
+  - 涉及：`core/network/UserAgents.kt`（新）、`source/venera/VeneraEngine.kt`、`source/venera/SourceRepairs.kt`、`source/venera/VeneraSourceAdapter.kt`、`assets/venera/runtime.js`、`core/image/LazyImage.kt`（新）、`core/image/CoverDefaultsInterceptor.kt`、`domain/model/ImageFallback.kt`（新）、`domain/repository/Repository.kt`、`data/repository/ContentRepositoryImpl.kt`、`ui/screens/comic/ComicReaderScreen.kt`、`ui/screens/comic/ComicReaderViewModel.kt`、`tools/venera-source-probe.js`、`tools/venera-http-helper.js`（新）。
+
+- [x] **54. jcomic 图片地址只有 60 秒有效期，长章节读到后面会 403** ✅ v1.9.2.4
+  - 现象：jcomic 的图片地址是 S3 预签名 URL（`X-Amz-Expires=60`），拿到地址 60 秒后失效，直链（去掉 query）也是 403。一章 50 页读超过一分钟，后面的图就全部加载失败；点「重试」也没用（地址已死，必须重新解析章节）。
+  - 现状：`content` 的 GET 缓存默认只有 5s，所以地址本身是新的；问题是**地址的生命周期短于阅读时长**。
+  - 落地（v1.9.2.4）：`ComicReaderViewModel` 新增 `maybeRefreshChapter()` —— 单张换址失败（`fallbackImage` 拿不到新地址）后累计计数，同章连续 3 张失败就重跑一次 `content`，按**下标**回填（`cur in fallbackTried` 的才替换，已显示的图不动）。每章上限 3 次、两次间隔 ≥5s，防「真没网」时打成死循环。日志 `ComicReader: 整章重解析图片地址：第 N 次，共 M 张`。
+  - 附带修：`ComicReaderScreen` 的「回顶」`LaunchedEffect` 原本 key 里带了 `images`，任何一次图片列表变动（单张换址 / 整章重解析）都会把读者弹回第一页，现改为只按 `chapterIndex` 触发。
+  - 参考位置：`ui/screens/comic/ComicReaderViewModel.kt` 的 `onImageFailed` / `maybeRefreshChapter` / `loadContent`。
+  - 上游（venera 官方）同样没处理这个，属于源站设计导致，不是我们的 bug。
+
+- [x] **55. 修：绅士漫画进得去但「无法获取章节」** ✅ v1.9.2.4
+  - 现象：绅士漫画（wnacg）详情页打得开，目录一直空 / 提示无法获取章节。
+  - 根因：单话作品的章节号是**空串**（`["", "全一话"]`，含义是「这本没有话号，`loadEp` 只传 comicId」）。`VeneraSourceAdapter.chapterList` 里有 `if (epId.isBlank()) return@mapIndexedNotNull null`，把这类章节整条丢弃 → 目录恒空。这个空 epId 正是上一版给 `chapters` 为 null 的源加的单话兜底产出的，等于自己造了兜底又自己丢掉。
+  - 落地：`chapterList` 不再按空 epId 过滤；`VeneraChapterCodec.decode` 的 JSON 分支不再要求 `e` 非空（否则 comicId 含 `|` 的源会退回旧格式解析、还原出垃圾）。
+  - 涉及：`source/venera/VeneraSourceAdapter.kt`、`source/venera/VeneraChapterCodec.kt`。
+
+- [x] **56. 单源搜索只取第 1 页，需要「加载更多」/ 翻页** ✅ v1.9.2.6
+  - 现象（用户提出）：「搜索都是一次性吗单源搜索，怎么漫画单源搜索出来的内容这么少？还是说我搞错了本来就只有这么点」。
+  - 现状：**确实只有第 1 页**。`ComicSearchViewModel.search()` 调 `contentRepository.searchWithProgress(..., page = 1, ...)` 后就不再翻页，也没有「加载更多」入口；界面上的结果数 = 各源第 1 页的并集（多数源一页 20~40 条）。`searchWithProgress` 本身支持 `page` 参数，只是没人传。
+  - 落地：照视频搜索（v1.8.8.0）的既有模式补上 —— `searchPage` + `_hasMore` + `_loadingMore` + `SearchResultMerge.Accumulator`（翻页只处理新到的一页）+ `loadMore()`；列表 `onNearEnd` 触底自动问下一页，`footer` 显示「共 N 部 · 继续下滑加载更多 / 已全部加载」。**判到底口径**：一页没新增不算到底（同作多源重复），连续 `REPEAT_PAGE_TOLERANCE = 5` 页都没新增才停。
+  - 同步补齐**小说搜索**（同样的单页问题）；小说翻页**不重复跑 `verifyResults`**（「剔除 0 章死链」的校验只对第一页做一次，否则翻页请求量翻倍）。
+  - 顺手把页脚组件从 `VideoSearchScreen` 的私有函数提到 `ui/components/SearchLoadMoreFooter.kt`，漫画 / 小说 / 视频三页共用。
+  - 涉及：`ui/screens/comic/ComicSearchViewModel.kt`、`ui/screens/comic/ComicSearchScreen.kt`、`ui/screens/novel/NovelSearchViewModel.kt`、`ui/screens/novel/NovelSearchScreen.kt`、`ui/screens/video/VideoSearchScreen.kt`、`ui/components/SearchLoadMoreFooter.kt`（新）。
+
+- [x] **57. 修：jcomic / 绅士漫画「章节后半部分一直转圈」** ✅ v1.9.2.5
+  - 现象（用户反馈）：「jcomic.net 进去内容一直转圈不出来」「这两源还是一样的」。
+  - 真机日志证据：`W ComicImage: 图片加载失败 err=IllegalStateException`，出现在 `content images=43` 之后 53ms —— 不是网络失败，是 Coil 遇到 `venera-image:` 这个未知 scheme 立刻失败。
+  - 根因：v1.9.2.3 引入的「惰性占位」用**张数**判断要不要惰性（前 24 张预解析，其余下发占位）。但 `onImageLoad` 的成本因源而异：jcomic / wnacg 的 `onImageLoad` 只补一个 referer，**零网络开销**，43 张瞬间就能解析完，却被 24 张的闸门硬截断，后 19 张全落到按需解析那条路上 —— 那条路一旦不顺，用户看到的就是「后半章一直转圈」。
+  - 落地：`serializeImages` 改成**按时间预算**推进（分批 8 张、每批前检查 `IMAGE_EAGER_BUDGET_MS = 1500`）。免费型 `onImageLoad` 整章一次解析完；真正逐张发请求的图库型源自然在 1.5s 处停下转惰性。`IMAGE_EAGER_RESOLVE_LIMIT` 从 24 放宽到 300（只作防呆硬上限）。
+  - 实测：jcomic 14 张 / 绅士漫画 38 张均 `lazy = 0`（全部一次解析完）。
+  - 附带：`onImageFailed` 对惰性占位补一条明确日志（「源未返回可用地址」），并**不再**对惰性占位触发整章重解析（重算出的 token 与原来逐字节相同，只会白打一次 `content`）。
+  - 涉及：`assets/venera/runtime.js`、`ui/screens/comic/ComicReaderViewModel.kt`。
+
+## 备注
 - 改动涉及 `books` 表结构或 `RssFeedEntity` 时，必须写 Room 迁移（`AppDatabase.kt`）并自增数据库版本。
 - 新增设置项统一走 `core/preferences/PreferencesManager.kt`，不要各自散落存 SharedPreferences。
 - 涉及 jsDelivr 的改动注意 CDN 缓存：新文件路径变化才不会被 7 天缓存命中，必要时用 `leimao-tagger` 里的 `publish_tags.py --purge`。

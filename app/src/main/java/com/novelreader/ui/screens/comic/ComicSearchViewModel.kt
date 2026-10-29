@@ -74,6 +74,25 @@ class ComicSearchViewModel(
 
     private var searchJob: Job? = null
 
+    // ===== 关键词搜索翻页（v1.9.2.6）=====
+    // 此前 `search()` 固定 `page = 1`，全链路没有「加载更多」，每个源只贡献第 1 页
+    // 那 20~40 条 —— 单源搜索时尤其明显：选定一个源，看到的永远是它首页的量。
+    // 做法与视频搜索（v1.8.8.0）保持一致，避免两套口径。
+    private var searchPage = 1
+
+    /** 是否还有下一页（列表触底时继续问） */
+    private val _hasMore = MutableStateFlow(false)
+    val hasMore: StateFlow<Boolean> = _hasMore.asStateFlow()
+
+    private val _loadingMore = MutableStateFlow(false)
+    val loadingMore: StateFlow<Boolean> = _loadingMore.asStateFlow()
+
+    /** 翻页去重累加器：翻页只处理新到的一页，不重算整个列表 */
+    private val resultsAcc = com.novelreader.core.util.SearchResultMerge.Accumulator()
+
+    /** 连续「整页没新增」的页数 */
+    private var repeatPages = 0
+
     init {
         viewModelScope.launch {
             preferencesManager.fuzzySearchFlow.collect { _fuzzyEnabled.value = it }
@@ -147,6 +166,10 @@ class ComicSearchViewModel(
         viewModelScope.launch { preferencesManager.addSearchHistory(SourceType.COMIC, keyword) }
 
         searchJob?.cancel()
+        searchPage = 1
+        repeatPages = 0
+        _hasMore.value = false
+        _loadingMore.value = false
 
         searchJob = viewModelScope.launch {
             val concurrency = preferencesManager.searchConcurrencyFlow.first()
@@ -164,7 +187,68 @@ class ComicSearchViewModel(
                 }
                 .collect { s ->
                     _state.value = s
+                    // 第一页收完：接管累加器，并开放翻页
+                    if (!s.isSearching) {
+                        resultsAcc.reset(s.results)
+                        searchPage = 1
+                        _hasMore.value = s.results.isNotEmpty() && s.error == null
+                    }
                 }
         }
+    }
+
+    /**
+     * 加载下一页（v1.9.2.6）。
+     *
+     * 同一关键词、同一批源，只把页码 +1；各源第 N 页的结果合并进来。
+     * 判到底的口径与视频搜索一致：**一页没新增不等于到底**（同一部作品在多个源上重复），
+     * 连续 [REPEAT_PAGE_TOLERANCE] 页都没新增才停。
+     */
+    fun loadMore() {
+        if (_loadingMore.value || !_hasMore.value) return
+        val keyword = _query.value.trim()
+        if (keyword.isEmpty()) return
+        val next = searchPage + 1
+        _loadingMore.value = true
+        viewModelScope.launch {
+            try {
+                val concurrency = preferencesManager.searchConcurrencyFlow.first()
+                val fuzzy = preferencesManager.fuzzySearchFlow.first()
+                var pageResults: List<com.novelreader.domain.model.MediaItem> = emptyList()
+                contentRepository.searchWithProgress(
+                    SourceType.COMIC, keyword, next, concurrency, fuzzy,
+                    sourceIds = _selectedSourceIds.value.takeIf { it.isNotEmpty() },
+                ).catch { /* 单页失败就当这页没有 */ }
+                    .collect { s -> if (!s.isSearching) pageResults = s.results }
+                if (pageResults.isEmpty()) {
+                    _hasMore.value = false
+                    return@launch
+                }
+                val idsBefore = resultsAcc.uniqueCount
+                val merged = resultsAcc.addAll(pageResults)
+                _state.value = _state.value.copy(results = merged)
+                val newIds = resultsAcc.uniqueCount - idsBefore
+                if (newIds > 0) {
+                    repeatPages = 0
+                    searchPage = next
+                } else {
+                    repeatPages++
+                    if (repeatPages >= REPEAT_PAGE_TOLERANCE) _hasMore.value = false
+                    else searchPage = next
+                }
+            } finally {
+                _loadingMore.value = false
+            }
+        }
+    }
+
+    private companion object {
+        /**
+         * 连续多少页「整页没有任何新东西」才判定到底。
+         *
+         * 漫画源之间同人 / 汉化组转载很常见，第 2 页按 id 去重后可能一条不剩；
+         * 一页就停会让用户以为「只有一页」，这正是这次要修的问题。
+         */
+        const val REPEAT_PAGE_TOLERANCE = 5
     }
 }

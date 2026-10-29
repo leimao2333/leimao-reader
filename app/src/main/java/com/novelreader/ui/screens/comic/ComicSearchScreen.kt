@@ -30,6 +30,7 @@ import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
 import com.novelreader.ui.components.GroupedSearchResults
 import com.novelreader.ui.components.SearchBar
+import com.novelreader.ui.components.SearchLoadMoreFooter
 import com.novelreader.ui.components.SearchProgressBar
 import com.novelreader.ui.components.SourceFilterDropdown
 
@@ -61,6 +62,9 @@ fun ComicSearchScreen(
     val searchGrid by viewModel.searchGrid.collectAsState()
     /** 宫格列数（v1.8.7.5）：0 = 自适应 */
     val gridColumns by viewModel.gridColumns.collectAsState()
+    /** 翻页（v1.9.2.6）：还能不能继续问下一页 / 是否正在问 */
+    val hasMore by viewModel.hasMore.collectAsState()
+    val loadingMore by viewModel.loadingMore.collectAsState()
 
     // 深链关键词：进入即搜索（与小说 / 影视搜索页一致）
     androidx.compose.runtime.LaunchedEffect(initialKeyword) {
@@ -180,6 +184,17 @@ fun ComicSearchScreen(
                     longPressEnabled = longPressShelfEnabled,
                     grid = searchGrid,
                     gridColumns = gridColumns,
+                    // 触底继续问下一页（v1.9.2.6）：单源搜索时尤其需要 ——
+                    // 以前只取第 1 页，选定一个源就永远只有它首页那二三十条。
+                    onNearEnd = { viewModel.loadMore() },
+                    footer = {
+                        SearchLoadMoreFooter(
+                            hasMore = hasMore,
+                            loading = loadingMore,
+                            total = state.results.size,
+                            onLoadMore = { viewModel.loadMore() },
+                        )
+                    },
                 )
             }
         }

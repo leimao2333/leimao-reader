@@ -57,7 +57,10 @@ object VeneraChapterCodec {
                 val obj = JsonParser.parseString(text.substring(JSON_PREFIX.length)).asJsonObject
                 obj.get("c")?.asString.orEmpty() to obj.get("e")?.asString.orEmpty()
             }.getOrNull()
-            if (parsed != null && parsed.first.isNotBlank() && parsed.second.isNotBlank()) {
+            // v1.9.2.4：`e`（epId）**允许为空**——单话作品的 epId 就是空串，
+            // 含义是「loadEp 只传 comicId」。此前要求两段都非空，空 epId 的
+            // JSON 形态会被判为损坏、退回旧格式解析，还原出 `{"c":...` 这样的垃圾。
+            if (parsed != null && parsed.first.isNotBlank()) {
                 return parsed
             }
             // 损坏的 JSON 一律退回旧格式解析，不抛异常

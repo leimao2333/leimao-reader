@@ -193,7 +193,13 @@ class AppContainer(context: Context) {
 
     /** 下载管理器 */
     val downloadManager: DownloadManager by lazy {
-        DownloadManager(appContext)
+        DownloadManager(
+            appContext,
+            // 惰性图片解析（v1.9.2.3）：下载是整章一次性抓完，占位地址必须先换成真实地址
+            resolveLazyImage = { sourceId, url ->
+                contentRepository.fallbackImage(sourceId, url)?.url
+            },
+        )
     }
 
     /**

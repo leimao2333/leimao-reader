@@ -8,6 +8,7 @@ import com.novelreader.core.util.runCatchingCc
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.ContentResult
 import com.novelreader.domain.model.ExploreCategory
+import com.novelreader.domain.model.ImageFallback
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceAdapter
 import com.novelreader.domain.model.SourceInfo
@@ -265,7 +266,11 @@ class VeneraSourceAdapter(
             if (pair.size() < 2) return@mapIndexedNotNull null
             val epId = pair.get(0).asString
             val title = pair.get(1).asString
-            if (epId.isBlank()) return@mapIndexedNotNull null
+            // v1.9.2.4：**不要**丢弃空 epId。
+            // 单话作品的源（以及 `chapters` 为 null 时我们自己的单话兜底）会给出
+            // `["", "全一话"]` —— 空 epId 的含义是「这本没有话号，loadEp 只传 comicId」，
+            // 是合法值。此前这里 `if (epId.isBlank()) return null` 把它整条丢掉，
+            // 结果目录永远是空的，用户侧看到的就是「无法获取章节」。
             ChapterItem(
                 id = epId,
                 title = title,
@@ -314,6 +319,13 @@ class VeneraSourceAdapter(
                 }
             }
         }
+        // 一张图都没有 → 多半不是「这一话是空的」，而是**源站把请求拦了**：
+        // 被限流 / 被安全策略拦时，站点往往仍返回 200，只是正文换成了拦截页，
+        // 源里的选择器一个都命中不了，于是「0 张图」。抛出去让 SourceErrorLog 记下来，
+        // 读者才能看到「被拦了」而不是误导性的「本章暂无可用图片」。
+        if (images.isEmpty()) {
+            throw IllegalStateException("源返回的页面里没有任何图片地址（可能被站点限流或拦截，稍后再试或换网络）")
+        }
         return ContentResult.comic(images, sanitizeHeaders(headers), scripts)
     }
 
@@ -335,12 +347,17 @@ class VeneraSourceAdapter(
     }.getOrDefault(false)
 
     /**
-     * 图片加载失败 → 向源要下一个镜像地址（v1.7.1.0）。
+     * 图片加载失败 → 向源要下一个可用地址（v1.7.1.0，v1.9.2.3 扩展）。
      *
-     * 源在 onImageLoad 里返回 `onLoadFailed`（多镜像回退，如禁漫天堂的 5 条线路），
-     * 官方 App 会自动调它重试；这里通过运行时新增的 `retryImage` 操作按需调用。
+     * 两种情形走同一条链路：
+     * 1. 源在 `onImageLoad` 里给了 `onLoadFailed`（多镜像回退，如禁漫天堂的 5 条线路），
+     *    官方 App 会自动调它重试；
+     * 2. 图片是**惰性占位地址**（`venera-image:`，章节打开时没预解析的那批），
+     *    运行时现场调 `onImageLoad` 解析出真实地址 —— 见 [LazyImage]。
+     *
+     * 返回值带 `script`：乱序还原脚本必须跟着新地址一起换，否则按需解析出来的图会乱序。
      */
-    suspend fun fallbackImage(url: String): Pair<String, Map<String, String>>? = runCatchingCc {
+    suspend fun fallbackImage(url: String): ImageFallback? = runCatchingCc {
         engine.putSource(key, code)
         val json = engine.call(key, "retryImage", url)
         if (json.isBlank() || json == "null") return@runCatchingCc null
@@ -350,7 +367,8 @@ class VeneraSourceAdapter(
         val hs = obj.getAsJsonObject("headers")?.entrySet()
             ?.associate { (k, v) -> k to (if (v.isJsonPrimitive) v.asString else v.toString()) }
             ?: emptyMap()
-        next to sanitizeHeaders(hs)
+        val script = obj.get("script")?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+        ImageFallback(next, sanitizeHeaders(hs), script)
     }.getOrNull()
 
     // ===== 账号登录（v1.3.0.0：源管理页登录按钮）=====

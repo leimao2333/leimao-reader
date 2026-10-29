@@ -13,6 +13,8 @@ import android.webkit.WebViewClient
 import com.google.gson.Gson
 import com.google.gson.JsonParser
 import com.novelreader.core.network.RequestBudget
+import com.novelreader.core.network.UserAgents
+import java.io.IOException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -207,9 +209,12 @@ class VeneraEngine(private val context: Context) {
 
     /** 注册（或覆盖）一个源的源码。调用方：导入 / 启动恢复 */
     fun putSource(key: String, code: String) {
-        val old = sources.put(key, code)
+        // 本地源码补丁（v1.9.2.3，见 [SourceRepairs]）：上游逻辑已失效时在这里替换掉
+        // 那一小段。补丁不命中时原样返回，绝不会让源加载不了。
+        val patched = SourceRepairs.patchCode(key, code)
+        val old = sources.put(key, patched)
         // 源码变了（编辑 / 更新）→ 清掉注册标记，下次调用时重新求值
-        if (old != code) registered.remove(key)
+        if (old != patched) registered.remove(key)
     }
 
     /**
@@ -638,6 +643,20 @@ class VeneraEngine(private val context: Context) {
                 android.util.Log.d("VeneraProbe", message)
                 return
             }
+            // v1.9.2.4：warning / error 级别**脱敏后透出正文**。
+            // 此前一律只打长度（`[warn] (19 chars)`），而源在出错时正是靠
+            // `console.warn` 说明原因（状态码 / 解析失败 / 缺字段）——
+            // 只留长度等于把最有用的那行诊断信息丢掉，排查只能靠猜。
+            // 与 PROBE 同口径：URL 抹成 <url>、域名抹成 <host>，并截断长度。
+            val lv = level.lowercase()
+            if (lv == "warning" || lv == "warn" || lv == "error") {
+                val clean = message
+                    .replace(Regex("""https?://\S+"""), "<url>")
+                    .replace(Regex("""(?<![A-Za-z0-9.-])(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}"""), "<host>")
+                    .take(200)
+                android.util.Log.d("VeneraJs", "[$level] $clean")
+                return
+            }
             android.util.Log.d("VeneraJs", "[$level] (${message.length} chars)")
         }
 
@@ -850,31 +869,84 @@ class VeneraEngine(private val context: Context) {
         }
         builder.method(m, body)
 
-        client.newCall(builder.build()).execute().use { response ->
-            val bytes = readCapped(response.body)
-            val respHeaders = linkedMapOf<String, String>()
-            response.headers.names().forEach { name ->
-                respHeaders[name] = response.header(name).orEmpty()
-            }
-            return if (binary) {
-                gson.toJson(
-                    mapOf(
-                        "status" to response.code,
-                        "headers" to respHeaders,
-                        "bodyBase64" to Base64.encodeToString(bytes, Base64.NO_WRAP),
-                        "url" to response.request.url.toString(),
-                    )
+        return executeWithRetry(m, builder.build(), binary, contentType)
+    }
+
+    /**
+     * 发请求，对**瞬时**网络故障做有限次重试（v1.9.2.3）。
+     *
+     * 为什么要重试：部分源站的 TLS 握手 / 连接建立是**偶发**失败的 —— 实测 GoDa漫画
+     * （`godamh.com`，2026-10-29）同一个 URL 连续请求，会随机出现 `Connection reset`、
+     * `SSL handshake aborted`、`Recv failure`。一次失败就等于整页 0 条，用户看到的是
+     * 「这个源坏了」，但其实再打一次就好。上游 venera 走 Dio，同样带重试。
+     *
+     * 边界：
+     * - 只重试 **GET / HEAD**（幂等）。POST 可能已经落地，重试有副作用，宁可不重试。
+     * - 只重试 [isTransient] 认定的故障；4xx/5xx 是**正常响应**，不在这里处理。
+     * - 取消（[abortJsCall] 触发的 OkHttp cancel）不重试，否则取消等于没取消。
+     * - 重试总耗时受外层 [CALL_TIMEOUT_MS] 约束，退避取几百毫秒级，不会把预算吃光。
+     */
+    private fun executeWithRetry(
+        method: String,
+        request: Request,
+        binary: Boolean,
+        contentType: String?,
+    ): String {
+        val maxAttempts = if (method == "GET" || method == "HEAD") HTTP_MAX_ATTEMPTS else 1
+        var attempt = 0
+        while (true) {
+            attempt++
+            try {
+                client.newCall(request).execute().use { response ->
+                    val bytes = readCapped(response.body)
+                    val respHeaders = linkedMapOf<String, String>()
+                    response.headers.names().forEach { name ->
+                        respHeaders[name] = response.header(name).orEmpty()
+                    }
+                    return if (binary) {
+                        gson.toJson(
+                            mapOf(
+                                "status" to response.code,
+                                "headers" to respHeaders,
+                                "bodyBase64" to Base64.encodeToString(bytes, Base64.NO_WRAP),
+                                "url" to response.request.url.toString(),
+                            )
+                        )
+                    } else {
+                        gson.toJson(
+                            mapOf(
+                                "status" to response.code,
+                                "headers" to respHeaders,
+                                "body" to decodeBody(bytes, contentType ?: response.header("Content-Type")),
+                                "url" to response.request.url.toString(),
+                            )
+                        )
+                    }
+                }
+            } catch (e: IOException) {
+                if (attempt >= maxAttempts || !isTransient(e)) throw e
+                Log.w(
+                    LOG_TAG,
+                    "HTTP 瞬时失败，重试 $attempt/${maxAttempts - 1}：${request.url} → " +
+                        "${e.javaClass.simpleName}: ${e.message}",
                 )
-            } else {
-                gson.toJson(
-                    mapOf(
-                        "status" to response.code,
-                        "headers" to respHeaders,
-                        "body" to decodeBody(bytes, contentType ?: response.header("Content-Type")),
-                        "url" to response.request.url.toString(),
-                    )
-                )
+                Thread.sleep(HTTP_RETRY_BACKOFF_MS * attempt)
             }
+        }
+    }
+
+    /** 是否属于「再打一次大概率就好」的网络故障 */
+    private fun isTransient(e: IOException): Boolean {
+        // 用户主动取消 / 外层超时放弃：重试只会拖住 JS 线程
+        if (e is java.io.InterruptedIOException) return false
+        if (e.message?.contains("Canceled", ignoreCase = true) == true) return false
+        return when (e) {
+            is javax.net.ssl.SSLException,
+            is java.net.SocketException,
+            is java.net.SocketTimeoutException,
+            is java.net.ConnectException,
+            -> true
+            else -> false
         }
     }
 
@@ -1046,10 +1118,34 @@ class VeneraEngine(private val context: Context) {
 
     companion object {
         private const val LOG_TAG = "VeneraEngine"
-        private const val USER_AGENT =
-            "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+        /**
+         * 缺省请求头 UA（v1.9.2.3）。
+         *
+         * **必须与 venera 官方一致**：上游 `lib/network/app_dio.dart` 里是
+         * `options.headers['User-Agent'] = "venera/v${App.version}"` —— 一个**非移动端**
+         * 的自定义串。此前这里用的是 Android 移动版 Chrome UA，后果不是「被识别成手机」
+         * 这么轻：源站会按 `Mobile` 分词分流到**移动版 DOM**，而源脚本里的选择器全是
+         * 照桌面版写的。
+         *
+         * 实测绅士漫画（2026-10-29，搜索页 `https://wnacg.com/search/?q=全彩`）：
+         * - 移动 UA → `<p class="result">` 0 个、`gallary_wrap` 0 个、`<ul class="cc">` 0 个
+         * - 桌面 UA / `venera/v1.9.2.3` → 2 个 / 1 个 / 1 个
+         *
+         * 即搜索「有结果但解析出 0 条」。换成官方串后与桌面版式完全一致，且 ehentai /
+         * hitomi / goda / jcomic 的首页与搜索页实测无回归（同状态码、同量级字节数）。
+         * 图片请求用的是另一套（[com.novelreader.core.network.UserAgents.WEB]）。
+         */
+        private val USER_AGENT = UserAgents.APP
         private const val START_TIMEOUT_MS = 20_000L
+
+        /**
+         * 瞬时网络故障的尝试次数（含首次）与退避基数（v1.9.2.3）。
+         *
+         * 3 次 + 300/600ms 退避，最坏多花 0.9s —— 相对「一次握手失败就整页 0 条」，
+         * 这点代价完全值得。详见 [executeWithRetry]。
+         */
+        private const val HTTP_MAX_ATTEMPTS = 3
+        private const val HTTP_RETRY_BACKOFF_MS = 300L
 
         /**
          * 单次调用（含 init / dynamic loader）的执行上界。

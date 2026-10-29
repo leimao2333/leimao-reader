@@ -30,17 +30,26 @@ class CoverDefaultsInterceptor : Interceptor {
         val declared = fromSource.keys.map { it.lowercase() }.toSet()
         if ("user-agent" !in declared) builder.header("User-Agent", IMAGE_USER_AGENT)
         if ("referer" !in declared) {
-            builder.header("Referer", "${request.url.scheme}://${request.url.host}/")
+            // v1.9.2.7：兜底改成**站点根域**而不是图片自身域名。
+            // 图床多为独立子域 + 防盗链（只认站点页面的 Referer），
+            // 拿 `images.xxx.com` 当 Referer 会被 CDN 边缘直接拦成一张 HTML 拦截页 ——
+            // 封面全空白且没有任何错误码可看。详见 [ImageReferer]。
+            ImageReferer.of(request.url.toString())?.let { builder.header("Referer", it) }
         }
         if ("accept" !in declared) builder.header("Accept", IMAGE_ACCEPT)
         return chain.proceed(builder.build())
     }
 
     companion object {
-        /** 与阅读页 ComicReaderScreen 的 IMAGE_USER_AGENT 保持一致 */
-        const val IMAGE_USER_AGENT =
-            "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+        /**
+         * 图片请求 UA（v1.9.2.3 起对齐 venera 官方的 `webUA`，桌面版 Chrome）。
+         *
+         * 旧值是 Android 移动版 Chrome UA。改桌面版的依据：上游 `lib/foundation/consts.dart`
+         * 的 `webUA` 与 `lib/network/images.dart`「源没声明 UA 时补 webUA」用的都是桌面 UA；
+         * 且部分站点会按 `Mobile` 分词返回移动版页面 / 移动版图床分支。
+         * 详见 [com.novelreader.core.network.UserAgents]。
+         */
+        const val IMAGE_USER_AGENT = com.novelreader.core.network.UserAgents.WEB
 
         const val IMAGE_ACCEPT = "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
     }

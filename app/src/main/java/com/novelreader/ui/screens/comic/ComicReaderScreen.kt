@@ -533,7 +533,10 @@ private fun VerticalScrollReader(
 
     // 切话后回到顶部：LazyListState 在同一个 Composable 实例上会保留上一话的滚动位置，
     // 不重置的话点「下一话」会直接停在新一话的末尾。
-    LaunchedEffect(chapterIndex, images) {
+    // v1.9.2.4：**只按 chapterIndex 触发**。此前把 `images` 也当 key，于是任何一次
+    // 图片列表变动（单张换址回退、整章重解析）都会把读者弹回第一页 —— 表现为
+    // 「读着读着跳回开头 / 一直停在顶部转圈」。
+    LaunchedEffect(chapterIndex) {
         listState.scrollToItem(0)
     }
 
@@ -939,14 +942,21 @@ internal fun ComicImage(
         contentScale = contentScale,
         loading = { ComicLoading(placeholderModifier) },
         error = {
-            ComicError(
-                placeholderModifier,
-                unreachable = unreachable,
-                onRetry = {
-                    onLoadFailed(url)
-                    retry++
-                },
-            )
+            // 惰性占位地址（v1.9.2.3）：这张图还没解析过真实地址，Coil 必然打不开。
+            // 这不是「加载失败」，而 onLoadFailed 已经在上面触发解析了 —— 此时应该
+            // 继续显示加载占位，别让用户看到一闪而过的「图片加载失败」。
+            if (com.novelreader.core.image.LazyImage.isLazy(url)) {
+                ComicLoading(placeholderModifier)
+            } else {
+                ComicError(
+                    placeholderModifier,
+                    unreachable = unreachable,
+                    onRetry = {
+                        onLoadFailed(url)
+                        retry++
+                    },
+                )
+            }
         },
     )
 }
@@ -1047,6 +1057,9 @@ private fun preloadImage(
     script: String? = null,
 ) {
     if (url.isBlank()) return
+    // 惰性占位地址（v1.9.2.3）：真实地址还没解析，预取只会白跑一次失败请求。
+    // 真正的解析由它进入视口后的 onLoadFailed → retryImage 触发。
+    if (com.novelreader.core.image.LazyImage.isLazy(url)) return
     val request = ImageRequest.Builder(context)
         .data(url)
         .apply { applyImageDefaults(url, headers) }
@@ -1071,12 +1084,9 @@ private fun ImageRequest.Builder.applyImageDefaults(url: String, headers: Map<St
     val declared = headers.keys.map { it.lowercase() }
     if ("user-agent" !in declared) setHeader("User-Agent", IMAGE_USER_AGENT)
     if ("referer" !in declared) {
-        runCatching {
-            val u = java.net.URI(url)
-            val scheme = u.scheme
-            val host = u.host
-            if (scheme != null && host != null) setHeader("Referer", "$scheme://$host/")
-        }
+        // v1.9.2.7：兜底用**站点根域**（`images.xxx.com` → `xxx.com`），
+        // 与 CoverDefaultsInterceptor 同一口径。图床的防盗链只认站点页面的 Referer。
+        com.novelreader.core.image.ImageReferer.of(url)?.let { setHeader("Referer", it) }
     }
     if ("accept" !in declared) {
         setHeader("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
@@ -1106,10 +1116,13 @@ private fun PageModeButton(
 /** 图片加载日志标签（排查「图片加载失败」时用 logcat 过滤它） */
 private const val IMAGE_LOG_TAG = "ComicImage"
 
-/** 图片请求默认 UA（Coil 默认的 okhttp/x.y 会被部分图床拒绝） */
-private const val IMAGE_USER_AGENT =
-    "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+/**
+ * 图片请求默认 UA（Coil 默认的 okhttp/x.y 会被部分图床拒绝）。
+ *
+ * v1.9.2.3 起统一取 [com.novelreader.core.network.UserAgents.WEB]（桌面版 Chrome，
+ * 对齐 venera 官方 `webUA`），不再各自硬编码一份移动版 UA。
+ */
+private const val IMAGE_USER_AGENT = com.novelreader.core.network.UserAgents.WEB
 
 /** 底部章节导航条高度（正文/设置面板都据此让位） */
 private val CHAPTER_BAR_HEIGHT = 48.dp

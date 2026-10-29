@@ -205,7 +205,7 @@ interface ContentRepository {
      *
      * @return (新地址, 该地址需要的请求头)；没有更多回退时返回 null
      */
-    suspend fun fallbackImage(sourceId: String, url: String): Pair<String, Map<String, String>>? = null
+    suspend fun fallbackImage(sourceId: String, url: String): com.novelreader.domain.model.ImageFallback? = null
 
     /**
      * 获取**全部线路**的剧集（v1.3.6.0 播放页「换源」）。

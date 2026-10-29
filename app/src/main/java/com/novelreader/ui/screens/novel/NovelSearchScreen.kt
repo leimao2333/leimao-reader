@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.ui.components.GroupedSearchResults
 import com.novelreader.ui.components.SearchBar
+import com.novelreader.ui.components.SearchLoadMoreFooter
 import com.novelreader.ui.components.SearchProgressBar
 import com.novelreader.ui.components.SourceFilterDropdown
 
@@ -55,6 +56,9 @@ fun NovelSearchScreen(
     val searchGrid by viewModel.searchGrid.collectAsState()
     /** 宫格列数（v1.8.7.5）：0 = 自适应 */
     val gridColumns by viewModel.gridColumns.collectAsState()
+    /** 翻页（v1.9.2.6）：还能不能继续问下一页 / 是否正在问 */
+    val hasMore by viewModel.hasMore.collectAsState()
+    val loadingMore by viewModel.loadingMore.collectAsState()
 
     // enableEdgeToEdge 下自绘顶栏必须自行避让系统栏
     Column(
@@ -173,6 +177,16 @@ fun NovelSearchScreen(
                     longPressEnabled = longPressShelfEnabled,
                     grid = searchGrid,
                     gridColumns = gridColumns,
+                    // 触底继续问下一页（v1.9.2.6）
+                    onNearEnd = { viewModel.loadMore() },
+                    footer = {
+                        SearchLoadMoreFooter(
+                            hasMore = hasMore,
+                            loading = loadingMore,
+                            total = state.results.size,
+                            onLoadMore = { viewModel.loadMore() },
+                        )
+                    },
                 )
             }
         }

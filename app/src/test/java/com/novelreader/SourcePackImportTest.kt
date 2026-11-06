@@ -263,6 +263,34 @@ private class FakeSourceDao : SourceDao {
         changed()
     }
 
+    // ===== 源自定义分组（v1.9.3.0）：内存版按真实 SQL 语义实现 =====
+    override suspend fun setGroup(id: String, group: String) {
+        rows[id]?.let { rows[id] = it.copy(groupName = group) }
+        changed()
+    }
+
+    override suspend fun setGroupByIds(ids: List<String>, group: String) {
+        ids.forEach { id -> rows[id]?.let { rows[id] = it.copy(groupName = group) } }
+        changed()
+    }
+
+    override suspend fun renameGroup(oldName: String, newName: String) {
+        rows.forEach { (id, entity) ->
+            if (entity.groupName == oldName) rows[id] = entity.copy(groupName = newName)
+        }
+        changed()
+    }
+
+    override suspend fun clearGroup(name: String) {
+        rows.forEach { (id, entity) ->
+            if (entity.groupName == name) rows[id] = entity.copy(groupName = "")
+        }
+        changed()
+    }
+
+    override suspend fun groupNames(): List<String> =
+        rows.values.map { it.groupName }.filter { it.isNotEmpty() }.distinct().sorted()
+
     override suspend fun delete(source: SourceEntity) {
         rows.remove(source.id)
         changed()

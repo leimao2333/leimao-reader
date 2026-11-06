@@ -38,6 +38,28 @@ interface SourceDao {
     @Query("UPDATE sources SET sortOrder = :sortOrder WHERE id = :id")
     suspend fun setSortOrder(id: String, sortOrder: Int)
 
+    // ===== 用户自定义分组（v1.9.3.0）=====
+
+    /** 设置单个源的分组（空串 = 移出分组） */
+    @Query("UPDATE sources SET groupName = :group WHERE id = :id")
+    suspend fun setGroup(id: String, group: String)
+
+    /** 批量把若干源挪进同一个分组（单条 SQL，只触发一次 invalidation） */
+    @Query("UPDATE sources SET groupName = :group WHERE id IN (:ids)")
+    suspend fun setGroupByIds(ids: List<String>, group: String)
+
+    /** 分组改名：库里属于旧名字的源一并改掉 */
+    @Query("UPDATE sources SET groupName = :newName WHERE groupName = :oldName")
+    suspend fun renameGroup(oldName: String, newName: String)
+
+    /** 删除分组：只把源移回「未分组」，绝不删源 */
+    @Query("UPDATE sources SET groupName = '' WHERE groupName = :name")
+    suspend fun clearGroup(name: String)
+
+    /** 库里已经出现过的分组名（备份恢复等场景下补齐分组清单用） */
+    @Query("SELECT DISTINCT groupName FROM sources WHERE groupName != '' ORDER BY groupName")
+    suspend fun groupNames(): List<String>
+
     @Delete
     suspend fun delete(source: SourceEntity)
 

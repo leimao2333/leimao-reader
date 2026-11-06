@@ -1,7 +1,7 @@
 # 待完成清单（Roadmap）
 
 > 基线版本：**v1.8.7.8**
-> 记录时间：2026-10-19（最后更新 2026-10-29）
+> 记录时间：2026-10-19（最后更新 2026-11-06）
 > 说明：本文件只记录待开工的需求，做完后把对应条目的 `- [ ]` 改成 `- [x]` 并在该行末尾补上落地版本号，随后从清单里移除或折叠进 CHANGELOG。
 
 图例：`- [ ]` 待做 / `- [x]` 已完成（末尾标注版本）
@@ -788,6 +788,26 @@
   - 复查：`CHANGELOG.md` / `AppVersion.kt` / `README.md` 三份对外文案按 60+ 关键词全量扫描 0 命中；GitHub 上 174 个历史 Release 说明同步复查 0 命中（本轮另修 v1.9.2.3 的 `JCOMIC_TRAPS_` 与 3 个老版本残留）。
   - **保留项**：学术出版方名称与 DOI 前缀（Nature / Science / ACS 等）属于「订阅 + PDF 直链」功能的必要技术事实，未改写；开源技术组件名（Venera、legado、OkHttp、Coil…）按红线例外保留。
   - 涉及：`app/src/main/java/com/novelreader/core/version/AppVersion.kt`、`CHANGELOG.md`。
+
+## 十二、源分组与搜索
+
+- [x] **62. 源管理支持自主新建并编辑分组** ✅ v1.9.3.0
+  - 现状：源管理页只有按源名 / 描述关键词推断的「智能分类」筛选（只读），既不能自己建组、改名、删组，也不能把源放进某个组。
+  - 落地：`SourceInfo` / `SourceEntity` 新增 `groupName`，与自动推断的 `category` 完全独立（Venera 候选的分类是硬编码、`toDomain()` 还会回填自动分类，复用 category 会被冲掉）；Room 18→19 迁移加列。分组名清单走 `PreferencesManager` 的 `source_groups`（先建空分组再放源也不会丢），并纳入本地 / WebDav 备份；`SourceDao` 补单源 / 批量归类、改名、清空归属的 SQL，`SourceManager` 与 `SourceRepositoryImpl` 同步内存态 —— 重新解析规则、重复源覆盖、启动恢复三处都要把用户分组带过去。
+  - UI：源管理页新增「分组」筛选行（全部 / 未分组 / 各组 / ＋新建），「管理」弹窗里新建、重命名、删除（删除只把源移回未分组，不删源）；源卡片和表格视图都能点分组标签归类，批量模式下可一次给多个源设组。分组筛选与原有的类型 / 格式 / 自动分类是叠加关系。
+  - 涉及：`domain/model/SourceInfo.kt`、`data/model/SourceEntity.kt`、`data/database/{AppDatabase,SourceDao}.kt`、`core/preferences/PreferencesManager.kt`、`core/backup/BackupManager.kt`、`domain/repository/Repository.kt`、`data/repository/SourceRepositoryImpl.kt`、`source/manager/SourceManager.kt`、`ui/screens/source/{SourceManageScreen,SourceManageViewModel}.kt`、`ui/navigation/AppNavHost.kt`。
+
+- [x] **63. 搜索支持用分组源进行搜索** ✅ v1.9.3.0
+  - 现状：搜索页下拉只有「全部源 / 逐个源复选」，想按自己分好的一组搜只能一个个勾；而且在源管理页改完分组，搜索页的源列表还是进页面那一刻的快照。
+  - 落地：`SourceFilterDropdown` 按 `SourceInfo.groupName` 派生分组，菜单顶部加「按分组搜索」，选一组 = 一次勾上组内全部**已启用**源，标题显示「分组：X」；底层 `searchWithProgress(sourceIds)` 本来就接受多源集合，无需改搜索接口。小说 / 漫画 / 影视 / 标签四个搜索 VM 改走 `SourceRepository.observeSources()` 的 Flow，分组归属与启停变更即时生效（接口给默认空流，测试 fake 不受影响）。
+  - 顺带修：切换选源 / 分组时旧的 `loadMore()` 协程没被取消，会把上一组的 `pageResults` 经累加器混进新结果，还会扰乱 `repeatPages` 判到底；现在 `setSelectedSources` 里取消 `loadMoreJob`（小说另取消 `verifyJob`）、重置累加器与翻页状态。
+  - 涉及：`ui/components/SourceFilterDropdown.kt`、`ui/screens/novel/NovelSearchViewModel.kt`、`ui/screens/comic/ComicSearchViewModel.kt`、`ui/screens/video/VideoSearchViewModel.kt`、`ui/screens/tag/TagSearchViewModel.kt`、`domain/repository/Repository.kt`。
+
+- [x] **64. 同源站点变体源的地址规范化与一键归类** ✅ v1.9.3.0
+  - 背景：真机上同一个轻小说站点被导入了三十多个变体源，其中若干个 `bookSourceUrl` 带 `[图片]` 前缀、「已校验 / 已整理」中文后缀，或干脆没写协议；宿主原来只裁 `#` 备注，`java.net.URI` 解析不出 host → `{{baseUrl}}/path` 模板、目录 / 正文相对地址、源级请求头按 host 注册（防盗链）一起失效，表现是「搜得到、点进去却没内容」。
+  - 落地：新增纯函数 `SourceUrlNormalizer`（裁标记 / 中文后缀 / 补协议 / 校验 host / 取根域），`LegadoSourceAdapter.baseUrl`、`SourceManager.toSourceInfo`、`SourceDedupe.urlKey` 三处统一口径；规范化不出合法域名时退回原值，保证不比修复前更差。单测覆盖真机上见到的全部脏写法。
+  - 顺带：分组管理弹窗加「把当前筛选的 N 个源建为一组并归入」—— 搜索框筛出这一批变体后一键归类，就能在搜索页直接「按分组搜索」选中整组。
+  - 涉及：`core/util/SourceUrlNormalizer.kt`（新）、`core/util/SourceDedupe.kt`、`source/legado/LegadoSourceAdapter.kt`、`source/manager/SourceManager.kt`、`ui/screens/source/SourceManageScreen.kt`、`app/src/test/java/com/novelreader/SourceUrlNormalizerTest.kt`（新）。
 
 ## 备注
 - 改动涉及 `books` 表结构或 `RssFeedEntity` 时，必须写 Room 迁移（`AppDatabase.kt`）并自增数据库版本。

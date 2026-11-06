@@ -92,6 +92,8 @@ class BackupManager(
             add("bookmarks", gson.toJsonTree(bookmarks))
             add("rssFeeds", gson.toJsonTree(rssFeeds))
             add("rssArticles", gson.toJsonTree(rssArticles))
+            // 源分组名清单（含还没放源的空分组）；归属本身已在 sources 实体里（v1.9.3.0）
+            add("sourceGroups", gson.toJsonTree(preferencesManager.sourceGroupsFlow.first().sorted()))
             addProperty("replaceRules", replaceRules)
         }
 
@@ -161,6 +163,20 @@ class BackupManager(
         }
         root.get("replaceRules")?.asString?.let { rules ->
             if (rules.isNotBlank()) preferencesManager.setNovelReplaceRules(rules)
+        }
+        // 分组名清单：老备份没有这个字段，就从 sources 里的归属兜底重建（v1.9.3.0）
+        val restoredGroups = root.getAsJsonArray("sourceGroups")
+            ?.mapNotNull { runCatching { it.asString }.getOrNull() }
+            ?.filter { it.isNotBlank() }
+            ?.toMutableSet() ?: mutableSetOf()
+        root.getAsJsonArray("sources")?.forEach { el ->
+            val g = runCatching { el.asJsonObject.get("groupName")?.asString }.getOrNull()
+            if (!g.isNullOrBlank()) restoredGroups += g
+        }
+        if (restoredGroups.isNotEmpty()) {
+            preferencesManager.setSourceGroups(
+                preferencesManager.sourceGroupsFlow.first() + restoredGroups,
+            )
         }
 
         // 恢复的书源注册进 SourceManager（应用启动恢复逻辑的复用）

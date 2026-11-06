@@ -1030,6 +1030,15 @@ class TagSearchViewModel(
                 sourceRepository?.getSourcesByType(type)?.filter { it.enabled }.orEmpty()
             }.getOrDefault(emptyList())
         }
+        // v1.9.3.0：源分组 / 启停改动即时同步到「按源搜索」下拉（只管列表，不动正在跑的搜索）
+        viewModelScope.launch {
+            runCatching {
+                sourceRepository?.observeSources()?.collect { list ->
+                    val enabled = list.filter { it.type == type && it.enabled }
+                    if (enabled.isNotEmpty()) _sources.value = enabled
+                }
+            }
+        }
     }
 
     /** 收集标签池：先读缓存（毫秒级），空则现场收集 */

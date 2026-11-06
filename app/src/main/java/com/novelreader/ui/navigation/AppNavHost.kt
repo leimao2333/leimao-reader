@@ -366,6 +366,7 @@ fun AppNavHost(
                         it.sourceRepository,
                         it.sourceRepository as? com.novelreader.data.repository.SourceRepositoryImpl,
                         it.veneraEngine,
+                        it.preferencesManager,
                     )
                 }
             )
@@ -385,6 +386,7 @@ fun AppNavHost(
                         it.sourceRepository,
                         it.sourceRepository as? com.novelreader.data.repository.SourceRepositoryImpl,
                         it.veneraEngine,
+                        it.preferencesManager,
                     )
                 }
             )

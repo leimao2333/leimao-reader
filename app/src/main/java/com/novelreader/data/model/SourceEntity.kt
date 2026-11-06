@@ -28,6 +28,8 @@ data class SourceEntity(
     val createdAt: Long = System.currentTimeMillis(),
     /** 智能分类 */
     val category: String = "",
+    /** 用户自定义分组名（v1.9.3.0，空串 = 未分组） */
+    val groupName: String = "",
     /** 手动排序序号（v1.5.8.0，0 = 未手动排序） */
     val sortOrder: Int = 0,
 )

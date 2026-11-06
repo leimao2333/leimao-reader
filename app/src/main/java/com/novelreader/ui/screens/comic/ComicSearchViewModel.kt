@@ -33,8 +33,13 @@ class ComicSearchViewModel(
     private val _selectedSourceIds = MutableStateFlow<Set<String>>(emptySet())
     val selectedSourceIds: StateFlow<Set<String>> = _selectedSourceIds.asStateFlow()
 
-    /** 选择源（**多选**；空集合 = 全部源，v1.8.1.2）。已有搜索词时立即按新范围重搜。 */
+    /** 选择源 / 分组（**多选**；空集合 = 全部源，v1.8.1.2）。已有搜索词时立即按新范围重搜。 */
     fun setSelectedSources(ids: Set<String>) {
+        if (ids == _selectedSourceIds.value) return
+        // 换分组时旧翻页协程仍会把上一组的 pageResults 写回累加器，必须先取消（v1.9.3.0）
+        loadMoreJob?.cancel()
+        resultsAcc.reset(emptyList())
+        _loadingMore.value = false
         _selectedSourceIds.value = ids
         if (_query.value.isNotBlank()) search()
     }
@@ -73,6 +78,8 @@ class ComicSearchViewModel(
     val history: StateFlow<List<String>> = _history.asStateFlow()
 
     private var searchJob: Job? = null
+    /** 翻页协程（换分组时要单独取消） */
+    private var loadMoreJob: Job? = null
 
     // ===== 关键词搜索翻页（v1.9.2.6）=====
     // 此前 `search()` 固定 `page = 1`，全链路没有「加载更多」，每个源只贡献第 1 页
@@ -107,6 +114,15 @@ class ComicSearchViewModel(
                     ?.filter { it.enabled }
                     .orEmpty()
             }.getOrDefault(emptyList())
+        }
+        // v1.9.3.0：源管理页改分组 / 启停后即时同步到「按源搜索」下拉
+        viewModelScope.launch {
+            runCatching {
+                sourceRepository?.observeSources()?.collect { list ->
+                    val enabled = list.filter { it.type == SourceType.COMIC && it.enabled }
+                    if (enabled.isNotEmpty()) _sources.value = enabled
+                }
+            }
         }
         // 书架变化时刷新收藏态（加入/移出后图标实时更新，v1.8.3.0 待办 #15）
         viewModelScope.launch {
@@ -210,7 +226,7 @@ class ComicSearchViewModel(
         if (keyword.isEmpty()) return
         val next = searchPage + 1
         _loadingMore.value = true
-        viewModelScope.launch {
+        loadMoreJob = viewModelScope.launch {
             try {
                 val concurrency = preferencesManager.searchConcurrencyFlow.first()
                 val fuzzy = preferencesManager.fuzzySearchFlow.first()

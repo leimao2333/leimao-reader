@@ -42,8 +42,16 @@ class NovelSearchViewModel(
     private val _selectedSourceIds = MutableStateFlow<Set<String>>(emptySet())
     val selectedSourceIds: StateFlow<Set<String>> = _selectedSourceIds.asStateFlow()
 
-    /** 选择源（**多选**；空集合 = 全部源，v1.8.1.2）。已有搜索词时立即按新范围重搜。 */
+    /** 选择源 / 分组（**多选**；空集合 = 全部源，v1.8.1.2）。已有搜索词时立即按新范围重搜。 */
     fun setSelectedSources(ids: Set<String>) {
+        if (ids == _selectedSourceIds.value) return
+        // 换源 / 换分组时先掐断上一批翻页与校验：它们是独立于 searchJob 的 launch，
+        // 不取消的话旧分组的 pageResults 会经 resultsAcc.addAll 混进新结果，
+        // 连 repeatPages / uniqueCount 判到底的口径都会错（v1.9.3.0）。
+        loadMoreJob?.cancel()
+        verifyJob?.cancel()
+        resultsAcc.reset(emptyList())
+        _loadingMore.value = false
         _selectedSourceIds.value = ids
         if (_query.value.isNotBlank()) search()
     }
@@ -85,6 +93,8 @@ class NovelSearchViewModel(
     val history: StateFlow<List<String>> = _history.asStateFlow()
 
     private var searchJob: Job? = null
+    /** 翻页协程（换分组时要单独取消，见 setSelectedSources） */
+    private var loadMoreJob: Job? = null
 
     // ===== 关键词搜索翻页（v1.9.2.6）=====
     // 与漫画 / 视频搜索同一套口径：此前 `search()` 固定 `page = 1`，没有「加载更多」，
@@ -136,6 +146,16 @@ class NovelSearchViewModel(
                     ?.filter { it.enabled }
                     .orEmpty()
             }.getOrDefault(emptyList())
+        }
+        // v1.9.3.0：源管理页新建/改名/删除分组、给源换组、启停源之后，搜索页要立刻看到，
+        // 不能等下次进页面才刷新。observeSources 默认空流，测试里的 fake 仓库不受影响。
+        viewModelScope.launch {
+            runCatching {
+                sourceRepository?.observeSources()?.collect { list ->
+                    val enabled = list.filter { it.type == SourceType.NOVEL && it.enabled }
+                    if (enabled.isNotEmpty()) _sources.value = enabled
+                }
+            }
         }
     }
 
@@ -233,7 +253,7 @@ class NovelSearchViewModel(
         if (keyword.isEmpty()) return
         val next = searchPage + 1
         _loadingMore.value = true
-        viewModelScope.launch {
+        loadMoreJob = viewModelScope.launch {
             try {
                 val concurrency = preferencesManager.searchConcurrencyFlow.first()
                 val fuzzy = preferencesManager.fuzzySearchFlow.first()

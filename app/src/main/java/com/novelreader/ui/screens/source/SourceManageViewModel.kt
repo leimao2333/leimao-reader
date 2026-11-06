@@ -2,6 +2,7 @@ package com.novelreader.ui.screens.source
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.novelreader.core.preferences.PreferencesManager
 import com.novelreader.domain.model.SourceInfo
 import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.SourceRepository
@@ -12,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withPermit
@@ -27,6 +29,8 @@ class SourceManageViewModel(
     private val sourceRepositoryImpl: SourceRepositoryImpl? = null,
     /** Venera 运行时：Venera 漫画源的登录 / 退出登录走这里（v1.3.0.0） */
     private val veneraEngine: com.novelreader.source.venera.VeneraEngine? = null,
+    /** 用户自建源分组的名字清单（v1.9.3.0）；测试里可不传，退化为纯内存 */
+    private val preferencesManager: PreferencesManager? = null,
 ) : ViewModel() {
 
     /** 源列表 */
@@ -120,10 +124,42 @@ class SourceManageViewModel(
             .filterValues { it }
     }
 
+    // ===== 用户自定义分组（v1.9.3.0）=====
+    // 声明必须在下面的 init 之前：init 里会读 _groupNames（同类事故见 v1.3.0.0 / v1.9.2.2）
+    private val _groupNames = MutableStateFlow<List<String>>(emptyList())
+    val groupNames: StateFlow<List<String>> = _groupNames.asStateFlow()
+
+    /**
+     * 分组名有三个来源，缺一不可：
+     * 1. PreferencesManager 里**用户建过的名字**（含还没放源的空分组）；
+     * 2. 数据库 sources 表里出现过的归属（备份恢复 / 老数据兼容）；
+     * 3. 内存 SourceInfo 里的归属（刚 import 还没落 Flow 时）。
+     */
+    private fun refreshGroupNames() {
+        viewModelScope.launch {
+            val saved = runCatching {
+                preferencesManager?.sourceGroupsFlow?.first().orEmpty()
+            }.getOrDefault(emptySet())
+            val inDb = runCatching { sourceRepository.sourceGroupNames() }.getOrDefault(emptyList())
+            val inMemory = _sources.value.map { it.groupName }
+            _groupNames.value = (saved + inDb + inMemory)
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .distinct()
+                .sorted()
+        }
+    }
+
     // 注意：init 必须放在所有 StateFlow 属性声明之后——
     // Kotlin 按声明顺序初始化属性，init 提前会拿到 null 的 _loginStates（v1.3.0.0 实测崩溃）
     init {
         refresh()
+        refreshGroupNames()
+        preferencesManager?.let { pm ->
+            viewModelScope.launch {
+                pm.sourceGroupsFlow.collect { refreshGroupNames() }
+            }
+        }
     }
 
     /** 刷新源列表 */
@@ -131,6 +167,88 @@ class SourceManageViewModel(
         viewModelScope.launch {
             _sources.value = sourceRepository.getAllSources()
             refreshLoginStates()
+            refreshGroupNames()
+        }
+    }
+
+    // ===== 分组增删改（v1.9.3.0）=====
+
+    /** 新建分组；名字 trim 后判重，空分组也保留（可以先建组再往里放源） */
+    fun createGroup(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) {
+            _message.value = "分组名不能为空"
+            return
+        }
+        viewModelScope.launch {
+            val added = preferencesManager?.addSourceGroup(trimmed)
+                ?: (trimmed !in _groupNames.value)
+            if (!added) {
+                _message.value = "分组「$trimmed」已存在"
+                return@launch
+            }
+            // 没有 PreferencesManager（测试 / 降级）时至少让本次会话可用
+            if (preferencesManager == null) {
+                _groupNames.value = (_groupNames.value + trimmed).distinct().sorted()
+            }
+            _message.value = "已新建分组「$trimmed」"
+            refreshGroupNames()
+        }
+    }
+
+    /** 分组改名：名字清单与库里所有源的归属一起改 */
+    fun renameGroup(oldName: String, newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) {
+            _message.value = "分组名不能为空"
+            return
+        }
+        if (trimmed == oldName) return
+        if (trimmed in _groupNames.value) {
+            _message.value = "已存在同名分组「$trimmed」"
+            return
+        }
+        viewModelScope.launch {
+            val ok = preferencesManager?.renameSourceGroup(oldName, trimmed) ?: true
+            if (!ok) {
+                _message.value = "重命名失败：分组名冲突"
+                return@launch
+            }
+            sourceRepository.renameSourceGroup(oldName, trimmed)
+            _groupNames.value = _groupNames.value
+                .map { if (it == oldName) trimmed else it }
+                .distinct().sorted()
+            _message.value = "分组已改名为「$trimmed」"
+        }
+    }
+
+    /** 删除分组：源只移回「未分组」，不删源 */
+    fun deleteGroup(name: String) {
+        viewModelScope.launch {
+            preferencesManager?.removeSourceGroup(name)
+            sourceRepository.deleteSourceGroup(name)
+            _groupNames.value = _groupNames.value - name
+            _message.value = "已删除分组「$name」，源已移回未分组"
+            refresh()
+        }
+    }
+
+    /** 把若干源挪进分组；[group] 为空串表示移出分组 */
+    fun assignGroup(ids: List<String>, group: String) {
+        if (ids.isEmpty()) return
+        val trimmed = group.trim()
+        viewModelScope.launch {
+            // 允许直接输入一个还不存在的名字：等价于「新建分组并放进去」
+            if (trimmed.isNotEmpty() && trimmed !in _groupNames.value) {
+                preferencesManager?.addSourceGroup(trimmed)
+            }
+            sourceRepository.setSourceGroup(ids, trimmed)
+            refreshGroupNames()
+            _message.value = if (trimmed.isEmpty()) {
+                "已把 ${ids.size} 个源移回未分组"
+            } else {
+                "已把 ${ids.size} 个源放入「$trimmed」"
+            }
         }
     }
 
@@ -175,6 +293,7 @@ class SourceManageViewModel(
                 impl.observeSources().collect { list ->
                     _sources.value = list
                     refreshLoginStates()
+                    refreshGroupNames()
                 }
             }
         } ?: refresh()

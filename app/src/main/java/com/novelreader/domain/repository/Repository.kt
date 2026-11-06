@@ -6,6 +6,7 @@ import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SearchState
 import com.novelreader.domain.model.SourceInfo
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 
 /**
  * 一轮「各源发现分类枚举」的结果。
@@ -152,6 +153,24 @@ interface SourceRepository {
      * @return 更新后的 [SourceInfo]；解析失败时抛异常（保留原源不变）
      */
     suspend fun updateSource(sourceId: String, rawContent: String): SourceInfo
+
+    // ===== 用户自定义分组（v1.9.3.0）=====
+    // 全部给默认实现：测试里的 fake 仓库不必跟着实现一堆用不到的方法。
+
+    /** 观察所有源（Room 变更即时推送，默认空流 = 不支持响应式） */
+    fun observeSources(): Flow<List<SourceInfo>> = emptyFlow()
+
+    /** 把一个或多个源挪进指定分组；空串 = 移回未分组 */
+    suspend fun setSourceGroup(ids: List<String>, group: String) {}
+
+    /** 分组改名：库里属于旧名字的源一并改掉 */
+    suspend fun renameSourceGroup(oldName: String, newName: String) {}
+
+    /** 删除分组：只把源移回未分组，不删源 */
+    suspend fun deleteSourceGroup(name: String) {}
+
+    /** 库里已经出现过的分组名（备份恢复 / 老数据兼容） */
+    suspend fun sourceGroupNames(): List<String> = emptyList()
 }
 
 /**

@@ -39,8 +39,8 @@ class SourceRepositoryImpl(
         }
     }
 
-    /** 观察所有源（响应式） */
-    fun observeSources(): Flow<List<SourceInfo>> =
+    /** 观察所有源（响应式）；分组归属改动也会经这条 Flow 推给各搜索页 */
+    override fun observeSources(): Flow<List<SourceInfo>> =
         sourceDao.observeAll().map { list -> list.map { it.toDomain() } }
 
     override suspend fun importSource(rawContent: String, fileName: String?): List<SourceInfo> =
@@ -202,9 +202,10 @@ class SourceRepositoryImpl(
                     out += c
                     claimed += key
                 }
-                // 新包更完整 → 覆盖旧条目，但沿用旧 id，避免书架引用断裂
+                // 新包更完整 → 覆盖旧条目，但沿用旧 id，避免书架引用断裂；
+                // 用户手改的分组也要带过去，否则「更新一次源包，分组全丢」（v1.9.3.0）
                 c.rawContent.length > old.rawContent.length -> {
-                    out += c.copy(info = c.info.copy(id = old.id))
+                    out += c.copy(info = c.info.copy(id = old.id, groupName = old.groupName))
                     claimed += key
                     lastImportUpdated++
                 }
@@ -240,6 +241,7 @@ class SourceRepositoryImpl(
         rawContent = content,
         enabled = enabled,
         category = category,
+        groupName = groupName,
     )
 
     override suspend fun deleteSource(sourceId: String) {
@@ -344,6 +346,41 @@ class SourceRepositoryImpl(
             updated
         }
 
+    // ===== 用户自定义分组（v1.9.3.0）=====
+
+    override suspend fun setSourceGroup(ids: List<String>, group: String) {
+        if (ids.isEmpty()) return
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            // 内存与库一起改：搜索页读的是 SourceManager 里的 SourceInfo
+            ids.forEach { sourceManager.setSourceGroup(it, group) }
+            sourceDao.setGroupByIds(ids, group)
+        }
+    }
+
+    override suspend fun renameSourceGroup(oldName: String, newName: String) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            sourceManager.getAllSources()
+                .filter { it.groupName == oldName }
+                .forEach { sourceManager.setSourceGroup(it.id, newName) }
+            sourceDao.renameGroup(oldName, newName)
+        }
+    }
+
+    override suspend fun deleteSourceGroup(name: String) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            sourceManager.getAllSources()
+                .filter { it.groupName == name }
+                .forEach { sourceManager.setSourceGroup(it.id, "") }
+            // 只清空归属，绝不删源
+            sourceDao.clearGroup(name)
+        }
+    }
+
+    override suspend fun sourceGroupNames(): List<String> =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { sourceDao.groupNames() }.getOrDefault(emptyList())
+        }
+
     /** 最近一次导入中被跳过（解析失败）的条目数（供导入消息展示，v1.3.0.0） */
     fun lastImportSkipped(): Int = sourceManager.lastImportSkipped
 
@@ -370,6 +407,9 @@ class SourceRepositoryImpl(
                         sourceManager.setSourceEnabled(entity.id, entity.enabled)
                         // 恢复手动排序序号（v1.5.8.0）
                         sourceManager.setSourceSortOrder(entity.id, entity.sortOrder)
+                        // 恢复用户自定义分组（v1.9.3.0）：内存里的 SourceInfo 也要带上，
+                        // 否则搜索页按 getSourcesByType 读到的分组永远是空的
+                        sourceManager.setSourceGroup(entity.id, entity.groupName)
                     }.onFailure {
                         // 恢复失败不能完全静默：留日志便于排查「部分源不加载」（v1.3.0.0）
                         android.util.Log.w(
@@ -420,5 +460,6 @@ fun SourceEntity.toDomain(): SourceInfo = SourceInfo(
             SourceInfo(id = id, name = name, type = SourceType.fromString(type) ?: SourceType.NOVEL, author = author, desc = desc, baseUrl = baseUrl)
         )
     },
+    groupName = groupName,
     sortOrder = sortOrder,
 )

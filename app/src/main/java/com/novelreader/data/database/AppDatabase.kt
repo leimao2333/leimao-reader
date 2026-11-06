@@ -37,7 +37,7 @@ import com.novelreader.data.model.SourceEntity
         TagInstanceEntity::class,
         ChapterListCacheEntity::class,
     ],
-    version = 18,
+    version = 19,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -422,6 +422,17 @@ abstract class AppDatabase : RoomDatabase() {
                     )
                     """.trimIndent(),
                 )
+            }
+        }
+
+        /**
+         * v18 -> v19：sources 表新增 groupName 列（v1.9.3.0 源自定义分组）。
+         *
+         * 存量数据一律默认空串（未分组），不影响原有的智能分类 category。
+         */
+        val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sources ADD COLUMN groupName TEXT NOT NULL DEFAULT ''")
             }
         }
 

@@ -305,6 +305,16 @@ class PreferencesManager(private val context: Context) {
          */
         val KEY_SEARCH_GRID_COLUMNS = intPreferencesKey("search_grid_columns")
 
+        // ===== 源自定义分组（v1.9.3.0）=====
+        /**
+         * 用户新建的源分组名集合。
+         *
+         * 分组「归属」存在 sources.groupName 列，这里只存**名字清单**：新建的空分组
+         * （还没往里放源）也要能保留下来，光靠 DISTINCT groupName 会凭空消失。
+         * 用 Set 而不是 JSON 字符串：DataStore 原生支持，读写都是一次 edit。
+         */
+        val KEY_SOURCE_GROUPS = stringSetPreferencesKey("source_groups")
+
         // ===== RSS 订阅（v1.8.6.0 待办 #24 / #29） =====
         /**
          * RSS 订阅入口位置（v1.8.6.0 待办 #24，默认**关闭** = 保持在首页顶栏）。
@@ -1280,5 +1290,55 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setSubtitleAsr(value: Boolean) {
         context.dataStore.edit { it[KEY_SUBTITLE_ASR] = value }
+    }
+
+    // ===== 源自定义分组（v1.9.3.0）=====
+
+    /** 用户建过的分组名（无序；UI 展示时自行排序） */
+    val sourceGroupsFlow: Flow<Set<String>> = context.dataStore.data
+        .map { it[KEY_SOURCE_GROUPS] ?: emptySet() }
+
+    /** 新建分组；重名不重复写入（返回是否真的新建了） */
+    suspend fun addSourceGroup(name: String): Boolean {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return false
+        var added = false
+        context.dataStore.edit { p ->
+            val current = p[KEY_SOURCE_GROUPS] ?: emptySet()
+            if (trimmed !in current) {
+                p[KEY_SOURCE_GROUPS] = current + trimmed
+                added = true
+            }
+        }
+        return added
+    }
+
+    /** 分组改名；新名字与已有分组冲突时返回 false（调用方不应改库里的归属） */
+    suspend fun renameSourceGroup(oldName: String, newName: String): Boolean {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) return false
+        // 名字没变：无需写库，但对调用方来说是「成功」（不要把源误移出分组）
+        if (trimmed == oldName) return true
+        var renamed = false
+        context.dataStore.edit { p ->
+            val current = p[KEY_SOURCE_GROUPS] ?: emptySet()
+            if (trimmed !in current) {
+                p[KEY_SOURCE_GROUPS] = current - oldName + trimmed
+                renamed = true
+            }
+        }
+        return renamed
+    }
+
+    /** 删除分组名（源归属由 SourceDao.clearGroup 单独清，不在这里碰数据库） */
+    suspend fun removeSourceGroup(name: String) {
+        context.dataStore.edit { p ->
+            p[KEY_SOURCE_GROUPS] = (p[KEY_SOURCE_GROUPS] ?: emptySet()) - name
+        }
+    }
+
+    /** 覆盖写分组名清单（备份恢复用） */
+    suspend fun setSourceGroups(names: Set<String>) {
+        context.dataStore.edit { p -> p[KEY_SOURCE_GROUPS] = names.map { it.trim() }.filter { it.isNotEmpty() }.toSet() }
     }
 }

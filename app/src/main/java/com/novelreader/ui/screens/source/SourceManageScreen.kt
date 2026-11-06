@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -103,10 +104,26 @@ fun SourceManageScreen(
     // 删除失效源二次确认（v1.5.5.0）
     var confirmDeleteFailed by remember { mutableStateOf(false) }
 
+    // ===== 用户自定义分组（v1.9.3.0）=====
+    val groupNames by viewModel.groupNames.collectAsState()
+    // null = 不按分组筛选；UNGROUPED_KEY = 只看未分组；其余 = 具体分组名
+    var selectedGroup by remember { mutableStateOf<String?>(null) }
+    var showGroupManage by remember { mutableStateOf(false) }
+    // 非空 = 弹出「把这些源放进哪一组」的对话框
+    var assignIds by remember { mutableStateOf<List<String>?>(null) }
+
     LaunchedEffect(Unit) {
         viewModel.observe()
         // v1.6.6.0：进页面先算一次「可合并的重复源」，驱动合并按钮的可用态
         viewModel.refreshDuplicateCount()
+    }
+
+    // 分组被删掉或改名后，旧的筛选值会指向一个不存在的组 —— 自动回到「全部」，
+    // 否则用户看到的是空列表却找不到原因（v1.9.3.0）
+    LaunchedEffect(groupNames, selectedGroup) {
+        if (selectedGroup != null && selectedGroup != UNGROUPED_KEY && selectedGroup !in groupNames) {
+            selectedGroup = null
+        }
     }
 
     // 显示提示消息
@@ -140,10 +157,26 @@ fun SourceManageScreen(
         if (selectedType != SourceType.COMIC || selectedFormat == null) typeFiltered
         else typeFiltered.filter { it.format == selectedFormat }
     }
-    val grouped = remember(formatFiltered) { viewModel.groupByCategory(formatFiltered) }
-    val categories = remember(formatFiltered) { viewModel.sortedCategories(formatFiltered) }
-    val categoryFiltered = remember(formatFiltered, selectedCategory) {
-        if (selectedCategory == null) formatFiltered
+    // 分组筛选（v1.9.3.0）：与类型 / 格式 / 自动分类是**叠加**关系，不是替换。
+    // groupNames 里可能含刚建好还没有源的空分组，所以计数以名字清单为准。
+    val groupCounts = remember(formatFiltered, groupNames) {
+        val counts = formatFiltered.groupingBy { it.groupName.trim() }.eachCount()
+        groupNames.associateWith { counts[it] ?: 0 }
+    }
+    val ungroupedCount = remember(formatFiltered) {
+        formatFiltered.count { it.groupName.isBlank() }
+    }
+    val groupFiltered = remember(formatFiltered, selectedGroup) {
+        when (selectedGroup) {
+            null -> formatFiltered
+            UNGROUPED_KEY -> formatFiltered.filter { it.groupName.isBlank() }
+            else -> formatFiltered.filter { it.groupName.trim() == selectedGroup }
+        }
+    }
+    val grouped = remember(groupFiltered) { viewModel.groupByCategory(groupFiltered) }
+    val categories = remember(groupFiltered) { viewModel.sortedCategories(groupFiltered) }
+    val categoryFiltered = remember(groupFiltered, selectedCategory) {
+        if (selectedCategory == null) groupFiltered
         else grouped[selectedCategory] ?: emptyList()
     }
     val displayedSources = remember(categoryFiltered, sortOrder) {
@@ -151,6 +184,35 @@ fun SourceManageScreen(
         // 否则筛选会把部分源排除在外，拖拽持久化时会把它们的手动序号清空（v1.5.9.0）。
         val base = if (sortOrder == SourceSortOrder.MANUAL) sources else categoryFiltered
         viewModel.sortSources(base, sortOrder)
+    }
+
+    // ===== 分组管理 / 归类弹窗（v1.9.3.0）=====
+    if (showGroupManage) {
+        GroupManageDialog(
+            groups = groupNames,
+            currentCount = categoryFiltered.size,
+            onCreate = { viewModel.createGroup(it) },
+            onGroupCurrent = { name ->
+                viewModel.assignGroup(categoryFiltered.map { it.id }, name)
+            },
+            onRename = { old, new -> viewModel.renameGroup(old, new) },
+            onDelete = { name ->
+                viewModel.deleteGroup(name)
+                if (selectedGroup == name) selectedGroup = null
+            },
+            onDismiss = { showGroupManage = false },
+        )
+    }
+    assignIds?.let { ids ->
+        AssignGroupDialog(
+            groups = groupNames,
+            count = ids.size,
+            onAssign = { group ->
+                viewModel.assignGroup(ids, group)
+                assignIds = null
+            },
+            onDismiss = { assignIds = null },
+        )
     }
 
     Scaffold(
@@ -314,7 +376,18 @@ fun SourceManageScreen(
                         onSelect = { selectedFormat = it },
                     )
                 }
-                // 内容分类筛选栏
+                // 用户自定义分组筛选栏（v1.9.3.0）
+                GroupFilterBar(
+                    groups = groupNames,
+                    counts = groupCounts,
+                    ungroupedCount = ungroupedCount,
+                    total = formatFiltered.size,
+                    selected = selectedGroup,
+                    onSelect = { selectedGroup = it },
+                    onCreate = { showGroupManage = true },
+                    onManage = { showGroupManage = true },
+                )
+                // 内容分类筛选栏（自动推断，与上面的用户分组互不冲突）
                 CategoryFilterBar(
                     categories = categories,
                     counts = grouped.mapValues { it.value.size },
@@ -335,12 +408,20 @@ fun SourceManageScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = {
-                        viewModel.setAllEnabled(displayedSources, true)
-                    }) { Text("全部启用") }
-                    TextButton(onClick = {
-                        viewModel.setAllEnabled(displayedSources, false)
-                    }) { Text("全部禁用") }
+                    if (selectionMode) {
+                        // 批量模式下把位置让给分组归类：勾选若干源后一次性放进同一组
+                        TextButton(
+                            enabled = selectedIds.isNotEmpty(),
+                            onClick = { assignIds = selectedIds.toList() },
+                        ) { Text("批量设分组") }
+                    } else {
+                        TextButton(onClick = {
+                            viewModel.setAllEnabled(displayedSources, true)
+                        }) { Text("全部启用") }
+                        TextButton(onClick = {
+                            viewModel.setAllEnabled(displayedSources, false)
+                        }) { Text("全部禁用") }
+                    }
                 }
                 // 源有效性检测（自动筛选无用源）
                 val testResults by viewModel.testResults.collectAsState()
@@ -495,6 +576,7 @@ fun SourceManageScreen(
                         onToggle = { viewModel.toggleEnabled(it) },
                         onEdit = { viewModel.openEditSource(it) },
                         onDelete = { viewModel.deleteSource(it) },
+                        onAssignGroup = { assignIds = listOf(it.id) },
                     )
                 } else {
                     val loginStates by viewModel.loginStates.collectAsState()
@@ -592,6 +674,7 @@ fun SourceManageScreen(
                                 onEdit = { viewModel.openEditSource(source) },
                                 onDelete = { viewModel.deleteSource(source) },
                                 onLogin = { loginTarget = source },
+                                onAssignGroup = { assignIds = listOf(source.id) },
                                 onLongClick = {
                                     selectionMode = true
                                     if (source.id !in selectedIds) selectedIds.add(source.id)
@@ -891,6 +974,7 @@ private fun SourceTableView(
     onToggle: (SourceInfo) -> Unit,
     onEdit: (SourceInfo) -> Unit,
     onDelete: (SourceInfo) -> Unit,
+    onAssignGroup: (SourceInfo) -> Unit = {},
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         // 表头
@@ -902,6 +986,7 @@ private fun SourceTableView(
         ) {
             TableCell("名称", 2.0f)
             TableCell("类型", 0.8f)
+            TableCell("分组", 1f)
             TableCell("状态", 1f)
             TableCell("启用", 0.9f)
             TableCell("操作", 1.4f)
@@ -918,6 +1003,11 @@ private fun SourceTableView(
                 ) {
                     TableCell(source.name, 2.0f)
                     TableCell(source.type.label(), 0.8f)
+                    TableCell(
+                        text = source.groupName.ifBlank { "未分组" },
+                        weight = 1.0f,
+                        onClick = { onAssignGroup(source) },
+                    )
                     val status = statusOf(source.id, testing, testResults, unreadable)
                     androidx.compose.foundation.layout.Box(modifier = Modifier.weight(1f)) {
                         SourceTestBadge(status)
@@ -940,13 +1030,19 @@ private fun SourceTableView(
 }
 
 @Composable
-private fun androidx.compose.foundation.layout.RowScope.TableCell(text: String, weight: Float) {
+private fun androidx.compose.foundation.layout.RowScope.TableCell(
+    text: String,
+    weight: Float,
+    onClick: (() -> Unit)? = null,
+) {
     Text(
         text = text,
         style = MaterialTheme.typography.bodyMedium,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.weight(weight),
+        modifier = Modifier
+            .weight(weight)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
     )
 }
 
@@ -1054,6 +1150,244 @@ private fun CategoryFilterBar(
     }
 }
 
+/** 「未分组」筛选项的内部 key（含 NUL，用户输入的名字不可能撞上） */
+private const val UNGROUPED_KEY = "\u0000__ungrouped__"
+
+/**
+ * 用户自定义分组筛选栏（v1.9.3.0）。
+ *
+ * 与下面那行「智能分类」是两套独立维度：分类按源名关键词自动推断、只读；
+ * 分组由用户新建 / 改名 / 删除，并且会直接成为搜索页的「按分组搜索」选项。
+ */
+@Composable
+private fun GroupFilterBar(
+    groups: List<String>,
+    counts: Map<String, Int>,
+    ungroupedCount: Int,
+    total: Int,
+    selected: String?,
+    onSelect: (String?) -> Unit,
+    onCreate: () -> Unit,
+    onManage: () -> Unit,
+) {
+    LazyRow(
+        modifier = Modifier.fillMaxWidth(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        item {
+            FilterChip(
+                selected = selected == null,
+                onClick = { onSelect(null) },
+                label = { Text("全部 $total") },
+            )
+        }
+        item {
+            FilterChip(
+                selected = selected == UNGROUPED_KEY,
+                onClick = { onSelect(if (selected == UNGROUPED_KEY) null else UNGROUPED_KEY) },
+                label = { Text("未分组 $ungroupedCount") },
+            )
+        }
+        items(groups) { group ->
+            FilterChip(
+                selected = selected == group,
+                onClick = { onSelect(if (selected == group) null else group) },
+                label = { Text("$group ${counts[group] ?: 0}") },
+            )
+        }
+        item {
+            FilterChip(
+                selected = false,
+                onClick = onCreate,
+                label = { Text("＋ 新建分组") },
+            )
+        }
+        item {
+            TextButton(onClick = onManage) { Text("管理") }
+        }
+    }
+}
+
+/** 分组管理：新建 / 重命名 / 删除，都在这一个弹窗里完成（v1.9.3.0） */
+@Composable
+private fun GroupManageDialog(
+    groups: List<String>,
+    /** 当前筛选结果里的源数量（用于「一键把这一批归成一组」） */
+    currentCount: Int,
+    onCreate: (String) -> Unit,
+    onGroupCurrent: (String) -> Unit,
+    onRename: (String, String) -> Unit,
+    onDelete: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var input by remember { mutableStateOf("") }
+    var renameTarget by remember { mutableStateOf<String?>(null) }
+    var deleteTarget by remember { mutableStateOf<String?>(null) }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("管理源分组") },
+        text = {
+            Column {
+                Text(
+                    text = "分组可以在搜索页一次选中整组源。删除分组只会把源移回「未分组」，不会删源。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                if (groups.isEmpty()) {
+                    Text(
+                        text = "还没有分组，在下面输入名字新建一个。",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 220.dp)) {
+                        items(groups) { group ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = group,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                TextButton(onClick = { renameTarget = group }) { Text("重命名") }
+                                TextButton(onClick = { deleteTarget = group }) {
+                                    Text("删除", color = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                androidx.compose.material3.OutlinedTextField(
+                    value = input,
+                    onValueChange = { input = it },
+                    label = { Text("新分组名") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                // 同一站点常被导入十几个变体：先用搜索框筛出这一批，再一键建组并归类，
+                // 之后就能在搜索页直接「按分组搜索」（v1.9.3.0）
+                if (currentCount > 0) {
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(
+                        enabled = input.isNotBlank(),
+                        onClick = {
+                            onGroupCurrent(input)
+                            input = ""
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("把当前筛选的 $currentCount 个源建为一组并归入")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = input.isNotBlank(),
+                onClick = {
+                    onCreate(input)
+                    input = ""
+                },
+            ) { Text("新建") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
+
+    renameTarget?.let { old ->
+        var name by remember(old) { mutableStateOf(old) }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("重命名分组") },
+            text = {
+                androidx.compose.material3.OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("分组名") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = name.isNotBlank(),
+                    onClick = {
+                        onRename(old, name)
+                        renameTarget = null
+                    },
+                ) { Text("保存") }
+            },
+            dismissButton = { TextButton(onClick = { renameTarget = null }) { Text("取消") } },
+        )
+    }
+
+    deleteTarget?.let { name ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("删除分组「$name」") },
+            text = { Text("组内源会移回「未分组」，源本身不会被删除。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDelete(name)
+                    deleteTarget = null
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } },
+        )
+    }
+}
+
+/** 给一个 / 一批源设置分组（v1.9.3.0）；也支持直接输入新名字「新建并放入」 */
+@Composable
+private fun AssignGroupDialog(
+    groups: List<String>,
+    count: Int,
+    onAssign: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var input by remember { mutableStateOf("") }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("设置分组（$count 个源）") },
+        text = {
+            Column {
+                Text(
+                    text = "选一个已有分组，或输入新名字直接新建并放入。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                LazyColumn(modifier = Modifier.heightIn(max = 220.dp)) {
+                    item {
+                        TextButton(onClick = { onAssign("") }) { Text("未分组（移出分组）") }
+                    }
+                    items(groups) { group ->
+                        TextButton(onClick = { onAssign(group) }) { Text(group) }
+                    }
+                }
+                androidx.compose.material3.OutlinedTextField(
+                    value = input,
+                    onValueChange = { input = it },
+                    label = { Text("新分组名") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = input.isNotBlank(),
+                onClick = { onAssign(input) },
+            ) { Text("新建并放入") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun SourceCard(
@@ -1072,6 +1406,8 @@ private fun SourceCard(
     loggingIn: Boolean = false,
     /** 点击「登录」按钮（仅 Venera 源） */
     onLogin: () -> Unit = {},
+    /** 点击分组标签：把这个源放进某个用户分组（v1.9.3.0） */
+    onAssignGroup: () -> Unit = {},
     /** 手动排序模式（v1.5.8.0；v1.5.9.0 起为拖拽）：显示拖拽把手 */
     manualMode: Boolean = false,
     /** 是否正在被拖拽（拖拽中提升阴影） */
@@ -1163,6 +1499,24 @@ private fun SourceCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                )
+                // 分组标签本身就是「设置分组」的入口：未分组的源也常驻一行，
+                // 免得用户找不到从哪里把源加进新建的分组（v1.9.3.0）
+                Text(
+                    text = if (source.groupName.isBlank()) {
+                        "分组：未分组（点此设置）"
+                    } else {
+                        "分组：${source.groupName}"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (source.groupName.isBlank()) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.clickable(onClick = onAssignGroup),
                 )
                 if (source.desc.isNotEmpty()) {
                     Spacer(Modifier.height(2.dp))

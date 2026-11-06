@@ -3,6 +3,7 @@ package com.novelreader.ui.components
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -25,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.novelreader.core.util.SourceGroups
 import com.novelreader.domain.model.SourceInfo
 
 /**
@@ -33,6 +35,10 @@ import com.novelreader.domain.model.SourceInfo
  * 早先是横向一排单选 chip：源一多就得一路横滑，而且只能选一个。
  * 现在改成**下拉复选**：点标题展开全部源、勾选即时生效，可同时选多个源；
  * 一个都不选 = 全部源（不额外限制）。
+ *
+ * v1.9.3.0 追加「按分组搜索」：源管理页建好的用户分组直接列在菜单顶部，
+ * 选一组等价于一次勾上组内所有**已启用**源。底层搜索本来就接受 `Set<String>`，
+ * 所以这里只负责把分组展开成 id 集合，不需要新增搜索接口。
  */
 @Composable
 fun SourceFilterDropdown(
@@ -42,11 +48,20 @@ fun SourceFilterDropdown(
     modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(false) }
+
+    // 展开规则在 SourceGroups（纯逻辑，可单测）：只收已启用源、空分组不出现
+    val groups = remember(sources) { SourceGroups.of(sources) }
+    // 当前选中的 id 集合若与某组完全一致，标题直接显示组名，比「已选 12 个源」更好认
+    val matchedGroup = remember(groups, selectedIds) {
+        SourceGroups.matchingGroup(groups, selectedIds)
+    }
     val label = when {
+        matchedGroup != null -> "分组：$matchedGroup"
         selectedIds.isEmpty() -> "全部源"
         selectedIds.size == 1 -> sources.firstOrNull { it.id in selectedIds }?.name ?: "1 个源"
         else -> "已选 ${selectedIds.size} 个源"
     }
+
     Box(modifier) {
         Row(
             modifier = Modifier
@@ -79,17 +94,56 @@ fun SourceFilterDropdown(
                 onClick = { onSelectionChange(emptySet()) },
                 leadingIcon = { Checkbox(checked = selectedIds.isEmpty(), onCheckedChange = null) },
             )
-            HorizontalDivider()
+            if (groups.isNotEmpty()) {
+                HorizontalDivider()
+                Text(
+                    text = "按分组搜索",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+                groups.forEach { (name, ids) ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = "$name（${ids.size} 个源）",
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                        onClick = {
+                            onSelectionChange(ids)
+                            expanded = false
+                        },
+                        leadingIcon = {
+                            Checkbox(checked = matchedGroup == name, onCheckedChange = null)
+                        },
+                    )
+                }
+                HorizontalDivider()
+            }
             sources.forEach { source ->
                 val checked = source.id in selectedIds
                 DropdownMenuItem(
                     text = {
-                        Text(
-                            text = source.name,
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        Column {
+                            Text(
+                                text = source.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            if (source.groupName.isNotBlank()) {
+                                Text(
+                                    text = "分组：${source.groupName}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
                     },
                     // 不关闭面板：连续勾选多个源时不用反复展开
                     onClick = {

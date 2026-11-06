@@ -303,7 +303,10 @@ class SourceManager(
             version = "legado",
             author = src.group,
             desc = src.comment,
-            baseUrl = src.url,
+            // 与 LegadoSourceAdapter 用同一份规范化：列表展示、判重、搜索页按站点
+            // 归组都读这个字段，脏地址不能在两处口径不一致（v1.9.3.0）
+            baseUrl = com.novelreader.core.util.SourceUrlNormalizer.normalize(src.url)
+                .ifEmpty { src.url },
             format = SourceFormat.LEGADO,
         )
         return info.copy(
@@ -360,6 +363,13 @@ class SourceManager(
     fun setSourceSortOrder(sourceId: String, sortOrder: Int) {
         sourceMap[sourceId]?.let { info ->
             sourceMap[sourceId] = info.copy(sortOrder = sortOrder)
+        }
+    }
+
+    /** 设置源的用户自定义分组（v1.9.3.0）；空串 = 未分组 */
+    fun setSourceGroup(sourceId: String, group: String) {
+        sourceMap[sourceId]?.let { info ->
+            sourceMap[sourceId] = info.copy(groupName = group)
         }
     }
 
@@ -468,13 +478,16 @@ class SourceManager(
             }
         }
 
-        // 构建新的 info：沿用原 id、启停状态与分类
+        // 构建新的 info：沿用原 id、启停状态、分类与用户分组。
+        // 分组是用户手改的，重新解析规则时绝不能被解析器算出来的空值冲掉（v1.9.3.0）。
         val newInfo = (newAdapter.info).copy(
             id = oldInfo.id,
             enabled = oldInfo.enabled,
             category = oldInfo.category.ifBlank {
                 com.novelreader.source.category.SourceCategory.classify(newAdapter.info)
             },
+            groupName = oldInfo.groupName,
+            sortOrder = oldInfo.sortOrder,
         )
 
         // 替换注册（先注销旧，再注册新，保证 adapter 与 info 一致）

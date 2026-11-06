@@ -41,7 +41,10 @@ object SourceDedupe {
 
     /** 归一化站点地址为判重键 */
     fun urlKey(baseUrl: String): String {
-        var u = baseUrl.trim().lowercase()
+        // v1.9.3.0：先走统一的地址规范化，把 `[图片]` 前缀、「已校验」后缀这类
+        // 手工标记也归一掉 —— 否则同一站点的两个变体会因为备注不同判不成重复。
+        var u = com.novelreader.core.util.SourceUrlNormalizer.normalize(baseUrl)
+            .ifEmpty { baseUrl.trim() }.lowercase()
         u = u.substringBefore('#')                       // 去掉 # 片段
         u = u.removePrefix("https://").removePrefix("http://")
         while (u.endsWith("/")) u = u.dropLast(1)        // 去掉全部结尾斜杠

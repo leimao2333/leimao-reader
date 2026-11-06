@@ -32,11 +32,14 @@ class LegadoSourceAdapter(
 ) : SourceAdapter {
 
     private val headers: Map<String, String> = source.parseHeaders()
-    // 清理 baseUrl：去掉 URL 片段（#…）与末尾斜杠。
-    // 源包里不少源写成 `https://site.com#🎃` / `#pb1101` 这类带标记的地址；
-    // 片段保留会让 `{{baseUrl}}/path` 模板拼出 `site.com#🎃/path` —— 片段之后
-    // 全部被当作锚点，真实请求只会打到站点根，目录/正文集体取不到（本次修复）。
-    private val baseUrl: String = source.url.trim().substringBefore('#').trimEnd('/')
+    // 清理 baseUrl：去掉 URL 片段（#…）、末尾斜杠，以及源包里常见的非 URL 标记
+    // （`[图片]` 前缀、「已校验 / 已整理」中文后缀、缺协议等）。片段保留会让
+    // `{{baseUrl}}/path` 拼出 `site.com#🎃/path`；中文混进 host 则会让 URI 解析失败，
+    // 目录 / 正文的相对地址与源级请求头注册一起失效（v1.9.3.0）。
+    // 规范化不出合法域名时退回原来的裁法，保证不比修复前更差。
+    private val baseUrl: String =
+        com.novelreader.core.util.SourceUrlNormalizer.normalize(source.url)
+            .ifEmpty { source.url.trim().substringBefore('#').trimEnd('/') }
 
     init {
         // 源级请求头注册进封面注册表：书架/搜索/详情的封面由 Coil 直接加载，

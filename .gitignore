@@ -1,5 +1,6 @@
-# Gradle
+# Gradle / Kotlin 编译会话缓存
 .gradle/
+.kotlin/
 build/
 */build/
 

@@ -30,10 +30,12 @@ fun SearchLoadMoreFooter(
     total: Int,
     onLoadMore: () -> Unit = {},
 ) {
-    // 页脚即「触底哨兵」（v1.8.8.0）：它一出现在屏幕上就自动接着问下一页，
-    // 不再依赖「可见项下标变化」那种会卡死的事件源（不增长就再也不触发）。
-    LaunchedEffect(loading, hasMore) {
-        if (!loading && hasMore) onLoadMore()
+    // v1.9.4.0：这里原来把 loading 放进 key，等于「每翻完一页 → loading 由 true 变 false
+    // → effect 重跑 → 立刻再问下一页」，形成永不停歇的自动翻页，UI 上就是「搜索结束后
+    // 一直在『正在加载更多…』、像又重新开始搜」。现在只在 hasMore 从 false→true
+    // （一轮搜索收尾）时自动补一页，后续交给列表触底哨兵 [onNearEnd] 驱动。
+    LaunchedEffect(hasMore) {
+        if (hasMore) onLoadMore()
     }
     Row(
         modifier = Modifier

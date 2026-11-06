@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
@@ -84,7 +85,9 @@ class NovelDetailViewModel(
     private val _changeSourceProgress = MutableStateFlow<String?>(null)
     val changeSourceProgress: StateFlow<String?> = _changeSourceProgress.asStateFlow()
 
-    fun load(item: MediaItem) {
+    fun load(item: MediaItem) = loadInternal(item, allowAutoFallback = true)
+
+    private fun loadInternal(item: MediaItem, allowAutoFallback: Boolean) {
         _detail.value = item
         viewModelScope.launch {
             _loading.value = true
@@ -96,6 +99,22 @@ class NovelDetailViewModel(
                 val progressDeferred = launch { loadProgressFlag(item) }
                 val detailed = loadDetail(item)
                 loadChapters(detailed)
+                // v1.9.4.0：聚合源包里大量老变体源「搜得到书、目录却是 0 章」，
+                // 用户点开只看到一句「该源未返回任何章节」，还得手点换源再等一轮全量搜索。
+                // 这里在目录为空时自动找一本同名且能取到目录的书，直接就地换过去。
+                if (allowAutoFallback && _chapters.value.isEmpty()) {
+                    _notice.value = "当前源没有章节，正在自动查找可读源…"
+                    val fallback = findReadableSource(detailed)
+                    if (fallback != null) {
+                        _notice.value = "已自动切换到可读源「${fallback.sourceName.ifBlank { fallback.title }}」"
+                        // 在当前协程里就地续上，不递归 launch（否则外层 finally 会提前关掉 loading）
+                        _detail.value = fallback
+                        val detailed2 = loadDetail(fallback)
+                        loadChapters(detailed2)
+                    } else {
+                        _notice.value = null
+                    }
+                }
                 metaDeferred.join()
                 progressDeferred.join()
             } finally {
@@ -104,6 +123,40 @@ class NovelDetailViewModel(
                 _loading.value = false
             }
         }
+    }
+
+    /**
+     * 找一本同名、且能取到目录的书（v1.9.4.0）。
+     *
+     * 复用「换源」的同名 + 作者判定，但只试前几个候选、每个有独立超时，
+     * 整体 25 秒封顶；找不到就原样返回 null，页面照旧显示 0 章提示，不会更差。
+     */
+    private suspend fun findReadableSource(current: MediaItem): MediaItem? {
+        val title = current.title.trim()
+        if (title.isBlank()) return null
+        val results = mutableListOf<MediaItem>()
+        runCatching {
+            withTimeoutOrNull(25_000L) {
+                contentRepository.searchWithProgress(
+                    type = SourceType.NOVEL,
+                    keyword = title,
+                    page = 1,
+                    concurrency = 8,
+                    fuzzyEnabled = true,
+                ).collect { state ->
+                    results.clear()
+                    results.addAll(state.results)
+                }
+            }
+        }
+        val candidates = filterCandidates(results, current, title).take(6)
+        for (cand in candidates) {
+            val chapters = runCatching {
+                withTimeoutOrNull(6_000L) { contentRepository.chapterList(cand) }
+            }.getOrNull()
+            if (!chapters.isNullOrEmpty()) return cand
+        }
+        return null
     }
 
     /** 是否有阅读进度（按钮文案用） */

@@ -739,6 +739,10 @@ class SettingsViewModel(
     private val _searchConcurrency = MutableStateFlow(PreferencesManager.DEFAULT_SEARCH_CONCURRENCY)
     val searchConcurrency: StateFlow<Int> = _searchConcurrency.asStateFlow()
 
+    /** 「全部源」搜索时每个站点最多问几个源（v1.9.4.0，0 = 不限流） */
+    private val _searchSiteLimit = MutableStateFlow(PreferencesManager.DEFAULT_SEARCH_SITE_LIMIT)
+    val searchSiteLimit: StateFlow<Int> = _searchSiteLimit.asStateFlow()
+
     /**
      * 标签搜索并发（v1.8.8.4）。
      *
@@ -1076,6 +1080,9 @@ class SettingsViewModel(
             preferencesManager.searchConcurrencyFlow.collect { _searchConcurrency.value = it }
         }
         viewModelScope.launch {
+            preferencesManager.searchSiteLimitFlow.collect { _searchSiteLimit.value = it }
+        }
+        viewModelScope.launch {
             preferencesManager.tagSearchConcurrencyFlow.collect {
                 _tagSearchConcurrency.value = it
             }
@@ -1255,6 +1262,11 @@ class SettingsViewModel(
 
     fun setSearchConcurrency(value: Int) {
         viewModelScope.launch { preferencesManager.setSearchConcurrency(value) }
+    }
+
+    /** 同站点搜索源上限（v1.9.4.0），下一次搜索生效 */
+    fun setSearchSiteLimit(value: Int) {
+        viewModelScope.launch { preferencesManager.setSearchSiteLimit(value) }
     }
 
     /** 标签搜索并发（v1.8.8.4）：下一次标签搜索生效 */

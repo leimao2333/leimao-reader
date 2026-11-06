@@ -49,14 +49,21 @@ fun SourceFilterDropdown(
 ) {
     var expanded by remember { mutableStateOf(false) }
 
-    // 展开规则在 SourceGroups（纯逻辑，可单测）：只收已启用源、空分组不出现
-    val groups = remember(sources) { SourceGroups.of(sources) }
+    // 展开规则在 SourceGroups（纯逻辑，可单测）：只收已启用源、空分组不出现。
+    // v1.9.4.0 起自动推断的类别也作为只读「自动分组」列出来，可以整类一起搜。
+    val userGroups = remember(sources) { SourceGroups.of(sources) }
+    val autoGroups = remember(sources) { SourceGroups.autoOf(sources) }
+    val allGroups = remember(userGroups, autoGroups) { userGroups + autoGroups }
     // 当前选中的 id 集合若与某组完全一致，标题直接显示组名，比「已选 12 个源」更好认
-    val matchedGroup = remember(groups, selectedIds) {
-        SourceGroups.matchingGroup(groups, selectedIds)
+    val matchedGroup = remember(allGroups, selectedIds) {
+        SourceGroups.matchingGroup(allGroups, selectedIds)
     }
     val label = when {
-        matchedGroup != null -> "分组：$matchedGroup"
+        matchedGroup != null -> if (SourceGroups.isAutomatic(matchedGroup)) {
+            "分类：${SourceGroups.categoryOf(matchedGroup)}"
+        } else {
+            "分组：$matchedGroup"
+        }
         selectedIds.isEmpty() -> "全部源"
         selectedIds.size == 1 -> sources.firstOrNull { it.id in selectedIds }?.name ?: "1 个源"
         else -> "已选 ${selectedIds.size} 个源"
@@ -94,7 +101,7 @@ fun SourceFilterDropdown(
                 onClick = { onSelectionChange(emptySet()) },
                 leadingIcon = { Checkbox(checked = selectedIds.isEmpty(), onCheckedChange = null) },
             )
-            if (groups.isNotEmpty()) {
+            if (userGroups.isNotEmpty()) {
                 HorizontalDivider()
                 Text(
                     text = "按分组搜索",
@@ -102,29 +109,38 @@ fun SourceFilterDropdown(
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                 )
-                groups.forEach { (name, ids) ->
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                text = "$name（${ids.size} 个源）",
-                                style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        },
-                        onClick = {
-                            onSelectionChange(ids)
-                            expanded = false
-                        },
-                        leadingIcon = {
-                            Checkbox(checked = matchedGroup == name, onCheckedChange = null)
-                        },
+                userGroups.forEach { (name, ids) ->
+                    GroupMenuItem(
+                        label = name,
+                        count = ids.size,
+                        checked = matchedGroup == name,
+                        onClick = { onSelectionChange(ids); expanded = false },
                     )
                 }
+            }
+            if (autoGroups.isNotEmpty()) {
+                HorizontalDivider()
+                Text(
+                    text = "按自动分类搜索",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+                autoGroups.forEach { (name, ids) ->
+                    GroupMenuItem(
+                        label = SourceGroups.categoryOf(name),
+                        count = ids.size,
+                        checked = matchedGroup == name,
+                        onClick = { onSelectionChange(ids); expanded = false },
+                    )
+                }
+            }
+            if (userGroups.isNotEmpty() || autoGroups.isNotEmpty()) {
                 HorizontalDivider()
             }
             sources.forEach { source ->
                 val checked = source.id in selectedIds
+
                 DropdownMenuItem(
                     text = {
                         Column {
@@ -156,4 +172,26 @@ fun SourceFilterDropdown(
             }
         }
     }
+}
+
+/** 一个分组 / 自动分类条目：选中即把整组源 id 交给上层 */
+@Composable
+private fun GroupMenuItem(
+    label: String,
+    count: Int,
+    checked: Boolean,
+    onClick: () -> Unit,
+) {
+    DropdownMenuItem(
+        text = {
+            Text(
+                text = "$label（$count 个源）",
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+        onClick = onClick,
+        leadingIcon = { Checkbox(checked = checked, onCheckedChange = null) },
+    )
 }

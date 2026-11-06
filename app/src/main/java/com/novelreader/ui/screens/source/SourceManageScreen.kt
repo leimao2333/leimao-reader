@@ -86,8 +86,8 @@ fun SourceManageScreen(
     var searchKeyword by remember { mutableStateOf("") }
     // 类型筛选：null = 全部类型
     var selectedType by remember { mutableStateOf<SourceType?>(null) }
-    // 内容分类筛选：null = 全部分类
-    var selectedCategory by remember { mutableStateOf<String?>(null) }
+    // 自动分类不再是独立的一层筛选（v1.9.4.0）：它们以「分类·xxx」的形式
+    // 并进 selectedGroup，和分组行、搜索页的按组搜索共用同一份选择状态。
     // 漫画源二级格式筛选（v1.3.0.0）：选中「漫画」类型后出现下级菜单（legado / Venera）
     var selectedFormat by remember { mutableStateOf<SourceFormat?>(null) }
     // 排序方式
@@ -121,7 +121,10 @@ fun SourceManageScreen(
     // 分组被删掉或改名后，旧的筛选值会指向一个不存在的组 —— 自动回到「全部」，
     // 否则用户看到的是空列表却找不到原因（v1.9.3.0）
     LaunchedEffect(groupNames, selectedGroup) {
-        if (selectedGroup != null && selectedGroup != UNGROUPED_KEY && selectedGroup !in groupNames) {
+        if (selectedGroup != null && selectedGroup != UNGROUPED_KEY &&
+            !com.novelreader.core.util.SourceGroups.isAutomatic(selectedGroup) &&
+            selectedGroup !in groupNames
+        ) {
             selectedGroup = null
         }
     }
@@ -157,32 +160,42 @@ fun SourceManageScreen(
         if (selectedType != SourceType.COMIC || selectedFormat == null) typeFiltered
         else typeFiltered.filter { it.format == selectedFormat }
     }
-    // 分组筛选（v1.9.3.0）：与类型 / 格式 / 自动分类是**叠加**关系，不是替换。
+    // 分组筛选（v1.9.3.0）：与类型 / 格式是**叠加**关系，不是替换。
     // groupNames 里可能含刚建好还没有源的空分组，所以计数以名字清单为准。
     val groupCounts = remember(formatFiltered, groupNames) {
         val counts = formatFiltered.groupingBy { it.groupName.trim() }.eachCount()
         groupNames.associateWith { counts[it] ?: 0 }
     }
+    // v1.9.4.0：自动推断的类别也并进分组体系，作为只读「自动分组」出现在同一行、
+    // 并在搜索下拉里可以整类一起搜。它们不写进用户分组名清单，不能被重命名 / 删除。
+    val autoGroupCounts = remember(formatFiltered) {
+        formatFiltered.groupingBy {
+            com.novelreader.core.util.SourceGroups.AUTO_PREFIX +
+                it.category.trim().ifBlank { "未分类" }
+        }.eachCount()
+    }
+    val autoGroupNames = remember(autoGroupCounts) { autoGroupCounts.keys.sorted() }
     val ungroupedCount = remember(formatFiltered) {
         formatFiltered.count { it.groupName.isBlank() }
     }
     val groupFiltered = remember(formatFiltered, selectedGroup) {
-        when (selectedGroup) {
-            null -> formatFiltered
-            UNGROUPED_KEY -> formatFiltered.filter { it.groupName.isBlank() }
-            else -> formatFiltered.filter { it.groupName.trim() == selectedGroup }
+        val sel = selectedGroup
+        when {
+            sel == null -> formatFiltered
+            sel == UNGROUPED_KEY -> formatFiltered.filter { it.groupName.isBlank() }
+            com.novelreader.core.util.SourceGroups.isAutomatic(sel) -> {
+                val cat = com.novelreader.core.util.SourceGroups.categoryOf(sel)
+                formatFiltered.filter { it.category.trim().ifBlank { "未分类" } == cat }
+            }
+            else -> formatFiltered.filter { it.groupName.trim() == sel }
         }
     }
     val grouped = remember(groupFiltered) { viewModel.groupByCategory(groupFiltered) }
     val categories = remember(groupFiltered) { viewModel.sortedCategories(groupFiltered) }
-    val categoryFiltered = remember(groupFiltered, selectedCategory) {
-        if (selectedCategory == null) groupFiltered
-        else grouped[selectedCategory] ?: emptyList()
-    }
-    val displayedSources = remember(categoryFiltered, sortOrder) {
+    val displayedSources = remember(groupFiltered, sortOrder) {
         // 手动排序模式下强制展示全部源：拖拽排序需要看到完整列表才有意义，
         // 否则筛选会把部分源排除在外，拖拽持久化时会把它们的手动序号清空（v1.5.9.0）。
-        val base = if (sortOrder == SourceSortOrder.MANUAL) sources else categoryFiltered
+        val base = if (sortOrder == SourceSortOrder.MANUAL) sources else groupFiltered
         viewModel.sortSources(base, sortOrder)
     }
 
@@ -190,10 +203,10 @@ fun SourceManageScreen(
     if (showGroupManage) {
         GroupManageDialog(
             groups = groupNames,
-            currentCount = categoryFiltered.size,
+            currentCount = groupFiltered.size,
             onCreate = { viewModel.createGroup(it) },
             onGroupCurrent = { name ->
-                viewModel.assignGroup(categoryFiltered.map { it.id }, name)
+                viewModel.assignGroup(groupFiltered.map { it.id }, name)
             },
             onRename = { old, new -> viewModel.renameGroup(old, new) },
             onDelete = { name ->
@@ -376,10 +389,12 @@ fun SourceManageScreen(
                         onSelect = { selectedFormat = it },
                     )
                 }
-                // 用户自定义分组筛选栏（v1.9.3.0）
+                // 分组筛选栏（v1.9.3.0）：用户自建分组 + 自动推断类别（只读），共一行
                 GroupFilterBar(
                     groups = groupNames,
                     counts = groupCounts,
+                    autoGroups = autoGroupNames,
+                    autoCounts = autoGroupCounts,
                     ungroupedCount = ungroupedCount,
                     total = formatFiltered.size,
                     selected = selectedGroup,
@@ -387,12 +402,19 @@ fun SourceManageScreen(
                     onCreate = { showGroupManage = true },
                     onManage = { showGroupManage = true },
                 )
-                // 内容分类筛选栏（自动推断，与上面的用户分组互不冲突）
+                // 自动分类筛选栏：与上面的自动组 chips 共用 selectedGroup，
+                // 点哪边都会同步高亮（v1.9.4.0）
                 CategoryFilterBar(
                     categories = categories,
                     counts = grouped.mapValues { it.value.size },
-                    selected = selectedCategory,
-                    onSelect = { selectedCategory = it },
+                    selected = selectedGroup
+                        ?.takeIf { com.novelreader.core.util.SourceGroups.isAutomatic(it) }
+                        ?.let { com.novelreader.core.util.SourceGroups.categoryOf(it) },
+                    onSelect = { cat ->
+                        selectedGroup = cat?.let {
+                            com.novelreader.core.util.SourceGroups.AUTO_PREFIX + it
+                        }
+                    },
                 )
                 // 一键全启用 / 全禁用 + 启用统计
                 Row(
@@ -1163,6 +1185,9 @@ private const val UNGROUPED_KEY = "\u0000__ungrouped__"
 private fun GroupFilterBar(
     groups: List<String>,
     counts: Map<String, Int>,
+    /** 自动推断类别，作为只读分组并进来（v1.9.4.0） */
+    autoGroups: List<String> = emptyList(),
+    autoCounts: Map<String, Int> = emptyMap(),
     ungroupedCount: Int,
     total: Int,
     selected: String?,
@@ -1195,6 +1220,18 @@ private fun GroupFilterBar(
                 selected = selected == group,
                 onClick = { onSelect(if (selected == group) null else group) },
                 label = { Text("$group ${counts[group] ?: 0}") },
+            )
+        }
+        items(autoGroups) { group ->
+            FilterChip(
+                selected = selected == group,
+                onClick = { onSelect(if (selected == group) null else group) },
+                label = {
+                    Text(
+                        "${com.novelreader.core.util.SourceGroups.categoryOf(group)}·自动 " +
+                            "${autoCounts[group] ?: 0}",
+                    )
+                },
             )
         }
         item {

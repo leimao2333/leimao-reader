@@ -11,6 +11,38 @@ import com.novelreader.domain.model.SourceInfo
 object SourceGroups {
 
     /**
+     * 自动分类分组的内部前缀（v1.9.4.0）。
+     *
+     * 按源名关键词推断出来的分类（综合 / 二次元 / 影视…）不算用户建的分组，
+     * 但用户要求它们也能「当一组来搜」。加前缀既避免与用户同名分组撞车，
+     * 也让 UI / ViewModel 能一眼区分「只读、随源自动变化」和「可编辑」两类。
+     */
+    const val AUTO_PREFIX = "分类·"
+
+    fun isAutomatic(name: String?): Boolean = name?.startsWith(AUTO_PREFIX) == true
+
+    /** 去掉前缀，拿到原始分类名 */
+    fun categoryOf(name: String): String = name.removePrefix(AUTO_PREFIX)
+
+    /**
+     * 按自动分类展开（v1.9.4.0）。与 [of] 口径一致：只收已启用源、空组不出现。
+     * 分类为空的源归到「未分类」。
+     */
+    fun autoOf(sources: List<SourceInfo>): Map<String, Set<String>> {
+        val grouped = LinkedHashMap<String, MutableSet<String>>()
+        sources.forEach { source ->
+            if (!source.enabled) return@forEach
+            val name = AUTO_PREFIX + source.category.trim().ifEmpty { "未分类" }
+            grouped.getOrPut(name) { LinkedHashSet() }.add(source.id)
+        }
+        return grouped.mapValues { (_, ids) -> ids.toSet() }.toSortedMap()
+    }
+
+    /** 用户分组 + 自动分类分组，供下拉标题匹配 */
+    fun allOf(sources: List<SourceInfo>): Map<String, Set<String>> =
+        of(sources) + autoOf(sources)
+
+    /**
      * 把源列表展开成「分组名 → 该组可用源 id 集合」，按分组名排序。
      *
      * 只收**已启用**且带分组名的源：

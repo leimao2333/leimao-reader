@@ -106,21 +106,56 @@ class ContentRepositoryImpl(
                     sourceManager.getAdapter(info.id)?.let { info to it }
                 }
 
-        val total = adapters.size
+        // v1.9.4.0：只在「全部源」时按站点根域**交错排序**。同一站点被导入几十个
+        // 新旧变体时，它们连续排在队列里会把并发槽与 45 秒整体时限吃光（真机实测
+        // 2434 个源只来得及问 159 个）。交错后先问每个站点的最优源，再回头问第二个，
+        // 时限到了也已经覆盖过更多不同站点。**默认不删任何源** —— 实测按规则长度
+        // 截断会把能出结果的变体挤掉，结果反而从 4 条变 0 条。
+        // 手动选了单源 / 多选 / 分组时完全不干预。
+        val siteOf: (Pair<SourceInfo, com.novelreader.domain.model.SourceAdapter>) -> String =
+            { (info, _) -> com.novelreader.core.util.SourceUrlNormalizer.rootDomain(info.baseUrl) }
+        val qualityOf: (Pair<SourceInfo, com.novelreader.domain.model.SourceAdapter>) -> Int =
+            { (info, _) -> sourceManager.getRawContent(info.id)?.length ?: 0 }
+        val siteLimited = if (sourceIds == null) {
+            val perSite = preferencesManager?.searchSiteLimitFlow?.first()
+                ?: com.novelreader.core.preferences.PreferencesManager.DEFAULT_SEARCH_SITE_LIMIT
+            var prepared = com.novelreader.core.util.SourceSiteLimiter.interleave(
+                adapters, siteOf, qualityOf,
+            )
+            if (perSite > 0) {
+                val before = prepared.size
+                prepared = com.novelreader.core.util.SourceSiteLimiter.limit(
+                    prepared, perSite, siteOf, qualityOf,
+                )
+                if (prepared.size != before) {
+                    android.util.Log.i(
+                        "SearchSiteLimit",
+                        "全部源搜索：$before → ${prepared.size}（每站最多 $perSite 个）",
+                    )
+                }
+            }
+            android.util.Log.i(
+                "SearchSiteLimit",
+                "全部源搜索：按站点交错 ${prepared.size} 个源（每站上限 $perSite，0 = 不删源）",
+            )
+            prepared
+        } else {
+            adapters
+        }
 
         // v1.5.8.0「优化搜索响应」：18+ 成人源排到搜索队列**末尾**，普通源先搜先上屏。
         // 这样搜索响应更快、普通结果先出；成人源结果最后统一沉底。
         // 同时记录成人源 id 集合，用于最终结果把成人内容沉底。
-        val adultSourceIds = adapters.map { it.first }
+        val adultSourceIds = siteLimited.map { it.first }
             .filter { com.novelreader.source.category.SourceAdults.isAdult(it) }
             .map { it.id }
             .toSet()
         // v1.7.5.0：默认「隐藏成人内容」时**根本不搜**成人源（既省请求也彻底不出成人结果）。
         val hideAdult = preferencesManager?.hideAdultFlow?.first() ?: true
         val effectiveAdapters = if (hideAdult) {
-            adapters.filter { (info, _) -> info.id !in adultSourceIds }
+            siteLimited.filter { (info, _) -> info.id !in adultSourceIds }
         } else {
-            adapters
+            siteLimited
         }
         val orderedAdapters = effectiveAdapters.sortedBy { (info, _) -> info.id in adultSourceIds }
         val effectiveTotal = orderedAdapters.size
@@ -250,7 +285,9 @@ class ContentRepositoryImpl(
         emit(
             SearchState(
                 results = finalResults,
-                searchedCount = total,
+                // 用实际参与搜索的源数，别再拿限流 / 成人过滤之前的总数，
+                // 否则进度条在收尾时会从「159/N」跳到一个对不上的数字（v1.9.4.0）
+                searchedCount = effectiveTotal,
                 totalCount = effectiveTotal,
                 currentSource = "",
                 isSearching = false,

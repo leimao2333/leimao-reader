@@ -804,10 +804,29 @@
   - 涉及：`ui/components/SourceFilterDropdown.kt`、`ui/screens/novel/NovelSearchViewModel.kt`、`ui/screens/comic/ComicSearchViewModel.kt`、`ui/screens/video/VideoSearchViewModel.kt`、`ui/screens/tag/TagSearchViewModel.kt`、`domain/repository/Repository.kt`。
 
 - [x] **64. 同源站点变体源的地址规范化与一键归类** ✅ v1.9.3.0
-  - 背景：真机上同一个轻小说站点被导入了三十多个变体源，其中若干个 `bookSourceUrl` 带 `[图片]` 前缀、「已校验 / 已整理」中文后缀，或干脆没写协议；宿主原来只裁 `#` 备注，`java.net.URI` 解析不出 host → `{{baseUrl}}/path` 模板、目录 / 正文相对地址、源级请求头按 host 注册（防盗链）一起失效，表现是「搜得到、点进去却没内容」。
+  - 背景：真机上同一个小说站点被导入了三十多个变体源，其中若干个 `bookSourceUrl` 带 `[图片]` 前缀、「已校验 / 已整理」中文后缀，或干脆没写协议；宿主原来只裁 `#` 备注，`java.net.URI` 解析不出 host → `{{baseUrl}}/path` 模板、目录 / 正文相对地址、源级请求头按 host 注册（防盗链）一起失效，表现是「搜得到、点进去却没内容」。
   - 落地：新增纯函数 `SourceUrlNormalizer`（裁标记 / 中文后缀 / 补协议 / 校验 host / 取根域），`LegadoSourceAdapter.baseUrl`、`SourceManager.toSourceInfo`、`SourceDedupe.urlKey` 三处统一口径；规范化不出合法域名时退回原值，保证不比修复前更差。单测覆盖真机上见到的全部脏写法。
   - 顺带：分组管理弹窗加「把当前筛选的 N 个源建为一组并归入」—— 搜索框筛出这一批变体后一键归类，就能在搜索页直接「按分组搜索」选中整组。
   - 涉及：`core/util/SourceUrlNormalizer.kt`（新）、`core/util/SourceDedupe.kt`、`source/legado/LegadoSourceAdapter.kt`、`source/manager/SourceManager.kt`、`ui/screens/source/SourceManageScreen.kt`、`app/src/test/java/com/novelreader/SourceUrlNormalizerTest.kt`（新）。
+
+## 十三、分组体系与搜索体验（v1.9.4.0）
+
+- [x] **65. 自动推断的源类别也变成分组** ✅ v1.9.4.0
+  - 现状：源管理里按源名 / 描述关键词推断的「智能分类」是独立一层只读筛选，跟用户自建分组互不通用；搜索页只能按自建分组搜。
+  - 落地：`SourceGroups` 新增 `AUTO_PREFIX = "分类·"` / `autoOf()` / `allOf()` / `isAutomatic()`，把类别展开成只读「自动分组」（只收已启用源、空组不出现）；源管理分组行新增自动组 chips，与原类别行**共用同一个 `selectedGroup`**（类别行 selected/onSelect 双向映射，点哪边都同步高亮）；自动组不进 `PreferencesManager` 的名字清单，也就不出现在重命名 / 删除列表里，不会被误编辑。搜索下拉新增「按自动分类搜索」小节，标题显示「分类：X」。
+  - 涉及：`core/util/SourceGroups.kt`、`ui/components/SourceFilterDropdown.kt`、`ui/screens/source/SourceManageScreen.kt`。
+
+- [x] **66. 修：小说搜索搜着搜着结果变少、然后又一直加载** ✅ v1.9.4.0
+  - 真机复现：从搜索历史搜一本书，45 秒只跑到 159/2434 源，之后页面连续 15 秒以上一直显示「正在加载更多…」。
+  - 三个叠加原因：① `ContentRepositoryImpl` 在「最后一个源返回」和「最终排序收尾」时各 emit 一次 `isSearching=false`，`NovelSearchViewModel.search()` 的 collect 里那个收尾分支跑了两遍（累加器 reset 两次、`verifyResults` 被 cancel 后重启）；② `verifyResults` 剔除 0 章结果时只改 `_state.results`，没同步 `resultsAcc`，下次 `loadMore()` 又把死链写回来 → 条数忽多忽少；③ `SearchLoadMoreFooter` 把 `loading` 放进 `LaunchedEffect` 的 key，翻完一页 `true→false` 就立刻再触发一次 `onLoadMore()`，形成永不停歇的自动翻页。
+  - 落地：小说 VM 改在 `onCompletion` 里只收尾一次；`SearchResultMerge.Accumulator` 新增 `removeByKey()`，校验剔除时同步调用；页脚改为只在 `hasMore` 变化时自动补一页，后续交给列表触底哨兵。顺带把最终进度的 `searchedCount` 改成实际参与搜索的源数。
+  - 涉及：`data/repository/ContentRepositoryImpl.kt`、`core/util/SearchResultMerge.kt`、`ui/components/SearchLoadMoreFooter.kt`、`ui/screens/novel/NovelSearchViewModel.kt`。
+
+- [x] **67. 同站点源限流 + 目录为空自动换源（同源变体源的实效优化）** ✅ v1.9.4.0
+  - 背景：上一版 #64 只把带标记的 `bookSourceUrl` 清洗成合法地址，用户在真机上点开搜索历史里的书，仍然「搜得到、目录 0 章、正文读不了」，等于没解决可读性问题。进一步实测发现换源面板也要在 2434 个源里全量搜（20 秒才 85 个），根子是同一站点几十个新旧变体把并发槽和 45 秒整体时限吃光。
+  - 落地：新增纯逻辑 `SourceSiteLimiter`（`interleave()` 按 `SourceUrlNormalizer.rootDomain` 分组做站点轮转、`limit()` 可选截断同站变体、无站点源各自独立），`ContentRepositoryImpl.searchWithProgress` 仅在 `sourceIds == null`（全部源）时启用**交错排序**，默认一个源都不删；设置项 `KEY_SEARCH_SITE_LIMIT` 默认 0（只交错），>0 才截断；默认并发 6→12、上限 24；手动选单源 / 多选 / 分组完全不干预。`NovelDetailViewModel` 在目录为空时自动搜同名书并试前几个候选的目录，找到可读源就在当前页就地切换并提示，25 秒 / 单候选 6 秒双重超时，找不到保持原提示。
+  - **中途踩过的坑**：第一版默认「每站只留规则最完整的 2 个」，真机一搜结果从 4 条掉到 0 条 —— 「规则更长」不等于「能出结果」，把还能返回搜索结果的老变体挤掉了。改成只交错排序、不删源后恢复。
+  - 涉及：`core/util/SourceSiteLimiter.kt`（新）、`core/preferences/PreferencesManager.kt`、`data/repository/ContentRepositoryImpl.kt`、`ui/screens/settings/{SettingsScreen,SettingsViewModel}.kt`、`ui/screens/novel/NovelDetailViewModel.kt`、`app/src/test/java/com/novelreader/SourceSiteLimiterTest.kt`（新）。
 
 ## 备注
 - 改动涉及 `books` 表结构或 `RssFeedEntity` 时，必须写 Room 迁移（`AppDatabase.kt`）并自增数据库版本。

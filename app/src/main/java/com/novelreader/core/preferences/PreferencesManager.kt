@@ -255,6 +255,16 @@ class PreferencesManager(private val context: Context) {
         val KEY_SEARCH_CONCURRENCY = intPreferencesKey("search_concurrency")
 
         /**
+         * 「全部源」搜索时，同一站点最多问几个源（v1.9.4.0，**默认 0 = 不删源**）。
+         *
+         * 默认只按站点交错排序，不丢任何源；设成 >0 才会截断同站变体。
+         * 手动选单源 / 多选 / 分组时一律不受影响。
+         */
+        val KEY_SEARCH_SITE_LIMIT = intPreferencesKey("search_site_limit")
+        const val DEFAULT_SEARCH_SITE_LIMIT = 0
+        const val MAX_SEARCH_SITE_LIMIT = 8
+
+        /**
          * 标签搜索并发（v1.8.8.4）。
          *
          * 与 [KEY_SEARCH_CONCURRENCY] 分开记：关键词搜索是「每个源一次请求」，
@@ -388,9 +398,9 @@ class PreferencesManager(private val context: Context) {
         /** 默认自动翻页间隔（秒） */
         const val DEFAULT_AUTO_PAGE_INTERVAL = 20
         /** 默认并行搜索线程数 */
-        const val DEFAULT_SEARCH_CONCURRENCY = 6
+        const val DEFAULT_SEARCH_CONCURRENCY = 12
         /** 并行搜索线程数上限 */
-        const val MAX_SEARCH_CONCURRENCY = 16
+        const val MAX_SEARCH_CONCURRENCY = 24
         /**
          * 标签搜索默认并发（v1.8.8.4）：与改动前写死的 24 保持一致，
          * 升级后用户手感不变，想调再自己拖。
@@ -1168,6 +1178,14 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setSearchConcurrency(value: Int) {
         context.dataStore.edit { it[KEY_SEARCH_CONCURRENCY] = value.coerceIn(1, MAX_SEARCH_CONCURRENCY) }
+    }
+
+    /** 「全部源」搜索时每个站点最多保留几个源（0 = 不限流） */
+    val searchSiteLimitFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_SEARCH_SITE_LIMIT] ?: DEFAULT_SEARCH_SITE_LIMIT }
+
+    suspend fun setSearchSiteLimit(value: Int) {
+        context.dataStore.edit { it[KEY_SEARCH_SITE_LIMIT] = value.coerceIn(0, MAX_SEARCH_SITE_LIMIT) }
     }
 
     /** 模糊搜索开关 */

@@ -64,6 +64,17 @@ object SearchResultMerge {
             return addAll(items)
         }
 
+        /**
+         * 移除一条（v1.9.4.0）。搜索收尾的「0 章校验」会从 UI 列表里剔除失效结果，
+         * 累加器必须同步删掉；否则下一次翻页 `addAll()` 又把这条写回来，
+         * 用户看到的就是结果数忽多忽少。
+         */
+        fun removeByKey(key: String) {
+            val removed = byId.remove(key) ?: return
+            val titleKey = TagQuery.identityKey(removed.title)
+            if (titleOwner[titleKey] == key) titleOwner.remove(titleKey)
+        }
+
         /** 追加一批结果，返回当前快照（可直接喂给 StateFlow） */
         fun addAll(items: List<MediaItem>): List<MediaItem> {
             items.forEach { item ->

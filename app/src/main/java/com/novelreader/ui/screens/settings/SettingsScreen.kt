@@ -122,6 +122,7 @@ fun SettingsScreen(
     val comicPreloadWifiOnly by viewModel.comicPreloadWifiOnly.collectAsState()
     val comicEdgeGesture by viewModel.comicEdgeGesture.collectAsState()
     val searchConcurrency by viewModel.searchConcurrency.collectAsState()
+    val searchSiteLimit by viewModel.searchSiteLimit.collectAsState()
     val tagSearchConcurrency by viewModel.tagSearchConcurrency.collectAsState()
     val tagSingleSearchSources by viewModel.tagSingleSearchSources.collectAsState()
     val videoFullscreenDefault by viewModel.videoFullscreenDefault.collectAsState()
@@ -479,8 +480,28 @@ fun SettingsScreen(
             Slider(
                 value = searchConcurrency.toFloat(),
                 onValueChange = { viewModel.setSearchConcurrency(it.toInt()) },
-                valueRange = 1f..16f,
-                steps = 15,
+                valueRange = 1f..24f,
+                steps = 22,
+            )
+            Spacer(Modifier.height(8.dp))
+            // v1.9.4.0：同一站点常被导入几十个新旧变体，连续排在队列里会把 45 秒时限吃光，
+            // 实测 2434 个源只来得及问 159 个。默认只按站点交错排序、一个源都不删。
+            Text(
+                text = if (searchSiteLimit == 0) "同站点搜索源数：不限（只交错排序）" else "同站点搜索源数：$searchSiteLimit",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = "只影响「全部源」搜索：默认让不同站点轮流先搜，不删任何源。" +
+                    "调成大于 0 才会把同站变体截断到指定个数（规则更完整者优先）。" +
+                    "手动选单源、多选或按分组搜索时不受限制。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Slider(
+                value = searchSiteLimit.toFloat(),
+                onValueChange = { viewModel.setSearchSiteLimit(it.toInt()) },
+                valueRange = 0f..8f,
+                steps = 7,
             )
             Spacer(Modifier.height(8.dp))
             // v1.8.8.4：标签搜索并发单独一个滑块 —— 标签搜索的请求数是

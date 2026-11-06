@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -227,16 +228,22 @@ class NovelSearchViewModel(
                         error = e.message ?: "搜索失败",
                     )
                 }
-                .collect { s ->
-                    _state.value = s
-                    // 搜索收尾：后台验证结果章节数，剔除 0 章（目录为空）的失效结果
-                    if (!s.isSearching && s.results.isNotEmpty()) {
-                        resultsAcc.reset(s.results)
-                        searchPage = 1
-                        _hasMore.value = s.error == null
-                        verifyResults(s.results)
+                // v1.9.4.0：底层在「最后一个源返回」和「最终排序收尾」时会各 emit 一次
+                // isSearching=false，旧写法把这个收尾分支跑了两遍（累加器被 reset 两次、
+                // 0 章校验被 cancel 后重启），观感就是结果抖一下又开始加载。
+                // 现在只在整个 flow 正常结束时做一次收尾。
+                .onCompletion { cause ->
+                    if (cause == null) {
+                        val final = _state.value
+                        if (final.results.isNotEmpty()) {
+                            resultsAcc.reset(final.results)
+                            searchPage = 1
+                            _hasMore.value = final.error == null
+                            verifyResults(final.results)
+                        }
                     }
                 }
+                .collect { s -> _state.value = s }
         }
     }
 
@@ -310,8 +317,10 @@ class NovelSearchViewModel(
                                 }
                             }.getOrNull()
                             if (chapters != null && chapters.isEmpty()) {
-                                // 该条目 0 章，从当前结果中剔除
+                                // 该条目 0 章，从当前结果与翻页累加器里一起剔除。
+                                // 只删 UI 列表而不动累加器，下一页又会把死链写回来（v1.9.4.0）。
                                 val key = "${item.sourceId}|${item.id}"
+                                resultsAcc.removeByKey("${item.sourceId}:${item.id}")
                                 _state.value = _state.value.copy(
                                     results = _state.value.results.filter {
                                         "${it.sourceId}|${it.id}" != key

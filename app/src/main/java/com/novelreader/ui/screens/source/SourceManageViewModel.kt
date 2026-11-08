@@ -932,69 +932,126 @@ class SourceManageViewModel(
      *
      * @param sources 待检测的源；默认检测当前全部源
      */
+    /** 正在跑的检测任务（v1.9.5.0）。不持有 Job 就没法中途停止。 */
+    private var testJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * 检测轮次（v1.9.5.0）。停止后自增，让**已经在网络请求里、取消不响应**的
+     * 在途任务回来时直接丢弃结果 —— 否则点完停止，失效数还会自己往上涨。
+     */
+    @Volatile
+    private var testGeneration = 0L
+
+    /** 立即停止检测：掐断并发任务、清掉「检测中」标记，已经出结果的部分原样保留。 */
+    fun stopTesting() {
+        val job = testJob ?: return
+        if (!job.isActive) return
+        testGeneration++
+        job.cancel()
+        testJob = null
+        _testing.value = emptySet()
+        _testRunning.value = false
+        _testProgress.value = null
+        _message.value = "已停止检测，已完成 ${_testResults.value.size} 个源的结果已保留"
+    }
+
     fun testSources(sources: List<SourceInfo> = _sources.value) {
         if (sources.isEmpty()) return
         if (_testRunning.value) return
-        viewModelScope.launch {
+        // 本轮范围内的旧标注先清掉（避免「检测中」还挂着上次的可用/失效），
+        // 不在本轮筛选里的源结果保留 —— 用户按分组分批检测时不会互相冲掉。
+        val scopeIds = sources.map { it.id }.toSet()
+        _testResults.value = _testResults.value.filterKeys { it !in scopeIds }
+        _unreadable.value = _unreadable.value - scopeIds
+        val gen = ++testGeneration
+        testJob = viewModelScope.launch {
             _testRunning.value = true
             val total = sources.size
             _testProgress.value = 0 to total
-            _unreadable.value = emptySet()
-            // 必须在 IO 线程执行：test() 含网络请求与 Rhino JS，
-            // 在主线程跑会卡死 UI 导致 ANR（实体机已复现）。
-            val results = withContext(Dispatchers.IO) {
-                val map = _testResults.value.toMutableMap()
-                val unreadableSet = java.util.Collections.synchronizedSet(mutableSetOf<String>())
-                // 限流并发：全串行太慢（280 源 × 20s 上限），全并发耗尽内存；
-                // 用信号量限制最多 8 个源同时检测。
-                val semaphore = kotlinx.coroutines.sync.Semaphore(8)
-                val done = java.util.concurrent.atomic.AtomicInteger(0)
-                sources.map { source ->
-                    launch {
-                        semaphore.withPermit {
-                            _testing.value = _testing.value + source.id
-                            // 用 withTimeoutOrNull 包住整个 test()，防止单个慢源卡死整轮检测；
-                            // 用 runCatching 捕获 Throwable（Rhino 等可能抛 Error，非 Exception），
-                            // 任何异常都视为「不可用」，绝不因此崩溃。
-                            val adapter = sourceRepository.getAdapter(source.id)
-                            val searchOk = kotlinx.coroutines.withTimeoutOrNull(20_000L) {
-                                runCatching { adapter?.test() ?: true }.getOrDefault(false)
-                            } ?: false
-                            // 搜得到才值得再探一次目录（搜索就失败时无法判定，不能算「无目录」）
-                            val readable: Boolean? = if (searchOk && adapter != null) {
-                                probeReadable(adapter)
-                            } else {
-                                null
+            _testing.value = emptySet()
+            try {
+                // 必须在 IO 线程执行：test() 含网络请求与 Rhino JS，
+                // 在主线程跑会卡死 UI 导致 ANR（实体机已复现）。
+                withContext(Dispatchers.IO) {
+                    val map = _testResults.value.toMutableMap()
+                    val unreadableSet = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+                    // 限流并发：全串行太慢（280 源 × 20s 上限），全并发耗尽内存；
+                    // 用信号量限制最多 8 个源同时检测。
+                    val semaphore = kotlinx.coroutines.sync.Semaphore(8)
+                    val done = java.util.concurrent.atomic.AtomicInteger(0)
+                    val lastFlush = java.util.concurrent.atomic.AtomicLong(0L)
+                    sources.map { source ->
+                        launch {
+                            semaphore.withPermit {
+                                // 停止后排队中的源直接跳过，不再发请求
+                                if (gen != testGeneration) return@withPermit
+                                _testing.value = _testing.value + source.id
+                                // 用 withTimeoutOrNull 包住整个 test()，防止单个慢源卡死整轮检测；
+                                // 用 runCatching 捕获 Throwable（Rhino 等可能抛 Error，非 Exception），
+                                // 任何异常都视为「不可用」，绝不因此崩溃。
+                                val adapter = sourceRepository.getAdapter(source.id)
+                                val searchOk = kotlinx.coroutines.withTimeoutOrNull(20_000L) {
+                                    runCatching { adapter?.test() ?: true }.getOrDefault(false)
+                                } ?: false
+                                // 搜得到才值得再探一次目录（搜索就失败时无法判定，不能算「无目录」）
+                                val readable: Boolean? = if (searchOk && adapter != null) {
+                                    probeReadable(adapter)
+                                } else {
+                                    null
+                                }
+                                val ok = com.novelreader.core.util.SourceHealth.isUsable(searchOk, readable)
+                                val noToc = com.novelreader.core.util.SourceHealth.isNoToc(searchOk, readable)
+                                // 网络请求可能不响应协程取消；回来时若已停止，结果一律丢弃
+                                if (gen != testGeneration) return@withPermit
+                                val d = done.incrementAndGet()
+                                synchronized(map) {
+                                    map[source.id] = ok
+                                    // 实时标注：每测完一个就把新结果推给 UI，卡片立刻从
+                                    // 「检测中」变成「可用 / 失效」。2700 个源各触发一次全页重组
+                                    // 会掉帧，所以最多每 100ms 刷一次，收尾再强制刷完整快照。
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastFlush.get() >= 100L || d >= total) {
+                                        lastFlush.set(now)
+                                        _testResults.value = map.toMap()
+                                    }
+                                }
+                                if (noToc) {
+                                    unreadableSet += source.id
+                                    _unreadable.value = unreadableSet.toSet()
+                                }
+                                _testing.value = _testing.value - source.id
+                                _testProgress.value = d to total
                             }
-                            val ok = com.novelreader.core.util.SourceHealth.isUsable(searchOk, readable)
-                            synchronized(map) { map[source.id] = ok }
-                            if (com.novelreader.core.util.SourceHealth.isNoToc(searchOk, readable)) {
-                                unreadableSet += source.id
-                            }
-                            _testing.value = _testing.value - source.id
-                            val d = done.incrementAndGet()
-                            _testProgress.value = d to total
                         }
+                    }.joinAll()
+                    if (gen == testGeneration) {
+                        _testResults.value = map.toMap()
+                        _unreadable.value = unreadableSet.toSet()
                     }
-                }.joinAll()
-                _unreadable.value = unreadableSet.toSet()
-                map
-            }
-            _testResults.value = results.toMap()
-            _testProgress.value = null
-            _testRunning.value = false
-            val failed = results.count { !it.value }
-            val noToc = _unreadable.value.size
-            _message.value = buildString {
-                append(
-                    if (failed == 0) {
-                        "检测完成：全部源可用"
-                    } else {
-                        "检测完成：${results.size} 个源中 $failed 个失效"
-                    },
-                )
-                if (noToc > 0) {
-                    append("（其中 $noToc 个能搜到书但读不了目录，已一并记为失效）")
+                }
+                val results = _testResults.value
+                val failed = results.count { !it.value }
+                val noToc = _unreadable.value.size
+                _message.value = buildString {
+                    append(
+                        if (failed == 0) {
+                            "检测完成：全部源可用"
+                        } else {
+                            "检测完成：${results.size} 个源中 $failed 个失效"
+                        },
+                    )
+                    if (noToc > 0) {
+                        append("（其中 $noToc 个能搜到书但读不了目录，已一并记为失效）")
+                    }
+                }
+            } finally {
+                // 只复位「当前轮」的状态：停止后立刻又开新一轮时，旧任务的 finally
+                // 不能把新一轮的进度 / 按钮状态清掉。停止时的复位已由 stopTesting 做过。
+                if (gen == testGeneration) {
+                    _testing.value = emptySet()
+                    _testProgress.value = null
+                    _testRunning.value = false
+                    testJob = null
                 }
             }
         }

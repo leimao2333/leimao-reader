@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.9.4.0"
+    const val CURRENT_VERSION = "1.9.5.0"
 
     /**
      * 更新日志。
@@ -25,6 +25,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.9.5.0",
+            date = "2026-11-08",
+            changes = listOf(
+                "**检测源可以随时停止**：检测中按钮变成「停止检测」，点一下立即掐断全部并发检测，已经测完的结果原样保留；停止后可直接对已发现的失效源做禁用 / 删除。",
+                "**检测结果实时标注**：以前要等整轮结束才一次性给出可用 / 失效，现在每测完一个源卡片状态就立刻更新，顶部同时显示「正在检测 x/N · 已发现 X 个失效」。",
+                "**修切回首页推荐每次都重新加载**：推荐内容本来有磁盘缓存，但判据要求枚举覆盖源数达到启用源总数的一半；源一多（真机 2700+）缓存根本写不进去也读不出来。现在改成只拦明显残缺的缓存；少量源启停不作废，源集大变也先把旧内容上屏并标注「缓存」，不再白等一轮全量枚举。切回首页秒开，想更新下拉刷新即可。",
+            ),
+        ),
         VersionEntry(
             version = "1.9.4.0",
             date = "2026-11-06",

@@ -1164,6 +1164,8 @@ class HomeViewModel(
         val error: String? = null,
         /** 首屏最近一次成功加载的时间戳（毫秒） */
         val loadedAtMs: Long = 0L,
+        /** true = 当前显示的是缓存内容且源集变化较大，提示用户可下拉刷新（v1.9.5.0） */
+        val stale: Boolean = false,
     ) {
         /** 当前是否停在「推荐」合览（false = 选中了具体栏目） */
         val onRecommendTab: Boolean
@@ -1523,6 +1525,7 @@ class HomeViewModel(
                             aliveCount = maxOf(covered, aliveSources.size),
                             rows = rows.toList()
                                 .sortedBy { r -> plan.rows.indexOfFirst { it.title == r.categoryId } },
+                            stale = false,
                         )
                     } }
 
@@ -1546,6 +1549,8 @@ class HomeViewModel(
                 rows = ordered,
                 error = if (ordered.isEmpty()) "没有取到内容，可能是各源暂时不可用，稍后再试" else null,
                 loadedAtMs = if (ordered.isNotEmpty()) System.currentTimeMillis() else 0L,
+                // 已经拉到新内容，清掉「显示的是旧缓存」标记
+                stale = false,
             )
             if (ordered.isNotEmpty()) saveFeedCache(type)
             backfillFeedCovers(type)
@@ -1625,13 +1630,20 @@ class HomeViewModel(
             runCatching { cache.load(feedCacheKey(type)) }.getOrNull()
                 ?.let { raw -> runCatching { cacheGson.fromJson(raw, FeedCachePayload::class.java) }.getOrNull() }
         } ?: return false
-        if (payload.sourceIds.isEmpty() || payload.rows.isEmpty()) return false
-        val enabled = currentEnabledFeedIds(type)
-        if (payload.sourceIds.toSet() != enabled) return false
-        // 残缺计划不认：这份缓存的枚举只覆盖了一小撮源（源还没恢复完就抢跑），
-        // 计划里往往只有 1 个源 —— 让它上屏等于把「聚合 1 个源」永久固化。
-        // 允许「全局截止截掉的少数源」造成的差额（<= 一半），只拦明显残缺的。
-        if (payload.enumerated <= 0 || payload.enumerated * 2 < enabled.size) return false
+        // v1.9.5.0：判据抽到 FeedCachePolicy（纯逻辑，可单测）。旧判据拿枚举覆盖数
+        // 与启用源总数比，2700+ 源时缓存永远判废，每次进首页都重新联网。
+        val verdict = com.novelreader.core.util.FeedCachePolicy.check(
+            com.novelreader.core.util.FeedCachePolicy.Input(
+                cachedSourceIds = payload.sourceIds.toSet(),
+                enumerated = payload.enumerated,
+                rowCount = payload.rows.size,
+                enabledSourceIds = currentEnabledFeedIds(type),
+            ),
+        )
+        if (!verdict.usable) {
+            android.util.Log.i("FeedCache", "首页推荐缓存不复用：${verdict.reason}")
+            return false
+        }
         feedStateOf(type).value = FeedHomeState(
             aliveCount = payload.aliveCount,
             categories = payload.categories,
@@ -1642,6 +1654,7 @@ class HomeViewModel(
             loading = false,
             error = null,
             loadedAtMs = System.currentTimeMillis(),
+            stale = verdict.stale,
         )
         // 缓存里带回了栏目地址表，直接重建计划：冷启动后点「栏目」下拉不用再探测一轮分类
         if (payload.urls.isNotEmpty()) {
@@ -1652,6 +1665,11 @@ class HomeViewModel(
         // 缓存里的 rows 也可能是缺封面的（缓存只存 URL 与元数据，不存图片本身），
         // 恢复完照样要补一轮（v1.8.2.0）
         backfillFeedCovers(type)
+        android.util.Log.i(
+            "FeedCache",
+            "首页推荐缓存已恢复：${payload.rows.size} 排 / ${payload.sourceIds.size} 个源" +
+                if (verdict.stale) "（源集变化较大，标记为旧内容）" else "",
+        )
         return true
     }
 
@@ -1662,9 +1680,16 @@ class HomeViewModel(
         if (st.rows.isEmpty()) return
         val enumerated = feedEnumerated[type] ?: 0
         val enabled = currentEnabledFeedIds(type)
-        // 残缺计划不落盘（同 hydrateFeedFromCache 的判据）：源恢复没完成时枚举出来的
-        // 结果会被这次写入固化，用户之后每次冷启动都从缓存恢复，永远修不好。
-        if (enumerated <= 0 || enumerated * 2 < enabled.size) return
+        // 残缺计划不落盘（与 hydrateFeedFromCache 共用同一套判据，见 FeedCachePolicy）
+        val verdict = com.novelreader.core.util.FeedCachePolicy.check(
+            com.novelreader.core.util.FeedCachePolicy.Input(
+                cachedSourceIds = enabled,
+                enumerated = enumerated,
+                rowCount = st.rows.size,
+                enabledSourceIds = enabled,
+            ),
+        )
+        if (!verdict.usable) return
         withContext(cacheDispatcher) {
             runCatching {
                 cache.save(
@@ -2127,6 +2152,7 @@ class HomeViewModel(
          * ≈ 20 秒内跑完，35 秒留了足够余量。
          */
         private const val FEED_ROW_DEADLINE_MS = 35_000L
+        // 推荐缓存的可用判据已抽到 core/util/FeedCachePolicy.kt（v1.9.5.0）
 
         /**
          * 推荐页「各排取内容」真正的**硬上界**（毫秒，v1.7.4.0）。

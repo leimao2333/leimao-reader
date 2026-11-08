@@ -213,7 +213,13 @@ private fun FeedHeaderRow(
         ) {
             val alive = state.aliveCount
             Text(
-                text = if (alive > 0) "聚合 $alive 个源" else "正在探测书源…",
+                text = when {
+                    alive > 0 && state.stale -> "聚合 $alive 个源 · 缓存"
+                    alive > 0 -> "聚合 $alive 个源"
+                    // 缓存恢复时 aliveCount 可能是 0，但内容已经上屏，不该再显示「正在探测」
+                    state.rows.isNotEmpty() -> "推荐（缓存）"
+                    else -> "正在探测书源…"
+                },
                 style = MaterialTheme.typography.titleSmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

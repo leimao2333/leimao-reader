@@ -461,7 +461,12 @@ fun SourceManageScreen(
                     val partialCount = unreadable.size
                     Text(
                         text = when {
-                            testRunning -> "正在检测…"
+                            // v1.9.5.0：检测中实时报进度与已发现的失效数，卡片也逐个即时标注
+                            testRunning -> buildString {
+                                val (d, t) = testProgress ?: (0 to 0)
+                                append("正在检测 $d/$t")
+                                if (failedCount > 0) append(" · 已发现 $failedCount 个失效")
+                            }
                             testResults.isEmpty() -> "尚未检测源可用性"
                             failedCount == 0 && partialCount == 0 -> "检测完成：全部可用"
                             else -> buildString {
@@ -474,9 +479,17 @@ fun SourceManageScreen(
                         modifier = Modifier.weight(1f),
                     )
                     TextButton(
-                        enabled = !testRunning,
-                        onClick = { viewModel.testSources(displayedSources) },
-                    ) { Text(if (testRunning) "检测中" else "检测可用性") }
+                        onClick = {
+                            if (testRunning) viewModel.stopTesting()
+                            else viewModel.testSources(displayedSources)
+                        },
+                    ) {
+                        Text(
+                            text = if (testRunning) "停止检测" else "检测可用性",
+                            color = if (testRunning) MaterialTheme.colorScheme.error
+                            else androidx.compose.ui.graphics.Color.Unspecified,
+                        )
+                    }
                     TextButton(
                         enabled = failedCount > 0 && !testRunning,
                         onClick = { viewModel.disableFailedSources() },

@@ -828,6 +828,20 @@
   - **中途踩过的坑**：第一版默认「每站只留规则最完整的 2 个」，真机一搜结果从 4 条掉到 0 条 —— 「规则更长」不等于「能出结果」，把还能返回搜索结果的老变体挤掉了。改成只交错排序、不删源后恢复。
   - 涉及：`core/util/SourceSiteLimiter.kt`（新）、`core/preferences/PreferencesManager.kt`、`data/repository/ContentRepositoryImpl.kt`、`ui/screens/settings/{SettingsScreen,SettingsViewModel}.kt`、`ui/screens/novel/NovelDetailViewModel.kt`、`app/src/test/java/com/novelreader/SourceSiteLimiterTest.kt`（新）。
 
+## 十四、源检测与首页缓存（v1.9.5.0）
+
+- [x] **68. 源可用性检测可随时停止 + 实时标注** ✅ v1.9.5.0
+  - 现状：`testSources()` 直接用 `viewModelScope.launch` 起任务，没有 Job 句柄，跑了就停不下来；结果写进局部 map，`joinAll()` 之后才一次性 `_testResults.value = ...`，所以卡片在整轮结束前只显示「检测中」，出不了「可用 / 失效」。
+  - 落地：`SourceManageViewModel` 持有 `testJob`，新增 `stopTesting()`（cancel + 清检测中标记 + 保留已完成结果 + 提示）；每个源测完就在 IO 线程把最新快照推给 `_testResults`（100ms 节流，收尾强制全量刷一次），`_unreadable` 也实时更新；重新检测只清本轮筛选范围内的旧标注，按分组分批检测互不干扰。
+  - 真机踩坑：`adapter.test()` 里的网络请求不响应协程取消，光 `job.cancel()` 后点完停止，已发出的请求回来仍会把结果写进去（实测停止 9 秒后失效数从 60 自己涨到 62）。加 `@Volatile testGeneration` 轮次守卫：停止时自增，排队中的源直接跳过、在途结果回来一律丢弃；`finally` 也只在 gen 匹配时复位，避免旧任务清掉新一轮状态。
+  - UI：检测中按钮变「停止检测」（红色），顶部文案改为「正在检测 x/N · 已发现 X 个失效」；进度条沿用。
+  - 涉及：`ui/screens/source/{SourceManageViewModel,SourceManageScreen}.kt`。
+
+- [x] **69. 修：切回首页推荐每次都要重新联网加载** ✅ v1.9.5.0
+  - 根因：推荐内容有磁盘缓存（`VideoHomeCache` + `FeedCachePayload`），但 `saveFeedCache()` 与 `hydrateFeedFromCache()` 都要求 `enumerated * 2 >= 当前启用源数`。本意是拦「冷启动源还没恢复完只枚举到 1 个源」的残缺计划，但源一多（真机 2700+），枚举受全局时限限制本来就覆盖不全 → 缓存**永远写不进去、也读不出来**，每次进首页只能 `loadFeed()` 重新联网。另外源集严格相等校验也太脆，启停几个源就作废。
+  - 落地：判据抽成纯逻辑 `core/util/FeedCachePolicy.kt` —— 只按绝对下限 `MIN_COVERED_SOURCES = 5` 拦明显残缺；源集变化在 `max(20, 当前源数 / 20)` 内视为新鲜，超了也**不判废**，改为先上屏旧内容并标 `stale=true`（顶栏显示「缓存」，下拉刷新后清除），避免每次进首页白等 2400+ 源的全量枚举。保存与回填共用同一套判据，回填成功 / 失败各打一行不含对象名的日志。补 `FeedCachePolicyTest`（大源库部分枚举可用、小变动不陈旧、大变动可复用但陈旧、冷启动 1 个源判废、小库全覆盖可用等）。
+  - 涉及：`core/util/FeedCachePolicy.kt`（新）、`ui/screens/common/{HomeViewModel,FeedContent}.kt`、`app/src/test/java/com/novelreader/FeedCachePolicyTest.kt`（新）。
+
 ## 备注
 - 改动涉及 `books` 表结构或 `RssFeedEntity` 时，必须写 Room 迁移（`AppDatabase.kt`）并自增数据库版本。
 - 新增设置项统一走 `core/preferences/PreferencesManager.kt`，不要各自散落存 SharedPreferences。

@@ -82,6 +82,22 @@ class MacCmsParserPlayUrlTest {
         )
     }
 
+    /**
+     * 停放页会把原地址原样抄进查询参数：`?requrl=https://host/x/index.m3u8`。
+     * 这类「作为参数值出现的地址」必须跳过，否则取回来还是同一个死地址，
+     * 播放→失败→再解析→再播放，白白多绕一圈。
+     */
+    @Test
+    fun `skips media url that only appears as a query parameter value`() {
+        val html = """
+            <html><body><h1>example.com</h1>
+            <p>This domain may be for sale.</p>
+            <script>var u="https://stat.example.net/ping.php?requrl=https://host.com/a/index.m3u8";</script>
+            </body></html>
+        """.trimIndent()
+        assertNull(MacCmsParser.extractPlayUrl(html, "https://host.com/a/index.m3u8"))
+    }
+
     @Test
     fun `direct media detection`() {
         assertTrue(MacCmsParser.looksLikeDirectMedia("https://a.com/x/index.m3u8?t=1"))

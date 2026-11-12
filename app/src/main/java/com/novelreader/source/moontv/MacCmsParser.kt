@@ -56,6 +56,10 @@ object MacCmsParser {
             """(?:https?:)?//[^\s'"<>()\\]+""",
             RegexOption.IGNORE_CASE,
         ).findAll(text).forEach { m ->
+            // 被当成**另一个地址的查询参数值**的不算：`…?requrl=https://host/x.m3u8`
+            // 这种只是把原地址又抄了一遍（停放页 / 统计页常见），取出来等于原地打转。
+            val prev = text.getOrNull(m.range.first - 1)
+            if (prev == '=') return@forEach
             var url = m.value.trimEnd(',', ';', ')', ']', '\\', '.', '"', '\'')
             if (url.startsWith("//")) {
                 url = (if (baseUrl.startsWith("http://")) "http:" else "https:") + url

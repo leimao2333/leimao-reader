@@ -48,6 +48,30 @@ object PlayPageResolver {
         object Unknown : Result()
     }
 
+    /**
+     * 域名停放 / 转卖占位页的特征词（中英）。
+     *
+     * 这类页面看起来是 HTML、里面还挂着统计跳转脚本，把原地址又编码进 `requrl=` 里，
+     * 提取逻辑很容易「解析」出一个和原来一模一样的死地址 —— 白再播一次、多等两秒。
+     * 命中这些特征就直接判定为死链，不再尝试提取。
+     */
+    private val PARKED_PAGE_MARKERS = listOf(
+        "domain may be for sale",
+        "domain is for sale",
+        "buy this domain",
+        "this domain is parked",
+        "domain for sale",
+        "此域名可出售",
+        "域名出售",
+        "该域名正在出售",
+    )
+
+    /**
+     * 响应体是否为域名停放 / 转卖占位页（internal：单测直接喂页面样本）。
+     */
+    internal fun isParkedPage(body: String): Boolean =
+        PARKED_PAGE_MARKERS.any { body.contains(it, ignoreCase = true) }
+
     /** 同一地址解析出的真实流，进程内只请求一次 */
     private val resolved = ConcurrentHashMap<String, String>()
 
@@ -65,11 +89,16 @@ object PlayPageResolver {
         Log.d(TAG, "sniff $url -> ${text.take(80).replace("\n", " ")}")
         when {
             text.startsWith("#EXTM3U") -> Result.ValidMedia
+            // 域名停放页：不是播放页，也没有流可提，直接判死链
+            isParkedPage(text) -> {
+                Log.d(TAG, "parked page $url")
+                Result.PlayPage(null)
+            }
             text.startsWith("<") || text.contains("<script", ignoreCase = true) ||
                 text.contains("<html", ignoreCase = true) -> {
                 val found = MacCmsParser.extractPlayUrl(body, url)
                 Log.d(TAG, "play page $url -> real=$found")
-                if (found != null) resolved[url] = found
+                if (found != null && found != url) resolved[url] = found
                 Result.PlayPage(found)
             }
             else -> Result.Unknown

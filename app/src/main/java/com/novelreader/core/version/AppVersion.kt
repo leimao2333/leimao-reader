@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.9.5.3"
+    const val CURRENT_VERSION = "1.9.5.4"
 
     /**
      * 更新日志。
@@ -25,6 +25,14 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.9.5.4",
+            date = "2026-11-13",
+            changes = listOf(
+                "**死链线路不再原地打转**：域名停放的占位页会把原播放地址原样抄进查询参数（`?requrl=https://…/index.m3u8`），上一版修掉统计地址后，这里又会「解析」出一个和原地址一模一样的结果，于是播放→失败→再解析→再播放来回绕两圈。现在这类「作为参数值出现的地址」直接跳过，并在探测阶段就识别域名停放 / 转卖占位页（中英文特征词），命中即判定死链，不再尝试提取。",
+                "**死链判定更快**：以前要等播放器解析失败、再探测一次网页才报错；现在命中停放页特征立即给出「地址已失效」提示，省掉一次无意义的播放。",
+            ),
+        ),
         VersionEntry(
             version = "1.9.5.3",
             date = "2026-11-13",

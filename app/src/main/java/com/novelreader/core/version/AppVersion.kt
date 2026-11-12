@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.9.5.4"
+    const val CURRENT_VERSION = "1.9.5.5"
 
     /**
      * 更新日志。
@@ -25,6 +25,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.9.5.5",
+            date = "2026-11-13",
+            changes = listOf(
+                "**线路的域名到期时，自动换到同源的其它域名**：采集站的内容通常同时挂在好几个并行 CDN 上，同一路径互为镜像。`vod_play_url` 里只写了其中一个，那个域名一旦到期 / 被停放（打开返回「域名出售」占位页），整条线路就成了死链 —— 但同一路径在别的域名上还是正常的。现在播放失败时会拿**同一个路径**去同源的其它域名上并发探一下，命中 `#EXTM3U` 就自动切换续播，不再直接报「线路已失效」。",
+                "**自动攒「同源域名表」**：解析搜索 / 详情 / 分类结果时顺带记下出现过的播放域名（只记域名，不记内容、不落盘），命中镜像后把可用域名提到最前，下次优先试它。",
+                "**补救顺序也调了**：先试同源镜像（快、命中率高），再走播放页嗅探，最后才报错；每一步都按地址去重，不会在两个域名之间来回跳。",
+            ),
+        ),
         VersionEntry(
             version = "1.9.5.4",
             date = "2026-11-13",

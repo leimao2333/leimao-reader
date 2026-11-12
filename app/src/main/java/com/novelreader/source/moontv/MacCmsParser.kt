@@ -79,6 +79,37 @@ object MacCmsParser {
         return null
     }
 
+    /** 播放地址里的域名（含端口） */
+    private val HOST_IN_URL = Regex("""https?://([^/\s"\\]+)""", RegexOption.IGNORE_CASE)
+
+    /**
+     * 收集一份采集响应里 `vod_play_url` 用到的全部**播放域名**（v1.9.5.5）。
+     *
+     * 采集站的同一部片常同时挂在多个并行 CDN 上，而 `vod_play_url` 只写其中一个；
+     * 某个域名到期被停放后，这条线路就成了死链，但同一路径在别的域名上还活着。
+     * 这里把域名汇总给 [com.novelreader.core.media.MediaHostPool]，
+     * 播放失败时再拿同一路径去别的域名上碰一次。
+     *
+     * 只从 `vod_play_url` 里取，不碰 `vod_pic` 等图片域名 —— 那些域名上没有视频，
+     * 混进来只会让镜像探测白试一遍。
+     */
+    fun collectPlayHosts(json: String): List<String> = runCatching {
+        val root = JsonParser.parseString(json)
+        val list = root.takeIf { it.isJsonObject }
+            ?.asJsonObject?.get("list")
+            ?.takeIf { it.isJsonArray }?.asJsonArray
+            ?: return emptyList()
+        val hosts = LinkedHashSet<String>()
+        list.forEach { el ->
+            val obj = el.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEach
+            val raw = obj.get("vod_play_url")
+                ?.takeIf { it.isJsonPrimitive }?.asString
+                ?: return@forEach
+            HOST_IN_URL.findAll(raw).forEach { hosts += it.groupValues[1].lowercase() }
+        }
+        hosts.toList()
+    }.getOrDefault(emptyList())
+
     /** 地址的路径部分（忽略查询串 / 锚点）是否以媒体后缀结尾 */
     private fun isMediaPath(url: String): Boolean {
         val path = url.substringBefore('#').substringBefore('?')

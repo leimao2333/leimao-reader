@@ -17,6 +17,8 @@ import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import com.novelreader.core.media.MediaHostPool
+import com.novelreader.core.media.MediaMirrorResolver
 import com.novelreader.core.media.NextEpisodePrefetcher
 import com.novelreader.core.media.NextPrefetchPolicy
 import com.novelreader.core.media.PlayPageResolver
@@ -326,6 +328,14 @@ class VideoPlayerViewModel(
      * 嗅探 → 重播 → 若再失败就直接走换源 / 报错，不会来回死循环。
      */
     private val playPageTried = mutableSetOf<String>()
+
+    /**
+     * 已对哪些地址做过「同源 CDN 镜像」尝试（v1.9.5.5）。
+     *
+     * 采集站的播放域名到期被停放时，同一路径往往还挂在同源其它 CDN 上。
+     * 同样按 URL 去重：镜像重播再失败就不再镜像，避免在两个域名之间来回跳。
+     */
+    private val mirrorTried = mutableSetOf<String>()
 
     /** 常规倍速（长按加速结束后恢复到此值） */
     private var normalSpeed: Float = 1f
@@ -1031,6 +1041,8 @@ class VideoPlayerViewModel(
         currentEpisode = episode
         // 换集 / 换线路：明文降级重新给一次机会
         httpFallbackFor = null
+        // 同理，镜像兜底也重新给一次机会（用户点「重试」时不该被上一轮的去重记录挡住）
+        mirrorTried.clear()
         _episodeTitle.value = episode.title
         _currentEpisodeUrl.value = episode.url
         endSpeedBoost()
@@ -1519,8 +1531,13 @@ class VideoPlayerViewModel(
         val url = lastVideoUrl ?: return false
         if (!url.startsWith("http") || !playPageTried.add(url)) return false
         _error.value = null
-        _message.value = "正在检查播放地址"
+        val hasMirror = mirrorCandidates(url).isNotEmpty()
+        _message.value = if (hasMirror) "这条线路的域名可能已失效，正在尝试同源其它线路" else "正在检查播放地址"
         viewModelScope.launch {
+            // 先试同源其它 CDN：域名被停放时同一路径往往还在，
+            // 这比嗅探快，也更接近站点自己播放器能播的原因（v1.9.5.5）
+            if (tryMirrorHosts(url)) return@launch
+            _message.value = "正在检查播放地址"
             when (val result = PlayPageResolver.probe(url, lastVideoHeaders)) {
                 is PlayPageResolver.Result.PlayPage -> {
                     val real = result.realUrl
@@ -1557,6 +1574,58 @@ class VideoPlayerViewModel(
                 else -> failPlayback(error, unreachableMessage())
             }
         }
+        return true
+    }
+
+    /**
+     * 这条地址可以试哪些**同源其它域名**（v1.9.5.5）。
+     *
+     * 候选来自两处：
+     * - [MediaHostPool]：解析搜索 / 详情 / 分类响应时攒下的播放域名；
+     * - 当前这部剧其它线路的域名（换源列表里可能刚好有活着的那个 CDN）。
+     */
+    private fun mirrorCandidates(url: String): List<String> {
+        val sourceId = currentItem?.sourceId ?: return emptyList()
+        val currentHost = MediaHostPool.hostOf(url)
+        val fromLines = _lines.value.asSequence()
+            .flatMap { it.chapters.asSequence() }
+            .mapNotNull { MediaHostPool.hostOf(it.url) }
+            .toList()
+        return (MediaHostPool.hosts(sourceId) + fromLines)
+            .map { it.trim().lowercase() }
+            .filter { it.isNotEmpty() && it != currentHost }
+            .distinct()
+    }
+
+    /**
+     * 用同一路径去同源其它 CDN 试播（v1.9.5.5）。
+     *
+     * 采集站的播放地址里写死的那个域名到期 / 被停放后，整条线路就是死链；
+     * 但内容通常还在同源的其它域名上（实测同一路径在 `3sybf.com`、`vip8.3sybf.com`
+     * 仍是正常 m3u8，只在 `cdn2.shayubf3.com` 返回「域名出售」占位页）。
+     *
+     * @return true = 已切到镜像地址重播，本次错误不必再抛
+     */
+    private suspend fun tryMirrorHosts(url: String): Boolean {
+        val sourceId = currentItem?.sourceId ?: return false
+        if (!mirrorTried.add(url)) return false
+        val candidates = mirrorCandidates(url)
+        if (candidates.isEmpty()) return false
+        _message.value = "这条线路的域名可能已失效，正在尝试同源其它线路"
+        val mirror = MediaMirrorResolver.findMirror(url, candidates, lastVideoHeaders) ?: return false
+        val host = MediaHostPool.hostOf(mirror) ?: return false
+        MediaHostPool.promote(sourceId, host)
+        // 镜像地址本身也记一次，它再失败就不再兜（避免两个域名之间来回跳）
+        mirrorTried.add(mirror)
+        invalidateCurrentPrefetch()
+        _message.value = "已切换到同源可用域名，正在重试"
+        play(
+            mirror,
+            lastVideoHeaders,
+            restoreProgress = false,
+            seekToMs = player?.currentPosition ?: 0L,
+            bypassCache = true,
+        )
         return true
     }
 

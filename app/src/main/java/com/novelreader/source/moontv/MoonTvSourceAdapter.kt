@@ -1,6 +1,7 @@
 package com.novelreader.source.moontv
 
 import com.novelreader.core.network.HttpClient
+import com.novelreader.core.media.MediaHostPool
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.ChapterLine
 import com.novelreader.domain.model.ContentResult
@@ -67,6 +68,7 @@ class MoonTvSourceAdapter(
             return@withLock cached
         }
         val json = request(listOf("ac" to "detail", "ids" to id))
+        rememberHosts(json)
         cachedDetailId = id
         cachedDetailJson = json
         cachedDetailAt = now
@@ -90,7 +92,39 @@ class MoonTvSourceAdapter(
         val json = runCatching {
             request(listOf("ac" to "detail", "wd" to keyword, "pg" to page.toString()))
         }.getOrNull() ?: return emptyList()
+        rememberHosts(json)
         return MacCmsParser.parseList(json, info.id, info.name)
+    }
+
+    /**
+     * 顺带把响应里出现过的播放域名记进 [MediaHostPool]（v1.9.5.5）。
+     *
+     * 采集站的 CDN 域名是轮换的：某个域名到期后，新片照样能播，老片那条线路却成了死链。
+     * 有了这份域名表，播放失败时就能用同一路径去其它域名上碰运气。
+     */
+    private fun rememberHosts(json: String) {
+        val hosts = runCatching { MacCmsParser.collectPlayHosts(json) }.getOrDefault(emptyList())
+        if (hosts.isNotEmpty()) MediaHostPool.record(info.id, hosts)
+    }
+
+    /** 本进程内是否已经补过「同源播放域名表」 */
+    @Volatile
+    private var hostsSeeded = false
+
+    /**
+     * 池子里还没有这个源的播放域名时，补拉一次最新列表（v1.9.5.5）。
+     *
+     * 冷启动后直接从「收藏 / 历史」打开某一集时，本次运行里没走过搜索或分类，
+     * 域名池是空的 —— 而那条播放地址偏偏可能挂在一个已经停放的域名上。
+     * 这里只取一页最新列表（20 条）里的播放域名，够覆盖这个源当前的 CDN。
+     * 每个适配器实例只补一次，失败也不重试，不给正常播放添堵。
+     */
+    private suspend fun seedHostsOnce() {
+        if (hostsSeeded) return
+        hostsSeeded = true
+        if (MediaHostPool.hosts(info.id).isNotEmpty()) return
+        runCatching { request(listOf("ac" to "detail", "pg" to "1")) }
+            .getOrNull()?.let { rememberHosts(it) }
     }
 
     override suspend fun detail(item: MediaItem): MediaItem {
@@ -168,6 +202,8 @@ class MoonTvSourceAdapter(
     }
 
     override suspend fun content(chapter: ChapterItem): ContentResult {
+        // 播放前确保「同源播放域名表」有内容：死链时才有别的域名可试（v1.9.5.5）
+        runCatching { seedHostsOnce() }
         var url = chapter.url.trim()
         // 协议相对地址（//host/xxx.m3u8，部分采集站这么写）补全协议
         if (url.startsWith("//")) {
@@ -237,6 +273,7 @@ class MoonTvSourceAdapter(
             add("pg" to page.toString())
         }
         val json = runCatching { request(params) }.getOrNull() ?: return emptyList()
+        rememberHosts(json)
         return MacCmsParser.parseList(json, info.id, info.name)
     }
 }

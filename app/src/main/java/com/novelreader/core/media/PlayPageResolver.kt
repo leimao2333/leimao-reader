@@ -98,11 +98,33 @@ object PlayPageResolver {
                 text.contains("<html", ignoreCase = true) -> {
                 val found = MacCmsParser.extractPlayUrl(body, url)
                 Log.d(TAG, "play page $url -> real=$found")
-                if (found != null && found != url) resolved[url] = found
-                Result.PlayPage(found)
+                // 提取到的是同一个注册域名下的另一个子域（cdn2.x.com → x.com）时视为原地打转：
+                // 停放页会把原地址抄进 requrl，只换了个子域，拿去播等于白等一轮（v1.9.5.6）
+                val usable = found?.takeIf { !sameSite(it, url) }
+                if (usable != null) resolved[url] = usable
+                Result.PlayPage(usable)
             }
             else -> Result.Unknown
         }
+    }
+
+    /**
+     * 两个地址是不是同一个站点（注册域名相同）。
+     *
+     * `cdn2.shayubf3.com` 与 `shayubf3.com` 视为同站：域名停放页里 `?requrl=` 抄的就是
+     * 这类只差子域的地址，换过去照样是占位页。`internal` 便于单测。
+     */
+    internal fun sameSite(a: String, b: String): Boolean {
+        val ha = MediaHostPool.hostOf(a) ?: return false
+        val hb = MediaHostPool.hostOf(b) ?: return false
+        return registrable(ha) == registrable(hb)
+    }
+
+    /** 粗略取注册域名：取最后两段（`cdn2.shayubf3.com` → `shayubf3.com`） */
+    private fun registrable(host: String): String {
+        val pure = host.substringBefore(':').lowercase()
+        val parts = pure.split('.').filter { it.isNotEmpty() }
+        return if (parts.size <= 2) pure else parts.takeLast(2).joinToString(".")
     }
 
     /**

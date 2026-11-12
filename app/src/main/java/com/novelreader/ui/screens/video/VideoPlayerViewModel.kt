@@ -51,6 +51,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import com.novelreader.domain.model.MediaItem as NovelMediaItem
 
 /**
@@ -336,6 +337,13 @@ class VideoPlayerViewModel(
      * 同样按 URL 去重：镜像重播再失败就不再镜像，避免在两个域名之间来回跳。
      */
     private val mirrorTried = mutableSetOf<String>()
+
+    /**
+     * 「原地址 → 已确认可用的镜像地址」（v1.9.5.6）。
+     *
+     * 同一集重播（退出再进、拖动后重载）时直接走镜像，不必再等一次失败 + 探测。
+     */
+    private val mirrorCache = mutableMapOf<String, String>()
 
     /** 常规倍速（长按加速结束后恢复到此值） */
     private var normalSpeed: Float = 1f
@@ -1069,8 +1077,10 @@ class VideoPlayerViewModel(
                     if (url.isNullOrEmpty()) {
                         _error.value = "未获取到播放地址"
                     } else {
-                        _videoUrl.value = url
-                        play(url, result.videoHeaders, restoreProgress, seekToMs)
+                        // 上一轮已经把这个地址镜像到可用域名：直接用它起播，不用再等一轮失败（v1.9.5.6）
+                        val effectiveUrl = mirrorCache[url] ?: url
+                        _videoUrl.value = effectiveUrl
+                        play(effectiveUrl, result.videoHeaders, restoreProgress, seekToMs)
                         schedulePrefetchNext()
                     }
                 }
@@ -1609,12 +1619,19 @@ class VideoPlayerViewModel(
     private suspend fun tryMirrorHosts(url: String): Boolean {
         val sourceId = currentItem?.sourceId ?: return false
         if (!mirrorTried.add(url)) return false
-        val candidates = mirrorCandidates(url)
+        var candidates = mirrorCandidates(url)
+        // 池子里只有当前这个域名（常见于冷启动后直接从历史打开）→ 用片名在同一源里搜一次，
+        // 采集站的搜索结果横跨各个年份的片，正好覆盖它历史上用过的所有 CDN 域名（v1.9.5.6）
+        if (candidates.size < 2) {
+            _message.value = "正在查找这个源可用的播放域名"
+            if (seedHostsBySearch()) candidates = mirrorCandidates(url)
+        }
         if (candidates.isEmpty()) return false
         _message.value = "这条线路的域名可能已失效，正在尝试同源其它线路"
         val mirror = MediaMirrorResolver.findMirror(url, candidates, lastVideoHeaders) ?: return false
         val host = MediaHostPool.hostOf(mirror) ?: return false
         MediaHostPool.promote(sourceId, host)
+        mirrorCache[url] = mirror
         // 镜像地址本身也记一次，它再失败就不再兜（避免两个域名之间来回跳）
         mirrorTried.add(mirror)
         invalidateCurrentPrefetch()
@@ -1627,6 +1644,36 @@ class VideoPlayerViewModel(
             bypassCache = true,
         )
         return true
+    }
+
+    /**
+     * 用「当前片名 → 同一源搜索」把域名池补齐（v1.9.5.6）。
+     *
+     * 采集站的搜索结果横跨各个年份的片，而不同年份的片挂在不同的 CDN 上 ——
+     * 一次搜索就能拿到这个源历史上用过的多个播放域名（实测同一部老片能搜出
+     * `3sybf.com` / `vip8.3sybf.com` / `v2024.sysybf.com` 等 7 个域名，
+     * 而最新列表里只有 1 个）。这些才是死链时真正能救回来的候选。
+     *
+     * 只在镜像候选不足时触发一次，带超时且失败不抛。
+     */
+    private suspend fun seedHostsBySearch(): Boolean {
+        val item = currentItem ?: return false
+        val keyword = item.title.trim()
+        if (keyword.isEmpty()) return false
+        val before = MediaHostPool.hosts(item.sourceId).size
+        runCatching {
+            withTimeoutOrNull(HOST_SEED_TIMEOUT_MS) {
+                contentRepository.searchWithProgress(
+                    type = item.type,
+                    keyword = keyword,
+                    page = 1,
+                    concurrency = 1,
+                    fuzzyEnabled = false,
+                    sourceIds = setOf(item.sourceId),
+                ).first { MediaHostPool.hosts(item.sourceId).size > before }
+            }
+        }
+        return MediaHostPool.hosts(item.sourceId).size > before
     }
 
     /**
@@ -1867,5 +1914,8 @@ class VideoPlayerViewModel(
         private const val SPEED_PROBE_TIMEOUT_MS = 5_000L
         /** 进播放页自动纠线时的探测超时（比手动测速短，别让用户干等） */
         private const val AUTO_LINE_PROBE_TIMEOUT_MS = 4_000L
+
+        /** 「按片名搜一次补齐同源域名」的超时（死链补救路径，别让用户干等） */
+        private const val HOST_SEED_TIMEOUT_MS = 9_000L
     }
 }

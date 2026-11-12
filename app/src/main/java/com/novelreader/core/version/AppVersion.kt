@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.9.5.5"
+    const val CURRENT_VERSION = "1.9.5.6"
 
     /**
      * 更新日志。
@@ -25,6 +25,15 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.9.5.6",
+            date = "2026-11-13",
+            changes = listOf(
+                "**老片死链自动换到「同源活域名」**：鲨鱼资源这类采集站，同一部片同时挂在多个 CDN 上、路径完全一样，`vod_play_url` 里只写一个。那个域名到期被停放后，片子看起来就「只有一条线路还播不了」。现在按片名在同一源里搜一次，就能拿到这个源历史上用过的全部播放域名（实测一部老片能搜出 7 个），再用原路径去探，命中就切过去接着播。",
+                "**不再被停放页骗着白播一次**：占位页里的 `?requrl=` 只是把原地址换了子域（`cdn2.x.com` → `x.com`），以前会当成「解析到真实地址」再播一轮；现在同站子域直接判定为无效解析，立刻去做域名替换。",
+                "**同一集重播秒起**：镜像命中后记住「原地址 → 镜像地址」，同一集再看时直接走镜像，不用再经历一次失败等待。",
+            ),
+        ),
         VersionEntry(
             version = "1.9.5.5",
             date = "2026-11-13",

@@ -38,4 +38,22 @@ class PlayPageResolverParkedTest {
         """.trimIndent()
         assertFalse(PlayPageResolver.isParkedPage(body))
     }
+
+    @Test
+    fun `same site subdomain swap is not a real fix`() {
+        // 停放页把原地址抄进 requrl，只换了子域 —— 换过去还是占位页
+        assertTrue(
+            PlayPageResolver.sameSite(
+                "https://shayubf3.com/20240913/HCkz724H/index.m3u8",
+                "https://cdn2.shayubf3.com/20240913/HCkz724H/index.m3u8",
+            ),
+        )
+        // 同源不同 CDN 域名不属于同站，值得真的切过去试
+        assertFalse(
+            PlayPageResolver.sameSite(
+                "https://3sybf.com/20240913/HCkz724H/index.m3u8",
+                "https://cdn2.shayubf3.com/20240913/HCkz724H/index.m3u8",
+            ),
+        )
+    }
 }

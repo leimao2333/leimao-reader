@@ -52,6 +52,36 @@ class MacCmsParserPlayUrlTest {
         assertNull(MacCmsParser.extractPlayUrl("<html><body>just a moment...</body></html>", "https://a.com"))
     }
 
+    /**
+     * 停放的域名页 / 反盗链页里常带统计地址，真实地址被编码进查询串：
+     * `//l.cdn-fileserver.com/bping.php?…&requrl=https%3A%2F%2Fhost%2Fx%2Findex.m3u8`
+     * 整串以 `.m3u8` 结尾，会被误当成流地址再播一次（等于把死链又试一遍）。
+     * 判据必须是**路径**以媒体后缀结尾。
+     */
+    @Test
+    fun `ignores tracking url that only ends with media extension`() {
+        val html = """
+            <html><head><title>example.com</title>
+            <script src="https://l.cdn-fileserver.com/bping.php?prid=8PR&requrl=https%3A%2F%2Fhost.com%2Fa%2Findex.m3u8"></script>
+            </head><body><h1>This domain may be for sale.</h1></body></html>
+        """.trimIndent()
+        assertNull(
+            MacCmsParser.extractPlayUrl(html, "https://host.com/a/index.m3u8"),
+        )
+    }
+
+    @Test
+    fun `still finds real media url when page also has tracking url first`() {
+        val html = """
+            <script src="https://stat.example.net/beacon.gif?u=https%3A%2F%2Fcdn.example.com%2Fx%2Findex.m3u8"></script>
+            <script>player.src = "https://cdn.example.com/real/index.m3u8?sign=1";</script>
+        """.trimIndent()
+        assertEquals(
+            "https://cdn.example.com/real/index.m3u8?sign=1",
+            MacCmsParser.extractPlayUrl(html, "https://play.example.com/x"),
+        )
+    }
+
     @Test
     fun `direct media detection`() {
         assertTrue(MacCmsParser.looksLikeDirectMedia("https://a.com/x/index.m3u8?t=1"))

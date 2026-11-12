@@ -1455,14 +1455,16 @@ class VideoPlayerViewModel(
     private fun friendlyError(error: PlaybackException): String {
         val chain = generateSequence<Throwable>(error) { it.cause }
             .joinToString(" | ") { "${it.javaClass.simpleName}: ${it.message.orEmpty()}" }
+        // 只有一条线路时「已尝试其它线路」是假话 —— 这种源根本没得换
+        val suffix = if (_lines.value.size > 1) "，已尝试其它线路" else ""
         return when {
             chain.contains("CertificateExpired") || chain.contains("timestamp check failed") ->
-                "播放地址的证书已过期，已尝试其它线路"
+                "播放地址的证书已过期$suffix"
             chain.contains("SSLHandshake") || chain.contains("SSLPeerUnverified") ->
-                "播放地址的安全连接失败，已尝试其它线路"
+                "播放地址的安全连接失败$suffix"
             chain.contains("ParserException") || chain.contains("EXTM3U") ||
                 chain.contains("UnrecognizedInputFormat") ->
-                "播放地址返回的不是有效视频，已尝试其它线路"
+                "播放地址返回的不是有效视频$suffix"
             chain.contains("HttpDataSource") || chain.contains("Unable to connect") ->
                 "播放地址暂时不可达，请换一条线路或稍后重试"
             chain.contains("Unexpected runtime error") ->
@@ -1470,6 +1472,28 @@ class VideoPlayerViewModel(
             else -> error.message ?: "播放出错"
         }
     }
+
+    /**
+     * 播放页里连一个流地址都找不到时的提示（v1.9.5.3）。
+     *
+     * 这种情况多半是线路地址彻底失效：域名被停放 / 转卖、返回的是「此域名可出售」
+     * 一类的占位页，或者反盗链页。以前会一路兜到「不是有效视频」，
+     * 用户完全不知道该怎么办；现在直接说明是线路死了。
+     */
+    private fun deadEndpointMessage(): String =
+        if (_lines.value.size > 1) {
+            "这条线路的地址已失效（打开后返回的是网页，没有视频流），已尝试其它线路"
+        } else {
+            "这条线路的地址已失效（打开后返回的是网页，没有视频流），建议换一个片源"
+        }
+
+    /** 探测时连不上：线路的域名/端口已经不通 */
+    private fun unreachableMessage(): String =
+        if (_lines.value.size > 1) {
+            "这条线路已经打不开，已尝试其它线路"
+        } else {
+            "这条线路已经打不开（地址无法连接），建议换一个片源"
+        }
 
     // ==================== 播放页地址就地补救（v1.9.5.1） ====================
 
@@ -1511,7 +1535,8 @@ class VideoPlayerViewModel(
                             bypassCache = true,
                         )
                     } else {
-                        failPlayback(error)
+                        // 返回的是网页，但页面里连一个流地址都没有：线路本身死了
+                        failPlayback(error, deadEndpointMessage())
                     }
                 }
                 is PlayPageResolver.Result.ValidMedia -> {
@@ -1528,16 +1553,22 @@ class VideoPlayerViewModel(
                         bypassCache = true,
                     )
                 }
-                else -> failPlayback(error)
+                // 探测请求本身都没连上：这条线路直接不可用
+                else -> failPlayback(error, unreachableMessage())
             }
         }
         return true
     }
 
-    /** 补救失败：回到原有的自动换源 / 中文报错流程 */
-    private fun failPlayback(error: PlaybackException) {
+    /**
+     * 补救失败：回到原有的自动换源 / 中文报错流程。
+     *
+     * @param customMessage 嗅探已经查明具体死因时用它取代通用报错
+     */
+    private fun failPlayback(error: PlaybackException, customMessage: String? = null) {
+        _message.value = null
         if (tryAutoSwitchOnError()) return
-        _error.value = friendlyError(error)
+        _error.value = customMessage ?: friendlyError(error)
     }
 
     /**

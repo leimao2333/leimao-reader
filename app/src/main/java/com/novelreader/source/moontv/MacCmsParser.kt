@@ -47,15 +47,20 @@ object MacCmsParser {
             .replace("\\u0026", "&")
             .replace("&amp;", "&")
 
-        val absolute = Regex(
-            """(?:https?:)?//[^\s'"<>()\\]+\.(?:m3u8|mp4|mkv|flv)(?:\?[^\s'"<>()\\]*)?""",
+        // 先抓页面里所有绝对地址，再按「**路径**确实以媒体后缀结尾」筛选。
+        //
+        // 不能用 `…\.m3u8` 结尾的整体正则：统计 / 跳转地址会把真实地址编码进查询串，
+        // 例如 `//l.cdn-fileserver.com/bping.php?…&requrl=https%3A%2F%2Fhost%2Fx%2Findex.m3u8`
+        // —— 整串以 `.m3u8` 结尾会被误判成流地址，拿去播放又是一轮「不是有效视频」。
+        Regex(
+            """(?:https?:)?//[^\s'"<>()\\]+""",
             RegexOption.IGNORE_CASE,
-        ).find(text)?.value
-        if (absolute != null) {
-            val full = if (absolute.startsWith("//")) {
-                baseUrl.substringBefore("://", "https") + ":" + absolute
-            } else absolute
-            return full.trimEnd(',', ';', ')', ']', '\\')
+        ).findAll(text).forEach { m ->
+            var url = m.value.trimEnd(',', ';', ')', ']', '\\', '.', '"', '\'')
+            if (url.startsWith("//")) {
+                url = (if (baseUrl.startsWith("http://")) "http:" else "https:") + url
+            }
+            if (isMediaPath(url)) return url
         }
 
         // 相对路径写法：const vid = '/play/xxx/index.m3u8'
@@ -68,6 +73,12 @@ object MacCmsParser {
                 .getOrNull()
         }
         return null
+    }
+
+    /** 地址的路径部分（忽略查询串 / 锚点）是否以媒体后缀结尾 */
+    private fun isMediaPath(url: String): Boolean {
+        val path = url.substringBefore('#').substringBefore('?')
+        return MEDIA_URL_EXT.containsMatchIn(path)
     }
 
     /** 单集（一条播放地址） */

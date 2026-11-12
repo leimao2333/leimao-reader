@@ -37,6 +37,19 @@ class NovelReaderApp : Application(), ImageLoaderFactory {
         com.novelreader.core.crash.CrashHandler.install(this)
         container = AppContainer(this)
 
+        // 视频广告过滤开关回灌（v1.9.6.0）。
+        //
+        // 数据源工厂是同步构建的（播放点击那一下就要用），等不到 DataStore 的异步结果，
+        // 所以开关值放在进程内的 volatile 字段里，这里订阅一次保持同步 ——
+        // 用户改完设置，下一次起播就按新值走。
+        applicationScope.launch {
+            runCatching {
+                container.preferencesManager.videoAdFilterFlow.collect {
+                    com.novelreader.core.media.VideoAdFilter.enabled = it
+                }
+            }
+        }
+
         // 后台恢复源
         applicationScope.launch {
             runCatching {

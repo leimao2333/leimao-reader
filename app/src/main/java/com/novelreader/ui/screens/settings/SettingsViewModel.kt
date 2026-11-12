@@ -1019,6 +1019,10 @@ class SettingsViewModel(
     private val _videoPipEnabled = MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_PIP_ENABLED)
     val videoPipEnabled: StateFlow<Boolean> = _videoPipEnabled.asStateFlow()
 
+    /** 视频广告过滤（v1.9.6.0，默认开启） */
+    private val _videoAdFilter = MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_AD_FILTER)
+    val videoAdFilter: StateFlow<Boolean> = _videoAdFilter.asStateFlow()
+
     /** 视频向后缓冲时长（秒，0 = 关闭；v1.8.4.0） */
     private val _videoBufferSeconds = MutableStateFlow(PreferencesManager.DEFAULT_VIDEO_BUFFER_SECONDS)
     val videoBufferSeconds: StateFlow<Int> = _videoBufferSeconds.asStateFlow()
@@ -1115,6 +1119,9 @@ class SettingsViewModel(
         }
         viewModelScope.launch {
             preferencesManager.videoPipEnabledFlow.collect { _videoPipEnabled.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.videoAdFilterFlow.collect { _videoAdFilter.value = it }
         }
         viewModelScope.launch {
             preferencesManager.videoBufferSecondsFlow.collect { _videoBufferSeconds.value = it }
@@ -1332,6 +1339,11 @@ class SettingsViewModel(
 
     fun setVideoPipEnabled(value: Boolean) {
         viewModelScope.launch { preferencesManager.setVideoPipEnabled(value) }
+    }
+
+    /** 视频广告过滤开关（v1.9.6.0） */
+    fun setVideoAdFilter(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setVideoAdFilter(value) }
     }
 
     /** 视频预缓存时长（秒，0 = 关闭；v1.8.4.0） */

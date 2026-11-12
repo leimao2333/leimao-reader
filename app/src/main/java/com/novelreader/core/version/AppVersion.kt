@@ -17,7 +17,7 @@ package com.novelreader.core.version
 object AppVersion {
 
     /** 当前应用版本号（四段式：顶端版本.大版本.小版本.修订；与 build.gradle.kts 的 versionName 保持一致） */
-    const val CURRENT_VERSION = "1.9.5.6"
+    const val CURRENT_VERSION = "1.9.5.7"
 
     /**
      * 更新日志。
@@ -25,6 +25,19 @@ object AppVersion {
      * 每个版本一条，按时间倒序排列（最新在前）。
      */
     val CHANGELOG: List<VersionEntry> = listOf(
+        VersionEntry(
+            version = "1.9.5.7",
+            date = "2026-11-13",
+            changes = listOf(
+                "**新增视频广告过滤（默认开启）**：采集站的广告大多不是弹窗，而是**拼进 HLS 播放列表的广告分片** —— 一集正片被切成几百个 `.ts`，广告商塞几个自己的进去。现在播放器读清单时会把广告分片摘掉，正片分片一个字节都不动，画质不受影响、也不额外耗流量。",
+                "**两条判据**：① HLS 官方广告标记 `#EXT-X-CUE-OUT` ~ `#EXT-X-CUE-IN`（SCTE-35 用的就是它，零误伤）；② 分片地址的广告特征（`/ad/`、`/ads/`、`/gg/`、`/guanggao/` 目录，或文件名整串是 `ad1`、`preroll`、`midroll` 之类）。",
+                "**两道安全阀，宁可少删也不看不成**：删完一个分片不剩 → 放弃；删掉的时长超过整集一半 → 放弃（只可能是规则误伤）。删完交回原清单，用户顶多接着看广告，不会看到半截剧情。",
+                "**不在分片名里「找 ad」**：`load` / `download` / `header` / `shadow` 里都含 `ad`，早期这类过滤最容易在这里把正常分片删光，所以文件名必须**整串**匹配广告形状。",
+                "**删中间那段会补 `#EXT-X-DISCONTINUITY`**：挖掉分片后前后 PTS 不连续，不声明就会从这里开始音画错位甚至判流损坏；开头贴片不需要补。",
+                "**设置里可关**：视频设置新增「广告过滤」开关；过滤生效时播放页提示「已跳过 N 个广告片段（约 X 秒）」。",
+                "**说明**：广告若烧在正片画面内部（同一份 `.ts` 里前 15 秒就是广告画面），这一层管不了 —— 那需要重新转码。",
+            ),
+        ),
         VersionEntry(
             version = "1.9.5.6",
             date = "2026-11-13",

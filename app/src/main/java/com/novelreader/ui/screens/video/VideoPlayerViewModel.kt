@@ -22,6 +22,7 @@ import com.novelreader.core.media.MediaMirrorResolver
 import com.novelreader.core.media.NextEpisodePrefetcher
 import com.novelreader.core.media.NextPrefetchPolicy
 import com.novelreader.core.media.PlayPageResolver
+import com.novelreader.core.media.VideoAdFilter
 import com.novelreader.core.media.VideoMediaCache
 import com.novelreader.core.network.HttpClient
 import com.novelreader.core.preferences.PreferencesManager
@@ -357,6 +358,19 @@ class VideoPlayerViewModel(
     private var qualityAppliedForMedia: Boolean = false
 
     init {
+        // 广告过滤播报（v1.9.6.0）：真正的过滤发生在数据源的下载线程，
+        // 这里只负责把结果说给用户听一句，让他知道「刚才少看了几十秒广告」。
+        viewModelScope.launch {
+            VideoAdFilter.events.collect { report ->
+                val seconds = report.removedSeconds
+                _message.value = if (seconds > 0) {
+                    "已跳过 ${report.removedSegments} 个广告片段（约 ${seconds} 秒）"
+                } else {
+                    "已跳过 ${report.removedSegments} 个广告片段"
+                }
+            }
+        }
+
         // AI 字幕入口可见性（v1.8.7.3）：设置开关 + 模型已下载，两个都要满足
         viewModelScope.launch {
             val store = localModelStore
@@ -1218,7 +1232,8 @@ class VideoPlayerViewModel(
         // 回退重播 / 快退 / 重连都直接读缓存，弱网下卡顿明显减少。
         // 没有请求头的源同样走缓存（以前这条分支直接 setMediaItem，等于没缓存）。
         val upstream = if (bypassCache) {
-            VideoMediaCache.httpFactory(headers)
+            // 跳过缓存，但广告过滤照旧（v1.9.6.0）
+            VideoMediaCache.networkFactory(headers)
         } else {
             VideoMediaCache.dataSourceFactory(headers)
         }

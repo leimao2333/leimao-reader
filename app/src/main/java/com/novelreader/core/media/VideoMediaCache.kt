@@ -75,24 +75,38 @@ object VideoMediaCache {
      * （采集站 CDN 很常见）整条 m3u8 就播不了，而首页 / 搜索 / 详情都正常，
      * 极难排查。OkHttp 客户端只放宽「证书已过期」这一种校验，其余照旧严格。
      * 超时由 [VideoTls] 统一放宽，弱网下慢分片不会被默认 8s 读超时判死。
+     *
+     * 纯网络、不带广告过滤 —— 过滤要放在**缓存之外**，见 [dataSourceFactory]。
      */
-    fun httpFactory(headers: Map<String, String>): DataSource.Factory =
+    private fun httpFactory(headers: Map<String, String>): DataSource.Factory =
         OkHttpDataSource.Factory(VideoTls.client())
             .setUserAgent("NovelReader/1.0")
             .setDefaultRequestProperties(headers)
 
     /**
-     * 带缓存的 DataSource 工厂，交给 `DefaultMediaSourceFactory` 使用。
+     * 不走磁盘缓存、但带广告过滤的网络数据源（v1.9.6.0）。
      *
-     * 未初始化时退化为纯网络数据源（功能不受影响，只是没有缓存）。
+     * 「跳过缓存重播」分支用它：既不要旧缓存（上一次可能是坏网页），又要过滤广告。
+     */
+    fun networkFactory(headers: Map<String, String>): DataSource.Factory =
+        AdFilterDataSource.factory(httpFactory(headers))
+
+    /**
+     * 带缓存 + 广告过滤的 DataSource 工厂，交给 `DefaultMediaSourceFactory` 使用。
+     *
+     * 过滤放在缓存**外面**（v1.9.6.0）：缓存里存的是站点原样的 m3u8，每次读清单时
+     * 现过滤。好处是改过滤规则不用清缓存、关掉开关立刻恢复原样。
+     * 未初始化缓存时退化为纯网络数据源（功能不受影响，只是没有缓存）。
      */
     fun dataSourceFactory(headers: Map<String, String>): DataSource.Factory {
-        val c = cache ?: return httpFactory(headers)
-        return CacheDataSource.Factory()
-            .setCache(c)
-            .setUpstreamDataSourceFactory(httpFactory(headers))
-            // 缓存读失败时回退到网络，而不是让整条流报错
-            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        val c = cache ?: return networkFactory(headers)
+        return AdFilterDataSource.factory(
+            CacheDataSource.Factory()
+                .setCache(c)
+                .setUpstreamDataSourceFactory(httpFactory(headers))
+                // 缓存读失败时回退到网络，而不是让整条流报错
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR),
+        )
     }
 
     /**

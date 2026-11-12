@@ -133,6 +133,7 @@ fun SettingsScreen(
     val videoAutoNext by viewModel.videoAutoNext.collectAsState()
     val videoVerticalSwipeSwitch by viewModel.videoVerticalSwipeSwitch.collectAsState()
     val videoPipEnabled by viewModel.videoPipEnabled.collectAsState()
+    val videoAdFilter by viewModel.videoAdFilter.collectAsState()
     val videoBufferSeconds by viewModel.videoBufferSeconds.collectAsState()
     val videoQuality by viewModel.videoQuality.collectAsState()
     val videoPrefetchWifiOnly by viewModel.videoPrefetchWifiOnly.collectAsState()
@@ -744,6 +745,16 @@ fun SettingsScreen(
                 Switch(
                     checked = videoPipEnabled,
                     onCheckedChange = { viewModel.setVideoPipEnabled(it) },
+                )
+            }
+            SettingRow(
+                title = "广告过滤",
+                subtitle = "自动跳过视频里的贴片 / 中插广告（基于 HLS 播放列表里的广告分片，" +
+                    "不改变画质；烧在正片画面里的广告无法过滤）",
+            ) {
+                Switch(
+                    checked = videoAdFilter,
+                    onCheckedChange = { viewModel.setVideoAdFilter(it) },
                 )
             }
 

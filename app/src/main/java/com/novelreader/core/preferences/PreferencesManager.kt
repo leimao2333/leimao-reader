@@ -226,6 +226,15 @@ class PreferencesManager(private val context: Context) {
          */
         val KEY_VIDEO_PREFETCH_WIFI_ONLY = booleanPreferencesKey("video_prefetch_wifi_only")
         /**
+         * 视频广告过滤（v1.9.6.0，默认**开启**）。
+         *
+         * 采集站的广告大多是拼进 HLS 播放列表的广告分片（贴片 / 中插），
+         * 过滤逻辑在 [com.novelreader.core.media.VideoAdFilter]，这里只是开关。
+         * 默认开：被误伤的代价由过滤器内部两道安全阀兜住（见该类注释），
+         * 不需要用户先去理解风险再手动打开。
+         */
+        val KEY_VIDEO_AD_FILTER = booleanPreferencesKey("video_ad_filter")
+        /**
          * 播放页「记住上次用的源（线路）」（v1.6.9.0）。
          *
          * JSON 数组，元素 `{key, lineName, lineIndex, updatedAt}`，key = `sourceId\u0001itemId`。
@@ -459,6 +468,8 @@ class PreferencesManager(private val context: Context) {
         const val DEFAULT_VIDEO_QUALITY = 0
         /** 默认「尾段预缓冲仅在 WiFi 下」（v1.8.4.4）：移动网络下不偷偷下 6MB */
         const val DEFAULT_VIDEO_PREFETCH_WIFI_ONLY = true
+        /** 默认开启视频广告过滤（v1.9.6.0）：摘掉 HLS 清单里的广告分片 */
+        const val DEFAULT_VIDEO_AD_FILTER = true
         /** 默认视频 Tab 频道栏目：0=首页 */
         const val DEFAULT_VIDEO_CHANNEL_INDEX = 0
         /** 默认 RSS 订阅入口在顶栏（不搬到导航栏下方） */
@@ -1014,6 +1025,14 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setVideoPrefetchWifiOnly(value: Boolean) {
         context.dataStore.edit { it[KEY_VIDEO_PREFETCH_WIFI_ONLY] = value }
+    }
+
+    /** 视频广告过滤开关（v1.9.6.0，默认开启） */
+    val videoAdFilterFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_VIDEO_AD_FILTER] ?: DEFAULT_VIDEO_AD_FILTER }
+
+    suspend fun setVideoAdFilter(value: Boolean) {
+        context.dataStore.edit { it[KEY_VIDEO_AD_FILTER] = value }
     }
 
     // ----- v1.3.3.0 影视首页 -----

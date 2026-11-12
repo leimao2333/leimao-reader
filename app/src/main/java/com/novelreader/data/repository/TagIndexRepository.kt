@@ -282,6 +282,33 @@ class TagIndexRepository(
     }
 
     /**
+     * 一批作品里哪些**已经在本地索引里**（v1.9.5.8「只看新」）。
+     *
+     * 与 `TagInstanceDao.indexedKeys` 的口径一致（`sourceId|itemId`）。标签搜索每翻一页
+     * 就要问一次（一页几十条），所以按 [IN_CHUNK] 分批走 IN 查询 —— SQLite 的绑定变量
+     * 上限是 999，一次塞满会直接报错。
+     *
+     * 为什么不能只靠 `search()` 的返回：`search()` 是「按标签查条目」，
+     * 只回答「这个标签下我收录了谁」；网络结果里可能有一批作品身上带着别的标签、
+     * 当年是通过另一条路径收录的 —— 它们同样是「看过的」，只看 `search()` 会漏掉，
+     * 用户就会在「只看新」里继续刷到老面孔。
+     */
+    suspend fun recordedKeysOf(type: SourceType, items: List<MediaItem>): Set<String> =
+        withContext(Dispatchers.IO) {
+            val keys = items.asSequence()
+                .filter { it.sourceId.isNotBlank() && it.id.isNotBlank() }
+                .map { "${it.sourceId}|${it.id}" }
+                .distinct()
+                .toList()
+            if (keys.isEmpty()) return@withContext emptySet()
+            runCatching {
+                keys.chunked(IN_CHUNK)
+                    .flatMap { tagInstanceDao.indexedKeys(type.name, it) }
+                    .toSet()
+            }.getOrDefault(emptySet())
+        }
+
+    /**
      * 边搜边标记（v1.8.1.2）：搜索结果交给 [TagTagger] 打标后入库。
      *
      * 不额外发详情请求 —— 每搜一次，标签层就厚一点，用户用得越多越准。
@@ -1132,6 +1159,14 @@ class TagIndexRepository(
             val name = latest.ifBlank { "tag_table.json" }
             return "$base/$name?t=${System.currentTimeMillis() / 60_000}"
         }
+
+        /**
+         * 批量查「是否已收录」时一条 SQL 里放多少个键（v1.9.5.8）。
+         *
+         * SQLite 编译期默认 `SQLITE_MAX_VARIABLE_NUMBER = 999`，超了直接抛异常；
+         * 400 留够余量，一页几十条时通常一次就够。
+         */
+        private const val IN_CHUNK = 400
 
         /** 同一作品同一信号的最短记录间隔：半小时 */
         private const val SIGNAL_TTL_MS = 30 * 60 * 1000L

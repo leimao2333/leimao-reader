@@ -164,6 +164,13 @@ fun TagSearchScreen(
     val individualTags by viewModel.individualTags.collectAsState()
     // 待办 #47：本轮结果里哪些是本地已收录的（卡片角标）
     val indexedKeys by viewModel.indexedKeys.collectAsState()
+    // v1.9.5.8「只看新」：已收录的直接不画，然后一路往下翻到底（可暂停）
+    val skipRecorded by viewModel.skipRecorded.collectAsState()
+    val autoScan by viewModel.autoScan.collectAsState()
+    val bottomNoFresh by viewModel.bottomNoFresh.collectAsState()
+    val scanning by viewModel.scanning.collectAsState()
+    val scanPaused by viewModel.scanPaused.collectAsState()
+    val scanFinished by viewModel.scanFinished.collectAsState()
     val indexing by viewModel.indexing.collectAsState()
     // 视觉模型总开关（v1.8.7.2，默认关）：关着时「封面视觉打标」按钮禁用
     val visualTaggingEnabled by viewModel.visualTaggingEnabled.collectAsState()
@@ -700,34 +707,107 @@ fun TagSearchScreen(
         // 反而让人以为是两个不同的进度，且行太长会折成两行（小屏尤其明显）。
         val found = results.size
         val busy = searching || loadingPage > 0
+        /** 首屏召回 / 翻页这类「用户看得见的一次等待」，与连翻状态区分开 */
+        val searchBusy = searching || (loadingMore && !scanning)
+        // ===== 「只看新」（v1.9.5.8）=====
+        // 先按 `sourceId:id` 收敛（重复 key 会让 LazyColumn 闪退，见下方 v1.8.7.5 的说明），
+        // 再按「已收录」过滤。过滤放在**渲染这一层**做，不动 ViewModel 的结果集：
+        // 开关一关，刚才藏起来的条目立刻回来，不用重搜一遍。
+        // 「跳过多少部」按**去重后**的口径算：同一部片在多个源上各有一条，
+        // 拿 results.size 相减会把重复条数也算进去，数字虚高。
+        val (displayResults, hiddenCount) = remember(results, indexedKeys, skipRecorded) {
+            val deduped = if (results.size < 2) {
+                results
+            } else {
+                val seen = HashSet<String>(results.size)
+                results.filter { seen.add("${it.sourceId}:${it.id}") }
+            }
+            val visible = com.novelreader.core.util.RecordedSkip
+                .visible(deduped, indexedKeys, skipRecorded)
+            visible to (deduped.size - visible.size)
+        }
+        // 一整屏都被藏光了、后面还有页：**自动**开始往后翻，不需要用户点任何按钮。
+        // 这就是他要的「没有新结果就一直翻」——翻出新内容自己停，翻到底由 ViewModel
+        // 置 bottomNoFresh，界面上给一句「已经翻到底了」。
+        LaunchedEffect(displayResults.isEmpty(), skipRecorded, searching, hasMore, loadingMore, scanning, scanPaused) {
+            if (skipRecorded && displayResults.isEmpty() && !searching && !loadingMore &&
+                !scanning && !scanPaused && hasMore
+            ) {
+                viewModel.startScan()
+            }
+        }
         if (found > 0 || busy) {
             Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
-                Text(
-                    text = buildString {
-                        append(if (found > 0) "已找到 $found 部" else "正在搜索…")
-                        // 「用多少源」也留着：这个数说明覆盖面，掉了用户会以为源被悄悄砍了
-                        if (sourceCount > 0) append("　·　用 $sourceCount 个源")
-                        // v1.8.9.1：总进度只在「还在收」时显示。收完之后分母里还挂着
-                        // 预取那几页的请求数，留在屏幕上会变成「已找到 424 部 · 总进度 504/738」，
-                        // 看着像没跑完。
-                        if (phase == SearchPhase.STREAMING) {
-                            progress?.let { (done, total) ->
-                                if (total > 0) append("　·　总进度 $done/$total")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = buildString {
+                            append(if (found > 0) "已找到 $found 部" else "正在搜索…")
+                            // 开了「只看新」时把「其中已收录多少」说清楚 ——
+                            // 只写「已找到 4 部」会让用户以为源里就这么多
+                            if (skipRecorded && hiddenCount > 0) append("　·　已跳过 $hiddenCount 部已收录")
+                            // 「用多少源」也留着：这个数说明覆盖面，掉了用户会以为源被悄悄砍了
+                            if (sourceCount > 0) append("　·　用 $sourceCount 个源")
+                            // v1.8.9.1：总进度只在「还在收」时显示。收完之后分母里还挂着
+                            // 预取那几页的请求数，留在屏幕上会变成「已找到 424 部 · 总进度 504/738」，
+                            // 看着像没跑完。
+                            if (phase == SearchPhase.STREAMING) {
+                                progress?.let { (done, total) ->
+                                    if (total > 0) append("　·　总进度 $done/$total")
+                                }
                             }
-                        }
-                        // v1.8.9.1：任务终态决定说法，不再靠「结果有没有变」猜
-                        when (phase) {
-                            SearchPhase.STREAMING -> append("　·　仍在收集")
-                            SearchPhase.DONE_PARTIAL -> append(
-                                if (slowSourceCount > 0) "　·　$slowSourceCount 个源未返回，结果可能不全"
-                                else "　·　部分源未返回，结果可能不全",
-                            )
+                            // v1.8.9.1：任务终态决定说法，不再靠「结果有没有变」猜
+                            when (phase) {
+                                SearchPhase.STREAMING -> append("　·　仍在收集")
+                                SearchPhase.DONE_PARTIAL -> append(
+                                    if (slowSourceCount > 0) "　·　$slowSourceCount 个源未返回，结果可能不全"
+                                    else "　·　部分源未返回，结果可能不全",
+                                )
+                                else -> Unit
+                            }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    // 开关就在结果数量旁边：用户「刷不出来」的时候第一眼看到它
+                    FilterChip(
+                        selected = skipRecorded,
+                        onClick = { viewModel.setSkipRecorded(!skipRecorded) },
+                        label = { Text("只看新", style = MaterialTheme.typography.labelSmall) },
+                    )
+                }
+                // 「连翻」的实时交代 + 暂停按钮（v1.9.5.8）
+                if (skipRecorded) {
+                    val scan = autoScan
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = when {
+                                scanning && scan != null ->
+                                    "连翻中：第 ${scan.page} 页" +
+                                        if (scan.skippedItems > 0) "（已越过 ${scan.skippedItems} 条收录过的）" else "" +
+                                        if (scan.foundNew > 0) "，已翻到 ${scan.foundNew} 部新的" else ""
+                                scanPaused -> "连翻已暂停 · 第 ${scan?.page ?: 0} 页"
+                                scanFinished && bottomNoFresh -> "已经翻到底了，没有新的内容"
+                                scanFinished -> "已经翻到底了"
+                                else -> ""
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        when {
+                            scanning -> TextButton(
+                                onClick = { viewModel.pauseScan() },
+                                contentPadding = PaddingValues(horizontal = 8.dp),
+                            ) { Text("暂停", style = MaterialTheme.typography.labelSmall) }
+                            scanPaused -> TextButton(
+                                onClick = { viewModel.resumeScan() },
+                                contentPadding = PaddingValues(horizontal = 8.dp),
+                            ) { Text("继续连翻", style = MaterialTheme.typography.labelSmall) }
                             else -> Unit
                         }
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                    }
+                }
                 if (busy && progress != null) {
                     Spacer(Modifier.height(4.dp))
                     val (done, total) = progress!!
@@ -789,18 +869,100 @@ fun TagSearchScreen(
         // 「本地索引 + 多源网络 + 翻页追加」三条路，任何一条漏了去重，这里就会撞出
         // `Key "…" was already used` 直接闪退 —— 而且**只在滚到那一条时才崩**，
         // 表面看就像「快速拖动滚动条导致闪退」（v1.8.7.5 加固：喂给列表前再收敛一次）。
-        val displayResults = remember(results) {
-            if (results.size < 2) {
-                results
-            } else {
-                val seen = HashSet<String>(results.size)
-                results.filter { seen.add("${it.sourceId}:${it.id}") }
-            }
-        }
+        // v1.9.5.8：去重 + 「只看新」过滤已经合并到上面的 [displayResults]，这里不再重算。
         when {
             searching && displayResults.isEmpty() -> {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
+                }
+            }
+
+            // 「只看新」把这一屏全藏了：别说「没有匹配的内容」，要给一条往下走的路。
+            // 用户攒了上万条收录时这就是常态（前几页全是老面孔）。
+            // 这里的文案分两态：**还在往后翻**（有进度）/ **已经翻到底了**（结论）。
+            displayResults.isEmpty() && skipRecorded && results.isNotEmpty() -> {
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    val scan = autoScan
+                    when {
+                        scanning || searchBusy -> {
+                            CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                text = scan?.let { "连翻中：第 ${it.page} 页…" } ?: "正在往后翻…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = buildString {
+                                    if (scan != null && scan.skippedItems > 0) {
+                                        append("已越过 ${scan.skippedItems} 条收录过的")
+                                    }
+                                    if (scan != null && scan.foundNew > 0) {
+                                        if (isNotEmpty()) append("　·　")
+                                        append("已翻到 ${scan.foundNew} 部新的")
+                                    }
+                                }.ifEmpty { "正在抓取下一页" },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            TextButton(onClick = { viewModel.pauseScan() }) { Text("暂停连翻") }
+                        }
+                        scanPaused -> {
+                            Text(
+                                text = "连翻已暂停 · 第 ${scan?.page ?: 0} 页",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            TextButton(onClick = { viewModel.resumeScan() }) { Text("继续连翻") }
+                        }
+                        scanFinished || bottomNoFresh || !hasMore -> {
+                            // 这就是他要的结论：翻到该标签的底部，没有新内容了
+                            Text(
+                                text = if (bottomNoFresh) "已经翻到底了，这个标签没有新的内容"
+                                else "已经翻到底了",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = "已越过 $hiddenCount 部收录过的",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        else -> {
+                            Text(
+                                text = "这一屏 $hiddenCount 部都已收录",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            TextButton(
+                                onClick = { viewModel.startScan() },
+                                enabled = !loadingMore,
+                            ) {
+                                Text("开始连翻")
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "或者关掉「只看新」看全部",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clickable { viewModel.setSkipRecorded(false) }
+                            .padding(6.dp),
+                    )
                 }
             }
 

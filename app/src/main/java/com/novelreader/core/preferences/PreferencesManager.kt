@@ -292,6 +292,15 @@ class PreferencesManager(private val context: Context) {
          */
         val KEY_TAG_SINGLE_SEARCH_SOURCES = intPreferencesKey("tag_single_search_sources")
 
+        /**
+         * 「只看新」：标签搜索结果里跳过本地已收录的条目（v1.9.5.8）。
+         *
+         * 用户攒到一万多条收录之后，搜同一个标签回来的头几屏全是老面孔 ——
+         * 本地索引结果本来就是排在网络结果前面的，翻十页也遇不到新东西。
+         * 打开这个开关后：已收录的直接不画，翻到整页都是老面孔时自动往后再问一页。
+         */
+        val KEY_TAG_SKIP_RECORDED = booleanPreferencesKey("tag_skip_recorded")
+
         // ===== 搜索结果展示（v1.8.6.0 待办 #26） =====
         // 四个模块各自独立记忆：同一个用户可能想「小说看列表（要看清作者/字数）、
         // 漫画看宫格（认封面）」，共用一个开关会互相打架。
@@ -432,6 +441,14 @@ class PreferencesManager(private val context: Context) {
         const val MIN_TAG_SINGLE_SEARCH_SOURCES = 0
         /** 上限与并发上限同口径：源数再多也只是排队 */
         const val MAX_TAG_SINGLE_SEARCH_SOURCES = 40
+
+        /**
+         * 「只看新」默认值（v1.9.5.8）：**关闭**。
+         *
+         * 默认打开会让刚升级的用户以为「结果变少了 / 搜不到东西」——
+         * 这是一个「知道了才想开」的开关，放在结果栏旁边，点一下就一直记着。
+         */
+        const val DEFAULT_TAG_SKIP_RECORDED = false
         /** 默认漫画预加载张数 */
         const val DEFAULT_COMIC_PRELOAD_COUNT = 4
         /** 默认漫画预加载话数（v1.6.0.0） */
@@ -1117,6 +1134,18 @@ class PreferencesManager(private val context: Context) {
             it[KEY_TAG_SINGLE_SEARCH_SOURCES] =
                 value.coerceIn(MIN_TAG_SINGLE_SEARCH_SOURCES, MAX_TAG_SINGLE_SEARCH_SOURCES)
         }
+    }
+
+    /**
+     * 「只看新」开关（v1.9.5.8）：默认关闭 —— 打开后标签搜索结果里**已收录的条目
+     * 直接不显示**，翻到整页都是老面孔时自动往后再问一页。攒了几千上万条收录的用户
+     * 靠它才不会在重复内容上空刷。
+     */
+    val tagSkipRecordedFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_TAG_SKIP_RECORDED] ?: DEFAULT_TAG_SKIP_RECORDED }
+
+    suspend fun setTagSkipRecorded(value: Boolean) {
+        context.dataStore.edit { it[KEY_TAG_SKIP_RECORDED] = value }
     }
 
     // ===== 搜索结果展示（v1.8.6.0 待办 #26） =====

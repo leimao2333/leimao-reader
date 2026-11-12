@@ -3,6 +3,7 @@ package com.novelreader.ui.screens.video
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import android.net.Uri
+import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -18,6 +19,8 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import com.novelreader.core.media.NextEpisodePrefetcher
 import com.novelreader.core.media.NextPrefetchPolicy
+import com.novelreader.core.media.PlayPageResolver
+import com.novelreader.core.media.VideoMediaCache
 import com.novelreader.core.network.HttpClient
 import com.novelreader.core.preferences.PreferencesManager
 import com.novelreader.core.util.LineSwitch
@@ -309,6 +312,21 @@ class VideoPlayerViewModel(
     private var lastVideoUrl: String? = null
     private var lastVideoHeaders: Map<String, String> = emptyMap()
 
+    /**
+     * TLS 握手失败时，已对哪个 https 地址做过一次明文（http）降级重试（v1.9.5.1）。
+     *
+     * 每集 / 每条线路在 [loadEpisode] 里重置，避免同一个死地址无限重试。
+     */
+    private var httpFallbackFor: String? = null
+
+    /**
+     * 已对哪些地址做过「播放页嗅探」（v1.9.5.1）。
+     *
+     * 只在播放失败时触发，按 URL 去重，保证最多补救一次：
+     * 嗅探 → 重播 → 若再失败就直接走换源 / 报错，不会来回死循环。
+     */
+    private val playPageTried = mutableSetOf<String>()
+
     /** 常规倍速（长按加速结束后恢复到此值） */
     private var normalSpeed: Float = 1f
 
@@ -460,10 +478,23 @@ class VideoPlayerViewModel(
                     staleErrorGrace = false
                     return
                 }
+                // v1.9.5.1：证书过期 / 自签 / 握手失败时，先在本线路上试一次明文兜底。
+                // 采集站 CDN 的证书过期很常见，站点本身往往同时提供 http 分片。
+                if (isTlsFailure(error) && tryPlainHttpFallback()) return
+                // v1.9.5.1：地址其实是播放页 / 伪 m3u8 时，先嗅探一次就地救回来。
+                // 这类源经常只有一条线路，自动换源没得换，必须在本线路上补救。
+                Log.d(
+                    "NRPlayUrl",
+                    "onPlayerError url=$lastVideoUrl err=" +
+                        generateSequence<Throwable>(error) { it.cause }
+                            .joinToString(" | ") { "${it.javaClass.simpleName}: ${it.message.orEmpty()}" }
+                            .take(300),
+                )
+                if (isNotMediaError(error) && tryResolvePlayPage(error)) return
                 // 这条路线的流挂了就自动换下一条没试过的（每条最多试一次）；
                 // 全部试完才如实把错误抛给用户
                 if (tryAutoSwitchOnError()) return
-                _error.value = error.message ?: "播放出错"
+                _error.value = friendlyError(error)
             }
 
             override fun onTracksChanged(tracks: Tracks) {
@@ -998,6 +1029,8 @@ class VideoPlayerViewModel(
         seekToMs: Long? = null,
     ) {
         currentEpisode = episode
+        // 换集 / 换线路：明文降级重新给一次机会
+        httpFallbackFor = null
         _episodeTitle.value = episode.title
         _currentEpisodeUrl.value = episode.url
         endSpeedBoost()
@@ -1143,6 +1176,8 @@ class VideoPlayerViewModel(
         headers: Map<String, String>,
         restoreProgress: Boolean,
         seekToMs: Long? = null,
+        /** 补救重播时绕开磁盘缓存，避免又读到缓存里的旧网页（v1.9.5.1） */
+        bypassCache: Boolean = false,
     ) {
         val player = player ?: return
 
@@ -1153,15 +1188,19 @@ class VideoPlayerViewModel(
         // 缓存当前播放地址与请求头（外挂字幕重载时复用，见 loadSubtitle）
         lastVideoUrl = url
         lastVideoHeaders = headers
+        Log.d("NRPlayUrl", "play url=$url bypassCache=$bypassCache")
 
         val mediaItem = buildMediaItem(url)
 
         // 防盗链请求头 + 磁盘缓存（v1.7.7.0）：边播边把分片落到本地，
         // 回退重播 / 快退 / 重连都直接读缓存，弱网下卡顿明显减少。
         // 没有请求头的源同样走缓存（以前这条分支直接 setMediaItem，等于没缓存）。
-        val mediaSourceFactory = DefaultMediaSourceFactory(
-            com.novelreader.core.media.VideoMediaCache.dataSourceFactory(headers),
-        )
+        val upstream = if (bypassCache) {
+            VideoMediaCache.httpFactory(headers)
+        } else {
+            VideoMediaCache.dataSourceFactory(headers)
+        }
+        val mediaSourceFactory = DefaultMediaSourceFactory(upstream)
         val mediaSource = mediaSourceFactory.createMediaSource(mediaItem)
         player.setMediaSource(mediaSource)
 
@@ -1371,6 +1410,150 @@ class VideoPlayerViewModel(
         // v1.6.9.0：这次的选择记下来 —— 自动纠错选出的可用线路同样值得记住
         rememberCurrentLine()
         _message.value = note ?: "已切换到「${target.name}」${next.title}"
+    }
+
+    // ==================== TLS 失败的兜底与提示（v1.9.5.1） ====================
+
+    /**
+     * 播放错误是否来自 TLS / 证书校验。
+     *
+     * Media3 会把底层异常层层包起来（`ExoPlaybackException` → `HttpDataSourceException`
+     * → `SSLHandshakeException` → ...），只看最外层消息会漏判，所以遍历整条 cause 链。
+     */
+    private fun isTlsFailure(error: PlaybackException): Boolean =
+        generateSequence<Throwable>(error) { it.cause }.any { t ->
+            val name = t.javaClass.simpleName
+            name.contains("SSL", ignoreCase = true) ||
+                name.contains("Certificate", ignoreCase = true) ||
+                t.message.orEmpty().contains("Chain validation failed", ignoreCase = true)
+        }
+
+    /**
+     * 同一个 https 地址改用 http 重试一次。
+     *
+     * 应用已声明 `usesCleartextTraffic=true`，采集站的播放 CDN 通常也保留明文端口。
+     * 这是「证书彻底坏掉（自签 / 域名不匹配）」时的第二道兜底；第一道是
+     * [com.novelreader.core.media.VideoTls] 对「仅过期」证书的放行。
+     *
+     * @return true = 已发起重试，本次错误不必再向上抛 / 换线路
+     */
+    private fun tryPlainHttpFallback(): Boolean {
+        val secureUrl = lastVideoUrl ?: return false
+        if (!secureUrl.startsWith("https://") || httpFallbackFor == secureUrl) return false
+        httpFallbackFor = secureUrl
+        _message.value = "安全连接失败，正在改用普通连接重试"
+        play(
+            "http://" + secureUrl.removePrefix("https://"),
+            lastVideoHeaders,
+            restoreProgress = false,
+            seekToMs = player?.currentPosition ?: 0L,
+        )
+        return true
+    }
+
+    /** 把底层异常翻译成能看懂的中文提示，不再把一长串英文堆栈直接甩给用户 */
+    private fun friendlyError(error: PlaybackException): String {
+        val chain = generateSequence<Throwable>(error) { it.cause }
+            .joinToString(" | ") { "${it.javaClass.simpleName}: ${it.message.orEmpty()}" }
+        return when {
+            chain.contains("CertificateExpired") || chain.contains("timestamp check failed") ->
+                "播放地址的证书已过期，已尝试其它线路"
+            chain.contains("SSLHandshake") || chain.contains("SSLPeerUnverified") ->
+                "播放地址的安全连接失败，已尝试其它线路"
+            chain.contains("ParserException") || chain.contains("EXTM3U") ||
+                chain.contains("UnrecognizedInputFormat") ->
+                "播放地址返回的不是有效视频，已尝试其它线路"
+            chain.contains("HttpDataSource") || chain.contains("Unable to connect") ->
+                "播放地址暂时不可达，请换一条线路或稍后重试"
+            chain.contains("Unexpected runtime error") ->
+                "播放组件初始化失败，请重试或换一条线路"
+            else -> error.message ?: "播放出错"
+        }
+    }
+
+    // ==================== 播放页地址就地补救（v1.9.5.1） ====================
+
+    /** 错误是否属于「这个地址返回的不是能解析的媒体」 */
+    private fun isNotMediaError(error: PlaybackException): Boolean {
+        val chain = generateSequence<Throwable>(error) { it.cause }
+            .joinToString(" | ") { "${it.javaClass.simpleName}: ${it.message.orEmpty()}" }
+        return chain.contains("ParserException", ignoreCase = true) ||
+            chain.contains("EXTM3U", ignoreCase = true) ||
+            chain.contains("UnrecognizedInputFormat", ignoreCase = true)
+    }
+
+    /**
+     * 播放失败时嗅探地址本体，尽量在当前线路上救回来。
+     *
+     * 真机上「只有一条线路 + 一直提示不是有效视频」的最后一层：地址可能是播放页、
+     * 伪 m3u8，或旧版本落盘的预取缓存里的坏地址。后缀判断并不可靠，所以直接看
+     * 响应内容（[PlayPageResolver]），失败时才付这一次请求的代价。
+     *
+     * @return true = 本次错误已接管，交给后台补救，不要再向上抛错误 / 换源
+     */
+    private fun tryResolvePlayPage(error: PlaybackException): Boolean {
+        val url = lastVideoUrl ?: return false
+        if (!url.startsWith("http") || !playPageTried.add(url)) return false
+        _error.value = null
+        _message.value = "正在检查播放地址"
+        viewModelScope.launch {
+            when (val result = PlayPageResolver.probe(url, lastVideoHeaders)) {
+                is PlayPageResolver.Result.PlayPage -> {
+                    val real = result.realUrl
+                    if (!real.isNullOrBlank() && real != url) {
+                        invalidateCurrentPrefetch()
+                        _message.value = "已解析到真实播放地址，正在重试"
+                        play(
+                            real,
+                            lastVideoHeaders,
+                            restoreProgress = false,
+                            seekToMs = player?.currentPosition ?: 0L,
+                            bypassCache = true,
+                        )
+                    } else {
+                        failPlayback(error)
+                    }
+                }
+                is PlayPageResolver.Result.ValidMedia -> {
+                    // 网络上就是正常 m3u8，说明播放器读到了缓存里的旧网页：
+                    // 丢掉这份缓存、绕过缓存重播一次。
+                    VideoMediaCache.invalidate(url)
+                    invalidateCurrentPrefetch()
+                    _message.value = "已清理失效的播放缓存，正在重试"
+                    play(
+                        url,
+                        lastVideoHeaders,
+                        restoreProgress = false,
+                        seekToMs = player?.currentPosition ?: 0L,
+                        bypassCache = true,
+                    )
+                }
+                else -> failPlayback(error)
+            }
+        }
+        return true
+    }
+
+    /** 补救失败：回到原有的自动换源 / 中文报错流程 */
+    private fun failPlayback(error: PlaybackException) {
+        if (tryAutoSwitchOnError()) return
+        _error.value = friendlyError(error)
+    }
+
+    /**
+     * 让当前这一集的地址预取缓存失效。
+     *
+     * 不清的话，下次点「重试」会直接命中内存 / 磁盘里的旧地址，
+     * 连新版的解析逻辑都不会执行，表现为「升级了还是一样播不了」。
+     */
+    private fun invalidateCurrentPrefetch() {
+        val key = currentEpisode?.url ?: return
+        prefetchCache.remove(key)
+        val prefix = prefetchKeyPrefix
+        if (prefix.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { videoPrefetchCache.removeKey(prefix + key) }
+        }
     }
 
     /**

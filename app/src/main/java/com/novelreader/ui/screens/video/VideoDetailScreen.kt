@@ -42,6 +42,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -89,7 +90,12 @@ fun VideoDetailScreen(
     val resumeIndex = item.extras[HomeViewModel.EXTRA_RESUME_INDEX]?.toIntOrNull() ?: -1
     val resumeUrl = item.extras[HomeViewModel.EXTRA_RESUME_URL].orEmpty()
     val wantsResume = resumeIndex >= 0 || resumeUrl.isNotBlank()
-    var resumed by remember(item.id) { mutableStateOf(false) }
+    // v1.9.5.1：必须用 rememberSaveable。
+    // 详情页与播放页是两个不同的导航目的地，跳到播放页时详情页会**移出组合**，
+    // 普通 remember 的状态随之丢失；从播放页返回后 resumed 又变回 false，
+    // 目录一加载完就再次自动跳进播放器 —— 于是「按返回退出，马上又被推回去」，
+    // 反复退出视频加载页面。状态存进导航条目的 saved state 后，返回时仍是已续播过。
+    var resumed by rememberSaveable(item.id) { mutableStateOf(false) }
     LaunchedEffect(episodes, loading) {
         if (resumed || !wantsResume || loading || episodes.isEmpty()) return@LaunchedEffect
         resumed = true

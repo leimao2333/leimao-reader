@@ -650,7 +650,26 @@ ${'$'}.chapters[*]
     }.toString()
 
     /**
-     * 正文规则写成 `$.路径@js:...`（JSON 接口 + JS 拼多图，如部分 App 接口源）时，
+     * 漫画正文 - jayway 投影 `$.data.images[*].url`（接口型漫画源，如漫蛙吧）。
+     *
+     * 旧实现把 `*` 当作数组下标（`toIntOrNull()` 失败 → 返回 null），
+     * 于是「有封面、有目录，点进去一张图都没有」。投影必须逐元素取字段再按行拼接。
+     */
+    @Test
+    fun `漫画正文 - JSON 投影路径取图片地址`() {
+        val ad = adapter(minimalComicJson())
+        val json = """{"code":200,"data":{"images":[""" +
+            """{"url":"https://cdn.x/1.jpg"},{"url":"https://cdn.x/2.jpg"}]}}"""
+        val res = ad.extractComicImages(
+            json,
+            mapOf("content" to "$.data.images[*].url", "imageStyle" to "FULL"),
+            "https://example.com/api/comic/image/1",
+        )
+        assertEquals(listOf("https://cdn.x/1.jpg", "https://cdn.x/2.jpg"), res.comicImages)
+    }
+
+    /**
+     * 正文规则写成 `$.路径@js:...</js>`（JSON 接口 + JS 拼多图，如部分 App 接口源）时，
      * 前缀 JSONPath 必须先解析出 `result`：否则 JS 里 `result.split("\n")` 直接失败，
      * 一张图都取不到 → 页面显示「图片加载失败」。
      *

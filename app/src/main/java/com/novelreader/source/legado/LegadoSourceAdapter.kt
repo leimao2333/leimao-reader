@@ -913,12 +913,30 @@ class LegadoSourceAdapter(
         return null
     }
 
-    /** 从 JSON 节点按路径（支持 a.b.c、a.b[0].c）取字符串 */
+    /**
+     * 从 JSON 节点按路径取字符串。
+     *
+     * 支持 `a.b.c`、`a.b[0].c`，以及 **投影** `a.list[*].url` / `a.list.*.url`
+     * （jayway JSONPath 语义：`[*]` 之后的字段对每个元素生效，多值换行拼接）。
+     *
+     * 投影必须走 [LegadoRuleEngine.selectJsonList]：此前的简化实现把 `*` 当成数组下标，
+     * `toIntOrNull()` 失败直接返回 null —— 漫画源常见的图片规则 `$.data.images[*].url`
+     * 因此恒为空，表现为「有封面、有目录，点进去一张图都没有」。
+     */
     private fun extractJsonPath(node: com.google.gson.JsonElement, path: String): String? {
         return runCatching {
             val cleaned = path.removePrefix("$").removePrefix(".").trim()
+            val hasProjection = cleaned.contains("[*]") ||
+                Regex("(^|\\.)\\*(\\.|$)").containsMatchIn(cleaned)
             if (cleaned.isEmpty()) {
                 if (node.isJsonPrimitive) node.asString else null
+            } else if (hasProjection) {
+                val values = LegadoRuleEngine.selectJsonList(node, cleaned)
+                if (values.isEmpty()) null
+                // 多值按换行拼接（与 legado「全部获取」语义一致，正文/图片规则按行消费）
+                else values.joinToString("\n") { el ->
+                    if (el.isJsonPrimitive) el.asString else el.toString()
+                }
             } else {
                 var current: com.google.gson.JsonElement = node
                 val tokens = cleaned.split(Regex("[.\\[\\]]")).filter { it.isNotBlank() }

@@ -6,10 +6,10 @@ import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import java.io.File
 
 /**
@@ -38,10 +38,7 @@ object VideoMediaCache {
     /** 磁盘缓存上限：512MB（LRU 淘汰，不占用户可见的「已下载」里） */
     private const val MAX_BYTES = 512L * 1024 * 1024
 
-    /** 网络超时：比默认 8s 更宽，弱网下不至于一个分片重连就断整条流 */
-    private const val CONNECT_TIMEOUT_MS = 15_000
-    private const val READ_TIMEOUT_MS = 20_000
-
+    /** 网络超时由 [VideoTls] 的播放专用 OkHttp 客户端统一管理 */
     @Volatile
     private var cache: SimpleCache? = null
 
@@ -73,16 +70,16 @@ object VideoMediaCache {
     /**
      * 上游 HTTP 数据源（带防盗链请求头）。
      *
-     * 播放器原来直接用 `DefaultHttpDataSource.Factory()`，此处顺手把超时放宽 ——
-     * 采集站分片偶发 5~10s 才响应，默认 8s 读超时会把正常但慢的分片判死。
+     * v1.9.5.1 起改用 [OkHttpDataSource] + [VideoTls]：
+     * Media3 默认的 `DefaultHttpDataSource` 走系统 HttpsURLConnection，证书一过期
+     * （采集站 CDN 很常见）整条 m3u8 就播不了，而首页 / 搜索 / 详情都正常，
+     * 极难排查。OkHttp 客户端只放宽「证书已过期」这一种校验，其余照旧严格。
+     * 超时由 [VideoTls] 统一放宽，弱网下慢分片不会被默认 8s 读超时判死。
      */
-    fun httpFactory(headers: Map<String, String>): DefaultHttpDataSource.Factory =
-        DefaultHttpDataSource.Factory()
+    fun httpFactory(headers: Map<String, String>): DataSource.Factory =
+        OkHttpDataSource.Factory(VideoTls.client())
             .setUserAgent("NovelReader/1.0")
             .setDefaultRequestProperties(headers)
-            .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(CONNECT_TIMEOUT_MS)
-            .setReadTimeoutMs(READ_TIMEOUT_MS)
 
     /**
      * 带缓存的 DataSource 工厂，交给 `DefaultMediaSourceFactory` 使用。
@@ -124,6 +121,17 @@ object VideoMediaCache {
 
     /** 磁盘缓存当前占用（供「清除缓存」等场景展示） */
     fun cacheSizeBytes(): Long = runCatching { cache?.cacheSpace ?: 0L }.getOrDefault(0L)
+
+    /**
+     * 丢掉某个地址的缓存资源（v1.9.5.1）。
+     *
+     * 采集站偶尔会把 HTML 播放页 / 错误页当作 m3u8 返回，若这份内容被当成
+     * 播放列表缓存下来，之后即使站点恢复也会一直读到旧网页，报「不是有效视频」。
+     * 播放失败并确认网络上已是正常流时，清掉这一条再重播即可，不影响其它分片。
+     */
+    fun invalidate(url: String) {
+        runCatching { cache?.removeResource(url) }
+    }
 
     /**
      * 清空磁盘缓存并**立即重建**（v1.7.7.1）。

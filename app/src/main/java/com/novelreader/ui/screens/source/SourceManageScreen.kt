@@ -27,6 +27,8 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material3.Card
@@ -52,6 +54,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -94,6 +97,10 @@ fun SourceManageScreen(
     var sortOrder by remember { mutableStateOf(SourceSortOrder.DEFAULT) }
     // 视图模式：false = 列表，true = 表格
     var tableView by remember { mutableStateOf(false) }
+    // 筛选区收起（v1.9.5.1）：类型 / 格式 / 分组 / 分类 / 检测 / 更新这几行叠起来
+    // 能吃掉大半屏，浏览源列表时只剩一小半。收起后列表几乎占满屏；
+    // rememberSaveable 让进出页面后仍保持用户的收起偏好。
+    var filtersExpanded by rememberSaveable { mutableStateOf(true) }
     // 排序菜单展开
     var sortMenuOpen by remember { mutableStateOf(false) }
     // 批量选择模式
@@ -359,6 +366,17 @@ fun SourceManageScreen(
                     .fillMaxSize()
                     .padding(padding),
             ) {
+                // 这些状态在筛选区收起时也要继续订阅：列表卡片仍要显示检测结果，
+                // 检测 / 更新在后台跑完回来也要能看到进度。
+                val testResults by viewModel.testResults.collectAsState()
+                val testing by viewModel.testing.collectAsState()
+                val testProgress by viewModel.testProgress.collectAsState()
+                val testRunning by viewModel.testRunning.collectAsState()
+                val unreadable by viewModel.unreadable.collectAsState()
+                val updating by viewModel.updating.collectAsState()
+                val updateProgress by viewModel.updateProgress.collectAsState()
+                val duplicateCount by viewModel.duplicateCount.collectAsState()
+
                 // 搜索框：按名称/作者/描述过滤
                 androidx.compose.material3.OutlinedTextField(
                     value = searchKeyword,
@@ -377,6 +395,57 @@ fun SourceManageScreen(
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                 )
+
+                // 收起后只留这一行：既能看到当前筛到的是什么、有多少条，也能一键展开。
+                val filterSummary = buildList {
+                    add(selectedType?.label() ?: "全部")
+                    if (selectedType == SourceType.COMIC) {
+                        selectedFormat?.let {
+                            add(if (it == SourceFormat.LEGADO) "legado" else "Venera")
+                        }
+                    }
+                    selectedGroup?.let { g ->
+                        add(
+                            when {
+                                g == UNGROUPED_KEY -> "未分组"
+                                com.novelreader.core.util.SourceGroups.isAutomatic(g) ->
+                                    com.novelreader.core.util.SourceGroups.categoryOf(g)
+                                else -> g
+                            },
+                        )
+                    }
+                    if (searchKeyword.isNotBlank()) add("搜索「$searchKeyword」")
+                }.joinToString(" · ")
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (filtersExpanded) {
+                            "筛选 · ${displayedSources.size} 个源"
+                        } else {
+                            "$filterSummary · ${displayedSources.size} 个源"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { filtersExpanded = !filtersExpanded }) {
+                        Icon(
+                            imageVector = if (filtersExpanded) Icons.Default.KeyboardArrowUp
+                            else Icons.Default.KeyboardArrowDown,
+                            contentDescription = null,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(if (filtersExpanded) "收起" else "展开")
+                    }
+                }
+
+                if (filtersExpanded) {
                 // 类型筛选栏（小说 / 漫画 / 视频）
                 TypeFilterBar(
                     selected = selectedType,
@@ -446,11 +515,6 @@ fun SourceManageScreen(
                     }
                 }
                 // 源有效性检测（自动筛选无用源）
-                val testResults by viewModel.testResults.collectAsState()
-                val testing by viewModel.testing.collectAsState()
-                val testProgress by viewModel.testProgress.collectAsState()
-                val testRunning by viewModel.testRunning.collectAsState()
-                val unreadable by viewModel.unreadable.collectAsState()
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -558,8 +622,6 @@ fun SourceManageScreen(
                 }
 
                 // 书源 URL 一键更新（v1.3.0.0 对标 legado）
-                val updating by viewModel.updating.collectAsState()
-                val updateProgress by viewModel.updateProgress.collectAsState()
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -582,7 +644,6 @@ fun SourceManageScreen(
                 }
 
                 // 合并重复源（v1.6.6.0）：同类型 + 同名 + 同站的条目只留一条
-                val duplicateCount by viewModel.duplicateCount.collectAsState()
                 if (duplicateCount > 0) {
                     Row(
                         modifier = Modifier
@@ -601,6 +662,7 @@ fun SourceManageScreen(
                         }
                     }
                 }
+                } // if (filtersExpanded)
 
                 if (tableView) {
                     SourceTableView(

@@ -167,7 +167,20 @@ class VideoBufferControl(seconds: Int) : LoadControl {
 
     override fun onPrepared(playerId: PlayerId) {
         preparedReplay = { it.onPrepared(playerId) }
-        delegate.onPrepared(playerId)
+        // v1.9.5.1：DefaultLoadControl 会记住第一次 prepare 的播放线程，
+        // 同一个委托被再次 prepare（换线路 / 播放失败自动换源 / 热切换缓冲档位后重放）
+        // 会直接抛 "Players that share the same LoadControl must share the same
+        // playback thread" —— 异常一路冒到播放器线程就是「Unexpected runtime error」，
+        // 自动换源刚切过去就被打断，视频永远停在加载失败。
+        // 这里拦下断言，换一个干净的委托并把已发生过的生命周期重放上去。
+        try {
+            delegate.onPrepared(playerId)
+        } catch (_: IllegalStateException) {
+            val fresh = build(seconds)
+            runCatching { fresh.onPrepared(playerId) }
+            runCatching { tracksReplay?.invoke(fresh) }
+            delegate = fresh
+        }
     }
 
     override fun onTracksSelected(

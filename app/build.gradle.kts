@@ -39,8 +39,8 @@ android {
         // 版本规范：四段式 顶端版本.大版本.小版本.修订
         // 小版本每版 +1；小版本满 10 进大版本；大版本满 10 进顶端版本
         // versionCode = 顶端版本 * 1000000 + 大版本 * 10000 + 小版本 * 100 + 修订
-        versionCode = 1090500
-        versionName = "1.9.5.0"
+        versionCode = 1090502
+        versionName = "1.9.5.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -187,6 +187,10 @@ dependencies {
     // androidx.media3.exoplayer.hls.HlsMediaSource$Factory，缺此模块会
     // ClassNotFoundException 直接闪退（采集站视频几乎都是 HLS 流）。
     implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
+    // 用项目自己的 OkHttp 客户端作为播放分片的数据源（v1.9.5.1）。
+    // Media3 默认的 DefaultHttpDataSource 走系统 HttpsURLConnection，会强制校验证书有效期，
+    // 采集站 CDN 证书一过期就整条流播不了；换成 OkHttp 后由 VideoTls 统一放行「仅过期」的证书。
+    implementation("androidx.media3:media3-datasource-okhttp:1.4.1")
 
     // ---- DataStore 偏好设置 ----
     implementation("androidx.datastore:datastore-preferences:1.1.1")

@@ -5,9 +5,15 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -834,7 +840,16 @@ fun AppNavHost(
             val chapterIndex = backStackEntry.arguments?.getInt("chapterIndex") ?: 0
             val episodes = NavCache.getChapters(item)
             val episode = episodes.getOrNull(chapterIndex) ?: episodes.firstOrNull()
-                ?: return@composable
+            if (episode == null) {
+                // v1.9.5.1：进程被回收后目录缓存可能为空。以前这里直接 return，
+                // 播放页是一片空白，用户只能反复按返回退出；现在自动退回详情页，
+                // 由详情页重新拉目录，不让「空白页 + 反复退出」的假故障继续出现。
+                LaunchedEffect(Unit) { navController.popBackStack() }
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+                return@composable
+            }
             val viewModel: VideoPlayerViewModel = viewModel(
                 factory = NovelViewModelFactory(container) {
                     VideoPlayerViewModel(

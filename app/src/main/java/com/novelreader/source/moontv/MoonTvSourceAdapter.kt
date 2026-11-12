@@ -8,8 +8,11 @@ import com.novelreader.domain.model.ExploreCategory
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceAdapter
 import com.novelreader.domain.model.SourceInfo
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * MoonTV / LunaTV 采集源适配器（苹果 CMS maccms10 接口）。
@@ -135,6 +138,35 @@ class MoonTvSourceAdapter(
         }
     }
 
+    /** 播放页 → 真实流地址的解析结果（同一地址在本进程内只解析一次） */
+    private val resolvedPlayUrls = ConcurrentHashMap<String, String>()
+
+    /**
+     * 打开播放页，从内联脚本里提取真实流地址（v1.9.5.1）。
+     *
+     * 采集站常把 `vod_play_url` 写成播放页（HTML + hls.js），播放器直接打开只会
+     * 拿到网页。解析放在 IO 线程：预取后续剧集时也会走这里，不能阻塞主线程。
+     * 失败 / 超时 / 提取不到都原样返回，不会让本来能播的地址变差。
+     */
+    private suspend fun resolvePlayUrl(pageUrl: String): String {
+        resolvedPlayUrls[pageUrl]?.let { return it }
+        return withContext(Dispatchers.IO) {
+            val html = runCatching {
+                HttpClient.get(
+                    pageUrl,
+                    headers = buildMap {
+                        if (site.detail.startsWith("http")) put("Referer", site.detail)
+                    },
+                    timeoutMs = 8_000L,
+                    retry = false,
+                )
+            }.getOrNull() ?: return@withContext pageUrl
+            val found = MacCmsParser.extractPlayUrl(html, pageUrl) ?: return@withContext pageUrl
+            resolvedPlayUrls[pageUrl] = found
+            found
+        }
+    }
+
     override suspend fun content(chapter: ChapterItem): ContentResult {
         var url = chapter.url.trim()
         // 协议相对地址（//host/xxx.m3u8，部分采集站这么写）补全协议
@@ -147,6 +179,11 @@ class MoonTvSourceAdapter(
         // 相对路径等非法 URI，直接报友好错误，避免不可控的播放器行为
         if (!(url.startsWith("http://") || url.startsWith("https://"))) {
             throw IllegalStateException("该线路的播放地址无效，请换一条线路")
+        }
+        // 不是媒体直链（没有 m3u8 / mp4 等后缀）→ 很可能是播放页，二次解析出真实流。
+        // 「在线播放」这类单线路源就是这么给的，也是「点进去一直加载不出来」的一大类根因。
+        if (!MacCmsParser.looksLikeDirectMedia(url)) {
+            url = resolvePlayUrl(url)
         }
         return ContentResult.video(url)
     }

@@ -19,6 +19,57 @@ import com.novelreader.domain.model.SourceType
  */
 object MacCmsParser {
 
+    /** 看起来是真实媒体文件的播放地址（m3u8 / mp4 / …，可带查询串） */
+    private val MEDIA_URL_EXT =
+        Regex("\\.(m3u8|mp4|mkv|flv|ts|mov|avi|webm)(\\?|$)", RegexOption.IGNORE_CASE)
+
+    /** 同集数的线路里，优先挑播放地址带媒体后缀的那条（v1.9.5.1） */
+    private fun looksLikePlayableUrl(url: String): Boolean = MEDIA_URL_EXT.containsMatchIn(url)
+
+    /** 该地址能否直接交给播放器（不用再打开网页找真实流） */
+    fun looksLikeDirectMedia(url: String): Boolean = looksLikePlayableUrl(url)
+
+    /**
+     * 从「播放页」HTML / 内联 JS 里提取真实流地址（v1.9.5.1）。
+     *
+     * 采集站常把 `vod_play_url` 写成播放页地址（页面本身是 HTML，用 hls.js / DPlayer
+     * 拼出 m3u8），而不是直链。播放器直接打开这种地址只会拿到网页，
+     * 报「无法识别格式」/「不是有效视频」。这些页面几乎都把真实地址以字符串常量
+     * 写在脚本里，所以静态提取就够，不需要跑 JS。
+     *
+     * 兼容三种常见写法：完整 https 地址、`\ /` 转义过的地址、协议相对 `//host/...`；
+     * 外加单引号包住的相对路径。提取不到就返回 null，由调用方保持原地址不变
+     * （行为不会比现在更差）。
+     */
+    fun extractPlayUrl(page: String, baseUrl: String): String? {
+        val text = page
+            .replace("\\/", "/")
+            .replace("\\u0026", "&")
+            .replace("&amp;", "&")
+
+        val absolute = Regex(
+            """(?:https?:)?//[^\s'"<>()\\]+\.(?:m3u8|mp4|mkv|flv)(?:\?[^\s'"<>()\\]*)?""",
+            RegexOption.IGNORE_CASE,
+        ).find(text)?.value
+        if (absolute != null) {
+            val full = if (absolute.startsWith("//")) {
+                baseUrl.substringBefore("://", "https") + ":" + absolute
+            } else absolute
+            return full.trimEnd(',', ';', ')', ']', '\\')
+        }
+
+        // 相对路径写法：const vid = '/play/xxx/index.m3u8'
+        val relative = Regex(
+            """['"](/[^'"\s]+\.(?:m3u8|mp4)(?:\?[^'"\s]*)?)['"]""",
+            RegexOption.IGNORE_CASE,
+        ).find(text)?.groupValues?.getOrNull(1)
+        if (relative != null) {
+            return runCatching { java.net.URL(java.net.URL(baseUrl), relative).toString() }
+                .getOrNull()
+        }
+        return null
+    }
+
     /** 单集（一条播放地址） */
     data class Episode(
         /** 线路名（`vod_play_from`） */
@@ -99,6 +150,12 @@ object MacCmsParser {
      *
      * 约定：**按集数降序**返回，集数相同时保持响应里的原始顺序（用稳定排序）。
      * 集数最多的线路更完整、也能避开「预告 / 花絮」这类短线路，所以排第一作为默认选路。
+     *
+     * v1.9.5.1 补一条次级判据：集数相同时，**播放地址带媒体后缀的线路优先**。
+     * 采集站常把同一个地址给两条线路，一条写成 `/play/xxx`（返回 HTML 播放页，
+     * 播放器拿到后报「无法识别格式」），另一条写成 `/play/xxx/index.m3u8`（真正的流）。
+     * 两条都只有 1 集时原顺序会选中前者，用户看到的就是「点进去一直加载不出来」。
+     * 所有线路都没有后缀时计数同为 0，稳定排序保持原顺序，不影响既有源。
      */
     fun parseEpisodeLines(playFrom: String?, playUrl: String?): List<EpisodeLine> {
         if (playUrl.isNullOrBlank()) return emptyList()
@@ -135,7 +192,10 @@ object MacCmsParser {
                     },
                 )
             }
-        }.sortedByDescending { it.episodes.size }
+        }.sortedWith(
+            compareByDescending<EpisodeLine> { it.episodes.size }
+                .thenByDescending { line -> line.episodes.count { looksLikePlayableUrl(it.url) } },
+        )
     }
 
     /**

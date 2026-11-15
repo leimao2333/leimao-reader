@@ -1,0 +1,11 @@
+# 赞助入口（v1.9.6.0）
+#
+# 为什么只有 custom：
+# GitHub Sponsors 的收款地区列表里没有中国大陆（只有中国香港 / 中国澳门 SAR），
+# 打款也只走 Stripe Connect → 银行账户，不支持微信 / 支付宝。所以官方渠道这条
+# 用不了，改用 custom 指向爱发电主页 —— 它的收款本身走微信 / 支付宝，
+# 手机端点开就能付。
+#
+# custom 最多 4 个链接，GitHub 会自动在仓库右上角生成 ❤️ Sponsor 按钮。
+custom:
+  - "https://ifdian.net/a/leimao"

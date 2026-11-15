@@ -16,12 +16,12 @@
 <td align="center" width="50%">
 <img src="docs/sponsor/sponsor-5-soda.png" width="200" alt="两瓶快乐水"><br>
 <b>两瓶快乐水 · ¥5</b><br>
-<sub>够我把一个失效的源重新调通</sub>
+<sub>感谢您对 leimao 的支持</sub>
 </td>
 <td align="center" width="50%">
 <img src="docs/sponsor/sponsor-10-burger.png" width="200" alt="一个汉堡"><br>
 <b>一个汉堡 · ¥10</b><br>
-<sub>够我撑过修源的一整晚</sub>
+<sub>感谢您对 leimao 的支持</sub>
 </td>
 </tr>
 </table>

@@ -14,12 +14,12 @@
 <table>
 <tr>
 <td align="center" width="50%">
-<a href="https://ifdian.net/item?plan_id=e494ea64e0ea11f1b735525400c8052f"><img src="docs/sponsor/sponsor-5-soda.png" width="200" alt="两瓶快乐水"></a><br>
+<a href="https://ifdian.net/item?plan_id=e494ea64e0ea11f1b735525400c8052f"><img src="docs/sponsor/soda.png" width="200" alt="两瓶快乐水"></a><br>
 <b>两瓶快乐水 · ¥5</b><br>
 <sub>感谢您对 leimao 的支持</sub>
 </td>
 <td align="center" width="50%">
-<a href="https://ifdian.net/item?plan_id=281f2330e0eb11f19d725254001e7c00"><img src="docs/sponsor/sponsor-10-burger.png" width="200" alt="一个汉堡"></a><br>
+<a href="https://ifdian.net/item?plan_id=281f2330e0eb11f19d725254001e7c00"><img src="docs/sponsor/burger.png" width="200" alt="一个汉堡"></a><br>
 <b>一个汉堡 · ¥10</b><br>
 <sub>感谢您对 leimao 的支持</sub>
 </td>

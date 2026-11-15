@@ -174,6 +174,8 @@ fun TagSearchScreen(
     val scanFinished by viewModel.scanFinished.collectAsState()
     val scanStarted by viewModel.scanStarted.collectAsState()
     val scanCapped by viewModel.scanCapped.collectAsState()
+    // 翻页记忆（v1.9.6.0）：这一轮是从上次的第几页接着翻的
+    val scanResumePage by viewModel.scanResumePage.collectAsState()
     val indexing by viewModel.indexing.collectAsState()
     // 视觉模型总开关（v1.8.7.2，默认关）：关着时「封面视觉打标」按钮禁用
     val visualTaggingEnabled by viewModel.visualTaggingEnabled.collectAsState()
@@ -826,11 +828,14 @@ fun TagSearchScreen(
                     )
                 }
                 // 「连翻」的实时交代 + 暂停按钮（v1.9.5.8）
-                if (skipRecorded) {
+                // v1.9.6.0：不再要求「只看新」—— 它就是一个「自动帮我往后翻页」的开关，
+                // 关掉只看新也能用，而且不会因为翻到重复页就自己停（只有你按暂停才停）。
+                if (results.isNotEmpty() || scanning || scanPaused) {
                     val scan = autoScan
                     val scanText = when {
                         scanning && scan != null -> buildString {
                             append("连翻中 第 ${scan.page} 页")
+                            scanResumePage?.let { if (scan.page == it) append("（从上次停下的地方继续）") }
                             if (scan.skippedItems > 0) append(" · 越过 ${scan.skippedItems} 条收录过的")
                             if (scan.foundNew > 0) append(" · 已找到 ${scan.foundNew} 部新的")
                         }
@@ -843,9 +848,10 @@ fun TagSearchScreen(
                         scanFinished && (scan?.foundNew ?: 0) > 0 ->
                             "连翻完成 · 翻完 ${scan?.page ?: 0} 页，共找到 ${scan?.foundNew} 部新的"
                         scanFinished -> "已经翻到底了"
-                        else -> ""
+                        skipRecorded -> ""
+                        else -> "自动连翻：一页页往后翻，随时可以暂停"
                     }
-                    if (scanText.isNotEmpty()) {
+                    if (scanText.isNotEmpty() || !scanning) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 text = scanText,
@@ -857,6 +863,13 @@ fun TagSearchScreen(
                                 },
                                 modifier = Modifier.weight(1f),
                             )
+                            // 有书签就能「从头翻」：怀疑前面漏了新内容时用（v1.9.6.0）
+                            if (scanResumePage != null && !scanFinished) {
+                                TextButton(
+                                    onClick = { viewModel.restartScanFromFirstPage() },
+                                    contentPadding = PaddingValues(horizontal = 6.dp),
+                                ) { Text("从头翻", style = MaterialTheme.typography.labelSmall) }
+                            }
                             when {
                                 scanning -> TextButton(
                                     onClick = { viewModel.pauseScan() },
@@ -871,7 +884,11 @@ fun TagSearchScreen(
                                     onClick = { viewModel.resumeScan() },
                                     contentPadding = PaddingValues(horizontal = 8.dp),
                                 ) { Text("再翻一遍", style = MaterialTheme.typography.labelSmall) }
-                                else -> Unit
+                                // 没在翻的时候给入口：不依赖「只看新」，就是个自动翻页开关
+                                else -> TextButton(
+                                    onClick = { viewModel.startScan() },
+                                    contentPadding = PaddingValues(horizontal = 8.dp),
+                                ) { Text("自动连翻", style = MaterialTheme.typography.labelSmall) }
                             }
                         }
                     }

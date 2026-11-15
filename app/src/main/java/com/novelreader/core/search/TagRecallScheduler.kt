@@ -49,6 +49,16 @@ class TagRecallScheduler(
     private val hardDeadlineMs: Long = DEFAULT_HARD_DEADLINE_MS,
     private val convergeBatches: Int = DEFAULT_CONVERGE_BATCHES,
     private val convergeMinNew: Int = DEFAULT_CONVERGE_MIN_NEW,
+    /**
+     * 是否启用收敛早停（v1.9.6.0）。
+     *
+     * **首页召回可以早停**：几十个近义词 × 多源，长尾本来就是为了凑数。
+     * **翻页（第 2 页起）绝对不能早停**：页面内容越往后越稀，连续几批新增
+     * 少于 2 条就是常态 —— 一旦在这里停下，剩下的源根本没被问到这一页，
+     * 用户的感受就是「连翻只翻了几页就没了」。真机 18:05 的日志里，
+     * 每个源第三页起全是 `SKIPPED`，就是这个早停造成的。
+     */
+    private val earlyStop: Boolean = true,
     private val slowSources: Set<String> = emptySet(),
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val execute: suspend (RecallTask) -> List<com.novelreader.domain.model.MediaItem>,
@@ -171,7 +181,7 @@ class TagRecallScheduler(
                     emitLock.withLock {
                         val newCount = responses.sumOf { it.items.size }
                         convergeStreak = if (newCount < convergeMinNew) convergeStreak + 1 else 0
-                        if (convergeStreak >= convergeBatches) stopped.set(true)
+                        if (earlyStop && convergeStreak >= convergeBatches) stopped.set(true)
                     }
                 }
             }
@@ -179,7 +189,9 @@ class TagRecallScheduler(
         jobs.awaitAll()
         softTimer.cancel()
 
-        RecallResult(allResponses.toList(), HashMap(status))
+        // taskCount 必须带上真实任务数：调用方（连翻）用它判断「这一页是不是一个请求都没发」。
+        // 漏了这个字段时它恒为 0，连翻会一启动就认定「所有入口都翻到头」（v1.9.6.0 修）。
+        RecallResult(allResponses.toList(), HashMap(status), taskCount = total)
     }
 
     /**

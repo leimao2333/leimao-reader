@@ -290,6 +290,15 @@ class TagSearchViewModel(
     private val _scanCapped = MutableStateFlow(false)
     val scanCapped: StateFlow<Boolean> = _scanCapped.asStateFlow()
 
+    /**
+     * 这一轮连翻是**接着上次的书签**开始的：值为当时的起始页码（v1.9.6.0）。
+     *
+     * 界面用它说一句「从上次翻到的第 N 页继续」，并给一个「从头翻」的出口 ——
+     * 否则用户看到结果区空着、页码却是 38，会以为是 bug。
+     */
+    private val _scanResumePage = MutableStateFlow<Int?>(null)
+    val scanResumePage: StateFlow<Int?> = _scanResumePage.asStateFlow()
+
     /** 连翻那条长循环的句柄：暂停 / 离开页面时要能立刻掐断 */
     private var scanJob: kotlinx.coroutines.Job? = null
 
@@ -981,12 +990,27 @@ class TagSearchViewModel(
         val items: List<MediaItem>,
         /** `sourceId:id` → 该作品被真实分类页证明过的标签 */
         val proven: Map<String, Set<String>> = emptyMap(),
+        /** 这一页一个请求都没发（所有入口都已翻到头）→ 可以直接收手 */
+        val noTasks: Boolean = false,
     )
 
     /** 本次搜索已经写进索引的作品（`sourceId:id`），翻页时避免重复写库 */
     private val indexedInSearch = mutableSetOf<String>()
 
     private var paging: PagingContext? = null
+
+    /**
+     * 本轮搜索里**已经翻到头**的入口（v1.9.6.0）：某入口第 N 页返回了空，第 N+1 页必然还是空。
+     *
+     * 深翻几十页时，早就不再有内容的源如果不剔除，每一页都要为它们各发一次请求 ——
+     * 每页 11 秒里有大半是白等的。剔除之后，越往后翻越快，而且「所有入口都翻到头」
+     * 这件事本身就能直接给出「到底了」的结论，不用靠「连续几页重复」去猜。
+     */
+    private val exhaustedEntries = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** 某个入口连续几页返回空（连续两次才判「翻到头」） */
+    private val emptyStrikesOfEntry =
+        java.util.concurrent.ConcurrentHashMap<String, Int>()
 
     /**
      * 本轮搜索的**任务终态**（v1.8.9.1）。
@@ -1616,8 +1640,31 @@ class TagSearchViewModel(
         _scanPaused.value = false
         _scanFinished.value = false
         _scanCapped.value = false
+        // 翻页记忆（v1.9.6.0）：上次翻到第几页就接着问第几页。
+        // 只在「只看新」下续页 —— 关着开关时要的是从头浏览，不该跳过前几十页。
+        val scanKey = scanKeyOf(ctx.tags)
+        val remembered = if (_skipRecorded.value) {
+            com.novelreader.core.search.TagScanMemory.nextPageOf(scanKey)
+        } else {
+            1
+        }
+        if (remembered > nextPage) {
+            nextPage = remembered
+            _scanResumePage.value = remembered
+        } else {
+            _scanResumePage.value = null
+        }
         _scanning.value = true
         _scanStarted.value = true
+        android.util.Log.d(
+            "TagSearch",
+            "连翻开始：从第 $nextPage 页起，入口 ${ctx.entriesPerTag.sumOf { it.size }} 个" +
+                "（已翻到头 ${exhaustedEntries.size}），结果 ${_results.value.size} 条" +
+                "（已收录 ${recordedKeys.size}）",
+        )
+        // 新一轮连翻：重复页计数必须归零，否则上一轮留下的计数会让这一轮提前判死
+        repeatPages = 0
+        _emptyPage.value = 0
         _autoScan.value = AutoScan(page = nextPage)
         beginPaging()
         scanJob = viewModelScope.launch {
@@ -1635,6 +1682,35 @@ class TagSearchViewModel(
                 _scanFinished.value = !_hasMore.value || _scanCapped.value
             }
         }
+    }
+
+    /**
+     * 丢掉书签、从第 1 页重新翻（v1.9.6.0）。
+     *
+     * 书签是「上次翻到第 40 页」这种位置记忆，用久了会想把前面的重新过一遍 ——
+     * 比如怀疑某个源刚上了新内容、或者站点分页顺序变了。这就是那个出口。
+     */
+    fun restartScanFromFirstPage() {
+        val ctx = paging ?: return
+        // 正在翻也可以直接掐断重来：用户点了就是明确意图，不该让他先暂停再点
+        scanJob?.cancel()
+        scanJob = null
+        loadMoreJob?.cancel()
+        loadMoreJob = null
+        _scanning.value = false
+        _loadingMore.value = false
+        _loadingPage.value = 0
+        com.novelreader.core.search.TagScanMemory.clear(scanKeyOf(ctx.tags))
+        _scanResumePage.value = null
+        _scanPaused.value = false
+        _scanFinished.value = false
+        _scanCapped.value = false
+        _scanStarted.value = false
+        nextPage = 1
+        _hasMore.value = true
+        _emptyPage.value = 0
+        repeatPages = 0
+        startScan()
     }
 
     /** 暂停连翻（v1.9.5.8）：停在这一页，界面上的结果保留，随时可以继续 */
@@ -1688,20 +1764,38 @@ class TagSearchViewModel(
     private suspend fun pagingLoop(ctx: PagingContext, generation: Long, scan: Boolean) {
         var info = if (scan) AutoScan(page = nextPage) else (_autoScan.value ?: AutoScan())
         // 连续「这一页一条都没有」的页数。聚合几十个源时，某一页全源超时是常态，
-        // 以前一次空页就直接判「到底了」—— 用户翻着翻着莫名结束，这是 v1.9.5.8 的硬伤。
+        // 一次空页就判「到底了」会让用户翻着翻着莫名结束。
         var emptyPages = 0
         // 这一轮连翻已经翻了多少页（上限保护，见 MAX_SCAN_PAGES）
         var scannedPages = 0
+        /**
+         * 本轮**取回来过**的条目键（`sourceId:id`）。
+         *
+         * 它只回答一个问题：这一页带来的是不是**从没见过的东西**。
+         *
+         * 以前这里用「新增行数 / 唯一条目数」当判据，碰上「只看新」就必然翻车：
+         * 本地索引那上万条**本来就在结果集里**，网络每页都会命中它们，于是每一页
+         * 都是「新增 0 行 / 0 条」—— 翻到第 3 页就被判成「源站反复返回同一批」，
+         * 连翻直接结束（真机 18:05 复现：第 2、3 页各取回 58 / 40 条，新增 0）。
+         * 换成「这一页的键是否都取回过」后，「已收录」与「翻到底」才真正分开。
+         */
+        val progress = com.novelreader.core.search.PageProgressTracker()
+        var lastPage = 0
+        var stopReason = ""
+        /** 本页是否已经做过一次「清空已翻到头再重试」，防止同一页原地打转 */
+        var retriedNoTasks = false
         while (true) {
             if (generation != searchGeneration) return
             val page = nextPage
+            lastPage = page
             _loadingPage.value = page
             if (scan) {
                 info = info.copy(page = page)
                 _autoScan.value = info
             }
             val result = try {
-                fetchPage(ctx, page)
+                // 只有连翻自己登记「翻到头」：预取 / 手动翻页不写这张表
+                fetchPage(ctx, page, trackExhaustion = scan)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
@@ -1714,51 +1808,94 @@ class TagSearchViewModel(
                     continue
                 }
                 _hasMore.value = false
+                stopReason = "第 $page 页连续抓取失败"
                 break
             }
             if (generation != searchGeneration) return
+            if (result.noTasks) {
+                // 一个请求都没发：所有入口都被记成「翻到头」了。
+                // **先别下结论** —— 这张表可能被别处（预取 / 异常折算成空）污染过。
+                // 清空重试同一页：真的没内容，重试出来的仍是空页，交给下面的空页容错去数。
+                if (!retriedNoTasks) {
+                    retriedNoTasks = true
+                    exhaustedEntries.clear()
+                emptyStrikesOfEntry.clear()
+                    emptyStrikesOfEntry.clear()
+                    android.util.Log.d(
+                        "TagSearch",
+                        "第 $page 页没有可问的入口，清空「已翻到头」重试一次",
+                    )
+                    continue
+                }
+                android.util.Log.d("TagSearch", "第 $page 页重试后仍没有可问的入口")
+            }
             if (result.items.isEmpty()) {
                 emptyPages++
                 if (emptyPages > MAX_EMPTY_PAGES) {
                     // 连续几页都是空：这些源确实没有更多了
                     _hasMore.value = false
                     _emptyPage.value = page
+                    com.novelreader.core.search.TagScanMemory.clear(scanKeyOf(ctx.tags))
+                    stopReason = "连续 $emptyPages 页没有任何内容"
                     break
                 }
                 // 只有这一页空：跳过它继续往后问，不要把整轮判死
+                android.util.Log.d("TagSearch", "第 $page 页没有任何内容，跳过继续往后问")
                 nextPage = page + 1
                 kotlinx.coroutines.delay(RETRY_DELAY_MS)
                 continue
             }
             emptyPages = 0
+            retriedNoTasks = false
+            val pageKeys = result.items.asSequence().map(::itemKey).toSet()
+            // 这一页的条目全都取回过 → 源站把同一批内容又给了一遍（不是「都收录过」）
+            val nothingNew = progress.observe(pageKeys)
             // 先查明哪些是本地已收录的（只看新关着时直接返回本页条数）
             val fresh = annotateRecorded(result.items)
             val (added, newIds) = appendResultsCounted(result.items)
             nextPage = page + 1
-            if (added > 0 || newIds > 0) {
+            // 翻完一页就更新书签：中途被杀进程 / 用户退出，下次也能从附近接着翻
+            if (scan) {
+                com.novelreader.core.search.TagScanMemory.remember(
+                    scanKeyOf(ctx.tags),
+                    nextPage = nextPage,
+                    scannedPages = scannedPages + 1,
+                )
+            }
+            if (added > 0) {
                 // 翻页同样打标（v1.8.4.1）：以前只有第一页进索引，滚十页标签层不动
-                if (added > 0) indexProvenance(result.items, result.proven)
-                _emptyPage.value = 0
-                repeatPages = 0
-            } else {
-                // 整页都是「同一个源的同一条」——源站把最后一页反复返回（v1.8.8.0，待办 #35）。
-                // 注意判据是**唯一条目数**：只要多出新的 `sourceId:id`（哪怕同名被折叠、
-                // 行数没涨），就说明还有新东西，不能算空页。
-                repeatPages++
+                indexProvenance(result.items, result.proven)
+            }
+            scannedPages++
+            if (nothingNew) {
+                repeatPages = progress.consecutiveRepeats
                 // 连翻时多给几页余量：几十个源一起翻，个别源滞后很常见，
                 // 用 2 页就把整轮判死会让用户以为「翻到第 5 页就没了」。
                 val tolerance = if (scan) SCAN_REPEAT_TOLERANCE else REPEAT_PAGE_TOLERANCE
-                if (repeatPages >= tolerance) {
+                android.util.Log.d(
+                    "TagSearch",
+                    "第 $page 页 ${result.items.size} 条全是取回过的（连续 $repeatPages 页，" +
+                        "容忍 $tolerance，连翻=$scan，只看新=${_skipRecorded.value}）",
+                )
+                // 「只看新」开着时，重复页 = 「这一段没有新的」，判停才有意义；
+                // 关着时的「自动连翻」是**一直翻**，重复页只当路过，不判停 ——
+                // 停不停由用户按「暂停」决定（v1.9.6.0）。
+                if (_skipRecorded.value && repeatPages >= tolerance) {
                     _hasMore.value = false
                     _emptyPage.value = page
+                    // 到底了 → 书签作废（下次从头，可能已有新内容）
+                    com.novelreader.core.search.TagScanMemory.clear(scanKeyOf(ctx.tags))
+                    stopReason = "连续 $repeatPages 页都是取回过的内容"
                     break
                 }
+            } else {
+                repeatPages = 0
+                _emptyPage.value = 0
             }
-            scannedPages++
             android.util.Log.d(
                 "TagSearch",
                 "第 $page 页取回 ${result.items.size} 条，新增 $added 行 / $newIds 条" +
-                    "（未收录 $fresh 条，连续空页 $repeatPages，连翻=$scan）",
+                    "（未收录 $fresh 条，连续重复页 $repeatPages，连翻=$scan）",
             )
             if (scan) {
                 info = info.copy(
@@ -1770,6 +1907,7 @@ class TagSearchViewModel(
                 // 单次连翻的上限：到这里先停，**保留 hasMore**，让「再翻一遍」能接着往下
                 if (scannedPages >= MAX_SCAN_PAGES) {
                     _scanCapped.value = true
+                    stopReason = "到单次上限 $MAX_SCAN_PAGES 页"
                     break
                 }
                 // 页与页之间让一下：67 个源一起打太密会被限流，暂停也才来得及响应
@@ -1780,6 +1918,13 @@ class TagSearchViewModel(
             }
             if (!_hasMore.value) break
         }
+        // 停下时把原因写进日志：「翻了几页就停」这类问题，下次一眼就能看出停在哪一环
+        android.util.Log.d(
+            "TagSearch",
+            "翻页结束：第 $lastPage 页，共翻 $scannedPages 页，" +
+                "原因=${stopReason.ifEmpty { "用户暂停 / 结果已够" }}" +
+                "，hasMore=${_hasMore.value}，上限停=${_scanCapped.value}",
+        )
     }
 
     /** 当前结果里还有多少条**没被收录**（只看新的可见条数），只用于「到底了没」的判断 */
@@ -1803,6 +1948,9 @@ class TagSearchViewModel(
             // attempts 兜住「一直没新增」的情况，避免无限往后问。
             var emptyStreak = 0
             var attempts = 0
+            // v1.9.6.0：与 pagingLoop 同一口径 —— 判「取回来的东西是不是新的」，
+            // 不看「结果集有没有涨」。预取也一样会被本地索引里那上万条骗到。
+            val fetchedKeys = HashSet<String>()
             // v1.9.5.8：开了「只看新」时预取也要越过整页老面孔，否则用户滑到底
             // 才发现预取的三页全是已收录的，等于白预取
             val attemptCap = PRELOAD_PAGES + REPEAT_PAGE_TOLERANCE +
@@ -1823,16 +1971,27 @@ class TagSearchViewModel(
                 }
                 if (generation != searchGeneration) return@launch
                 if (result.items.isEmpty()) {
-                    _hasMore.value = false
-                    return@launch
+                    // 单页空不等于到底：源站偶发超时时整页都会是空。跳过继续问，
+                    // 连续空到容忍上限才算到底（与 pagingLoop 一致）。
+                    emptyStreak++
+                    if (emptyStreak >= REPEAT_PAGE_TOLERANCE) {
+                        _hasMore.value = false
+                        _emptyPage.value = page
+                        return@launch
+                    }
+                    nextPage = page + 1
+                    continue
                 }
+                val pageKeys = result.items.asSequence().map(::itemKey).toSet()
+                val nothingNew = fetchedKeys.containsAll(pageKeys)
+                fetchedKeys.addAll(pageKeys)
                 val fresh = annotateRecorded(result.items)
                 val (added, newIds) = appendResultsCounted(result.items)
                 nextPage = page + 1
-                if (added == 0 && newIds == 0) {
+                if (nothingNew) {
                     emptyStreak++
                     if (emptyStreak >= REPEAT_PAGE_TOLERANCE) {
-                        // 连续几页都是同一个源的同一条：这才是真的到底，记下页码给页脚用（v1.8.7.8）
+                        // 连续几页都是取回过的内容：这才是真的到底，记下页码给页脚用（v1.8.7.8）
                         _hasMore.value = false
                         _emptyPage.value = page
                         return@launch
@@ -1862,11 +2021,19 @@ class TagSearchViewModel(
      * 旧版的第三种「组合关键词直搜」是「有标签没分类页」时的特判，现在已经由
      * 判定层接管（分级词按 unknown 保留），那条分支连同 `allSearchOnly` 一起删掉了。
      */
-    private suspend fun fetchPage(ctx: PagingContext, page: Int): PageResult = when {
+    private suspend fun fetchPage(
+        ctx: PagingContext,
+        page: Int,
+        trackExhaustion: Boolean = false,
+    ): PageResult = when {
         ctx.single && ctx.entriesPerTag[0].isNotEmpty() -> {
             val only = ctx.tags.firstOrNull()
             val proven = mutableMapOf<String, MutableSet<String>>()
-            val result = recallEntries(ctx.entriesPerTag, page = page)
+            val result = recallEntries(
+                ctx.entriesPerTag,
+                page = page,
+                trackExhaustion = trackExhaustion,
+            )
             result.responses.forEach { response ->
                 if (response.task.kind != EntryKind.CATEGORY) return@forEach
                 response.items.forEach { item ->
@@ -1880,16 +2047,24 @@ class TagSearchViewModel(
             // 翻页同样要过判定层：不过的话第 2 页起又会把无关内容原样追加回来。
             // 成人源口径也要跟着走（v1.9.1.1）：首页隐藏了，翻页不该又冒出来。
             val rankedPage = rankOffMain(items, ctx.tags, proven, pagingMinResults())
-            PageResult(applyAdultFilter(rankedPage, ctx.tags), proven)
+            PageResult(
+                applyAdultFilter(rankedPage, ctx.tags),
+                proven,
+                noTasks = result.taskCount == 0,
+            )
         }
         // 有标签在源里没有真实分类页 → 组合筛选在数据层不成立，退回各集并集。
         // 取舍交给判定层，不再用一刀切的标题过滤把这些内容砍掉。
         ctx.entriesPerTag.any { list -> list.none { it.kind == EntryKind.CATEGORY } } -> {
-            val result = recallEntries(ctx.entriesPerTag, page = page)
+            val result = recallEntries(
+                ctx.entriesPerTag,
+                page = page,
+                trackExhaustion = trackExhaustion,
+            )
             val items = result.responses.flatMap { it.items }
                 .distinctBy { "${it.sourceId}:${it.id}" }
             val ranked = rankOffMain(items, ctx.tags, emptyMap(), pagingMinResults())
-            PageResult(applyAdultFilter(ranked, ctx.tags))
+            PageResult(applyAdultFilter(ranked, ctx.tags), noTasks = result.taskCount == 0)
         }
         else -> {
             val categoryEntries = ctx.entriesPerTag.map { list ->
@@ -2364,6 +2539,7 @@ class TagSearchViewModel(
                 // 但标题一致时角标 / 「只看新」仍以条目键为准，不做跨 id 猜测。
                 recordedKeys.clear()
                 recordedKeys.addAll(_indexedKeys.value)
+                exhaustedEntries.clear()
                 _autoScan.value = null
                 _bottomNoFresh.value = false
                 _scanFinished.value = false
@@ -2753,8 +2929,9 @@ class TagSearchViewModel(
         tagNames: List<String> = emptyList(),
         onItems: suspend (List<MediaItem>, Map<String, Set<String>>) -> Unit = { _, _ -> },
         onBatch: (suspend (RecallBatch) -> Unit)? = null,
+        allowEarlyStop: Boolean = true,
     ): RecallResult {
-        if (tasks.isEmpty()) return RecallResult(emptyList(), emptyMap())
+        if (tasks.isEmpty()) return RecallResult(emptyList(), emptyMap(), taskCount = 0)
         val concurrency = tagConcurrency
         val scheduler = TagRecallScheduler(
             globalPool = pageSemaphore,
@@ -2768,6 +2945,7 @@ class TagSearchViewModel(
                 .filter { SourceHealth.isSlow(it) }
                 .toSet(),
             execute = { task -> executeRecall(task) },
+            earlyStop = allowEarlyStop,
         )
         addProgressTotal(tasks.size)
         val collected = mutableListOf<MediaItem>()
@@ -2856,9 +3034,51 @@ class TagSearchViewModel(
         tagNames: List<String> = emptyList(),
         onItems: suspend (List<MediaItem>, Map<String, Set<String>>) -> Unit = { _, _ -> },
         onBatch: (suspend (RecallBatch) -> Unit)? = null,
+        /**
+         * 是否把「返回空」的入口记成「已翻到头」。
+         *
+         * **只有连翻自己传 true**（v1.9.6.0 修订）。原因：`exploreFilter` 会把网络异常
+         * 折算成空列表，后台预取、慢源重试这些路径也会顺手写进同一张表 —— 真机出现过
+         * 「连翻一启动就 0 任务、直接报所有入口都翻到头」，就是这张表被别处填满了。
+         */
+        trackExhaustion: Boolean = false,
     ): RecallResult {
         val tasks = entriesPerTag.flatMapIndexed { index, entries -> tasksOf(entries, index, page) }
-        val result = recall(tasks, tagNames = tagNames, onItems = onItems, onBatch = onBatch)
+        val result = recall(
+            tasks,
+            tagNames = tagNames,
+            onItems = onItems,
+            onBatch = onBatch,
+            // 第 2 页起关闭收敛早停：深页「连续几批新增很少」是常态，
+            // 早停会让剩下的源压根没被问到这一页（详见 TagRecallScheduler.earlyStop）
+            allowEarlyStop = page <= 1,
+        )
+        // 翻页时把「已经翻到头」的入口记下来：某入口第 N 页返回空，第 N+1 页也不会有内容。
+        // 记下来以后，后续每页都只问还活着的入口 —— 深翻才不会越翻越慢、也不会被已死的入口拖死。
+        if (trackExhaustion && page > 1) {
+            result.responses.forEach { response ->
+                val key = entryKeyOf(response.task)
+                when (response.outcome) {
+                    // 连续两页都返回空才算「翻到头」：单页空可能只是一次偶发失败
+                    RecallOutcome.EMPTY -> {
+                        val strikes = (emptyStrikesOfEntry[key] ?: 0) + 1
+                        emptyStrikesOfEntry[key] = strikes
+                        if (strikes >= 2) exhaustedEntries.add(key)
+                    }
+                    RecallOutcome.SUCCESS -> {
+                        emptyStrikesOfEntry.remove(key)
+                        exhaustedEntries.remove(key)
+                    }
+                    else -> Unit
+                }
+            }
+            if (result.responses.isNotEmpty()) {
+                android.util.Log.d(
+                    "TagSearch",
+                    "第 $page 页：任务 ${result.taskCount} 条，已翻到头 ${exhaustedEntries.size} 个入口",
+                )
+            }
+        }
         // 只有第一页决定 phase：翻页不会把已经 DONE 的搜索打回 STREAMING
         if (page == 1) {
             _phase.value = if (result.partial) SearchPhase.DONE_PARTIAL else SearchPhase.DONE_COMPLETE
@@ -2981,7 +3201,7 @@ class TagSearchViewModel(
 
     /** 入口 → 召回任务。主词（termPriority 小）先发，长尾后发。 */
     private fun tasksOf(entries: List<TagEntry>, tagIndex: Int, page: Int): List<RecallTask> =
-        entries.map { entry ->
+        entries.filterNot { exhaustedEntries.contains(entryKeyOf(it)) }.map { entry ->
             RecallTask(
                 tagIndex = tagIndex,
                 sourceId = entry.sourceId,
@@ -2992,6 +3212,17 @@ class TagSearchViewModel(
                 page = page,
             )
         }
+
+    /** 这一轮的书签键：类型 + 排序后的标签组合（`VIDEO|里番组`） */
+    private fun scanKeyOf(tags: List<String>): String =
+        com.novelreader.core.search.TagScanMemory.keyOf(type.name, tags)
+
+    /** 入口的唯一身份（源 + 种类 + 地址 + 词）：用于记「这个入口已经翻到头」 */
+    private fun entryKeyOf(entry: TagEntry): String =
+        "${entry.sourceId}|${entry.kind}|${entry.url}|${entry.term}"
+
+    private fun entryKeyOf(task: RecallTask): String =
+        "${task.sourceId}|${task.kind}|${task.url}|${task.term}"
 
     /**
      * 复合标签：**每个标签先取全量并集，再把各并集按标题求交**（v1.7.9.9 口径）。
@@ -3186,11 +3417,16 @@ class TagSearchViewModel(
          */
         private const val REPEAT_PAGE_TOLERANCE = 2
 
-        /** 连翻时「连续多少页都是同一批」才判定翻到底（v1.9.5.8） */
-        private const val SCAN_REPEAT_TOLERANCE = 3
+        /**
+         * 连翻时「连续多少页都是取回过的内容」才判定翻到底（v1.9.6.0）。
+         *
+         * 给到 5 页：几十个源的分页深度各不相同，个别源会把最后一页反复返回，
+         * 三五页重复很正常；判早了用户就会看到「只翻了几页就停了」。
+         */
+        private const val SCAN_REPEAT_TOLERANCE = 5
 
         /** 连翻时容忍几页「一条都没有」（v1.9.5.9）：全源超时不该被当成到底 */
-        private const val MAX_EMPTY_PAGES = 2
+        private const val MAX_EMPTY_PAGES = 3
 
         /** 抓取失败 / 空页之后，隔多久再问下一页（v1.9.5.9） */
         private const val RETRY_DELAY_MS = 800L
@@ -3204,7 +3440,7 @@ class TagSearchViewModel(
          * 一个标签动辄几十上百页，全部翻完要十几分钟；到了这里先停、把控制权交回用户，
          * 想继续点「再翻一遍」。注意**不能**把 hasMore 关掉，否则再也翻不动。
          */
-        private const val MAX_SCAN_PAGES = 120
+        private const val MAX_SCAN_PAGES = 300
 
         /**
          * 「只看新」时**后台预取**最多额外越过几页老面孔（v1.9.5.8）。

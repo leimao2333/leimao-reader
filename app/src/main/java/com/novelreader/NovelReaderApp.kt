@@ -50,6 +50,12 @@ class NovelReaderApp : Application(), ImageLoaderFactory {
             }
         }
 
+        // 翻页记忆的存储位置（v1.9.6.0）：「只看新」连翻到第几十页时，
+        // 下次进来直接从那一页接着问，不用把老面孔再重翻一遍
+        runCatching {
+            com.novelreader.core.search.TagScanMemory.init(filesDir)
+        }
+
         // 后台恢复源
         applicationScope.launch {
             runCatching {

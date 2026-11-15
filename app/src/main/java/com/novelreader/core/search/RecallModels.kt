@@ -84,6 +84,8 @@ data class RecallBatch(
 data class RecallResult(
     val responses: List<RecallResponse>,
     val sourceStatus: Map<String, RecallOutcome>,
+    /** 这一页实际发出去的任务数（0 = 所有入口都已翻到头，调用方可以立刻收手） */
+    val taskCount: Int = 0,
 ) {
     /** 有源超时/报错 → 结果是 partial（可能不全），界面要如实说明 */
     val partial: Boolean get() = sourceStatus.values.any { it.isUnknown }

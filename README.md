@@ -11,6 +11,21 @@
 
 **[→ 爱发电赞赏（支持微信 / 支付宝）](https://ifdian.net/a/leimao)**
 
+<table>
+<tr>
+<td align="center" width="50%">
+<img src="docs/sponsor/sponsor-5-soda.png" width="200" alt="两瓶快乐水"><br>
+<b>两瓶快乐水 · ¥5</b><br>
+<sub>够我把一个失效的源重新调通</sub>
+</td>
+<td align="center" width="50%">
+<img src="docs/sponsor/sponsor-10-burger.png" width="200" alt="一个汉堡"><br>
+<b>一个汉堡 · ¥10</b><br>
+<sub>够我撑过修源的一整晚</sub>
+</td>
+</tr>
+</table>
+
 赞赏纯属自愿，也**不影响任何功能** —— 应用本身不收费、不插广告、不靠打赏解锁任何东西。不给钱照样能用全部功能。
 
 </details>

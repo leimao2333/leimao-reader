@@ -270,6 +270,26 @@ class TagSearchViewModel(
     private val _scanFinished = MutableStateFlow(false)
     val scanFinished: StateFlow<Boolean> = _scanFinished.asStateFlow()
 
+    /**
+     * 本轮搜索是否已经自动起过一次连翻（v1.9.5.8）。
+     *
+     * 打开「只看新」就该**一路翻到底**，而不是「屏上还有一条新的就不翻」——
+     * 真机上就是这个毛病：37 条新内容摆在那儿，连翻永远不启动，用户只能自己一屏屏往下滑，
+     * 滑到源站重复页又给他一句「第 5 页返回的还是同一批内容」。
+     * 这个标记保证每轮搜索只自动起一次，翻完/暂停后不会被界面的重组重新拉起来。
+     */
+    private val _scanStarted = MutableStateFlow(false)
+    val scanStarted: StateFlow<Boolean> = _scanStarted.asStateFlow()
+
+    /**
+     * 连翻因为「翻到单次上限」而停下（v1.9.5.9）。
+     *
+     * 与「翻到底」必须分开说：源站还有内容、只是这一轮先停一下，
+     * 用户点「再翻一遍」能接着往下。把上限说成「到底了」是撒谎。
+     */
+    private val _scanCapped = MutableStateFlow(false)
+    val scanCapped: StateFlow<Boolean> = _scanCapped.asStateFlow()
+
     /** 连翻那条长循环的句柄：暂停 / 离开页面时要能立刻掐断 */
     private var scanJob: kotlinx.coroutines.Job? = null
 
@@ -304,6 +324,8 @@ class TagSearchViewModel(
         _autoScan.value = null
         _scanFinished.value = false
         _scanPaused.value = false
+        _scanStarted.value = false
+        _scanCapped.value = false
         if (!value) {
             // 关掉开关就把连翻停掉：结果集不变，只是不再自动往后翻
             scanJob?.cancel()
@@ -316,7 +338,8 @@ class TagSearchViewModel(
             // 屏上这批是开关**关着**的时候抓的，还没查过库 —— 先标一遍，
             // 否则打开开关的瞬间一条都不会被藏起来（看着就像没生效）。
             annotateAll(_results.value)
-            // 藏完之后可能整屏都空了：直接开始连翻，一路翻到底（用户随时可暂停）
+            // 打开就一路翻到底（不是「屏上还有新的就不翻」）：
+            // 用户要的是「把没看过的都捞出来」，屏上那几条不够他翻。
             if (!_searching.value && !_loadingMore.value && !_scanning.value) {
                 if (_hasMore.value) startScan() else _scanFinished.value = true
             }
@@ -1592,7 +1615,9 @@ class TagSearchViewModel(
         preloadJob?.cancel()
         _scanPaused.value = false
         _scanFinished.value = false
+        _scanCapped.value = false
         _scanning.value = true
+        _scanStarted.value = true
         _autoScan.value = AutoScan(page = nextPage)
         beginPaging()
         scanJob = viewModelScope.launch {
@@ -1606,7 +1631,8 @@ class TagSearchViewModel(
             } finally {
                 _scanning.value = false
                 endPaging()
-                _scanFinished.value = !_hasMore.value
+                // 翻到上限也是「这一轮结束了」：hasMore 还留着，靠「再翻一遍」接着走
+                _scanFinished.value = !_hasMore.value || _scanCapped.value
             }
         }
     }
@@ -1622,10 +1648,20 @@ class TagSearchViewModel(
         _loadingPage.value = 0
     }
 
-    /** 继续连翻（暂停之后） */
+    /**
+     * 继续连翻（暂停之后）；翻完之后再点 = **再问一遍**（v1.9.5.8）。
+     *
+     * 后者是「源站可能刚上了新的」这条需求：翻到底之后 `_hasMore` 是 false，
+     * 直接 startScan 会立刻返回什么都不做，按钮看着像坏的。
+     */
     fun resumeScan() {
         if (_scanning.value) return
         _scanPaused.value = false
+        if (!_hasMore.value) {
+            _hasMore.value = true
+            _emptyPage.value = 0
+            repeatPages = 0
+        }
         startScan()
     }
 
@@ -1651,20 +1687,50 @@ class TagSearchViewModel(
      */
     private suspend fun pagingLoop(ctx: PagingContext, generation: Long, scan: Boolean) {
         var info = if (scan) AutoScan(page = nextPage) else (_autoScan.value ?: AutoScan())
+        // 连续「这一页一条都没有」的页数。聚合几十个源时，某一页全源超时是常态，
+        // 以前一次空页就直接判「到底了」—— 用户翻着翻着莫名结束，这是 v1.9.5.8 的硬伤。
+        var emptyPages = 0
+        // 这一轮连翻已经翻了多少页（上限保护，见 MAX_SCAN_PAGES）
+        var scannedPages = 0
         while (true) {
+            if (generation != searchGeneration) return
             val page = nextPage
             _loadingPage.value = page
             if (scan) {
                 info = info.copy(page = page)
                 _autoScan.value = info
             }
-            val result = fetchPage(ctx, page)
-            if (generation != searchGeneration) return
-            if (result.items.isEmpty()) {
-                // 一个源都没给内容：这批源确实到底了
+            val result = try {
+                fetchPage(ctx, page)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                // 抓取失败 ≠ 到底。连翻时让一下再试同一页（nextPage 没动就是重试），
+                // 连试几次都失败才收手，并且**不**把 hasMore 关掉 —— 关掉就再也翻不动了。
+                android.util.Log.w("TagSearch", "第 $page 页抓取失败", error)
+                if (scan && emptyPages < MAX_EMPTY_PAGES) {
+                    emptyPages++
+                    kotlinx.coroutines.delay(RETRY_DELAY_MS)
+                    continue
+                }
                 _hasMore.value = false
                 break
             }
+            if (generation != searchGeneration) return
+            if (result.items.isEmpty()) {
+                emptyPages++
+                if (emptyPages > MAX_EMPTY_PAGES) {
+                    // 连续几页都是空：这些源确实没有更多了
+                    _hasMore.value = false
+                    _emptyPage.value = page
+                    break
+                }
+                // 只有这一页空：跳过它继续往后问，不要把整轮判死
+                nextPage = page + 1
+                kotlinx.coroutines.delay(RETRY_DELAY_MS)
+                continue
+            }
+            emptyPages = 0
             // 先查明哪些是本地已收录的（只看新关着时直接返回本页条数）
             val fresh = annotateRecorded(result.items)
             val (added, newIds) = appendResultsCounted(result.items)
@@ -1679,12 +1745,16 @@ class TagSearchViewModel(
                 // 注意判据是**唯一条目数**：只要多出新的 `sourceId:id`（哪怕同名被折叠、
                 // 行数没涨），就说明还有新东西，不能算空页。
                 repeatPages++
-                if (repeatPages >= REPEAT_PAGE_TOLERANCE) {
+                // 连翻时多给几页余量：几十个源一起翻，个别源滞后很常见，
+                // 用 2 页就把整轮判死会让用户以为「翻到第 5 页就没了」。
+                val tolerance = if (scan) SCAN_REPEAT_TOLERANCE else REPEAT_PAGE_TOLERANCE
+                if (repeatPages >= tolerance) {
                     _hasMore.value = false
                     _emptyPage.value = page
                     break
                 }
             }
+            scannedPages++
             android.util.Log.d(
                 "TagSearch",
                 "第 $page 页取回 ${result.items.size} 条，新增 $added 行 / $newIds 条" +
@@ -1697,6 +1767,13 @@ class TagSearchViewModel(
                     foundNew = info.foundNew + fresh,
                 )
                 _autoScan.value = info
+                // 单次连翻的上限：到这里先停，**保留 hasMore**，让「再翻一遍」能接着往下
+                if (scannedPages >= MAX_SCAN_PAGES) {
+                    _scanCapped.value = true
+                    break
+                }
+                // 页与页之间让一下：67 个源一起打太密会被限流，暂停也才来得及响应
+                kotlinx.coroutines.delay(SCAN_PAGE_GAP_MS)
             } else {
                 if (!_skipRecorded.value) break
                 if (fresh > 0) break
@@ -2291,6 +2368,8 @@ class TagSearchViewModel(
                 _bottomNoFresh.value = false
                 _scanFinished.value = false
                 _scanPaused.value = false
+                _scanStarted.value = false
+                _scanCapped.value = false
 
                 val enabledIds = enabledSourceIds()
                 if (enabledIds != null && enabledIds.isEmpty()) {
@@ -3106,6 +3185,26 @@ class TagSearchViewModel(
          * 第 2 页原样返回第 1 页那批 id，继续问只是让页脚一直转圈、用户等不到东西。
          */
         private const val REPEAT_PAGE_TOLERANCE = 2
+
+        /** 连翻时「连续多少页都是同一批」才判定翻到底（v1.9.5.8） */
+        private const val SCAN_REPEAT_TOLERANCE = 3
+
+        /** 连翻时容忍几页「一条都没有」（v1.9.5.9）：全源超时不该被当成到底 */
+        private const val MAX_EMPTY_PAGES = 2
+
+        /** 抓取失败 / 空页之后，隔多久再问下一页（v1.9.5.9） */
+        private const val RETRY_DELAY_MS = 800L
+
+        /** 连翻时每页之间的间隔（v1.9.5.9）：压一压请求密度，也让「暂停」来得及生效 */
+        private const val SCAN_PAGE_GAP_MS = 200L
+
+        /**
+         * 单次连翻最多翻多少页（v1.9.5.9）。
+         *
+         * 一个标签动辄几十上百页，全部翻完要十几分钟；到了这里先停、把控制权交回用户，
+         * 想继续点「再翻一遍」。注意**不能**把 hasMore 关掉，否则再也翻不动。
+         */
+        private const val MAX_SCAN_PAGES = 120
 
         /**
          * 「只看新」时**后台预取**最多额外越过几页老面孔（v1.9.5.8）。

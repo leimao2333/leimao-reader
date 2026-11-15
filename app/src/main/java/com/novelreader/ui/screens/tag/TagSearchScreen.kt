@@ -71,6 +71,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.platform.LocalContext
@@ -171,12 +172,17 @@ fun TagSearchScreen(
     val scanning by viewModel.scanning.collectAsState()
     val scanPaused by viewModel.scanPaused.collectAsState()
     val scanFinished by viewModel.scanFinished.collectAsState()
+    val scanStarted by viewModel.scanStarted.collectAsState()
+    val scanCapped by viewModel.scanCapped.collectAsState()
     val indexing by viewModel.indexing.collectAsState()
     // 视觉模型总开关（v1.8.7.2，默认关）：关着时「封面视觉打标」按钮禁用
     val visualTaggingEnabled by viewModel.visualTaggingEnabled.collectAsState()
     // 编辑模式（v1.9.2.0）：进入后点标签 = 删除（带确认）
     var editMode by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<String?>(null) }
+    // 筛选区收纳（v1.9.5.9）：标签页上半截动辄占掉半屏，挑内容时列表只剩两三行。
+    // 用 rememberSaveable 记住，转屏 / 进出详情回来还是收起的。
+    var headerCollapsed by rememberSaveable { mutableStateOf(false) }
     val indexPaused by viewModel.indexPaused.collectAsState()
     val indexMessage by viewModel.indexMessage.collectAsState()
     val hasMore by viewModel.hasMore.collectAsState()
@@ -444,6 +450,44 @@ fun TagSearchScreen(
             }
         }
 
+        // ===== 筛选区收纳（v1.9.5.9）=====
+        // 热门推荐 / 搜索框 / 源筛选 / 已选标签 / 组内标签这一整块，在挑内容时纯属占地方 ——
+        // 收起后只剩「结果数量 + 只看新 / 连翻状态」，列表能多出大半屏。
+        // 选中了哪些标签写在这一行里，收起后也知道自己在看什么。
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 4.dp, top = 2.dp)
+                .clickable { headerCollapsed = !headerCollapsed },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = buildString {
+                    append(if (headerCollapsed) "标签与筛选（已收起）" else "标签与筛选")
+                    if (activeTags.isNotEmpty()) {
+                        append("　｜　")
+                        append(activeTags.joinToString(" "))
+                    }
+                },
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(
+                onClick = { headerCollapsed = !headerCollapsed },
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    imageVector = if (headerCollapsed) Icons.Filled.KeyboardArrowDown
+                    else Icons.Filled.KeyboardArrowUp,
+                    contentDescription = if (headerCollapsed) "展开标签与筛选" else "收起标签与筛选",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (!headerCollapsed) {
         // ===== 热门推荐标签（v1.6.1.0）：按覆盖源数倒序的 top N =====
         // v1.6.2.0：行内只显示前 HOT_TAG_VISIBLE 个 + 「更多 ▾ N」入口；
         // v1.6.5.0：「更多」面板 [AllHotTagsSheet] 展示**全部**标签
@@ -697,6 +741,8 @@ fun TagSearchScreen(
             }
         }
 
+        }
+
         // ===== 已找到多少 / 总进度（v1.8.7.5 改口径，v1.8.7.6 再改）=====
         // 以前这里只显示「正在搜索 32/32」，分母是**本页要发的请求数**，翻页跑完也不清零，
         // 看着就像永远卡在 32。现在：
@@ -729,9 +775,12 @@ fun TagSearchScreen(
         // 一整屏都被藏光了、后面还有页：**自动**开始往后翻，不需要用户点任何按钮。
         // 这就是他要的「没有新结果就一直翻」——翻出新内容自己停，翻到底由 ViewModel
         // 置 bottomNoFresh，界面上给一句「已经翻到底了」。
-        LaunchedEffect(displayResults.isEmpty(), skipRecorded, searching, hasMore, loadingMore, scanning, scanPaused) {
-            if (skipRecorded && displayResults.isEmpty() && !searching && !loadingMore &&
-                !scanning && !scanPaused && hasMore
+        // 只看新开着就**自动一路翻到底**（每轮搜索只自动起一次）。
+        // 以前要多加一个「整屏都是已收录」的条件，结果屏上还剩几十条新的时连翻永远不启动，
+        // 用户只能自己滑 —— 真机上就是这么卡住的。
+        LaunchedEffect(skipRecorded, searching, hasMore, loadingMore, scanning, scanPaused, scanStarted) {
+            if (skipRecorded && !searching && !loadingMore && !scanning && !scanPaused &&
+                !scanStarted && hasMore
             ) {
                 viewModel.startScan()
             }
@@ -742,9 +791,9 @@ fun TagSearchScreen(
                     Text(
                         text = buildString {
                             append(if (found > 0) "已找到 $found 部" else "正在搜索…")
-                            // 开了「只看新」时把「其中已收录多少」说清楚 ——
-                            // 只写「已找到 4 部」会让用户以为源里就这么多
-                            if (skipRecorded && hiddenCount > 0) append("　·　已跳过 $hiddenCount 部已收录")
+                            // 开了「只看新」时先说「新的有几部」——这才是他关心的数；
+                            // 「已跳过多少」放第二行，别把这行挤成三行
+                            if (skipRecorded) append("　·　新 ${displayResults.size} 部")
                             // 「用多少源」也留着：这个数说明覆盖面，掉了用户会以为源被悄悄砍了
                             if (sourceCount > 0) append("　·　用 $sourceCount 个源")
                             // v1.8.9.1：总进度只在「还在收」时显示。收完之后分母里还挂着
@@ -779,32 +828,51 @@ fun TagSearchScreen(
                 // 「连翻」的实时交代 + 暂停按钮（v1.9.5.8）
                 if (skipRecorded) {
                     val scan = autoScan
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = when {
-                                scanning && scan != null ->
-                                    "连翻中：第 ${scan.page} 页" +
-                                        if (scan.skippedItems > 0) "（已越过 ${scan.skippedItems} 条收录过的）" else "" +
-                                        if (scan.foundNew > 0) "，已翻到 ${scan.foundNew} 部新的" else ""
-                                scanPaused -> "连翻已暂停 · 第 ${scan?.page ?: 0} 页"
-                                scanFinished && bottomNoFresh -> "已经翻到底了，没有新的内容"
-                                scanFinished -> "已经翻到底了"
-                                else -> ""
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
-                        )
-                        when {
-                            scanning -> TextButton(
-                                onClick = { viewModel.pauseScan() },
-                                contentPadding = PaddingValues(horizontal = 8.dp),
-                            ) { Text("暂停", style = MaterialTheme.typography.labelSmall) }
-                            scanPaused -> TextButton(
-                                onClick = { viewModel.resumeScan() },
-                                contentPadding = PaddingValues(horizontal = 8.dp),
-                            ) { Text("继续连翻", style = MaterialTheme.typography.labelSmall) }
-                            else -> Unit
+                    val scanText = when {
+                        scanning && scan != null -> buildString {
+                            append("连翻中 第 ${scan.page} 页")
+                            if (scan.skippedItems > 0) append(" · 越过 ${scan.skippedItems} 条收录过的")
+                            if (scan.foundNew > 0) append(" · 已找到 ${scan.foundNew} 部新的")
+                        }
+                        scanning -> "连翻中…"
+                        scanPaused -> "连翻已暂停 · 停在" +
+                            (scan?.let { "第 ${it.page} 页" } ?: "当前位置")
+                        scanFinished && bottomNoFresh -> "这个标签已经翻到底了，没有新的内容"
+                        scanCapped && scanFinished ->
+                            "已翻 ${scan?.page ?: 0} 页先停一下 · 共找到 ${scan?.foundNew ?: 0} 部新的"
+                        scanFinished && (scan?.foundNew ?: 0) > 0 ->
+                            "连翻完成 · 翻完 ${scan?.page ?: 0} 页，共找到 ${scan?.foundNew} 部新的"
+                        scanFinished -> "已经翻到底了"
+                        else -> ""
+                    }
+                    if (scanText.isNotEmpty()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = scanText,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (scanFinished && !scanning) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                },
+                                modifier = Modifier.weight(1f),
+                            )
+                            when {
+                                scanning -> TextButton(
+                                    onClick = { viewModel.pauseScan() },
+                                    contentPadding = PaddingValues(horizontal = 8.dp),
+                                ) { Text("暂停", style = MaterialTheme.typography.labelSmall) }
+                                scanPaused -> TextButton(
+                                    onClick = { viewModel.resumeScan() },
+                                    contentPadding = PaddingValues(horizontal = 8.dp),
+                                ) { Text("继续连翻", style = MaterialTheme.typography.labelSmall) }
+                                // 翻完之后想再捞一遍（比如刚清过一部分收录）
+                                scanFinished -> TextButton(
+                                    onClick = { viewModel.resumeScan() },
+                                    contentPadding = PaddingValues(horizontal = 8.dp),
+                                ) { Text("再翻一遍", style = MaterialTheme.typography.labelSmall) }
+                                else -> Unit
+                            }
                         }
                     }
                 }
@@ -818,7 +886,7 @@ fun TagSearchScreen(
                 }
             }
         }
-        notice?.let { message ->
+        notice?.takeIf { !headerCollapsed }?.let { message ->
             // v1.8.1.2：这块内容可能极长（「无码」27 个写法 + 「全彩」42 个），
             // 改成**可折叠面板**：默认只露两行摘要 + 下拉箭头，点一下才铺开全部；
             // 展开后仍限高可滚动，不会把下面的结果区挤没。
@@ -1055,6 +1123,8 @@ fun TagSearchScreen(
                                 loading = loadingMore,
                                 hasMore = hasMore,
                                 emptyPage = emptyPage,
+                                skipMode = skipRecorded,
+                                scanFinished = scanFinished,
                                 onLoadMore = { viewModel.loadMore() },
                             )
                         }
@@ -1119,6 +1189,8 @@ fun TagSearchScreen(
                                 loading = loadingMore,
                                 hasMore = hasMore,
                                 emptyPage = emptyPage,
+                                skipMode = skipRecorded,
+                                scanFinished = scanFinished,
                                 onLoadMore = { viewModel.loadMore() },
                             )
                         }
@@ -1733,6 +1805,10 @@ private fun LoadMoreFooter(
     loading: Boolean,
     hasMore: Boolean,
     emptyPage: Int = 0,
+    /** 「只看新」开着：底部文案要换成「新内容」的说法，别再讲「同一批内容」 */
+    skipMode: Boolean = false,
+    /** 连翻已经翻到底：结论由连翻给，页脚不再劝「继续上滑再试一次」 */
+    scanFinished: Boolean = false,
     onLoadMore: () -> Unit,
 ) {
     // v1.8.8.0（待办 #35）：页脚就是「触底哨兵」。
@@ -1774,21 +1850,26 @@ private fun LoadMoreFooter(
             // 手势的实现在 [SwipeContinueConnection]，这里只留一行提示告诉用户怎么用。
             else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = if (emptyPage > 0) {
-                        // v1.8.8.0：说清到底的原因 —— 不是「没加载」，是源站把同一批内容又返回了一遍
-                        "第 $emptyPage 页返回的还是同一批内容（源站没有更多了）"
-                    } else {
-                        "没有更多了"
+                    text = when {
+                        // 「只看新」+ 连翻：结论已经在顶部说过，这里只说「这个标签没有了」，
+                        // 不再讲「第 5 页返回的还是同一批内容」——那是技术细节，用户只想知道还有没有新东西
+                        skipMode && scanFinished -> "没有更多新内容了"
+                        skipMode -> "往下滑继续找新的"
+                        emptyPage > 0 ->
+                            "第 $emptyPage 页返回的还是同一批内容（源站没有更多了）"
+                        else -> "没有更多了"
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = "继续上滑可再试一次",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                )
+                if (!(skipMode && scanFinished)) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "继续上滑可再试一次",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    )
+                }
             }
         }
     }

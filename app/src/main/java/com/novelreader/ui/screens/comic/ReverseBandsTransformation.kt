@@ -1,6 +1,7 @@
 package com.novelreader.ui.screens.comic
 
 import android.graphics.Bitmap
+import android.util.Log
 import coil.size.Size
 import coil.transform.Transformation
 import com.novelreader.core.image.ComicImageScramble
@@ -15,6 +16,14 @@ class ReverseBandsTransformation(private val count: Int) : Transformation {
 
     override val cacheKey: String = "comic-reverse-bands:$count"
 
-    override suspend fun transform(input: Bitmap, size: Size): Bitmap =
-        ComicImageScramble.unscramble(input, count)
+    override suspend fun transform(input: Bitmap, size: Size): Bitmap {
+        if (Log.isLoggable(TAG, Log.DEBUG)) {
+            Log.d(TAG, "还原 $count 段 ${input.width}x${input.height}")
+        }
+        return ComicImageScramble.unscramble(input, count)
+    }
+
+    private companion object {
+        const val TAG = "ComicScramble"
+    }
 }

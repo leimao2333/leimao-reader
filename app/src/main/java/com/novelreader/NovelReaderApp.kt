@@ -99,8 +99,32 @@ class NovelReaderApp : Application(), ImageLoaderFactory {
         ImageLoader.Builder(this)
             .okHttpClient {
                 OkHttpClient.Builder()
-                    .connectTimeout(20, TimeUnit.SECONDS)
+                    // v1.9.6.1：封面加载「又慢又全是占位块」的两处结构性修复。
+                    //
+                    // 1) 并发：OkHttp 默认 maxRequests=64 / maxRequestsPerHost=5。
+                    //    标签搜索页一屏几十张封面往往来自**同一个**慢图床 host
+                    //    （实测漫蛙吧图床单张 1~2.6s），默认每 host 只放 5 个在飞，
+                    //    其余全在队列里排队 —— 一张张慢慢出、滑到底还是色块。
+                    //    放到每 host 16，配合总 64，让同站封面真正并发起来；
+                    //    正文图预加载同样受益（多张同 host 不再排队）。
+                    .dispatcher(okhttp3.Dispatcher().apply {
+                        maxRequests = 64
+                        maxRequestsPerHost = 16
+                    })
+                    // 2) 连接超时 20s → 10s：封面里混着大量「IP+非标端口」的图床
+                    //    （如 https://52.128.238.250:5367/...），在当前网络下常常
+                    //    **建连就卡住**。20s 才判定失败 = 每张死链封面要卡 20s 才变
+                    //    占位；整屏就是长时间一片色块。10s 让死链快速失败并显示占位。
+                    //    readTimeout 仍保留 30s —— 正文长图下载需要，不受影响。
+                    .connectTimeout(10, TimeUnit.SECONDS)
                     .readTimeout(30, TimeUnit.SECONDS)
+                    // 3) v1.9.6.2：图床备用域名回退。部分图床（漫蛙吧）把图片放在
+                    //    「裸 IP + 非标端口」上，在手机网络下 TLS 会被瞬间切断
+                    //    （TCP 建连成功但 appconnect=0，SSL_ERROR_SYSCALL），
+                    //    字节一个都拿不到 → 封面全色块。站点自有域名入口
+                    //    （tu.mwzu.cc）可达且字节完全一致，故失败时自动换域名重试。
+                    //    放在最外层：先按原地址请求，失败再回退，对其它源零影响。
+                    .addInterceptor(com.novelreader.core.image.ImageHostFallbackInterceptor())
                     .addInterceptor(ImageDecryptInterceptor())
                     .addInterceptor(com.novelreader.core.image.CoverDefaultsInterceptor())
                     .build()

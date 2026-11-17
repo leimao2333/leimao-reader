@@ -53,4 +53,45 @@ object CoverUrl {
 
     /** 是否是可用的封面地址（[sanitize] 的非空简写） */
     fun isValid(raw: String?): Boolean = sanitize(raw) != null
+
+    /**
+     * 带站点基址的封面解析（v1.9.6.1）。
+     *
+     * 面向 **Venera 源**：上游 `Comic.cover` 有时给的是相对路径（`/cover/1.jpg`）
+     * 或协议相对地址（`//img.example.com/c.jpg`），而 [sanitize] 只认带协议的地址，
+     * 会把它们一律清成 null → 封面整排退化成占位块。Venera 官方客户端会在框架层
+     * 用源站点补全过程，本应用此前没有，这里补上。
+     *
+     * @param raw 源返回的封面值
+     * @param base 源站点基址（形如 `https://example.com`，由源源码的 api/url 提取）
+     * @return 可加载的绝对地址；补不出来仍返回 null（交给上层 backfill / 占位）
+     */
+    fun resolve(raw: String?, base: String?): String? {
+        sanitize(raw)?.let { return it }
+        val value = raw?.trim().orEmpty()
+        if (value.isEmpty() || base.isNullOrBlank()) return null
+        // 关键：脏值字面量必须先拦掉，否则会被拼成 `https://site/undefined`
+        // 这种「非空但永远 404」的假地址——正是 sanitize 一直防的那类问题
+        // （回归用例见 CoverUrlTest）。
+        val lower = value.lowercase()
+        if (EMPTY_LITERALS.contains(lower)) return null
+        if (JS_UNDEFINED_MARKS.any { value.contains(it) }) return null
+        val site = base.trim().trimEnd('/')
+        // 协议相对：//host/path → 借用基址协议
+        if (value.startsWith("//")) {
+            val scheme = site.substringBefore("://", "")
+            if (scheme.isNotEmpty()) return sanitize("$scheme:$value")
+        }
+        // 根相对：/path → 拼到基址的「协议 + 主机」根（丢掉 base 自带的路径）
+        if (value.startsWith("/")) {
+            val root = runCatching { java.net.URI(site) }.getOrNull()?.let { u ->
+                val scheme = u.scheme
+                val authority = u.rawAuthority
+                if (!scheme.isNullOrEmpty() && !authority.isNullOrEmpty()) "$scheme://$authority" else null
+            } ?: site
+            return sanitize("$root$value")
+        }
+        // 普通相对路径：cover/1.jpg → 拼到基址目录后
+        return sanitize("$site/$value")
+    }
 }

@@ -33,6 +33,15 @@ class VeneraSourceAdapter(
     private val key: String get() = info.id
 
     /**
+     * 源站点基址（v1.9.6.1）：给相对封面 URL 补全程用。
+     *
+     * 从源码里 `api = "https://host/api"` / `url = "https://host/"` 取协议+主机，
+     * 优先 `api`（真正的数据站），并跳过 jsdelivr / githubusercontent 这类
+     * **只放源脚本、不放图片**的 CDN。取不到返回 null，封面解析退回原行为。
+     */
+    private val siteBase: String? by lazy { extractSiteBase(code) }
+
+    /**
      * 发现分类 = 源**自己声明的分类表**（v1.6.6.0；v1.7.0.0 改走真分类页）。
      *
      * Venera 协议没有统一的「发现分类」接口，但源代码里 `category.parts[]` 就是完整的
@@ -210,7 +219,9 @@ class VeneraSourceAdapter(
             id = id,
             title = c.str("title").orEmpty(),
             // v1.8.3.0：清洗封面（JS undefined 拼出的假地址要清空，见 CoverUrl）
-            cover = com.novelreader.core.util.CoverUrl.sanitize(c.str("cover")),
+            // v1.9.6.1：改用 resolve —— 相对 / 协议相对封面用源站基址补全，
+            // 绝对地址（如漫蛙吧的 IP 图床）行为与 sanitize 完全一致
+            cover = com.novelreader.core.util.CoverUrl.resolve(c.str("cover"), siteBase),
             author = c.str("subTitle")?.takeIf { it.isNotBlank() },
             desc = c.str("description")?.takeIf { it.isNotBlank() },
             type = SourceType.COMIC,
@@ -248,7 +259,7 @@ class VeneraSourceAdapter(
         itemTags(obj)?.let { extras[com.novelreader.core.util.ItemTags.EXTRAS_TAGS] = it }
         return item.copy(
             title = obj.str("title")?.takeIf { it.isNotBlank() } ?: item.title,
-            cover = com.novelreader.core.util.CoverUrl.sanitize(obj.str("cover")) ?: item.cover,
+            cover = com.novelreader.core.util.CoverUrl.resolve(obj.str("cover"), siteBase) ?: item.cover,
             author = obj.str("subTitle")?.takeIf { it.isNotBlank() } ?: item.author,
             desc = obj.str("description")?.takeIf { it.isNotBlank() } ?: item.desc,
             extras = extras,
@@ -405,6 +416,29 @@ class VeneraSourceAdapter(
     private fun encodeChapterUrl(comicId: String, epId: String) =
         VeneraChapterCodec.encode(comicId, epId)
 
+    /**
+     * 从源码里提取源站点基址（v1.9.6.1，见 [siteBase]）。
+     *
+     * 匹配顺序：`api = "https://host/..."` → `url = "https://host/..."`。
+     * 跳过纯脚本托管 CDN（jsdelivr / githubusercontent / raw.githubusercontent），
+     * 它们不是图片站，拿它补相对封面只会得到 404。
+     */
+    private fun extractSiteBase(src: String): String? {
+        val candidates = mutableListOf<String>()
+        // api = "..." / api:"..." / this.api = '...'
+        SITE_URL_REGEX.findAll(src).forEach { candidates += it.groupValues[1] }
+        for (raw in candidates) {
+            val u = runCatching { java.net.URI(raw) }.getOrNull() ?: continue
+            val scheme = u.scheme ?: continue
+            val host = u.host ?: continue
+            if (scheme != "http" && scheme != "https") continue
+            val lower = host.lowercase()
+            if (SCRIPT_CDN_HOSTS.any { lower.contains(it) }) continue
+            return "$scheme://$host"
+        }
+        return null
+    }
+
     private fun JsonObject.str(name: String): String? {
         val el = get(name) ?: return null
         if (el.isJsonNull) return null
@@ -413,6 +447,17 @@ class VeneraSourceAdapter(
 
     companion object {
         private const val TAG = "VeneraAdapter"
+
+        /** 匹配 `api = "https://..."` / `url:'https://...'` 里的协议+地址 */
+        private val SITE_URL_REGEX = Regex(
+            """\b(?:api|url|baseUrl)\s*[:=]\s*["'](https?://[^"']+)["']""",
+            RegexOption.IGNORE_CASE,
+        )
+
+        /** 只托管源码、不托管图片的 CDN，不能拿来补全相对封面 */
+        private val SCRIPT_CDN_HOSTS = listOf(
+            "jsdelivr", "githubusercontent", "github.io", "cdn.jsdelivr",
+        )
 
         /** 分类项的 itemType：走分类页（默认） */
         private const val CATEGORY_KIND = "category"

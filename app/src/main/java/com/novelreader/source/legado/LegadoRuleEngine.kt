@@ -198,6 +198,14 @@ object LegadoRuleEngine {
                 return if (rest.isBlank()) decoded else extractFromDocument(decoded, rest, baseUrl)
             }
         }
+        // `{{规则}}` 模板（legado 语义）：把每个占位替换成对应规则的取值。
+        // 漫画正文规则大量使用这种写法——禁漫天堂的 content 就是
+        //   `{{@class.row thumb-overlay-albums@tag.img@data-original}}` + `@js:` 逐行拼 `<img>`。
+        // 此前完全不支持：前段取到空串 → JS 里 `result.split("\n")` 只得到一个空地址 →
+        // 一张图都拼不出来 → 阅读页显示「本章暂无可用图片」。
+        if (!rule.trimStart().startsWith("@js:")) {
+            renderBraceTemplate(rule, content, baseUrl)?.let { return it }
+        }
         val trimmed = rule.trimStart()
         // 顶层 @json: 规则：从 JSON 内容提取（内容本身可能不是 JSON，先尝试）
         if (trimmed.startsWith("@json:", ignoreCase = true)) {
@@ -247,6 +255,37 @@ object LegadoRuleEngine {
     }
 
     /**
+     * 渲染正文 / 目录规则里的 `{{规则}}` 占位（legado 语义）。
+     *
+     * 每个占位单独求值后原样拼回：`{{a}}<br>{{b}}` → a 的取值 + `<br>` + b 的取值。
+     * `{{baseUrl}}` 直接取上下文地址；其余先查变量表（`@put:` 写入），再按规则求值。
+     *
+     * 注意：**正则必须在这里现编译**，不能提成类级 `val`。上一版把它写成
+     * `private val BRACE_TEMPLATE = Regex(...)`，结果在 ART 上触发了
+     * `ExceptionInInitializerError`（类初始化失败），而这个类一旦初始化失败就会被
+     * 标记为 previously-failed，此后**所有 legado 源**的解析全部抛异常 ——
+     * 表现是「连目录都没有了」。函数内编译 + `runCatching` 兜底，最坏只是本规则不生效。
+     *
+     * @return 替换后的结果；规则里没有 `{{}}` 时返回 null（调用方继续走原路径）
+     */
+    private fun renderBraceTemplate(rule: String, content: String, baseUrl: String): String? {
+        if (!rule.contains("{{")) return null
+        val tpl = runCatching { Regex("\\{\\{([^{}]+)\\}\\}") }.getOrNull() ?: return null
+        var replaced = false
+        val out = tpl.replace(rule) { m ->
+            replaced = true
+            val inner = m.groupValues[1].trim()
+            when {
+                inner.isEmpty() -> ""
+                inner.equals("baseUrl", ignoreCase = true) -> baseUrl
+                else -> variables[inner]
+                    ?: runCatching { extractFromDocument(content, inner, baseUrl) }.getOrNull().orEmpty()
+            }
+        }
+        return if (replaced) out else null
+    }
+
+    /**
      * 从 JSON 文本根节点按路径取字符串。
      *
      * 数组按**换行**拼接（`$.a[*]` 的常见用法）：正文 JS 里普遍写
@@ -271,6 +310,28 @@ object LegadoRuleEngine {
      * 从单个元素按规则提取值（统一入口，支持 ## 正则、@css:、@ 链式）。
      */
     private fun extractFromElement(element: Element, rule: String, baseUrl: String): String? {
+        if (rule.isBlank()) return element.text()
+
+        // `||` 备选（legado 语义：前一条没取到值就用后一条）。
+        // 注意：必须在这里处理——字段规则（目录/搜索项）走的是本函数，
+        // 而 `extractString` 的 `||` 只作用于整篇文档；此前字段规则里的 `||`
+        // 会被整串当成一个选择器，于是「禁漫天堂」的 `li@ownText||text`
+        // 恒为空串（章节名全空、列表看起来是空白行）。
+        if (rule.contains("||")) {
+            val alts = rule.split("||").map { it.trim() }.filter { it.isNotEmpty() }
+            if (alts.size > 1) {
+                for (alt in alts) {
+                    val v = extractFromElementSingle(element, alt, baseUrl)
+                    if (!v.isNullOrBlank()) return v
+                }
+                return null
+            }
+        }
+        return extractFromElementSingle(element, rule, baseUrl)
+    }
+
+    /** 单条字段规则求值（不含 `||` 备选拆分） */
+    private fun extractFromElementSingle(element: Element, rule: String, baseUrl: String): String? {
         if (rule.isBlank()) return element.text()
 
         // `@put:{k:v}` 写入 / `@get:{k}` 回填（legado 变量机制，目录 URL 模板里常见）
@@ -1539,13 +1600,77 @@ object LegadoRuleEngine {
     private fun applyReplace(value: String?, replaceRule: String): String? {
         if (value == null) return null
         return runCatching {
+            val pattern: String
+            val template: String
             if (replaceRule.contains("##")) {
                 val parts = replaceRule.split("##", limit = 2)
-                value.replace(Regex(parts[0]), parts.getOrElse(1) { "" })
+                pattern = parts[0]
+                template = parts.getOrElse(1) { "" }
             } else {
-                value.replace(Regex(replaceRule), "")
+                pattern = replaceRule
+                template = ""
             }
+            replaceOnce(value, Regex(pattern), template)
         }.getOrDefault(value)
+    }
+
+    /**
+     * 单遍正则替换（等价于 `replaceAll`，但跳过「串尾的伪空匹配」）。
+     *
+     * Java 的 `Matcher.replaceAll` 对能匹配空串的模式（最典型就是 `(.*)`）会在
+     * 匹配完整串之后，于串尾再命中一次长度为 0 的空串，于是替换被执行两遍：
+     * `"/photo/1"` + `##(.*)##$1/?shunt=1` 得到 `"/photo/1/?shunt=1/?shunt=1"`。
+     * legado 书源里 `(.*)` 这种写法极其常见（禁漫天堂的章节地址就是这样坏掉的），
+     * 这里改为逐次手工拼接，只跳过「上一段已经抵达串尾时多出来的那次空匹配」，
+     * 其它情况（真正的多次命中、串中间的零长匹配）行为与 `replaceAll` 保持一致。
+     */
+    private fun replaceOnce(value: String, regex: Regex, template: String): String {
+        val matches = regex.findAll(value).toList()
+        if (matches.isEmpty()) return value
+        val sb = StringBuilder()
+        var cursor = 0
+        for (i in matches.indices) {
+            val m = matches[i]
+            val start = m.range.first
+            val endExclusive = m.range.last + 1
+            // 伪空匹配：零长、位于串尾、且上一条匹配也正好结束在串尾
+            if (start == endExclusive && start == value.length && i > 0 &&
+                matches[i - 1].range.last + 1 == value.length
+            ) {
+                continue
+            }
+            if (start < cursor) continue
+            sb.append(value, cursor, start)
+            sb.append(expandReplacement(m, template))
+            cursor = endExclusive
+        }
+        sb.append(value, cursor, value.length)
+        return sb.toString()
+    }
+
+    /** 展开替换模板中的 `$1`..`$9` / `\1` 分组引用与 `\` 转义 */
+    private fun expandReplacement(m: MatchResult, template: String): String {
+        val sb = StringBuilder()
+        var i = 0
+        while (i < template.length) {
+            val c = template[i]
+            if (c == '\\' && i + 1 < template.length) {
+                sb.append(template[i + 1]); i += 2; continue
+            }
+            if (c == '$' && i + 1 < template.length && template[i + 1].isDigit()) {
+                var j = i + 1
+                val num = StringBuilder()
+                while (j < template.length && template[j].isDigit() && num.length < 2) {
+                    num.append(template[j]); j++
+                }
+                val g = num.toString().toIntOrNull() ?: -1
+                sb.append(m.groupValues.getOrNull(g).orEmpty())
+                i = j
+                continue
+            }
+            sb.append(c); i++
+        }
+        return sb.toString()
     }
 
     // ===== JSON 提取 =====

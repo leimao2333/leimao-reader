@@ -60,6 +60,12 @@ object ComicImageScramble {
      */
     fun bandCountFromScript(script: String?): Int? {
         if (script.isNullOrBlank()) return null
+        // 段数已由源算好（见 HashBandScramble）：直接取标记里的数字
+        val trimmed = script.trim()
+        if (trimmed.startsWith(HashBandScramble.MARKER)) {
+            val n = trimmed.removePrefix(HashBandScramble.MARKER).trim().toIntOrNull() ?: return null
+            return n.takeIf { it in 2..MAX_BANDS }
+        }
         if (!script.contains("fillImageRangeAt")) return null
         if (!script.contains("blockSize")) return null
         if (!script.contains("blocks.length - 1") || !script.contains("i >= 0")) return null

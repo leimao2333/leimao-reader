@@ -1206,7 +1206,12 @@ class LegadoSourceAdapter(
 
     /** 目录字段 -> ChapterItem（pageBase 为章节锚点所在页面 URL，相对地址按其解析） */
     private fun fieldsToChapter(fields: Map<String, String>, index: Int, pageBase: String): ChapterItem {
-        val name = fields["chapterName"] ?: fields["name"] ?: fields["title"] ?: "第${index + 1}章"
+        // 章节名为空串时也要落到默认名（漫画源的 `.reading` 按钮常是纯图标，
+        // `text` 取不到字，若直接用 "" 会渲染成一行空白，看起来像「没有目录」）。
+        val name = fields["chapterName"]?.takeIf { it.isNotBlank() }
+            ?: fields["name"]?.takeIf { it.isNotBlank() }
+            ?: fields["title"]?.takeIf { it.isNotBlank() }
+            ?: "第${index + 1}话"
         val chapterUrlRaw = fields["chapterUrl"] ?: fields["url"] ?: ""
         // 章节地址后可能跟请求配置（`url,{"method":...,"headers":{...}}`）：
         // 漫画 App 接口源把 access-token / m-request-id 签名放在这里，正文请求必须带上。
@@ -1579,7 +1584,59 @@ class LegadoSourceAdapter(
                 }
             }
         }
-        return ContentResult.comic(images.distinct(), baseHeaders + jsHeaders + perImageHeaders)
+        // 部分站点的漫画页是「每页按 N 段纵向打乱」后下发的，页面里只给出推导段数的元数据
+        // （`var scramble_id` / `var aid`），段数本身要按 aid + 页序号现算。
+        // 见 [com.novelreader.core.image.HashBandScramble]。
+        val (pageImages, scripts) = bandScramble(content, images)
+        return ContentResult.comic(pageImages.distinct(), baseHeaders + jsHeaders + perImageHeaders, scripts)
+    }
+
+    /**
+     * 生成「逐图分段还原标记」，顺带剔掉混在正文里的广告位。
+     *
+     * 站点不在页面上直接给段数，而是给出两个元数据，由前端按
+     * `md5(aid + 页序号)` 现算（算法见 [com.novelreader.core.image.HashBandScramble]）。
+     * 因此这里把每张图对应的段数算出来，拼成阅读链路认识的 `bands:N` 标记。
+     *
+     * 只有页面**同时**声明 `scramble_id` 与 `aid`、且 `aid >= scramble_id` 时才启用：
+     * 早期专辑（`aid < scramble_id`）是原样下发的，误判会把正常图切乱。
+     *
+     * 同一段 HTML 里除了正文页图，还夹着站点广告位 / 占位图 —— 它们**没有页序号**。
+     * 正规页图够多时按页序号筛选，把广告位一并挡在正文之外。
+     *
+     * @return 过滤后的图片列表（保持原顺序）与「地址 → 标记」映射
+     */
+    private fun bandScramble(
+        content: String,
+        images: List<String>,
+    ): Pair<List<String>, Map<String, String>> {
+        if (images.isEmpty() || !content.contains("scramble_id")) return images to emptyMap()
+        val scrambleId = Regex("""var\s+scramble_id\s*=\s*(\d+)""")
+            .find(content)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: return images to emptyMap()
+        val aid = Regex("""var\s+aid\s*=\s*(\d+)""")
+            .find(content)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: return images to emptyMap()
+        if (aid < scrambleId) return images to emptyMap()
+
+        val withPageId = images.mapNotNull { url -> pageIdOf(url)?.let { url to it } }
+        val kept = if (withPageId.size >= MIN_PAGES) withPageId.map { it.first } else images
+
+        val scripts = LinkedHashMap<String, String>(kept.size)
+        kept.forEachIndexed { index, url ->
+            // 页序号取自文件名主干（`…/00001.webp` → `00001`），与站点前端的取法一致
+            val pageId = pageIdOf(url) ?: (index + 1).toString().padStart(5, '0')
+            scripts[url] = com.novelreader.core.image.HashBandScramble.script(
+                com.novelreader.core.image.HashBandScramble.bandCount(aid, pageId),
+            )
+        }
+        return kept to scripts
+    }
+
+    /** 取图片地址里的页序号（不带扩展名）；不是纯数字则返回 null（广告位、占位图） */
+    private fun pageIdOf(url: String): String? {
+        val name = url.substringBefore('?').substringBefore('#').substringAfterLast('/')
+        if (name.isEmpty()) return null
+        val stem = name.substringBeforeLast('.', name)
+        return stem.takeIf { it.length <= 6 && it.all(Char::isDigit) }
     }
 
     /**
@@ -1969,6 +2026,14 @@ class LegadoSourceAdapter(
         }.getOrNull()
     }
 }
+
+/**
+ * 判定「这一页确实是正文页图」所需的最少页数。
+ *
+ * 分段乱序站点的正文里只应有带页序号的图；若整页凑不出这么多，宁可按原样全留，
+ * 也别因为规则改版把正文图整批误删。
+ */
+private const val MIN_PAGES = 3
 
 /**
  * 「章节名当书名」的识别正则（v1.8.2.0）。

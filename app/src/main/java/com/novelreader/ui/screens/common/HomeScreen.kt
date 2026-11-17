@@ -7,6 +7,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -71,6 +73,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import com.novelreader.core.util.BookshelfAutoGroup
+import com.novelreader.core.util.ShelfCompanionGroup
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
@@ -237,6 +241,9 @@ fun HomeScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                // 顶栏重叠修复：显式声明消费状态栏 inset。enableEdgeToEdge 下某些设备
+                // Scaffold 默认 inset 未生效，导致标题压在状态栏上且图标点不到。
+                windowInsets = WindowInsets.statusBars,
                 title = { Text(tabs[selectedTab].label) },
                 actions = {
                     // RSS 订阅入口（v1.8.6.0 待办 #24）：开关打开时下移到内容区顶部，顶栏让位
@@ -824,12 +831,35 @@ private fun BookshelfContent(
 ) {
     // 按当前 tab 类型过滤
     val typeFiltered = books.filter { it.type == currentType }
-    // 分组筛选：null=全部；""=未分组；其余=指定分组
-    val filtered = when (selectedGroup) {
+
+    // C6 智能伴生分组：按「是否有进度 / 是否读完」把书架分成 在读·未读·已读完。
+    // 口径与独立的 BookShelfScreen 一致（同一个 BookshelfAutoGroup 判定函数）。
+    val companionOf = remember(typeFiltered, progressMap) {
+        typeFiltered.associate { item ->
+            val p = progressMap[item.itemKey()]
+            val group = when {
+                p == null -> ShelfCompanionGroup.UNREAD
+                BookshelfAutoGroup.approxFinished(p.chapterIndex, p.totalChapter) ->
+                    ShelfCompanionGroup.FINISHED
+                else -> ShelfCompanionGroup.READING
+            }
+            item.itemKey() to group
+        }
+    }
+    val companionCounts = remember(companionOf) {
+        ShelfCompanionGroup.entries.associateWith { g -> companionOf.count { it.value == g } }
+    }
+    // 切类型 tab 时重置筛选，避免「小说里选的在读」带到漫画下变成空列表
+    var companionFilter by remember(currentType) { mutableStateOf<ShelfCompanionGroup?>(null) }
+
+    // 分组筛选：null=全部；""=未分组；其余=指定分组。智能分组在其上叠加。
+    val groupFiltered = when (selectedGroup) {
         null -> typeFiltered
         "" -> typeFiltered.filter { it.groupName.isBlank() }
         else -> typeFiltered.filter { it.groupName == selectedGroup }
     }
+    val filtered = if (companionFilter == null) groupFiltered
+    else groupFiltered.filter { companionOf[it.itemKey()] == companionFilter }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -910,6 +940,42 @@ private fun BookshelfContent(
                 item {
                     GroupChip("未分组", selectedGroup == "") { onSelectGroup("") }
                 }
+            }
+        }
+
+        // C6 智能分组 chips：在读 / 未读 / 已读完。数量为 0 的仍显示但禁用，
+        // 避免用户以为「书丢了」。与上方自建分组是叠加关系，互不覆盖。
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            item {
+                GroupChip("全部", companionFilter == null) { companionFilter = null }
+            }
+            item {
+                val count = companionCounts[ShelfCompanionGroup.READING] ?: 0
+                GroupChip(
+                    "在读 $count",
+                    companionFilter == ShelfCompanionGroup.READING,
+                    enabled = count > 0,
+                ) { companionFilter = ShelfCompanionGroup.READING }
+            }
+            item {
+                val count = companionCounts[ShelfCompanionGroup.UNREAD] ?: 0
+                GroupChip(
+                    "未读 $count",
+                    companionFilter == ShelfCompanionGroup.UNREAD,
+                    enabled = count > 0,
+                ) { companionFilter = ShelfCompanionGroup.UNREAD }
+            }
+            item {
+                val count = companionCounts[ShelfCompanionGroup.FINISHED] ?: 0
+                GroupChip(
+                    "已读完 $count",
+                    companionFilter == ShelfCompanionGroup.FINISHED,
+                    enabled = count > 0,
+                ) { companionFilter = ShelfCompanionGroup.FINISHED }
             }
         }
 
@@ -1009,18 +1075,31 @@ private fun GroupChip(
     label: String,
     selected: Boolean,
     onLongClick: (() -> Unit)? = null,
+    /** 禁用态：数量为 0 的智能分组 chip 用它，点击无反应并降低不透明度 */
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     val bg = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
-    val fg = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+    val fg = when {
+        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+        selected -> MaterialTheme.colorScheme.onPrimary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
     Text(
         text = label,
         style = MaterialTheme.typography.bodySmall,
         color = fg,
         maxLines = 1,
         modifier = Modifier
-            .background(bg, RoundedCornerShape(16.dp))
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .background(
+                if (enabled) bg else bg.copy(alpha = 0.45f),
+                RoundedCornerShape(16.dp),
+            )
+            .combinedClickable(
+                enabled = enabled,
+                onClick = onClick,
+                onLongClick = onLongClick,
+            )
             .padding(horizontal = 14.dp, vertical = 6.dp),
     )
 }

@@ -3,6 +3,8 @@ package com.novelreader.ui.screens.rss
 import androidx.compose.foundation.background
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -429,6 +431,8 @@ fun RssReaderScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                    // 顶栏避让状态栏：enableEdgeToEdge 下部分设备 Scaffold 默认 inset 失效
+                    windowInsets = WindowInsets.statusBars,
                 title = {
                     Text(
                         text = article?.let { a ->

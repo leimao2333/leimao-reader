@@ -37,6 +37,13 @@ class NovelReaderApp : Application(), ImageLoaderFactory {
         com.novelreader.core.crash.CrashHandler.install(this)
         container = AppContainer(this)
 
+        // 夜间模式双向同步：老版本「全局夜间」与「小说页夜间」各存各的，可能出现
+        // 全局=开但小说页=关（表现为开了夜间小说页还是白底）。启动时以全局为准
+        // 对齐一次，后续两个开关的写方法会互相联动保持同步。
+        applicationScope.launch {
+            runCatching { container.preferencesManager.reconcileNightModes() }
+        }
+
         // 视频广告过滤开关回灌（v1.9.6.0）。
         //
         // 数据源工厂是同步构建的（播放点击那一下就要用），等不到 DataStore 的异步结果，

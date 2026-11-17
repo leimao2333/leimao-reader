@@ -30,6 +30,8 @@ class NovelDetailViewModel(
     private val downloadManager: DownloadManager? = null,
     private val progressRepository: com.novelreader.domain.repository.ProgressRepository? = null,
     private val chapterCacheRepository: com.novelreader.domain.repository.ChapterCacheRepository? = null,
+    /** 书籍备注仓库（C7）；为 null 时详情页不展示备注入口（例如测试/预览环境） */
+    private val bookNoteRepository: com.novelreader.data.repository.BookNoteRepository? = null,
 ) : ViewModel() {
 
     /** 详情信息 */
@@ -58,6 +60,58 @@ class NovelDetailViewModel(
 
     fun dismissNotice() {
         _notice.value = null
+    }
+
+    // ===== 书籍备注（C7） =====
+
+    /**
+     * 当前书的备注正文（无备注 = 空串）。
+     *
+     * 由 com.novelreader.data.repository.BookNoteRepository.observe 实时驱动：保存 / 清空后无需手动刷新页面。
+     */
+    private val _note = MutableStateFlow("")
+    val note: StateFlow<String> = _note.asStateFlow()
+
+    /** 当前书对应的备注主键（见 [novelNoteKeyOf]），切换书目时会重建订阅 */
+    private var noteBookId: Long? = null
+
+    /** 备注订阅任务（换书 / 换源时取消，避免串台） */
+    private var noteJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * 绑定当前书的备注订阅。
+     *
+     * 只在「同一本书」时复用已有订阅：换源后 itemId 会变，必须重新 observe，
+     * 否则页面会一直显示上一本书的备注。
+     */
+    private fun bindNote(item: MediaItem) {
+        val repo = bookNoteRepository ?: return
+        val key = novelNoteKeyOf(item)
+        if (noteBookId == key && noteJob?.isActive == true) return
+        noteBookId = key
+        noteJob?.cancel()
+        // 先清空，避免新书加载期间短暂显示上一本书的备注
+        _note.value = ""
+        noteJob = viewModelScope.launch {
+            repo.observe(key).collect { current -> _note.value = current?.note.orEmpty() }
+        }
+    }
+
+    /**
+     * 保存备注。
+     *
+     * 空白内容视为「删除备注」——仓库层 com.novelreader.data.repository.BookNoteRepository.save
+     * 对空白直接删行，这里只做 trim，不额外判断，保证与仓库语义一致。
+     */
+    fun saveNote(text: String) {
+        val repo = bookNoteRepository ?: return
+        val key = noteBookId ?: return
+        val body = text.trim()
+        viewModelScope.launch {
+            runCatching { repo.save(key, body) }
+                .onSuccess { _notice.value = if (body.isEmpty()) "备注已清空" else "备注已保存" }
+                .onFailure { _notice.value = "备注保存失败：${it.message ?: "未知错误"}" }
+        }
     }
 
     /** 下载状态 */
@@ -89,6 +143,8 @@ class NovelDetailViewModel(
 
     private fun loadInternal(item: MediaItem, allowAutoFallback: Boolean) {
         _detail.value = item
+        // 备注与详情/目录并行：备注是本地库，读失败不影响页面
+        bindNote(item)
         viewModelScope.launch {
             _loading.value = true
             // 详情与章节的收藏/进度状态并行取，但**目录必须在详情之后**：
@@ -468,3 +524,40 @@ class NovelDetailViewModel(
         }
     }
 }
+
+/**
+ * 条目 → 备注主键（`book_notes.bookId`）。
+ *
+ * **为什么不用 `books.bookId`**：备注表主键是 Long、注释里写的是「与 books.bookId 对应」，
+ * 但详情页的条目大多**还没进书架**（`books` 表里没有行、也就没有自增 bookId），
+ * 而 [BookRepository] 目前也没有「按 sourceId + itemId 查书架行」的方法。
+ * 为了不改数据层，这里用「源 + 源内条目 ID」做稳定散列当作主键：
+ *
+ * - 稳定：FNV-1a 是纯函数，同一本书在任何版本、任何进程里都算出同一个值，重启不丢备注；
+ * - 唯一性：64 位散列，撞车概率约 1/2^64（可接受）；
+ * - 通过 `or Long.MIN_VALUE` 把最高位置 1，使结果恒为**负数**，
+ *   从而不可能与 `books` 表自增主键（恒为正数、从 1 开始）相等，
+ *   避免书架侧按真实 bookId 清理备注时误删到这里的行。
+ *
+ * 已知代价：备注不随「从书架删除书籍」一起清理（`ShelfPurger` 按真实 bookId 删），
+ * 会留下孤儿行。日后若在 [BookRepository] 里补上「按 sourceId + itemId 查 bookId」，
+ * 建议改为直接复用该书架的 bookId，并做一次备注表迁移。
+ *
+ * 阅读页若也要展示备注，请复用本函数，保证两端读到同一行。
+ */
+internal fun novelNoteKeyOf(item: MediaItem): Long {
+    // itemId 在少数源里为空（只有详情地址），退化为按详情地址 + 源名定位
+    val identity = buildString {
+        append(item.sourceId)
+        append('\u0000')
+        append(item.id.ifBlank { item.detailUrl })
+    }
+    // FNV-1a 64 位
+    var hash = -0x340d631b7bdddcdbL // 14695981039346656037 (0xcbf29ce484222325)
+    for (byte in identity.toByteArray(Charsets.UTF_8)) {
+        hash = hash xor (byte.toLong() and 0xFF)
+        hash *= 0x100000001b3L
+    }
+    return hash or Long.MIN_VALUE
+}
+

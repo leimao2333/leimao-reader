@@ -78,10 +78,24 @@ class MainActivity : ComponentActivity() {
             // v1.9.1.0：用户导入的字体文件（appFont == 4 时生效）
             val customFontPath by app.container.preferencesManager.customFontPathFlow
                 .collectAsState(initial = "")
+            // C1 动态取色：开关打开且取到过种子色（!= 0）时，用 ThemeEngine 按种子色生成整套配色；
+            // 否则传 null，`NovelReaderTheme` 内部仍走原来的写死两套，观感完全不变。
+            val themeDynamicColor by app.container.preferencesManager.themeDynamicColorFlow
+                .collectAsState(initial = false)
+            val themeSeedColor by app.container.preferencesManager.themeSeedColorFlow
+                .collectAsState(initial = 0)
+            val dynamicColorScheme = remember(themeDynamicColor, themeSeedColor, darkTheme) {
+                if (themeDynamicColor && themeSeedColor != 0) {
+                    com.novelreader.ui.theme.ThemeEngine.fromSeedColor(themeSeedColor, darkTheme)
+                } else {
+                    null
+                }
+            }
             NovelReaderTheme(
                 darkTheme = darkTheme,
                 appFont = appFont,
                 customFontPath = customFontPath,
+                colorScheme = dynamicColorScheme,
             ) {
                 // 系统栏图标明暗跟随**应用**主题（v1.8.8.2）。
                 //

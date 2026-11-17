@@ -1,5 +1,6 @@
 package com.novelreader.ui.screens.novel
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -64,6 +65,8 @@ fun NovelSearchScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // 夜间模式跟随：裸 Column 不铺背景会透出 window 白底
+            .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding(),
     ) {
         // 顶部：返回按钮 + 搜索框同行（紧凑，贴合开源阅读）

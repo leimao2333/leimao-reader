@@ -307,6 +307,8 @@ fun ExploreScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // 夜间模式跟随：裸 Column 不铺背景会透出 window 白底
+            .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding(),
     ) {
         ExploreHeader(

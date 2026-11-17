@@ -3,6 +3,12 @@ package com.novelreader.ui.screens.source
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novelreader.core.preferences.PreferencesManager
+import com.novelreader.core.source.HealthVerdict
+import com.novelreader.core.source.SourceErrorLog
+import com.novelreader.core.source.SourceHealthChecker
+// 与 core/util/SourceHealth（可用性布尔判定的 object）同名，这里用别名区分：
+// 本文件里 HealthRecord = 带耗时 / 原因的单次检测结果（B5）
+import com.novelreader.core.source.SourceHealth as HealthRecord
 import com.novelreader.domain.model.SourceInfo
 import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.SourceRepository
@@ -850,6 +856,8 @@ class SourceManageViewModel(
     fun deleteSource(source: SourceInfo) {
         viewModelScope.launch {
             sourceRepository.deleteSource(source.id)
+            // 顺带丢掉这个源的健康档位，避免摘要里残留已删除的 id
+            _healthResults.value = _healthResults.value - source.id
             refresh()
         }
     }
@@ -893,6 +901,28 @@ class SourceManageViewModel(
     /** 检测结果：sourceId -> 是否可用 */
     private val _testResults = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     val testResults: StateFlow<Map<String, Boolean>> = _testResults.asStateFlow()
+
+    /**
+     * 健康检测结果（B5）：sourceId -> 单次检测记录（成功与否 + 耗时 + 原因）。
+     *
+     * 与 [testResults] 是**同一次检测的两种视图**，不额外发请求：
+     * 检测流程本来就要拿到 adapter 和成败，这里只是顺手量一下 `test()` 的耗时，
+     * 用 [SourceHealthChecker.verdict] 折算成「正常 / 偏慢 / 失效」给卡片上色。
+     *
+     * 复用现有轮次守卫 [testGeneration] 与 100ms 节流推送：两个 map 一起刷，
+     * 保证「状态徽标」和「健康徽标」同时出现，不会出现一个先变一个后变的跳变。
+     */
+    private val _healthResults = MutableStateFlow<Map<String, HealthRecord>>(emptyMap())
+    val healthResults: StateFlow<Map<String, HealthRecord>> = _healthResults.asStateFlow()
+
+    /**
+     * 错误诊断快照（B12）：[SourceErrorLog.summarize] 的最近一次读取结果。
+     *
+     * 只做「打开诊断弹窗前刷新」的缓存，不参与检测流程——错误是数据层在
+     * 各种 adapter 调用里记录的，这里只负责读出来给 UI 展示。
+     */
+    private val _diagnostics = MutableStateFlow<List<SourceErrorLog.SourceDiagnostic>>(emptyList())
+    val diagnostics: StateFlow<List<SourceErrorLog.SourceDiagnostic>> = _diagnostics.asStateFlow()
 
     /** 检测进度：已完成数 / 总数（v1.4.7.0 进度条） */
     private val _testProgress = MutableStateFlow<Pair<Int, Int>?>(null)
@@ -962,6 +992,8 @@ class SourceManageViewModel(
         // 不在本轮筛选里的源结果保留 —— 用户按分组分批检测时不会互相冲掉。
         val scopeIds = sources.map { it.id }.toSet()
         _testResults.value = _testResults.value.filterKeys { it !in scopeIds }
+        // 健康记录同理：本轮范围内的旧档位先撤掉，免得「检测中」还挂着上一轮的颜色
+        _healthResults.value = _healthResults.value.filterKeys { it !in scopeIds }
         _unreadable.value = _unreadable.value - scopeIds
         val gen = ++testGeneration
         testJob = viewModelScope.launch {
@@ -974,6 +1006,7 @@ class SourceManageViewModel(
                 // 在主线程跑会卡死 UI 导致 ANR（实体机已复现）。
                 withContext(Dispatchers.IO) {
                     val map = _testResults.value.toMutableMap()
+                    val healthMap = _healthResults.value.toMutableMap()
                     val unreadableSet = java.util.Collections.synchronizedSet(mutableSetOf<String>())
                     // 限流并发：全串行太慢（280 源 × 20s 上限），全并发耗尽内存；
                     // 用信号量限制最多 8 个源同时检测。
@@ -990,9 +1023,14 @@ class SourceManageViewModel(
                                 // 用 runCatching 捕获 Throwable（Rhino 等可能抛 Error，非 Exception），
                                 // 任何异常都视为「不可用」，绝不因此崩溃。
                                 val adapter = sourceRepository.getAdapter(source.id)
+                                // B5：顺手量一次自检耗时。口径与 SourceHealthChecker.check 一致，
+                                // 只计 adapter.test() 本身（不含后面的目录探测），
+                                // 这样 3s 的 SLOW 阈值才有可比性。
+                                val startedAt = System.nanoTime()
                                 val searchOk = kotlinx.coroutines.withTimeoutOrNull(20_000L) {
                                     runCatching { adapter?.test() ?: true }.getOrDefault(false)
                                 } ?: false
+                                val latencyMs = (System.nanoTime() - startedAt) / 1_000_000L
                                 // 搜得到才值得再探一次目录（搜索就失败时无法判定，不能算「无目录」）
                                 val readable: Boolean? = if (searchOk && adapter != null) {
                                     probeReadable(adapter)
@@ -1003,16 +1041,32 @@ class SourceManageViewModel(
                                 val noToc = com.novelreader.core.util.SourceHealth.isNoToc(searchOk, readable)
                                 // 网络请求可能不响应协程取消；回来时若已停止，结果一律丢弃
                                 if (gen != testGeneration) return@withPermit
+                                // B5：用已有的成败 + 耗时折算健康档位，不再额外调一次 check()
+                                val health = HealthRecord(
+                                    sourceId = source.id,
+                                    sourceName = source.name,
+                                    ok = ok,
+                                    latencyMs = latencyMs,
+                                    checkedAt = System.currentTimeMillis(),
+                                    reason = when {
+                                        noToc -> "目录为空"
+                                        searchOk -> null
+                                        else -> "自检未通过"
+                                    },
+                                )
                                 val d = done.incrementAndGet()
                                 synchronized(map) {
                                     map[source.id] = ok
+                                    healthMap[source.id] = health
                                     // 实时标注：每测完一个就把新结果推给 UI，卡片立刻从
                                     // 「检测中」变成「可用 / 失效」。2700 个源各触发一次全页重组
                                     // 会掉帧，所以最多每 100ms 刷一次，收尾再强制刷完整快照。
+                                    // 健康档位与可用性同步推送，两种徽标同时变化。
                                     val now = System.currentTimeMillis()
                                     if (now - lastFlush.get() >= 100L || d >= total) {
                                         lastFlush.set(now)
                                         _testResults.value = map.toMap()
+                                        _healthResults.value = healthMap.toMap()
                                     }
                                 }
                                 if (noToc) {
@@ -1026,6 +1080,7 @@ class SourceManageViewModel(
                     }.joinAll()
                     if (gen == testGeneration) {
                         _testResults.value = map.toMap()
+                        _healthResults.value = healthMap.toMap()
                         _unreadable.value = unreadableSet.toSet()
                     }
                 }
@@ -1043,7 +1098,18 @@ class SourceManageViewModel(
                     if (noToc > 0) {
                         append("（其中 $noToc 个能搜到书但读不了目录，已一并记为失效）")
                     }
+                    // B5：把本轮健康档位一并报出来（只统计本轮范围内的源）
+                    val healthCounts = SourceHealthChecker.summarize(
+                        _healthResults.value.filterKeys { it in scopeIds }.values.toList(),
+                    )
+                    append(
+                        "；正常 ${healthCounts[HealthVerdict.HEALTHY] ?: 0}" +
+                            " / 偏慢 ${healthCounts[HealthVerdict.SLOW] ?: 0}" +
+                            " / 失效 ${healthCounts[HealthVerdict.DEAD] ?: 0}",
+                    )
                 }
+                // 检测过程里 adapter 抛出的异常会进 SourceErrorLog，顺手刷一次诊断快照
+                refreshDiagnostics()
             } finally {
                 // 只复位「当前轮」的状态：停止后立刻又开新一轮时，旧任务的 finally
                 // 不能把新一轮的进度 / 按钮状态清掉。停止时的复位已由 stopTesting 做过。
@@ -1108,6 +1174,8 @@ class SourceManageViewModel(
             }
             if (result.isSuccess) {
                 _testResults.value = _testResults.value.filterKeys { it !in failed }
+                // 源已删除：健康档位一并清掉，避免残留的 id 影响摘要计数
+                _healthResults.value = _healthResults.value.filterKeys { it !in failed }
                 _message.value = buildString {
                     append("已删除 ${failed.size} 个失效源")
                     append("：")
@@ -1127,6 +1195,7 @@ class SourceManageViewModel(
                     }
                 }
                 _testResults.value = _testResults.value.filterKeys { it !in failed }
+                _healthResults.value = _healthResults.value.filterKeys { it !in failed }
                 _message.value = buildString {
                     append("已删除 ${okNames.size} 个失效源")
                     if (okNames.isNotEmpty()) {
@@ -1146,7 +1215,25 @@ class SourceManageViewModel(
     /** 清除检测结果 */
     fun clearTestResults() {
         _testResults.value = emptyMap()
+        _healthResults.value = emptyMap()
         _unreadable.value = emptySet()
+    }
+
+    // ===== 错误诊断（B12）=====
+
+    /** 重新读取 [SourceErrorLog] 的聚合诊断（打开诊断弹窗前调用） */
+    fun refreshDiagnostics() {
+        _diagnostics.value = runCatching { SourceErrorLog.summarize() }.getOrDefault(emptyList())
+    }
+
+    /**
+     * 清空错误诊断记录。
+     *
+     * @param sourceId 非空 = 只清这个源；null = 全清
+     */
+    fun clearDiagnostics(sourceId: String? = null) {
+        SourceErrorLog.clear(sourceId)
+        refreshDiagnostics()
     }
 
     /** 清除提示消息 */

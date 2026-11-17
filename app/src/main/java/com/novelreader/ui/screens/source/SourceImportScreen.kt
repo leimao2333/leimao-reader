@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -93,6 +95,8 @@ fun SourceImportScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                    // 顶栏避让状态栏：enableEdgeToEdge 下部分设备 Scaffold 默认 inset 失效
+                    windowInsets = WindowInsets.statusBars,
                 title = { Text("导入源") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {

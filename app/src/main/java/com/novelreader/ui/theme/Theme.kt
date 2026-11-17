@@ -1,6 +1,7 @@
 package com.novelreader.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.runtime.remember
@@ -135,9 +136,18 @@ fun NovelReaderTheme(
     appFont: Int = APP_FONT_SYSTEM,
     /** 自定义字体文件路径（v1.9.1.0）：仅在 appFont == 4 时生效 */
     customFontPath: String = "",
+    /**
+     * 外部传入的整套配色（C1 动态取色）。
+     *
+     * null = 用下面写死的白天 / 夜间两套；非空 = 直接用（通常来自
+     * `ThemeEngine.fromSeedColor(seed, darkTheme)`，即从用户选的色或封面主色算出来的）。
+     * 给默认值是为了让所有现有调用点不用改。
+     */
+    colorScheme: ColorScheme? = null,
     content: @Composable () -> Unit,
 ) {
-    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
+    // 参数名与局部变量同名会遮蔽，这里换个名字：有外部配色就优先用，否则按明暗取写死的那套
+    val activeColorScheme = colorScheme ?: if (darkTheme) DarkColorScheme else LightColorScheme
     // 自定义字体：每次路径变化都重建 FontFamily（Compose 按 FontFamily 缓存字形，
     // 复用旧实例会拿到旧字体）。文件读不到时回落到系统字体，不让整个界面变成豆腐块。
     val customFamily = remember(customFontPath) {
@@ -164,7 +174,7 @@ fun NovelReaderTheme(
 
     CompositionLocalProvider(LocalAppDarkTheme provides darkTheme) {
         MaterialTheme(
-            colorScheme = colorScheme,
+            colorScheme = activeColorScheme,
             typography = typography,
             content = content,
         )

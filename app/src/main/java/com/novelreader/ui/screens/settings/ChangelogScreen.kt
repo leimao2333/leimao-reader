@@ -1,6 +1,8 @@
 package com.novelreader.ui.screens.settings
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -44,6 +46,8 @@ fun ChangelogScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                    // 顶栏避让状态栏：enableEdgeToEdge 下部分设备 Scaffold 默认 inset 失效
+                    windowInsets = WindowInsets.statusBars,
                 title = { Text("更新日志") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {

@@ -6,6 +6,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -65,9 +67,17 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.novelreader.core.source.HealthVerdict
+import com.novelreader.core.source.SourceErrorLog
+import com.novelreader.core.source.SourceHealthChecker
+// 与 core/util/SourceHealth（可用性判定的 object）同名，别名区分：HealthRecord = 单次体检记录
+import com.novelreader.core.source.SourceHealth as HealthRecord
 import com.novelreader.domain.model.SourceFormat
 import com.novelreader.domain.model.SourceInfo
 import com.novelreader.domain.model.SourceType
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 源管理页。
@@ -84,6 +94,9 @@ fun SourceManageScreen(
 ) {
     val sources by viewModel.sources.collectAsState()
     val message by viewModel.message.collectAsState()
+    // B12：错误诊断快照（顶部「错误诊断」按钮的计数也用它）
+    val diagnostics by viewModel.diagnostics.collectAsState()
+    var showDiagnostics by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     // 源名称搜索关键词
     var searchKeyword by remember { mutableStateOf("") }
@@ -123,6 +136,8 @@ fun SourceManageScreen(
         viewModel.observe()
         // v1.6.6.0：进页面先算一次「可合并的重复源」，驱动合并按钮的可用态
         viewModel.refreshDuplicateCount()
+        // B12：进页面读一次错误聚合，让「错误诊断」按钮上的计数立即可用
+        viewModel.refreshDiagnostics()
     }
 
     // 分组被删掉或改名后，旧的筛选值会指向一个不存在的组 —— 自动回到「全部」，
@@ -238,6 +253,8 @@ fun SourceManageScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                    // 顶栏避让状态栏：enableEdgeToEdge 下部分设备 Scaffold 默认 inset 失效
+                    windowInsets = WindowInsets.statusBars,
                 title = {
                     if (selectionMode) Text("已选 ${selectedIds.size} 个")
                     else Text("源管理（${sources.size}）")
@@ -376,6 +393,8 @@ fun SourceManageScreen(
                 val updating by viewModel.updating.collectAsState()
                 val updateProgress by viewModel.updateProgress.collectAsState()
                 val duplicateCount by viewModel.duplicateCount.collectAsState()
+                // B5：sourceId -> 单次体检记录（正常 / 偏慢 / 失效）
+                val healthResults by viewModel.healthResults.collectAsState()
 
                 // 搜索框：按名称/作者/描述过滤
                 androidx.compose.material3.OutlinedTextField(
@@ -584,6 +603,59 @@ fun SourceManageScreen(
                     }
                 }
 
+                // ===== 健康检测摘要（B5）+ 错误诊断入口（B12）=====
+                // 只统计「当前筛选出来的源」，否则按分组 / 类型筛选后数字对不上列表。
+                val healthOfShown = remember(displayedSources, healthResults) {
+                    displayedSources.mapNotNull { healthResults[it.id] }
+                }
+                val healthSummary = remember(healthOfShown) {
+                    SourceHealthChecker.summarize(healthOfShown)
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (healthOfShown.isEmpty()) {
+                        Text(
+                            text = "检测摘要：尚未体检",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                    } else {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "检测摘要",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            HealthCount("正常", healthSummary[HealthVerdict.HEALTHY] ?: 0, HealthColorOk)
+                            HealthCount("偏慢", healthSummary[HealthVerdict.SLOW] ?: 0, HealthColorSlow)
+                            HealthCount(
+                                "失效",
+                                healthSummary[HealthVerdict.DEAD] ?: 0,
+                                MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                    // B12：错误诊断入口（有记录时带上条数，便于判断要不要点进去）
+                    TextButton(onClick = {
+                        viewModel.refreshDiagnostics()
+                        showDiagnostics = true
+                    }) {
+                        Text(
+                            text = if (diagnostics.isEmpty()) "错误诊断"
+                            else "错误诊断(${diagnostics.size})",
+                        )
+                    }
+                }
+
                 // 删除失效源二次确认（v1.5.5.0；v1.5.5.1 列出具体源名）
                 if (confirmDeleteFailed) {
                     val failedNames = testResults.filterValues { !it }.keys.mapNotNull { id ->
@@ -670,6 +742,7 @@ fun SourceManageScreen(
                         testResults = testResults,
                         testing = testing,
                         unreadable = unreadable,
+                        healthResults = healthResults,
                         onToggle = { viewModel.toggleEnabled(it) },
                         onEdit = { viewModel.openEditSource(it) },
                         onDelete = { viewModel.deleteSource(it) },
@@ -762,6 +835,8 @@ fun SourceManageScreen(
                                 selectionMode = if (manualMode) false else selectionMode,
                                 selected = if (manualMode) false else source.id in selectedIds,
                                 testStatus = statusOf(source.id, testing, testResults, unreadable),
+                                // B5：健康档位（正常 / 偏慢 / 失效），与状态徽标同时刷新
+                                verdict = verdictOf(source.id, healthResults),
                                 loggedIn = loginStates[source.id] == true,
                                 loggingIn = source.id in loggingIn,
                                 manualMode = manualMode,
@@ -790,6 +865,16 @@ fun SourceManageScreen(
 
     // ===== 源规则编辑对话框 =====
     SourceEditDialog(viewModel = viewModel)
+
+    // ===== 错误诊断对话框（B12）=====
+    if (showDiagnostics) {
+        SourceDiagnosticsDialog(
+            diagnostics = diagnostics,
+            onRefresh = { viewModel.refreshDiagnostics() },
+            onClear = { viewModel.clearDiagnostics() },
+            onDismiss = { showDiagnostics = false },
+        )
+    }
 
     // ===== 可选添加对话框（v1.4.7.0） =====
     ImportCandidatesDialog(viewModel = viewModel)
@@ -1068,6 +1153,8 @@ private fun SourceTableView(
     testResults: Map<String, Boolean> = emptyMap(),
     testing: Set<String> = emptySet(),
     unreadable: Set<String> = emptySet(),
+    /** B5：健康档位（表格视图与卡片视图保持同一套标注） */
+    healthResults: Map<String, HealthRecord> = emptyMap(),
     onToggle: (SourceInfo) -> Unit,
     onEdit: (SourceInfo) -> Unit,
     onDelete: (SourceInfo) -> Unit,
@@ -1106,8 +1193,13 @@ private fun SourceTableView(
                         onClick = { onAssignGroup(source) },
                     )
                     val status = statusOf(source.id, testing, testResults, unreadable)
-                    androidx.compose.foundation.layout.Box(modifier = Modifier.weight(1f)) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
                         SourceTestBadge(status)
+                        SourceHealthBadge(verdictOf(source.id, healthResults))
                     }
                     Row(modifier = Modifier.weight(0.9f)) {
                         Switch(
@@ -1510,6 +1602,8 @@ private fun SourceCard(
     selectionMode: Boolean = false,
     selected: Boolean = false,
     testStatus: SourceTestStatus = SourceTestStatus.UNKNOWN,
+    /** B5 健康档位：正常 / 偏慢 / 失效；UNKNOWN 不显示 */
+    verdict: HealthVerdict = HealthVerdict.UNKNOWN,
     onLongClick: () -> Unit = {},
     onSelectToggle: () -> Unit = {},
     /** Venera 源登录态（非 Venera 源恒 false），v1.3.0.0 */
@@ -1593,6 +1687,11 @@ private fun SourceCard(
                     if (testStatus != SourceTestStatus.UNKNOWN) {
                         Spacer(Modifier.width(6.dp))
                         SourceTestBadge(testStatus)
+                    }
+                    // B5 健康徽标：颜色区分「正常 / 偏慢 / 失效」，UNKNOWN 不占位
+                    if (verdict != HealthVerdict.UNKNOWN) {
+                        Spacer(Modifier.width(6.dp))
+                        SourceHealthBadge(verdict)
                     }
                     if (source.format == SourceFormat.VENERA && loggedIn) {
                         Spacer(Modifier.width(6.dp))
@@ -1725,5 +1824,155 @@ private fun SourceTestBadge(status: SourceTestStatus) {
         text = label,
         style = MaterialTheme.typography.labelSmall,
         color = color,
+    )
+}
+
+// ===== B5 健康档位配色 =====
+// 与「已登录」「可用」用的是同一个绿；橙 / 红取中间明度，深色模式下也不刺眼。
+private val HealthColorOk = Color(0xFF2E7D32)
+private val HealthColorSlow = Color(0xFFEF6C00)
+
+/**
+ * 从健康记录取档位。
+ *
+ * 记录里本来存的就是成败 + 耗时，这里再调一次 [SourceHealthChecker.verdict]
+ * 而不是另存一个字段：阈值只在一处定义，改阈值不用改数据。
+ * 没有记录 = UNKNOWN（未体检 / 本轮已清空），不显示徽标。
+ */
+private fun verdictOf(id: String, healthResults: Map<String, HealthRecord>): HealthVerdict {
+    val record = healthResults[id] ?: return HealthVerdict.UNKNOWN
+    return SourceHealthChecker.verdict(record.latencyMs, record.ok)
+}
+
+/** 健康档位徽标：HEALTHY「正常」绿 / SLOW「偏慢」橙 / DEAD「失效」红；UNKNOWN 不渲染 */
+@Composable
+private fun SourceHealthBadge(verdict: HealthVerdict) {
+    val (label, color) = when (verdict) {
+        HealthVerdict.HEALTHY -> "正常" to HealthColorOk
+        HealthVerdict.SLOW -> "偏慢" to HealthColorSlow
+        HealthVerdict.DEAD -> "失效" to MaterialTheme.colorScheme.error
+        HealthVerdict.UNKNOWN -> return
+    }
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall,
+        color = color,
+    )
+}
+
+/** 检测摘要里的「正常 3」这种计数块（数字用对应档位色） */
+@Composable
+private fun HealthCount(label: String, count: Int, color: Color) {
+    Text(
+        text = "$label $count",
+        style = MaterialTheme.typography.labelSmall,
+        color = if (count > 0) color else MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+    )
+}
+
+/**
+ * 错误诊断对话框（B12）。
+ *
+ * 数据来自 [SourceErrorLog.summarize]（进程内内存，重启即清空）：
+ * 按最近出错时间倒序，展示每个源的累计失败次数、按操作分类的计数与最近一条消息。
+ * 只读展示，不改动源本身；排查完可点「清空」把记录归零。
+ */
+@Composable
+private fun SourceDiagnosticsDialog(
+    diagnostics: List<SourceErrorLog.SourceDiagnostic>,
+    onRefresh: () -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    // 格式化器只建一次：SimpleDateFormat 不是线程安全的，但这里只在主线程组合期使用
+    val formatter = remember { SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()) }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("错误诊断（${diagnostics.size}）") },
+        text = {
+            Column {
+                Text(
+                    text = "统计自本次启动以来各源的操作失败，只存在内存里，重启后清空。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                if (diagnostics.isEmpty()) {
+                    Text(
+                        text = "暂无可诊断的错误记录",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 380.dp),
+                    ) {
+                        items(diagnostics, key = { it.sourceId }) { item ->
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 6.dp),
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = item.sourceName,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Text(
+                                        text = "${item.totalErrors} 次",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
+                                }
+                                Text(
+                                    text = buildString {
+                                        // 按操作分类计数：哪个环节最容易挂，一眼能看出来
+                                        append(
+                                            item.byKind.entries
+                                                .sortedByDescending { it.value }
+                                                .joinToString(" · ") { "${it.key}×${it.value}" },
+                                        )
+                                        if (item.lastErrorAt > 0L) {
+                                            if (isNotEmpty()) append(" · ")
+                                            append(formatter.format(Date(item.lastErrorAt)))
+                                        }
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                if (item.lastMessage.isNotBlank()) {
+                                    Text(
+                                        text = item.lastMessage,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                            HorizontalDivider()
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = diagnostics.isNotEmpty(),
+                onClick = onClear,
+            ) { Text("清空", color = MaterialTheme.colorScheme.error) }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onRefresh) { Text("刷新") }
+                TextButton(onClick = onDismiss) { Text("关闭") }
+            }
+        },
     )
 }

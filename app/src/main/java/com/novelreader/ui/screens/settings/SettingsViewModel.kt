@@ -29,7 +29,26 @@ class SettingsViewModel(
     private val localModelStore: com.novelreader.core.model.LocalModelStore? = null,
     /** 朗读控制器（v1.8.7.3）：设置页「试听」用，与阅读页共用同一个引擎实例 */
     private val ttsController: com.novelreader.core.tts.TtsController? = null,
+    /**
+     * 阅读进度仓库（C1）：只用于「从封面取色」——取最近阅读那本书的封面地址。
+     *
+     * 默认 null 是为了不破坏现有构造点；为 null 时会自动尝试从 Application 容器取
+     * （见 [recentReadings]），仍取不到就退化成预设色块。
+     */
+    private val progressRepository: com.novelreader.domain.repository.ProgressRepository? = null,
 ) : ViewModel() {
+
+    /**
+     * 「从封面取色」实际使用的进度仓库。
+     *
+     * 优先用构造点注入的；没有注入时从 Application 容器里拿一份（本次接入不改 DI 文件，
+     * 避免与并行任务冲突）。两条路都拿不到就退化成预设色块，按钮点击只弹提示。
+     */
+    private val recentReadings: com.novelreader.domain.repository.ProgressRepository? =
+        progressRepository ?: runCatching {
+            (appContext?.applicationContext as? com.novelreader.NovelReaderApp)
+                ?.container?.progressRepository
+        }.getOrNull()
 
     /** 自定义字体路径（v1.9.1.0）：空 = 未导入 */
     val customFontPath: StateFlow<String> = preferencesManager.customFontPathFlow
@@ -697,6 +716,104 @@ class SettingsViewModel(
     private val _darkThemeMode = MutableStateFlow(PreferencesManager.THEME_MODE_LIGHT)
     val darkThemeMode: StateFlow<Int> = _darkThemeMode.asStateFlow()
 
+    // ===== 动态取色（C1） =====
+
+    /** 主题种子色（argb）；0 = 还没取过色 */
+    private val _themeSeedColor = MutableStateFlow(0)
+    val themeSeedColor: StateFlow<Int> = _themeSeedColor.asStateFlow()
+
+    /** 动态取色开关 */
+    private val _themeDynamicColor = MutableStateFlow(false)
+    val themeDynamicColor: StateFlow<Boolean> = _themeDynamicColor.asStateFlow()
+
+    /** 是否正在从封面取色（按钮置灰，避免连点重复下载封面） */
+    private val _themeSeedBusy = MutableStateFlow(false)
+    val themeSeedBusy: StateFlow<Boolean> = _themeSeedBusy.asStateFlow()
+
+    /**
+     * 从「最近阅读的第一本书」的封面提取主色当主题色（C1）。
+     *
+     * 全流程都在 IO 线程：读最近阅读（Room）→ 下载 / 读本地封面 → 解码 → 提取主色。
+     * **任何一步失败都不动主题**：只弹一条提示，原配色继续生效 ——
+     * 取色是纯锦上添花的功能，不能让一次网络抖动把整个界面变成不可用的配色。
+     */
+    fun pickSeedFromRecentCover() {
+        if (_themeSeedBusy.value) return
+        val repo = recentReadings ?: run {
+            _backupMessage.value = "暂无可用的书架数据，可先点下方预设色"
+            return
+        }
+        _themeSeedBusy.value = true
+        viewModelScope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    // 最近阅读按 updatedAt 倒序；跳过没有封面 / 封面是脏值（JS 源拼出来的
+                    // "undefined"）的条目，免得第一本恰好没封面就直接失败。
+                    val cover = repo.recentReadings()
+                        .asSequence()
+                        .map { it.cover?.trim().orEmpty() }
+                        .firstOrNull { candidate ->
+                            candidate.startsWith("/") || candidate.startsWith("file://") ||
+                                ((candidate.startsWith("http://") || candidate.startsWith("https://")) &&
+                                    com.novelreader.core.util.CoverUrl.sanitize(candidate) != null)
+                        }
+                        ?: error("书架里还没有带封面的书")
+                    val bitmap = loadCoverBitmap(cover) ?: error("封面加载失败")
+                    val argb = com.novelreader.ui.theme.ImageSeedColorExtractor.extractSync(bitmap)
+                    bitmap.recycle()
+                    argb ?: error("封面里没取到合适的颜色")
+                }
+            }
+            result.onSuccess { argb ->
+                preferencesManager.setThemeSeedColor(argb)
+                // 取色成功后顺手打开开关：用户点这个按钮的意图就是「我要用这个颜色」
+                preferencesManager.setThemeDynamicColor(true)
+                _backupMessage.value = "已按最近阅读的封面切换主题色"
+            }.onFailure { e ->
+                _backupMessage.value = "取色失败：${e.message ?: "未知错误"}（主题保持原样）"
+            }
+            _themeSeedBusy.value = false
+        }
+    }
+
+    /** 直接指定种子色（预设色块 / 恢复备份后的手动选择）；同时打开动态取色 */
+    fun setThemeSeedColor(argb: Int) {
+        viewModelScope.launch {
+            preferencesManager.setThemeSeedColor(argb)
+            preferencesManager.setThemeDynamicColor(true)
+        }
+    }
+
+    fun setThemeDynamicColor(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setThemeDynamicColor(value) }
+    }
+
+    /**
+     * 把封面地址变成 Bitmap。
+     *
+     * 支持两种封面：本地书是绝对路径（`/data/...`），网络书是 http(s) 地址
+     * （与 `TagIndexRepository.fetchCoverBitmap` 同一套判定）。下载用共享的
+     * [com.novelreader.core.network.HttpClient]，不额外 new OkHttpClient。
+     */
+    private fun loadCoverBitmap(cover: String): android.graphics.Bitmap? {
+        if (cover.isBlank()) return null
+        val bytes = when {
+            // 本地书的封面是绝对路径；也兼容 file:// 前缀
+            cover.startsWith("/") -> runCatching { java.io.File(cover).readBytes() }.getOrNull()
+            cover.startsWith("file://") ->
+                runCatching { java.io.File(cover.removePrefix("file://")).readBytes() }.getOrNull()
+            else -> runCatching {
+                val request = okhttp3.Request.Builder().url(cover).build()
+                com.novelreader.core.network.HttpClient.executeRaw(request).use { response ->
+                    if (!response.isSuccessful) null else response.body?.bytes()
+                }
+            }.getOrNull()
+        } ?: return null
+        return runCatching {
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        }.getOrNull()
+    }
+
     /** 兼容字段：当前是否处于深色 */
     private val _darkTheme = MutableStateFlow(false)
     val darkTheme: StateFlow<Boolean> = _darkTheme.asStateFlow()
@@ -718,6 +835,15 @@ class SettingsViewModel(
      */
     private val _novelPageType = MutableStateFlow(PreferencesManager.DEFAULT_PAGE_TYPE)
     val novelPageType: StateFlow<Int> = _novelPageType.asStateFlow()
+
+    /**
+     * 自动翻页倍速（A5）：1.0 / 1.5 / 2.0 / 2.5 / 3.0 / 4.0。
+     *
+     * 与阅读页菜单、阅读页三支的翻页计时**共用同一个偏好键**，任何一处改动都会同步；
+     * 读写都会吸附到合法档位（见 `ReaderAutoPagePolicy.normalizeSpeed`）。
+     */
+    private val _autoPageSpeed = MutableStateFlow(PreferencesManager.DEFAULT_AUTO_PAGE_SPEED)
+    val autoPageSpeed: StateFlow<Float> = _autoPageSpeed.asStateFlow()
 
     /** 漫画翻页方式：0=上下滚动，1=左右翻页 */
     private val _comicPageMode = MutableStateFlow(0)
@@ -1068,6 +1194,17 @@ class SettingsViewModel(
         viewModelScope.launch {
             preferencesManager.novelPageTypeFlow.collect { _novelPageType.value = it }
         }
+        // 自动翻页倍速（A5）：与阅读页共用偏好键，设置页只做镜像
+        viewModelScope.launch {
+            preferencesManager.novelAutoPageSpeedFlow.collect { _autoPageSpeed.value = it }
+        }
+        // 动态取色（C1）
+        viewModelScope.launch {
+            preferencesManager.themeSeedColorFlow.collect { _themeSeedColor.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.themeDynamicColorFlow.collect { _themeDynamicColor.value = it }
+        }
         viewModelScope.launch {
             preferencesManager.comicPageModeFlow.collect { _comicPageMode.value = it }
         }
@@ -1249,6 +1386,11 @@ class SettingsViewModel(
     /** 小说翻页方式（v1.8.7.9，待办 #31）：写回统一偏好键，阅读页菜单同步生效 */
     fun setNovelPageType(value: Int) {
         viewModelScope.launch { preferencesManager.setNovelPageType(value) }
+    }
+
+    /** 自动翻页倍速（A5）：写回偏好键，阅读页菜单 / 阅读页计时同步生效 */
+    fun setAutoPageSpeed(value: Float) {
+        viewModelScope.launch { preferencesManager.setNovelAutoPageSpeed(value) }
     }
 
     fun setComicPageMode(value: Int) {

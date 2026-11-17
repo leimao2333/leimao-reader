@@ -3,6 +3,8 @@ package com.novelreader.ui.screens.novel
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -19,13 +21,19 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -79,6 +87,7 @@ fun NovelDetailScreen(
     val hasProgress by viewModel.hasProgress.collectAsState()
     val notice by viewModel.notice.collectAsState()
     val cacheProgress by viewModel.cacheProgress.collectAsState()
+    val note by viewModel.note.collectAsState()
 
     LaunchedEffect(item) {
         viewModel.load(item)
@@ -94,6 +103,9 @@ fun NovelDetailScreen(
 
     // 批量离线缓存弹窗开关（v1.2.3.0）
     var showCacheDialog by rememberSaveable { mutableStateOf(false) }
+    // 备注弹窗开关 + 草稿（草稿单独存，避免边输入边写库；取消时原备注不受影响）
+    var showNoteDialog by rememberSaveable { mutableStateOf(false) }
+    var noteDraft by rememberSaveable { mutableStateOf("") }
     // ===== 批量离线缓存弹窗（v1.2.3.0）：进行中显示进度，否则显示范围选择/完成提示 =====
     if (cacheProgress?.running == true) {
         val p = cacheProgress!!
@@ -152,6 +164,42 @@ fun NovelDetailScreen(
         )
     }
 
+    // ===== 备注编辑弹窗（C7） =====
+    if (showNoteDialog) {
+        AlertDialog(
+            onDismissRequest = { showNoteDialog = false },
+            title = { Text(if (note.isBlank()) "添加备注" else "编辑备注") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = noteDraft,
+                        onValueChange = { noteDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("例如：看到第几卷了、待追、剧透提醒…") },
+                        // 多行输入，最多 6 行后内部滚动，弹窗高度不会被撑爆
+                        minLines = 3,
+                        maxLines = 6,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "留空保存即删除备注",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showNoteDialog = false
+                    viewModel.saveNote(noteDraft)
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNoteDialog = false }) { Text("取消") }
+            },
+        )
+    }
+
     val display = detail ?: item
 
     // 目录是否展开（默认折叠，点击"目录"按钮展开）
@@ -159,7 +207,11 @@ fun NovelDetailScreen(
     // 目录排序：false=正序，true=倒序（#28）
     var reverseChapters by rememberSaveable { mutableStateOf(false) }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = Modifier
+        .fillMaxSize()
+        // 夜间模式跟随：本页是裸 Box（不是 Scaffold），不铺背景就会透出
+        // window 的白色背景，导致全局夜间开启时这里仍是刺眼白底。
+        .background(MaterialTheme.colorScheme.background)) {
         // enableEdgeToEdge 下自绘顶栏必须自行避让系统栏
         Column(
             modifier = Modifier
@@ -222,6 +274,17 @@ fun NovelDetailScreen(
                     DetailTagBar(
                         tags = com.novelreader.core.util.ItemTags.of(display),
                         onTagClick = onTagClick,
+                    )
+                }
+
+                // 备注条（C7）：有备注显示首行 + 编辑图标，无备注显示「添加备注」
+                item {
+                    NovelNoteBar(
+                        note = note,
+                        onEdit = {
+                            noteDraft = note
+                            showNoteDialog = true
+                        },
                     )
                 }
 
@@ -297,6 +360,7 @@ fun NovelDetailScreen(
                         Text(
                             text = "目录（${chapters.size}章）",
                             style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                         )
                     }
@@ -476,6 +540,67 @@ private fun DetailChangeSourcePanel(
     }
 }
 
+/**
+ * 详情页「备注」条（C7）。
+ *
+ * 有备注：显示**首行**内容 + 编辑图标（长备注只在弹窗里看，不能把详情页撑高）；
+ * 无备注：显示「添加备注」入口。整行可点击，点击打开编辑弹窗。
+ */
+@Composable
+private fun NovelNoteBar(
+    note: String,
+    onEdit: () -> Unit,
+) {
+    val hasNote = note.isNotBlank()
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .clickable(onClick = onEdit),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(10.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "备注",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(8.dp))
+            if (hasNote) {
+                // 只取首个非空行，单行省略——备注可能很长，详情页顶部区域要稳定
+                val firstLine = note.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+                Text(
+                    text = firstLine,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    imageVector = Icons.Filled.Edit,
+                    contentDescription = "编辑备注",
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            } else {
+                Text(
+                    text = "添加备注",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun DetailHeader(
     item: MediaItem,
@@ -522,6 +647,7 @@ private fun DetailHeader(
                 Text(
                     text = item.title,
                     style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -592,20 +718,29 @@ private fun DetailHeader(
                     )
                 }
                 Spacer(Modifier.height(12.dp))
-                // 主操作行：阅读 / 加入书架 / 换源
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                // 主操作行：阅读 / 加入书架。
+                // 用 FlowRow 而不是 Row：窄屏下「加入书架」原本会被挤成「加入书/架」两行，
+                // 改成整颗按钮换行，文字永远单行完整。
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     Button(onClick = onRead) { Text(if (hasProgress) "继续阅读" else "开始阅读") }
-                    Spacer(Modifier.width(8.dp))
                     OutlinedButton(onClick = onToggleCollect) {
                         Text(if (collected) "已收藏" else "加入书架")
                     }
                 }
                 Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                // 三颗按钮在 360dp 窄屏上放不下会被挤出边界：「缓存」虽然可点，
+                // 但文字被裁得一个都不显示（真机复现）。改用 FlowRow 自动换行。
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     OutlinedButton(onClick = onOpenChangeSource) { Text("换源") }
-                    Spacer(Modifier.width(8.dp))
                     OutlinedButton(onClick = onDownload) { Text("下载") }
-                    Spacer(Modifier.width(8.dp))
                     OutlinedButton(onClick = onOpenCacheDialog) { Text("缓存") }
                 }
             }
@@ -654,6 +789,7 @@ private fun DetailHeader(
         Text(
             text = desc,
             style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             maxLines = 6,
             overflow = TextOverflow.Ellipsis,
@@ -675,6 +811,7 @@ private fun ChapterRow(
         Text(
             text = chapter.title,
             style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )

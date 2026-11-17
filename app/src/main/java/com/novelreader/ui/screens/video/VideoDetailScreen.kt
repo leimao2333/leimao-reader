@@ -112,6 +112,9 @@ fun VideoDetailScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // 夜间模式跟随：本页是裸 Column（不是 Scaffold），不铺背景就会透出
+            // window 的白色背景，导致全局夜间开启时这里仍是刺眼白底。
+            .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding()
             .navigationBarsPadding(),
     ) {
@@ -127,6 +130,7 @@ fun VideoDetailScreen(
             Text(
                 text = "详情",
                 style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -159,6 +163,7 @@ fun VideoDetailScreen(
                         Text(
                             text = display.title,
                             style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )

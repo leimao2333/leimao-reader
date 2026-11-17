@@ -79,7 +79,10 @@ fun VideoChannelScreen(
     onRefresh: () -> Unit,
     onOpenDetail: (MediaItem) -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier
+        .fillMaxSize()
+        // 夜间模式跟随：裸 Column 不铺背景会透出 window 白底
+        .background(MaterialTheme.colorScheme.background)) {
         // ===== 顶栏：标题 + 聚合状态 + 刷新 =====
         Row(
             modifier = Modifier
@@ -359,6 +362,7 @@ private fun ChannelPosterCard(
         Text(
             text = item.title,
             style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface,
             fontWeight = FontWeight.Medium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,

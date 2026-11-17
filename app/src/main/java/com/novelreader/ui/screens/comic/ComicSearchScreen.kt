@@ -1,5 +1,6 @@
 package com.novelreader.ui.screens.comic
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -78,6 +79,8 @@ fun ComicSearchScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // 夜间模式跟随：裸 Column 不铺背景会透出 window 白底
+            .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding(),
     ) {
         Row(
@@ -92,6 +95,7 @@ fun ComicSearchScreen(
             Text(
                 text = "搜索漫画",
                 style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
             )
             Spacer(Modifier.weight(1f))
             // 宫格 / 列表切换（v1.8.6.0 待办 #26）

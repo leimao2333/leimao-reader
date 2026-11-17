@@ -75,11 +75,13 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.nativeKeyCode
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
@@ -104,6 +106,8 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.novelreader.core.preferences.PreferencesManager
+import com.novelreader.core.reader.ReaderGesturePolicy
+import com.novelreader.core.reader.ReaderGesturePolicy.TapAction
 import com.novelreader.core.text.ChineseConverter
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
@@ -216,6 +220,9 @@ fun NovelReaderScreen(
     val sidePadding by viewModel.sidePadding.collectAsState()
     val autoPage by viewModel.autoPage.collectAsState()
     val autoPageInterval by viewModel.autoPageInterval.collectAsState()
+    val autoPageSpeed by viewModel.autoPageSpeed.collectAsState()
+    // A8：点击分区模式（0=三区，1=两区），在阅读菜单里切
+    val tapZone by viewModel.tapZone.collectAsState()
     val showMenu by viewModel.showMenu.collectAsState()
     val menuTab by viewModel.menuTab.collectAsState()
     val chapterTitle by viewModel.chapterTitle.collectAsState()
@@ -383,8 +390,18 @@ fun NovelReaderScreen(
         .focusRequester(focusRequester)
         .focusable()
         .onPreviewKeyEvent { event ->
-            if (!volumePageEnabled) return@onPreviewKeyEvent false
             if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            // A8：手柄方向键 / PageUp·PageDown / A·B 也能翻页，且**不受**「音量键翻页」开关影响
+            //（那个开关管的是 24/25 两个音量键，这里先排掉，避免把音量调节劫持成翻页）
+            val nativeCode = event.key.nativeKeyCode
+            if (nativeCode != 24 && nativeCode != 25) {
+                val dir = ReaderGesturePolicy.gamepadDirection(nativeCode)
+                if (dir != 0) {
+                    if (dir > 0) viewModel.volumeNextPage() else viewModel.volumePrevPage()
+                    return@onPreviewKeyEvent true
+                }
+            }
+            if (!volumePageEnabled) return@onPreviewKeyEvent false
             when (event.key) {
                 Key.VolumeUp -> {
                     if (volumeUpPrev) viewModel.volumePrevPage() else viewModel.volumeNextPage(); true
@@ -538,6 +555,7 @@ fun NovelReaderScreen(
                     },
                     autoPage = autoPage,
                     autoPageInterval = autoPageInterval,
+                    autoPageSpeed = autoPageSpeed,
                     onTapCenter = { viewModel.toggleMenu() },
                     onNextChapter = { viewModel.nextChapter() },
                     onPageTextChanged = { pageText = it },
@@ -563,6 +581,7 @@ fun NovelReaderScreen(
                     hideChapterTitle = hideChapterTitle,
                     autoPage = autoPage,
                     autoPageInterval = autoPageInterval,
+                    autoPageSpeed = autoPageSpeed,
                     hasNextChapter = hasNextChapter,
                     onTapCenter = { viewModel.toggleMenu() },
                     onReachFirst = { viewModel.prevChapter() },
@@ -596,6 +615,9 @@ fun NovelReaderScreen(
                     pageType = pageType,
                     autoPage = autoPage,
                     autoPageInterval = autoPageInterval,
+                    autoPageSpeed = autoPageSpeed,
+                    tapZone = tapZone,
+                    onAddBookmark = { viewModel.addBookmark(currentRatio, content.take(60)) },
                     hasNextChapter = hasNextChapter,
                     onTapCenter = { viewModel.toggleMenu() },
                     onReachFirst = { viewModel.prevChapter() },
@@ -611,10 +633,14 @@ fun NovelReaderScreen(
 
         // ===== 常驻顶部状态条：显示本章名（菜单收起时；菜单展开时由顶部栏显示更完整信息） =====
         if (!showMenu && !hideTopBar) {
+            // A9：右侧补「时钟 · 当前页/总页」。沉浸全屏下系统状态栏被隐藏，
+            // 这条自绘状态条是用户唯一能看到时间与页码的地方。
+            val clock = rememberClockText()
             ReaderChapterStatusBar(
                 bookTitle = displayItem.title,
                 chapterTitle = chapterTitle,
                 textColor = textColor,
+                trailingInfo = if (pageText.isBlank()) clock else "$clock · $pageText",
             )
         }
 
@@ -817,6 +843,8 @@ private fun ScrollNovel(
     onScrollRatio: (Float) -> Unit,
     autoPage: Boolean,
     autoPageInterval: Int,
+    /** 自动翻页倍速（A5），1.0x = 按 autoPageInterval 原速 */
+    autoPageSpeed: Float = 1f,
     onTapCenter: () -> Unit,
     onNextChapter: () -> Unit,
     onPageTextChanged: (String) -> Unit = {},
@@ -982,6 +1010,14 @@ private fun ScrollNovel(
 
 /* ===================== 左右翻页 ===================== */
 
+/**
+ * 横向 Pager 翻页（**当前未接入**，A4 待清理）。
+ *
+ * 主阅读页的翻页分发只在 [ScrollNovel] / [VerticalPagerNovel] / [CanvasPagerNovel]
+ * 三支里选，本函数与 [HorizontalWindowNovel] / [WindowPageSlot] 均无调用点。
+ * 保留原因：其中 `PageTransform.cover/simulate` 的实现细节仍可参考；
+ * 后续确认无回归价值后应整体删除，避免「改了这里却不生效」的误判。
+ */
 @Composable
 private fun HorizontalPagerNovel(
     content: String,
@@ -1002,6 +1038,8 @@ private fun HorizontalPagerNovel(
     pageType: Int,
     autoPage: Boolean,
     autoPageInterval: Int,
+    /** 自动翻页倍速（A5），1.0x = 按 autoPageInterval 原速 */
+    autoPageSpeed: Float = 1f,
     hasNextChapter: Boolean,
     onTapCenter: () -> Unit,
     onReachFirst: () -> Unit,
@@ -1261,7 +1299,13 @@ private fun HorizontalPagerNovel(
         LaunchedEffect(autoPage, autoPageInterval, chapterIndex) {
             if (!autoPage) return@LaunchedEffect
             while (true) {
-                delay(autoPageInterval * 1000L)
+                // A5：按倍速换算间隔（1.0x 等于原设定；倍速越高停得越短，下限 300ms 防闪屏）
+                delay(
+                    com.novelreader.core.reader.ReaderAutoPagePolicy.intervalMs(
+                        autoPageInterval * 1000L,
+                        autoPageSpeed,
+                    )
+                )
                 val last = pagerState.pageCount - 1
                 if (pagerState.currentPage < last) pagerState.animateScrollToPage(pagerState.currentPage + 1)
                 else onNextChapter()
@@ -1406,6 +1450,8 @@ private fun HorizontalWindowNovel(
     pageType: Int,
     autoPage: Boolean,
     autoPageInterval: Int,
+    /** 自动翻页倍速（A5），1.0x = 按 autoPageInterval 原速 */
+    autoPageSpeed: Float = 1f,
     hasNextChapter: Boolean,
     onTapCenter: () -> Unit,
     onReachFirst: () -> Unit,
@@ -1519,7 +1565,13 @@ private fun HorizontalWindowNovel(
         LaunchedEffect(autoPage, autoPageInterval, chapterIndex) {
             if (!autoPage) return@LaunchedEffect
             while (true) {
-                delay(autoPageInterval * 1000L)
+                // A5：按倍速换算间隔（1.0x 等于原设定；倍速越高停得越短，下限 300ms 防闪屏）
+                delay(
+                    com.novelreader.core.reader.ReaderAutoPagePolicy.intervalMs(
+                        autoPageInterval * 1000L,
+                        autoPageSpeed,
+                    )
+                )
                 turn(1)
             }
         }
@@ -1754,6 +1806,10 @@ private fun WindowPageSlot(
  */
 @Composable
 private fun CanvasPagerNovel(
+    /** A8：点击分区模式（0 = 三区，1 = 两区） */
+    tapZone: Int = 0,
+    /** A8：下拉加书签（下拉超过阈值时回调） */
+    onAddBookmark: () -> Unit = {},
     content: String,
     chapterTitle: String,
     chapterIndex: Int,
@@ -1773,6 +1829,8 @@ private fun CanvasPagerNovel(
     pageType: Int,
     autoPage: Boolean,
     autoPageInterval: Int,
+    /** 自动翻页倍速（A5），1.0x = 按 autoPageInterval 原速 */
+    autoPageSpeed: Float = 1f,
     hasNextChapter: Boolean,
     onTapCenter: () -> Unit,
     onReachFirst: () -> Unit,
@@ -1979,7 +2037,13 @@ private fun CanvasPagerNovel(
         LaunchedEffect(autoPage, autoPageInterval, chapterIndex) {
             if (!autoPage) return@LaunchedEffect
             while (true) {
-                delay(autoPageInterval * 1000L)
+                // A5：按倍速换算间隔（1.0x 等于原设定；倍速越高停得越短，下限 300ms 防闪屏）
+                delay(
+                    com.novelreader.core.reader.ReaderAutoPagePolicy.intervalMs(
+                        autoPageInterval * 1000L,
+                        autoPageSpeed,
+                    )
+                )
                 turn(1)
             }
         }
@@ -1990,16 +2054,38 @@ private fun CanvasPagerNovel(
             }
         }
 
+        // ===== A7 长按选词 =====
+        // 选中的是「当前页内的字符区间」，翻页/切章就清空（区间只对某一页的排版有效）。
+        var selPage by remember { mutableIntStateOf(-1) }
+        var selStart by remember { mutableIntStateOf(-1) }
+        var selEnd by remember { mutableIntStateOf(-1) }
+        // 正文首个字的 y 偏移：第 0 页有章名时整体下移，选词命中必须用同一个原点。
+        val textTopOffsetPx = if (!hideChapterTitle && titleLayout != null) {
+            titleLayout.size.height + titleSpacerPx
+        } else 0f
+        val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+        fun clearSelection() {
+            selPage = -1
+            selStart = -1
+            selEnd = -1
+        }
+        // 换页即清空选区，避免高亮错位到别的页
+        LaunchedEffect(cur, pageCount) { clearSelection() }
+
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(pageCount, chapterIndex, cur) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
+                        // A7：记录按下时刻，松手时据此区分「点击」与「长按选词」
+                        val downTime = android.os.SystemClock.uptimeMillis()
                         // 手指按下先打断上一次收尾动画，否则它会继续写 dragX
                         animJob?.cancel()
                         moving = false
                         val startX = down.position.x
+                        val startY = down.position.y
+                        var maxDownDy = 0f
                         var lastX = startX
                         var pointerX = startX
                         var moved = false
@@ -2009,6 +2095,8 @@ private fun CanvasPagerNovel(
                             val change = event.changes.firstOrNull { it.id == down.id } ?: break
                             pressed = change.pressed
                             pointerX = change.position.x
+                            // A8：记录向下位移的最大值，用于「下拉加书签」判定
+                            maxDownDy = kotlin.math.max(maxDownDy, change.position.y - startY)
                             val delta = pointerX - lastX
                             lastX = pointerX
                             if (!moved && kotlin.math.abs(pointerX - startX) > touchSlop) {
@@ -2030,12 +2118,59 @@ private fun CanvasPagerNovel(
                         val totalDx = pointerX - startX
                         val hasPrev = cur > 0
                         val hasNext = cur < pageCount - 1
+                        // A8：纯竖直下拉（横向没超过 slop）且位移够 → 加书签。
+                        // 必须拦在「点击」分支之前，否则竖滑会被当成翻页 / 呼菜单。
+                        if (!moved && maxDownDy >= 72f * d) {
+                            clearSelection()
+                            onAddBookmark()
+                            return@awaitEachGesture
+                        }
                         if (!moved) {
-                            val w = size.width.toFloat()
-                            when {
-                                startX < w / 3f -> turn(-1)
-                                startX > w * 2f / 3f -> turn(1)
-                                else -> onTapCenter()
+                            // A7：按住 ≥420ms 视为长按 → 选中按下位置的词（走松手判定，
+                            // 不额外挂 pointerInput，避免和翻页手势抢事件）。
+                            if (android.os.SystemClock.uptimeMillis() - downTime >= 420L) {
+                                // 两区模式没有中间点击区，长按用来呼菜单 —— 与面板说明
+                                // 「左右翻页，长按呼菜单」保持一致，否则用户按说明长按却弹出
+                                // 复制条，等于两条手势抢同一个动作。
+                                if (tapZone == 1) {
+                                    clearSelection()
+                                    onTapCenter()
+                                    return@awaitEachGesture
+                                }
+                                val layout = layouts[cur]
+                                if (layout != null) {
+                                    val padPxLocal = sidePadding * d
+                                    val localX = startX - padPxLocal
+                                    val localY = down.position.y -
+                                        (topPx + if (cur == 0) textTopOffsetPx else 0f)
+                                    val offset = layout.getOffsetForPosition(
+                                        Offset(localX, localY)
+                                    )
+                                    val word = layout.getWordBoundary(offset)
+                                    if (word != null && word.end > word.start) {
+                                        selPage = cur
+                                        selStart = word.start
+                                        selEnd = word.end
+                                    }
+                                }
+                                return@awaitEachGesture
+                            }
+                            // 普通点击：先清掉已有选区，再按分区翻页 / 呼菜单
+                            clearSelection()
+                            // A8：点击分区交给 ReaderGesturePolicy（可配三区/两区），
+                            // 不再写死 1/3 分界。默认 THREE_ZONE 与旧行为完全一致。
+                            when (
+                                ReaderGesturePolicy.resolveTap(
+                                    startX,
+                                    size.width.toFloat(),
+                                    if (tapZone == 1) ReaderGesturePolicy.TapZoneMode.TWO_ZONE
+                                    else ReaderGesturePolicy.TapZoneMode.THREE_ZONE,
+                                )
+                            ) {
+                                TapAction.PREV_PAGE -> turn(-1)
+                                TapAction.NEXT_PAGE -> turn(1)
+                                TapAction.TOGGLE_MENU -> onTapCenter()
+                                TapAction.NONE -> Unit
                             }
                         } else {
                             val success = kotlin.math.abs(totalDx) > turnThresholdPx
@@ -2067,52 +2202,186 @@ private fun CanvasPagerNovel(
         ) {
             val dx = dragX
             val padPx = sidePadding * d
+            val w = size.width
+            // 翻页进度 0..1（0 = 静止，1 = 已翻满一页）
+            val p = (kotlin.math.abs(dx) / w).coerceIn(0f, 1f)
 
-            /** 画一页：背景 + （第 0 页的章名）+ 正文 + 页码 */
-            fun drawPage(idx: Int, offsetX: Float) {
+            /** 画一页的**内容本体**（背景 + 第 0 页章名 + 正文 + 页码），不含位移 */
+            fun drawPageBody(idx: Int) {
                 if (idx !in pages.indices) return
-                translate(offsetX, 0f) {
-                    drawRect(color = bgColor)
-                    // 正文严格裁到「分页时用的可用高度」内。
-                    // TextLayoutResult 的实际高度会比分页测量多出零点几行（行高取整累积），
-                    // 不按分页高度裁，最后一行就会压到页码上、看着像多了一行乱码。
-                    clipRect(0f, 0f, size.width, topPx + textHeightPx) {
-                        var y = topPx
-                        if (idx == 0 && !hideChapterTitle && titleLayout != null) {
-                            drawText(titleLayout, topLeft = Offset(padPx, y))
-                            y += titleLayout.size.height + titleSpacerPx
-                        }
-                        layouts[idx]?.let { layout ->
-                            drawText(layout, topLeft = Offset(padPx, y))
+                drawRect(color = bgColor)
+                // 正文严格裁到「分页时用的可用高度」内。
+                // TextLayoutResult 的实际高度会比分页测量多出零点几行（行高取整累积），
+                // 不按分页高度裁，最后一行就会压到页码上、看着像多了一行乱码。
+                clipRect(0f, 0f, size.width, topPx + textHeightPx) {
+                    var y = topPx
+                    if (idx == 0 && !hideChapterTitle && titleLayout != null) {
+                        drawText(titleLayout, topLeft = Offset(padPx, y))
+                        y += titleLayout.size.height + titleSpacerPx
+                    }
+                    layouts[idx]?.let { layout ->
+                        drawText(layout, topLeft = Offset(padPx, y))
+                        // A7：选中区间叠一层半透明底色。画在文字之后，不遮挡字形；
+                        // getPathForRange 的坐标相对文本排版原点，所以要先平移到 padPx / y。
+                        if (idx == selPage && selStart >= 0 && selEnd > selStart) {
+                            translate(padPx, y) {
+                                drawPath(
+                                    layout.getPathForRange(selStart, selEnd),
+                                    color = textColor.copy(alpha = 0.26f),
+                                )
+                            }
                         }
                     }
-                    // 页码：画在正文下方那条**固定高度页码行**的正中（对齐参考项目的 ReaderPageCard）。
-                    // 以前是「正文底 + 6dp」贴着正文画，底部那一整块 48dp 边距就白空着；
-                    // 现在页边只剩 4dp，页码行 26dp 独占，位置稳定、不随页内容多少上下漂。
-                    // 注意这里必须写 ${pages.size}（带花括号）。
-                    // 写成 `$pages.size` 时 Kotlin 只把 `$pages` 当变量，尾巴 `.size` 变字面量，
-                    // 结果画出来是「整个列表的 toString() + .size」那一长串乱码。
-                    val pageText = "${idx + 1}/${pages.size}"
-                    val pageLayout = measurer.measure(
-                        text = pageText,
-                        style = style.copy(fontSize = NovelPageTokens.pageNumberSp(fontSize).sp),
-                    )
-                    drawText(
-                        pageLayout,
-                        topLeft = Offset(
-                            (widthPx - pageLayout.size.width) / 2f,
-                            topPx + textHeightPx + bottomPx +
-                                (pageRowPx - pageLayout.size.height) / 2f,
-                        ),
-                        alpha = 0.45f,
-                    )
+                }
+                // 页码：画在正文下方那条**固定高度页码行**的正中（对齐参考项目的 ReaderPageCard）。
+                // 注意这里必须写 ${pages.size}（带花括号）。
+                // 写成 `$pages.size` 时 Kotlin 只把 `$pages` 当变量，尾巴 `.size` 变字面量，
+                // 结果画出来是「整个列表的 toString() + .size」那一长串乱码。
+                val pageText = "${idx + 1}/${pages.size}"
+                val pageLayout = measurer.measure(
+                    text = pageText,
+                    style = style.copy(fontSize = NovelPageTokens.pageNumberSp(fontSize).sp),
+                )
+                drawText(
+                    pageLayout,
+                    topLeft = Offset(
+                        (w - pageLayout.size.width) / 2f,
+                        topPx + textHeightPx + bottomPx +
+                            (pageRowPx - pageLayout.size.height) / 2f,
+                    ),
+                    alpha = 0.45f,
+                )
+            }
+
+            /** 平移后画一页 */
+            fun drawPageAt(idx: Int, offsetX: Float) {
+                if (idx !in pages.indices) return
+                translate(offsetX, 0f) { drawPageBody(idx) }
+            }
+
+            /**
+             * 画「被掀起」的页：绕装订边横向压缩，自由边叠一层随进度加深的阴影。
+             *
+             * 这是**仿真**模式的近似实现：真·卷曲需要逐像素网格变形与光照，
+             * 在 CanvaDrawScope 里每帧重算代价太高（以前那版就是这么掉帧的）。
+             * 用「装订边锚定的横向压缩 + 自由边阴影」能拿到七成观感，
+             * 且完全由 RenderThread 处理、不产生额外离屏合成。
+             */
+            fun drawLiftedPage(idx: Int, pivotX: Float, progress: Float) {
+                if (idx !in pages.indices) return
+                val sx = 1f - 0.38f * progress
+                scale(scaleX = sx, scaleY = 1f, pivot = Offset(pivotX, size.height)) {
+                    drawPageBody(idx)
+                }
+                // 自由边阴影：装订边在左 → 自由边在右，反之亦然。
+                val band = 56f * d
+                val alpha = 0.30f * progress
+                if (alpha <= 0.01f) return
+                if (pivotX <= 0f) {
+                    val edge = w * sx
+                    val startX = (edge - band).coerceAtLeast(0f)
+                    if (edge - startX > 1f) {
+                        drawRect(
+                            brush = Brush.horizontalGradient(
+                                listOf(Color.Transparent, Color.Black.copy(alpha = alpha)),
+                                startX = startX,
+                                endX = edge,
+                            ),
+                            topLeft = Offset(startX, 0f),
+                            size = Size(edge - startX, size.height),
+                        )
+                    }
+                } else {
+                    val edge = w - w * sx
+                    val endX = (edge + band).coerceAtMost(w)
+                    if (endX - edge > 1f) {
+                        drawRect(
+                            brush = Brush.horizontalGradient(
+                                listOf(Color.Black.copy(alpha = alpha), Color.Transparent),
+                                startX = edge,
+                                endX = endX,
+                            ),
+                            topLeft = Offset(edge, 0f),
+                            size = Size(endX - edge, size.height),
+                        )
+                    }
                 }
             }
 
-            // 层级（后画在上）：下一页 → 当前页 → 上一页
-            if (cur + 1 < pageCount) drawPage(cur + 1, 0f)
-            drawPage(cur, kotlin.math.min(dx, 0f))
-            if (cur - 1 >= 0) drawPage(cur - 1, -widthPx + kotlin.math.max(dx, 0f))
+            // 按 pageType 分发。以前这里无条件走「三页平移」，pageType 传进来后根本没用 ——
+            // 覆盖 / 仿真 / 无动画三种模式渲染结果完全一样，用户切了也没变化。
+            when (pageType) {
+                PreferencesManager.PAGE_TYPE_NO_ANIM -> {
+                    // 无动画：只画当前页，切换页时瞬间替换（不拖动、不留位移）
+                    drawPageAt(cur, 0f)
+                }
+
+                PreferencesManager.PAGE_TYPE_COVER -> {
+                    // 覆盖：底层页不动，新的页从侧边盖上来。
+                    drawPageAt(cur, 0f)
+                    if (dx < 0f && cur + 1 < pageCount) {
+                        drawPageAt(cur + 1, w + dx) // 从右侧滑入
+                    } else if (dx > 0f && cur - 1 >= 0) {
+                        drawPageAt(cur - 1, -w + dx) // 从左侧滑入
+                    }
+                }
+
+                PreferencesManager.PAGE_TYPE_SIMULATE -> {
+                    // 仿真：下一/上一页铺在底层原位，当前页绕装订边掀起。
+                    when {
+                        dx < 0f && cur + 1 < pageCount -> {
+                            drawPageAt(cur + 1, 0f)
+                            drawLiftedPage(cur, pivotX = 0f, progress = p) // 绕左边缘（装订边）掀起
+                        }
+                        dx > 0f && cur - 1 >= 0 -> {
+                            drawPageAt(cur - 1, 0f)
+                            drawLiftedPage(cur, pivotX = w, progress = p)
+                        }
+                        else -> drawPageAt(cur, 0f)
+                    }
+                }
+
+                else -> {
+                    // 滑动：三页平移（原实现，层级：下一页 → 当前页 → 上一页）
+                    if (cur + 1 < pageCount) drawPageAt(cur + 1, 0f)
+                    drawPageAt(cur, kotlin.math.min(dx, 0f))
+                    if (cur - 1 >= 0) drawPageAt(cur - 1, -w + kotlin.math.max(dx, 0f))
+                }
+            }
+        }
+
+        // A7：选中后的操作条。贴在屏幕下方而不是浮在选中的字旁边 ——
+        // 手绘 Canvas 里精确定位弹窗成本高，底部固定位置不会挡住刚选中的那行。
+        if (selPage >= 0 && selStart >= 0 && selEnd > selStart) {
+            val selectedText = pages.getOrNull(selPage)?.let { page ->
+                page.substring(
+                    selStart.coerceIn(0, page.length),
+                    selEnd.coerceIn(0, page.length),
+                )
+            }.orEmpty()
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                Row(
+                    modifier = Modifier
+                        .padding(bottom = 88.dp)
+                        .background(
+                            MaterialTheme.colorScheme.surface,
+                            RoundedCornerShape(24.dp),
+                        )
+                        .padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = {
+                        if (selectedText.isNotEmpty()) {
+                            clipboard.setText(AnnotatedString(selectedText))
+                        }
+                        clearSelection()
+                    }) { Text("复制") }
+                    TextButton(onClick = { clearSelection() }) { Text("取消") }
+                }
+            }
         }
 
         if (pageCount == 0) {
@@ -2147,6 +2416,8 @@ private fun VerticalPagerNovel(
     hideChapterTitle: Boolean,
     autoPage: Boolean,
     autoPageInterval: Int,
+    /** 自动翻页倍速（A5），1.0x = 按 autoPageInterval 原速 */
+    autoPageSpeed: Float = 1f,
     hasNextChapter: Boolean,
     onTapCenter: () -> Unit,
     onReachFirst: () -> Unit,
@@ -2404,7 +2675,13 @@ private fun VerticalPagerNovel(
         LaunchedEffect(autoPage, autoPageInterval, chapterIndex) {
             if (!autoPage) return@LaunchedEffect
             while (true) {
-                delay(autoPageInterval * 1000L)
+                // A5：按倍速换算间隔（1.0x 等于原设定；倍速越高停得越短，下限 300ms 防闪屏）
+                delay(
+                    com.novelreader.core.reader.ReaderAutoPagePolicy.intervalMs(
+                        autoPageInterval * 1000L,
+                        autoPageSpeed,
+                    )
+                )
                 val last = pagerState.pageCount - 1
                 if (pagerState.currentPage < last) pagerState.animateScrollToPage(pagerState.currentPage + 1)
                 else onNextChapter()
@@ -2626,18 +2903,42 @@ private data class PageTransform(
         }
 
         /**
-         * 仿真：v1.8.8.5 按参考实现（xrn1997/android-ebook 的 ReaderPager）改为**纯平移**。
+         * 仿真：透视掀纸翻页（A3）。
          *
-         * 那个项目翻页只有三个槽位（上一页 / 当前页 / 下一页）+ 一个 `Animatable` 位移，
-         * 位移在布局期读取（`offset {}`），动画期间零重组、零额外绘制 —— 这是它「翻得飞快」的原因。
+         * 历史：v1.8.8.5 曾按「三槽位 + 单 Animatable 位移」的参考实现退化成**纯平移**，
+         * 换来了流畅但完全不像翻书。现在把透视旋转加回来，但**不再**做以前的
+         * 「全屏渐变阴影 + 贝塞尔卷边」——那两项每帧要两次全屏渐变填充 + 一次离屏合成，
+         * 是快速连翻掉帧的真正来源。
          *
-         * 我们之前在这里叠了 3D 旋转 + 全屏渐变阴影 + 贝塞尔卷边，每帧要额外做两次全屏
-         * 渐变填充和一次离屏合成，快速连翻时直接掉帧。既然目标是「响应和流畅」，
-         * 就把这些全部去掉，只做平移。
+         * 现在的做法只用 `graphicsLayer` 的三项硬件属性（rotationY / rotationZ / shadowElevation），
+         * 全部由 RenderThread 处理，不产生额外的全屏绘制：
+         * - `rotationY` 绕**装订边**转到接近 90°，纸页真正「掀起」而不是平移；
+         * - `rotationZ` 给一点平面倾角，边线是斜的，避免看起来像卡片翻面；
+         * - `shadowElevation` 随翻页进度增长，纸页离开桌面时自然投影。
          *
-         * 注意：`PageTransform` 的字段仍保留（覆盖模式在用），这里只是不再设置它们。
+         * 支点选择：翻走页绕它「留在原位的那条边」（装订边）转，这样页面像被手捏住
+         * 外缘掀过去；`originY = 1f` 让它从底角起翘，符合纸页的受力方向。
          */
-        fun simulate(pageOffset: Float): PageTransform = PageTransform()
+        fun simulate(pageOffset: Float): PageTransform {
+            val d = pageOffset.coerceIn(-1f, 1f)
+            val progress = kotlin.math.abs(d)
+            if (progress <= 0.001f) return PageTransform()
+            val eased = easeOutCubic(progress)
+            // d > 0：下一页从右侧进入，本页绕右边缘（装订边）转；d < 0 反之。
+            val sign = if (d > 0f) 1f else -1f
+            return PageTransform(
+                // 轻微回缩，模拟纸页在透视里「变小一点」；幅度要小，否则正文会缩得发虚。
+                scaleX = 1f - eased * 0.04f,
+                scaleY = 1f - eased * 0.02f,
+                // 不透明度只掉一点：掉太多会在纸页上直接看到下层正文，像重影。
+                alpha = 1f - eased * 0.12f,
+                rotationY = sign * eased * 86f,
+                rotationZ = sign * eased * 1.6f,
+                shadowElevation = eased * 24f,
+                originX = if (d > 0f) 1f else 0f,
+                originY = 1f,
+            )
+        }
 
         /**
          * 缓出三次曲线：末段减速。
@@ -2754,12 +3055,19 @@ private fun paginateByMeasurement(
     fun naturalCut(text: String, limit: Int): Int {
         if (limit >= text.length) return text.length
         if (limit <= 0) return 0
-        val windowStart = (limit - 40).coerceAtLeast(0)
-        for (i in limit downTo (windowStart + 1)) {
+        // 先在理想切分点前 40 字内找句末标点（整句收尾的一页读起来更自然）
+        val windowStart = (limit - 40).coerceAtLeast(1)
+        var cut = limit
+        for (i in limit downTo windowStart) {
             val c = text[i - 1]
-            if (c == '\n' || c == '。' || c == '！' || c == '？' || c == '”' || c == '…') return i
+            if (c == '\n' || c == '。' || c == '！' || c == '？' || c == '”' || c == '…') {
+                cut = i
+                break
+            }
         }
-        return limit
+        // A2：避头尾微调 —— 避免「，。？）」悬在行首、开括号孤零零落在行尾。
+        // adjustCut 只会**前移**切分点（不超理想宽度），并在 1..len-1 内保证合法。
+        return com.novelreader.core.text.ChineseLineBreaker.adjustCut(text, cut)
     }
 
     val pages = mutableListOf<String>()

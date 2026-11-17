@@ -313,6 +313,12 @@ internal fun BoxScope.ReaderChapterStatusBar(
     bookTitle: String,
     chapterTitle: String,
     textColor: Color,
+    /**
+     * 右侧附加信息（A9）：时钟 + 当前页/总页，例如 `12:34 · 3/14`。
+     *
+     * 为空时保持原行为（只显示电量），确保老调用点零改动。
+     */
+    trailingInfo: String? = null,
 ) {
     if (chapterTitle.isBlank()) return
     val line = buildString {
@@ -341,9 +347,38 @@ internal fun BoxScope.ReaderChapterStatusBar(
             textAlign = TextAlign.Center,
             modifier = Modifier.weight(1f),
         )
+        if (!trailingInfo.isNullOrBlank()) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = trailingInfo,
+                color = textColor.copy(alpha = 0.45f),
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+            )
+        }
         Spacer(Modifier.width(8.dp))
         BatteryBadge(batteryPercent, textColor)
     }
+}
+
+/**
+ * 每 30 秒刷新一次的 `HH:mm` 时钟（A9）。
+ *
+ * 沉浸全屏时系统状态栏被隐藏，阅读页只剩这条自绘状态条 —— 没有时钟用户就得凭空猜时间。
+ * 30 秒刷新足够（分钟精度），比每秒刷新省电得多；跨分钟时会有一点点延迟，可接受。
+ */
+@Composable
+internal fun rememberClockText(): String {
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            // 对齐到下一个整 30 秒，避免刚进入页面时显示上一分钟
+            kotlinx.coroutines.delay(30_000L)
+            nowMs = System.currentTimeMillis()
+        }
+    }
+    val formatter = remember { java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()) }
+    return remember(nowMs) { formatter.format(java.util.Date(nowMs)) }
 }
 
 /** 底部菜单：进度条 + 章节导航 + 工具行 + 页签面板 */
@@ -516,15 +551,15 @@ internal fun BoxScope.ReaderBottomMenu(
                 ToolButton("换源", Icons.Filled.SwapHoriz, false, textColor) { viewModel.openChangeSource() }
                 ToolButton("书签", Icons.Filled.BookmarkBorder, menuTab == 3, textColor) { viewModel.setMenuTab(3) }
                 ToolButton("缓存", Icons.Filled.Download, false, textColor) { viewModel.cacheCurrentChapter() }
-                // 听书（v1.8.7.4）：朗读原先只藏在「设置」页签里，得先展开菜单再切页签才能找到。
-                // 这是阅读时的高频动作，提到工具行做成一键开关；正在朗读时图标变方块、高亮显示。
+                // 听书：点开「听书面板」（开始/暂停/继续/停止 + 语速），不再是盲切开关。
+                // 正在朗读时图标变耳机高亮，一眼能看出在播。
                 ToolButton(
-                    label = if (speaking) "停止" else "听书",
-                    icon = if (speaking) Icons.Filled.Stop else Icons.Filled.Headphones,
-                    selected = speaking,
+                    label = if (speaking) "听书中" else "听书",
+                    icon = Icons.Filled.Headphones,
+                    selected = menuTab == 4 || speaking,
                     textColor = textColor,
                 ) {
-                    if (speaking) viewModel.stopSpeaking() else viewModel.speakCurrentChapter()
+                    viewModel.setMenuTab(4)
                 }
             }
             Spacer(Modifier.height(4.dp))
@@ -541,6 +576,76 @@ internal fun BoxScope.ReaderBottomMenu(
             onJump = { viewModel.jumpToBookmark(it) },
             onDelete = { viewModel.removeBookmark(it) },
             onClose = { viewModel.closeMenuPanel() },
+        )
+    }
+
+    // 听书面板：开始 / 暂停 / 继续 / 停止 + 语速
+    if (menuTab == 4) {
+        SpeechPanel(
+            viewModel = viewModel,
+            backgroundColor = backgroundColor,
+            textColor = textColor,
+        )
+    }
+}
+
+/**
+ * 听书面板。
+ *
+ * 为什么要有它：原来「听书」只是一颗开关按钮 —— 点了就开始读，想暂停只能再点一次「停止」，
+ * 而且没有任何地方能调语速、看朗读状态。这里把三个动作拆开，并把暂停做成**真的暂停**
+ * （系统 TTS 没有原生 pause，靠按段落续播实现，详见 ViewModel.pauseSpeaking）。
+ */
+@Composable
+private fun SpeechPanel(
+    viewModel: NovelReaderViewModel,
+    backgroundColor: Color,
+    textColor: Color,
+) {
+    val speaking by viewModel.speaking.collectAsState()
+    val paused by viewModel.speechPaused.collectAsState()
+    val rate by viewModel.speechRate.collectAsState()
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+    ) {
+        Text(
+            text = when {
+                speaking -> "正在朗读本章"
+                paused -> "已暂停 · 继续会从当前段落接着读"
+                else -> "未开始朗读"
+            },
+            color = textColor,
+            style = MaterialTheme.typography.titleSmall,
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // 主按钮在「开始 / 继续」之间切换，避免出现一个永远点不动的按钮
+            MenuChip(
+                text = if (paused) "继续" else "开始",
+                selected = paused,
+                textColor = textColor,
+            ) {
+                if (paused) viewModel.resumeSpeaking() else viewModel.speakCurrentChapter()
+            }
+            MenuChip("暂停", paused, textColor) { viewModel.pauseSpeaking() }
+            MenuChip("停止", false, textColor) { viewModel.stopSpeaking() }
+        }
+        Spacer(Modifier.height(12.dp))
+        SettingSlider(
+            label = "语速",
+            value = rate,
+            display = String.format("%.1f", rate),
+            valueRange = 0.5f..2.0f,
+            textColor = textColor,
+            onChange = { viewModel.setSpeechRate(it) },
+        )
+        Text(
+            text = "提示：使用离线语音时，暂停后继续会从本章开头重新朗读。",
+            color = textColor.copy(alpha = 0.5f),
+            style = MaterialTheme.typography.labelSmall,
         )
     }
 }
@@ -856,6 +961,8 @@ private fun SettingsPanel(
     speechRate: Float,
     textColor: Color,
 ) {
+    // 自动翻页倍速（A5）：与设置页共用偏好键，这里读 VM 的 state（状态随设置页改动实时同步）
+    val autoPageSpeed by viewModel.autoPageSpeed.collectAsState()
     SettingSwitch("夜间模式", nightMode, textColor) { viewModel.toggleNightMode() }
     SettingSwitch("沉浸式全屏", fullScreen, textColor) { viewModel.setFullScreen(it) }
     SettingSwitch("隐藏顶部栏", hideTopBar, textColor) { viewModel.setHideTopBar(it) }
@@ -864,6 +971,18 @@ private fun SettingsPanel(
     SettingSwitch("音量键翻页", volumePage, textColor) { viewModel.setVolumePage(it) }
     if (volumePage) {
         SettingSwitch("音量上键=上一页", volumeUpPrev, textColor) { viewModel.setVolumeUpPrev(it) }
+    }
+    // A8：点击分区。三区 = 左上一页 / 中呼菜单 / 右下一页；两区 = 左右翻页（没有中间呼菜单区）。
+    val tapZone by viewModel.tapZone.collectAsState()
+    Text("点击分区", color = textColor, style = MaterialTheme.typography.titleSmall)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        MenuChip("三区", tapZone == 0, textColor) { viewModel.setTapZone(0) }
+        MenuChip("两区", tapZone == 1, textColor) { viewModel.setTapZone(1) }
+        Text(
+            text = if (tapZone == 0) "左/中/右翻页·菜单，长按选词" else "左右翻页，长按呼菜单",
+            color = textColor.copy(alpha = 0.55f),
+            style = MaterialTheme.typography.labelSmall,
+        )
     }
     SettingSwitch("自动翻页", autoPage, textColor) { viewModel.setAutoPage(it) }
     if (autoPage) {
@@ -875,6 +994,28 @@ private fun SettingsPanel(
             textColor = textColor,
             onChange = { viewModel.setAutoPageInterval(it.toInt()) },
         )
+        // 倍速档位（A5）：与设置页「自动翻页倍速」同一个偏好键。
+        // 6 档拆成两行放：MenuChip 自带 14dp 横向内边距，6 个挤一行在窄屏上会被裁掉。
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = "翻页倍速",
+            color = textColor.copy(alpha = 0.75f),
+            style = MaterialTheme.typography.labelMedium,
+        )
+        val speedChoices = com.novelreader.core.reader.ReaderAutoPagePolicy.SPEED_CHOICES
+        speedChoices.chunked(3).forEach { row ->
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                row.forEachIndexed { index, speed ->
+                    if (index > 0) Spacer(Modifier.width(8.dp))
+                    MenuChip(
+                        text = speedChipLabel(speed),
+                        selected = autoPageSpeed == speed,
+                        textColor = textColor,
+                    ) { viewModel.setAutoPageSpeed(speed) }
+                }
+            }
+        }
     }
     // 朗读 / 听书（对标开源阅读 ReadAloud）
     Spacer(Modifier.height(10.dp))
@@ -1367,6 +1508,10 @@ private fun MenuChip(text: String, selected: Boolean, textColor: Color, onClick:
             .padding(horizontal = 14.dp, vertical = 7.dp),
     )
 }
+
+/** 自动翻页倍速标签：整数档显示 `1x`，半档显示 `1.5x`（与设置页写法一致） */
+private fun speedChipLabel(speed: Float): String =
+    if (speed % 1f == 0f) "${speed.toInt()}x" else "${speed}x"
 
 /**
  * 阅读页菜单内开关的统一配色。

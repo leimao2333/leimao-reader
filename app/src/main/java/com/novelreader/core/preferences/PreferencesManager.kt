@@ -36,6 +36,17 @@ class PreferencesManager(private val context: Context) {
         const val THEME_MODE_DARK = 1
         const val THEME_MODE_SYSTEM = 2
 
+        // ===== 动态取色（C1） =====
+        /**
+         * 主题种子色（argb Int）。
+         *
+         * 0 = 还没有主题色（不启用动态取色）；非 0 时由
+         * [com.novelreader.ui.theme.ThemeEngine.fromSeedColor] 生成整套配色。
+         */
+        val KEY_THEME_SEED_COLOR = intPreferencesKey("theme_seed_color")
+        /** 动态取色开关（关着时即使有种子色也用写死的两套配色） */
+        val KEY_THEME_DYNAMIC_COLOR = booleanPreferencesKey("theme_dynamic_color")
+
         // ===== 小说阅读 =====
         val KEY_NOVEL_FONT_SIZE = floatPreferencesKey("novel_font_size")
         /** 详细日志开关（v1.9.0.2）：设置 → 开发者选项，默认关 */
@@ -66,6 +77,10 @@ class PreferencesManager(private val context: Context) {
         val KEY_NOVEL_AUTO_PAGE = booleanPreferencesKey("novel_auto_page")
         /** 自动翻页间隔（秒，5 ~ 120） */
         val KEY_NOVEL_AUTO_PAGE_INTERVAL = intPreferencesKey("novel_auto_page_interval")
+        /** 自动翻页倍速（A5，1.0 / 1.5 / 2.0 / 2.5 / 3.0 / 4.0，越大翻得越快） */
+        val KEY_NOVEL_AUTO_PAGE_SPEED = floatPreferencesKey("novel_auto_page_speed")
+        /** 点击分区模式（A8）：0 = 三区，1 = 两区 */
+        val KEY_NOVEL_TAP_ZONE = intPreferencesKey("novel_tap_zone")
         /** 音量键翻页开关（开启后音量键上/下翻页，不调音量） */
         val KEY_NOVEL_VOLUME_PAGE = booleanPreferencesKey("novel_volume_page")
 
@@ -415,6 +430,8 @@ class PreferencesManager(private val context: Context) {
         const val DEFAULT_SIDE_PADDING = 20f
         /** 默认自动翻页间隔（秒） */
         const val DEFAULT_AUTO_PAGE_INTERVAL = 20
+        /** 默认自动翻页倍速（1.0x = 按用户设定间隔翻页） */
+        const val DEFAULT_AUTO_PAGE_SPEED = 1.0f
         /** 默认并行搜索线程数 */
         const val DEFAULT_SEARCH_CONCURRENCY = 12
         /** 并行搜索线程数上限 */
@@ -539,7 +556,27 @@ class PreferencesManager(private val context: Context) {
         }
 
     suspend fun setDarkThemeMode(value: Int) {
-        context.dataStore.edit { it[KEY_DARK_THEME_MODE] = value.coerceIn(0, 2) }
+        val mode = value.coerceIn(0, 2)
+        // 全局夜间 ↔ 小说页夜间双向同步（用户明确要求）：
+        // 设置页切夜间，小说阅读页必须同步变；反之亦然。用同一个 edit 事务写两个 key，
+        // 避免分别调用 setNovelNight/setDarkThemeMode 造成来回递归。
+        // 「跟随系统」时按当前系统明暗折算成小说页的夜间值。
+        val novelNight = when (mode) {
+            THEME_MODE_DARK -> true
+            THEME_MODE_LIGHT -> false
+            else -> isSystemNight()
+        }
+        context.dataStore.edit { prefs ->
+            prefs[KEY_DARK_THEME_MODE] = mode
+            prefs[KEY_NOVEL_NIGHT] = novelNight
+        }
+    }
+
+    /** 当前系统是否处于深色（供「跟随系统」模式折算小说页夜间用） */
+    private fun isSystemNight(): Boolean {
+        val mask = android.content.res.Configuration.UI_MODE_NIGHT_MASK
+        return (context.resources.configuration.uiMode and mask) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
     }
 
     /** 兼容旧接口：设置深色主题开关（关闭跟随系统，转为显式 开/关） */
@@ -547,6 +584,27 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setDarkTheme(value: Boolean) {
         setDarkThemeMode(if (value) THEME_MODE_DARK else THEME_MODE_LIGHT)
+    }
+
+    /**
+     * 主题种子色（argb）；0 = 未取到过主题色。
+     *
+     * 只存颜色本身，**开不开**由 [themeDynamicColorFlow] 决定 ——
+     * 用户关掉动态取色后下次再打开，颜色还在，不用重新取一遍。
+     */
+    val themeSeedColorFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_THEME_SEED_COLOR] ?: 0 }
+
+    suspend fun setThemeSeedColor(value: Int) {
+        context.dataStore.edit { it[KEY_THEME_SEED_COLOR] = value }
+    }
+
+    /** 动态取色开关（默认关：默认观感保持不变） */
+    val themeDynamicColorFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_THEME_DYNAMIC_COLOR] ?: false }
+
+    suspend fun setThemeDynamicColor(value: Boolean) {
+        context.dataStore.edit { it[KEY_THEME_DYNAMIC_COLOR] = value }
     }
 
     // ===== 小说 =====
@@ -568,7 +626,33 @@ class PreferencesManager(private val context: Context) {
         .map { it[KEY_NOVEL_NIGHT] ?: false }
 
     suspend fun setNovelNight(value: Boolean) {
-        context.dataStore.edit { it[KEY_NOVEL_NIGHT] = value }
+        // 双向同步：小说页切夜间时，全局主题也跟着切到开/关（退出「跟随系统」为显式值）。
+        // 与 setDarkThemeMode 用同一个 edit 事务，避免互相调用递归。
+        context.dataStore.edit { prefs ->
+            prefs[KEY_NOVEL_NIGHT] = value
+            prefs[KEY_DARK_THEME_MODE] = if (value) THEME_MODE_DARK else THEME_MODE_LIGHT
+        }
+    }
+
+    /**
+     * 启动时对齐两个夜间开关（App.onCreate 调一次）。
+     *
+     * 老版本两个值各存各的，可能出现「全局夜间=开、小说页夜间=关」的不一致（正是
+     * "开了夜间小说页还是白底"的成因）。这里以全局为准把小说页拉齐；跟随系统则
+     * 折算成当前系统明暗。只在值不同时写，避免每次启动都触发一轮 DataStore 写入。
+     */
+    suspend fun reconcileNightModes() {
+        val prefs = context.dataStore.data.first()
+        val mode = prefs[KEY_DARK_THEME_MODE]
+            ?: if (prefs[KEY_DARK_THEME] == true) THEME_MODE_DARK else THEME_MODE_LIGHT
+        val expectedNovelNight = when (mode) {
+            THEME_MODE_DARK -> true
+            THEME_MODE_LIGHT -> false
+            else -> isSystemNight()
+        }
+        if (prefs[KEY_NOVEL_NIGHT] != expectedNovelNight) {
+            context.dataStore.edit { it[KEY_NOVEL_NIGHT] = expectedNovelNight }
+        }
     }
 
     val novelPageModeFlow: Flow<Int> = context.dataStore.data
@@ -646,6 +730,24 @@ class PreferencesManager(private val context: Context) {
         context.dataStore.edit { it[KEY_NOVEL_AUTO_PAGE_INTERVAL] = value.coerceIn(5, 120) }
     }
 
+    /**
+     * 自动翻页倍速（A5）。
+     *
+     * 存储时吸附到 [com.novelreader.core.reader.ReaderAutoPagePolicy.SPEED_CHOICES]
+     * 的合法档位，避免出现 1.37x 这种脏值（滑杆拖动会产生连续小数）。
+     */
+    val novelAutoPageSpeedFlow: Flow<Float> = context.dataStore.data
+        .map {
+            com.novelreader.core.reader.ReaderAutoPagePolicy.normalizeSpeed(
+                it[KEY_NOVEL_AUTO_PAGE_SPEED] ?: DEFAULT_AUTO_PAGE_SPEED
+            )
+        }
+
+    suspend fun setNovelAutoPageSpeed(value: Float) {
+        val safe = com.novelreader.core.reader.ReaderAutoPagePolicy.normalizeSpeed(value)
+        context.dataStore.edit { it[KEY_NOVEL_AUTO_PAGE_SPEED] = safe }
+    }
+
     // ===== 简繁转换（v1.1.8.0） =====
     /** 简繁转换模式：见 CONVERT_NONE / CONVERT_TO_TRADITIONAL / CONVERT_TO_SIMPLIFIED */
     val novelConvertModeFlow: Flow<Int> = context.dataStore.data
@@ -661,6 +763,18 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setNovelVolumePage(value: Boolean) {
         context.dataStore.edit { it[KEY_NOVEL_VOLUME_PAGE] = value }
+    }
+
+    /**
+     * 点击分区模式（A8）：0 = 三区（左上一页 / 中呼菜单 / 右下一页），1 = 两区（左右翻页，无中间）。
+     *
+     * 只影响左右/上下翻页模式的点击判定；滚动模式本身不看点击分区。
+     */
+    val novelTapZoneFlow: Flow<Int> = context.dataStore.data
+        .map { (it[KEY_NOVEL_TAP_ZONE] ?: 0).coerceIn(0, 1) }
+
+    suspend fun setNovelTapZone(value: Int) {
+        context.dataStore.edit { it[KEY_NOVEL_TAP_ZONE] = value.coerceIn(0, 1) }
     }
 
     /**

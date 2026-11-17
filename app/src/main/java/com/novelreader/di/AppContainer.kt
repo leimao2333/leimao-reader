@@ -77,6 +77,7 @@ class AppContainer(context: Context) {
                 AppDatabase.MIGRATION_16_17,
                 AppDatabase.MIGRATION_17_18,
                 AppDatabase.MIGRATION_18_19,
+                AppDatabase.MIGRATION_19_20,
             )
             .build()
     }
@@ -179,6 +180,11 @@ class AppContainer(context: Context) {
     /** 书签仓库（v1.1.0.0） */
     val bookmarkRepository: BookmarkRepository by lazy {
         BookmarkRepositoryImpl(database.bookmarkDao())
+    }
+
+    /** 书籍备注仓库（C7）：一本书一条备注，UI 后续接入书架长按菜单 */
+    val bookNoteRepository: com.novelreader.data.repository.BookNoteRepository by lazy {
+        com.novelreader.data.repository.BookNoteRepositoryImpl(database.bookNoteDao())
     }
 
     /** RSS 订阅仓库（v1.3.1.0） */

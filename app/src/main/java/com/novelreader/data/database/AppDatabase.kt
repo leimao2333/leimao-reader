@@ -5,6 +5,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.novelreader.data.model.BookEntity
+import com.novelreader.data.model.BookNoteEntity
 import com.novelreader.data.model.LocalTagEntity
 import com.novelreader.data.model.TagInstanceEntity
 import com.novelreader.data.model.BookmarkEntity
@@ -36,8 +37,9 @@ import com.novelreader.data.model.SourceEntity
         LocalTagEntity::class,
         TagInstanceEntity::class,
         ChapterListCacheEntity::class,
+        BookNoteEntity::class,
     ],
-    version = 19,
+    version = 20,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -51,6 +53,9 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun rssPdfDao(): RssPdfDao
     abstract fun localTagDao(): LocalTagDao
     abstract fun tagInstanceDao(): TagInstanceDao
+
+    /** 书籍备注 DAO（v20，C7） */
+    abstract fun bookNoteDao(): BookNoteDao
 
     companion object {
         /** v1 -> v2：sources 表新增 category 列 */
@@ -433,6 +438,27 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_18_19 = object : Migration(18, 19) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE sources ADD COLUMN groupName TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /**
+         * v19 -> v20：新增书籍备注表（C7）。
+         *
+         * 一本书一条备注，`bookId` 即主键，与 books.bookId 对应（不建外键，
+         * 删书时的清理由 ShelfPurger 显式完成）。
+         */
+        val MIGRATION_19_20 = object : Migration(19, 20) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `book_notes` (
+                      `bookId` INTEGER NOT NULL,
+                      `note` TEXT NOT NULL,
+                      `updatedAt` INTEGER NOT NULL,
+                      PRIMARY KEY(`bookId`)
+                    )
+                    """.trimIndent(),
+                )
             }
         }
 

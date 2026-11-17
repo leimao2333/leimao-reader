@@ -589,6 +589,8 @@ fun AppNavHost(
                         it.downloadManager,
                         it.progressRepository,
                         it.chapterCacheRepository,
+                        // 详情页「备注」入口（C7）
+                        it.bookNoteRepository,
                     )
                 }
             )

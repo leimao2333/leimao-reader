@@ -3,6 +3,8 @@ package com.novelreader.ui.screens.settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -117,6 +119,12 @@ fun SettingsScreen(
     val novelFontSize by viewModel.novelFontSize.collectAsState()
     val novelBgIndex by viewModel.novelBgIndex.collectAsState()
     val novelPageType by viewModel.novelPageType.collectAsState()
+    // 自动翻页倍速（A5）
+    val autoPageSpeed by viewModel.autoPageSpeed.collectAsState()
+    // 动态取色（C1）
+    val themeSeedColor by viewModel.themeSeedColor.collectAsState()
+    val themeDynamicColor by viewModel.themeDynamicColor.collectAsState()
+    val themeSeedBusy by viewModel.themeSeedBusy.collectAsState()
     val comicPageMode by viewModel.comicPageMode.collectAsState()
     val comicPreloadCount by viewModel.comicPreloadCount.collectAsState()
     val comicPreloadWifiOnly by viewModel.comicPreloadWifiOnly.collectAsState()
@@ -222,6 +230,8 @@ fun SettingsScreen(
         snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
+                    // 顶栏避让状态栏：enableEdgeToEdge 下部分设备 Scaffold 默认 inset 失效
+                    windowInsets = WindowInsets.statusBars,
                 title = { Text("设置") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -300,6 +310,47 @@ fun SettingsScreen(
                             modifier = Modifier.padding(start = 4.dp),
                         )
                     }
+                }
+            }
+
+            // ===== 动态取色（C1）=====
+            // 开关与种子色分开存：关掉只是不使用，取到的颜色还在，下次打开不必重取。
+            SettingRow(
+                title = "动态取色",
+                subtitle = "用主题色生成整套 Material3 配色；关掉则回到默认的藏蓝 / 夜色",
+            ) {
+                Switch(
+                    checked = themeDynamicColor,
+                    onCheckedChange = { viewModel.setThemeDynamicColor(it) },
+                )
+            }
+            SettingRow(
+                title = "从封面取色",
+                subtitle = if (themeSeedBusy) {
+                    "正在读取最近阅读的封面…"
+                } else if (themeSeedColor == 0) {
+                    "从书架最近阅读的第一本书封面提取主色"
+                } else {
+                    "当前主题色 #%06X".format(0xFFFFFF and themeSeedColor)
+                },
+            ) {
+                TextButton(
+                    onClick = { viewModel.pickSeedFromRecentCover() },
+                    enabled = !themeSeedBusy,
+                ) { Text(if (themeSeedBusy) "取色中…" else "取色") }
+            }
+            // 兜底：书架为空 / 封面下载不到时，也能从 6 个预设色里挑一个
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                THEME_PRESET_SEEDS.forEach { (argb, name) ->
+                    ColorSwatch(
+                        color = Color(argb),
+                        name = name,
+                        selected = themeSeedColor == argb,
+                        onClick = { viewModel.setThemeSeedColor(argb) },
+                    )
                 }
             }
 
@@ -387,6 +438,33 @@ fun SettingsScreen(
                 valueRange = 0f..10f,
                 steps = 9,
             )
+            // 自动翻页倍速（A5）：读写与阅读页菜单、阅读页翻页计时完全同一个偏好键。
+            // 设置页本来没有「自动翻页间隔」入口（那个在阅读页菜单里），所以这里单独成项，
+            // 给不想进阅读页调档的用户一个快捷入口。
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = "自动翻页倍速",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = "自动翻页的停留时长按倍速缩放：1x 最慢、4x 最快（实际间隔 = 设定间隔 ÷ 倍速）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                com.novelreader.core.reader.ReaderAutoPagePolicy.SPEED_CHOICES.forEach { speed ->
+                    PageModeChip(
+                        label = speedLabel(speed),
+                        selected = autoPageSpeed == speed,
+                        onClick = { viewModel.setAutoPageSpeed(speed) },
+                    )
+                }
+            }
+
             SettingRow(
                 title = "未加入书架时提示",
                 subtitle = "打开未收藏的小说时询问是否加入书架",
@@ -1654,6 +1732,29 @@ private fun PageModeChip(
         style = MaterialTheme.typography.bodyMedium,
     )
 }
+
+/**
+ * 倍速标签：整数档位显示 `1x / 2x`，半档显示 `1.5x`。
+ *
+ * 直接 `"${speed}x"` 会把 1.0f 打成「1.0x」，和阅读页菜单里的写法对不上。
+ */
+private fun speedLabel(speed: Float): String =
+    if (speed % 1f == 0f) "${speed.toInt()}x" else "${speed}x"
+
+/**
+ * 预设主题色（C1）：书架为空 / 封面下载不到时的兜底。
+ *
+ * 6 个色相大致均分（蓝 / 绿 / 红 / 紫 / 橙 / 青灰），
+ * 每个都能被 `ThemeEngine` 展开成一整套浅色 / 深色配色。
+ */
+private val THEME_PRESET_SEEDS: List<Pair<Int, String>> = listOf(
+    0xFF1E88E5.toInt() to "海蓝",
+    0xFF43A047.toInt() to "松绿",
+    0xFFE53935.toInt() to "朱红",
+    0xFF8E24AA.toInt() to "紫罗兰",
+    0xFFF4511E.toInt() to "赭橙",
+    0xFF546E7A.toInt() to "青灰",
+)
 
 /** 云端清单里的类型键 → 中文（`NOVEL` → 小说；v1.8.2.0） */
 private fun typeName(key: String): String = when (key.uppercase()) {

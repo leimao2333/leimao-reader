@@ -855,22 +855,22 @@
   - 现状：`buildReaderText` + `TextMeasurer` 二分测量塞在 3019 行的 `NovelReaderScreen.kt` 里。
   - 涉及：新建排版引擎类，从 `ui/screens/novel/NovelReaderScreen.kt` 抽离。
 
-- [ ] **A2（P0）中文断行 + 标点避头尾**
+- [x] **A2（P0）中文断行 + 标点避头尾** ✅ 已落地（新建 `core/text/ChineseLineBreaker.kt` 并接入 `paginateByMeasurement.naturalCut`；18 个单测覆盖）
   - 参考：`feature/reader/core/layout/ChineseLineBreaker.kt`。
   - 现状：无，换行靠系统默认，标点可能落在行首/行尾。
   - 涉及：排版引擎的断行环节。
 
-- [ ] **A3（P0）真·仿真翻页（卷曲/阴影透视）替代纯平移**
+- [x] **A3（P0）真·仿真翻页（卷曲/阴影透视）替代纯平移** ✅ 已落地（`CanvasPagerNovel` 按 `pageType` 真正分发；仿真=装订边横向压缩+自由边渐变阴影，覆盖=层叠滑入，无动画=瞬切）
   - 参考：`feature/reader/components/ioscurl/*`、`googlecurl/*`、`core/transition/PageCurlGeometry.kt`。
   - 现状：`PageTransform.simulate()` 实为纯平移（源码注释已标明降级实现）。
   - 涉及：`ui/screens/novel/NovelReaderScreen.kt`。
 
-- [ ] **A4（P1）多套翻页实现合并去重（现 5 套并存）**
+- [ ] **A4（P1）多套翻页实现合并去重（现 5 套并存）** 🔧 部分完成（确认 `HorizontalPagerNovel`/`HorizontalWindowNovel`/`WindowPageSlot` 零调用并加注说明；实际生效的三支已按 `pageType` 统一分发。死代码删除待做）
   - 参考：统一 `feature/reader/ReaderCanvasSurface.kt` 绘制层。
   - 现状：Scroll / HorizontalPager / HorizontalWindow / Canvas / Vertical 五套重复维护。
   - 涉及：`ui/screens/novel/NovelReaderScreen.kt`。
 
-- [ ] **A5（P1）自动翻页策略 + 速度档位**
+- [x] **A5（P1）自动翻页策略 + 速度档位** ✅ 已落地（`core/reader/ReaderAutoPagePolicy.kt` + `KEY_NOVEL_AUTO_PAGE_SPEED` + VM Flow + 三支阅读页接入 + **设置页/阅读菜单 chips**；9 个单测）
   - 参考：`core/transition/ReaderAutoPagePolicy.kt`、`ReaderPageTurnSpeed.kt`。
   - 现状：仅有固定间隔自动翻页。
   - 涉及：`ui/screens/novel/NovelReaderMenu.kt`、`core/preferences/PreferencesManager.kt`。
@@ -880,17 +880,17 @@
   - 现状：无，末页体验粗糙。
   - 涉及：排版引擎 + `NovelReaderScreen.kt`。
 
-- [ ] **A7（P1）正文长按选词（复制/搜索/翻译/字典）**
+- [x] **A7（P1）正文长按选词（复制/搜索/翻译/字典）** ✅ 已落地（长按 ≥420ms 选中按下处的词 + 半透明高亮 + 底部「复制/取消」；**搜索/翻译/字典菜单项未接**，当前只提供复制）
   - 参考：`feature/reader/core/selection/ReaderSelection*.kt` 系列。
   - 现状：无。
   - 涉及：`ui/screens/novel/NovelReaderScreen.kt`。
 
-- [ ] **A8（P1）手势策略化：点击分区可配 + 下拉加书签 + 手柄翻页**
+- [ ] **A8（P1）手势策略化：点击分区可配 + 下拉加书签 + 手柄翻页** 🔧 部分落地（`ReaderGesturePolicy` 已接入 Canvas 点击分区判定；手柄 DPAD/PageUp·PageDown/A·B 键翻页已接，且不劫持音量键）；**下拉加书签、分区比例的可配设置项未做**
   - 参考：`core/gesture/ReaderTapAction.kt`、`PullBookmarkGesture.kt`、`ReaderGestureSettingsPolicy.kt`。
   - 现状：硬编码连点/拖拽；参考项目 README 明确支持手柄上下翻页。
   - 涉及：`NovelReaderScreen.kt`、`core/preferences/PreferencesManager.kt`。
 
-- [ ] **A9（P2）阅读状态提示行（电量/时间/进度/章节）**
+- [x] **A9（P2）阅读状态提示行（电量/时间/进度/章节）** ✅ 已落地（`ReaderChapterStatusBar` 新增 `trailingInfo`，阅读页传「HH:mm · 当前页/总页」，30 秒刷新一次）
   - 参考：`core/model/ReaderTipRowLayout.kt`、`ReaderTipValue.kt`。
   - 现状：仅基础进度栏。
   - 涉及：`ui/screens/novel/NovelReaderMenu.kt`。
@@ -932,31 +932,31 @@
 
 ### 15.2 小说源解析
 
-- [ ] **B1（P0）JSON/JS 适配器容错增强（异常分类/编码探测/JSONP）**
+- [x] **B1（P0）JSON/JS 适配器容错增强（异常分类/编码探测/JSONP）** ✅ 已落地（异常分类日志 + 逐字段 `runCatching` + `TextDecoding` 编码回退 + `UrlJoin` 地址补全）
   - 参考：`domain/usecase/GetChapterContentUseCase.kt`、`domain/model/BookContentProcessEngine.kt`。
   - 现状：`source/parser/JsonSourceAdapter.kt` 用 `rule ?: return emptyList()` 简单吞错，无细粒度异常分类。
   - 涉及：`source/parser/JsonSourceAdapter.kt`、`JsSourceAdapter.kt`、`source/engine/HtmlSelectorEngine.kt`。
 
-- [ ] **B2（P0）规则语法对齐 legado 全套**
+- [ ] **B2（P0）规则语法对齐 legado 全套** 🔧 部分落地（`HtmlSelectorEngine` 支持 `[0]/[-1]` 索引与 `@text/@html/@ownhtml/@outerhtml/@href/@src/@attr(xxx)`；JSON 路径支持 `$.a.b[0]`/`[-1]`/`[*]` 投影与 `@json:` 前缀；相对地址统一走新建的 `core/util/UrlJoin.kt`；`{{baseUrl}}` 占位符支持。与 legado 全量语法仍有差距）
   - 参考：`data/entities/rule/*`（SearchRule / BookInfoRule / TocRule / ContentRule / ExploreRule / ReviewRule）。
   - 现状：本地**仅 legado 适配器完整**（`source/legado/LegadoRuleEngine.kt` 2018 行），自研 JSON/JS 源规则偏弱。
   - 涉及：`source/parser/JsonSourceParser.kt`、`JsSourceParser.kt`、`source/engine/JsonRuleParser.kt`。
 
-- [ ] **B3（P0）JS 执行全链路超时 + 死循环防护**
+- [ ] **B3（P0）JS 执行全链路超时 + 死循环防护** 🔧 引擎层已落地（`SourceJsEngine` 新增 `callFunctionWithTimeout`/`evaluateWithTimeout`，daemon 单线程池 + Future 超时）；**调用方尚未切换**，且 Rhino 死循环无法硬中断（已注释说明局限）
   - 现状：仅 `JsSourceAdapter.test()` 包了 15s，`core/js/SourceJsEngine.kt` 的 `callFunction` 无超时，恶意/死循环 JS 源可卡调用线程。
   - 涉及：`core/js/SourceJsEngine.kt`。
 
-- [ ] **B4（P1）源格式嗅探健壮化（现为字符串启发式）**
+- [x] **B4（P1）源格式嗅探健壮化（现为字符串启发式）** ✅ 已落地（`SourceValidator` 加 BOM/包裹引号规范化 + Gson 严格解析优先判定 JSON + JS 特征收窄）
   - 参考：`data/entities/BookSourcePart.kt` 结构化。
   - 现状：`source/loader/SourceValidator.kt` 靠 `content.contains("function")` / `startsWith("{")` 等特征，畸形源易误判。
   - 涉及：`source/loader/SourceValidator.kt`。
 
-- [ ] **B5（P0）书源健康检测 / 失效自动标记**
+- [x] **B5（P0）书源健康检测 / 失效自动标记** ✅ 已落地（`SourceHealthChecker` + 源管理页「正常/偏慢/失效」徽标 + 检测摘要「正常 x · 偏慢 y · 失效 z」；复用既有 `testSources` 计时，不重复请求）
   - 参考：`domain/usecase/BookSourceCheckUseCases.kt`、`data/repository/CheckSourceSettingsRepository.kt`。
   - 现状：靠网络试探 + `SourceErrorLog`，无体系化检测。
   - 涉及：`ui/screens/source/SourceManageViewModel.kt`、`core/source/SourceErrorLog.kt`。
 
-- [ ] **B6（P1）正文质量检查（空章/广告残留/乱码）**
+- [x] **B6（P1）正文质量检查（空章/广告残留/乱码）** ✅ 已落地（`ContentQualityChecker` + `ContentRepositoryImpl.content()` 接入：`stripAdTail` 去尾部广告、低质量记日志/记账但不中断；漫画/视频走 `novelText == null` 短路）
   - 参考：`domain/usecase/CheckBookContentQualityUseCase.kt`。
   - 现状：无。
   - 涉及：`source/` 解析层 + `core/text/TextCleaner.kt`。
@@ -986,13 +986,13 @@
   - 现状：有换源，效率可提升。
   - 涉及：`ui/screens/novel/NovelReaderViewModel.kt`（换源逻辑）。
 
-- [ ] **B12（P2）错误日志 + 可视化诊断报告**
+- [x] **B12（P2）错误日志 + 可视化诊断报告** ✅ 已落地（`SourceErrorLog.summarize()` + 源管理页「错误诊断(n)」弹窗：源名/次数/按 op 分类/时间/最近消息，可清空）
   - 现状：`core/source/SourceErrorLog.kt` 仅落日志，无诊断视图。
   - 涉及：源管理页新增诊断入口。
 
 ### 15.3 小说页面
 
-- [ ] **C1（P0）主题引擎升级：动态取色 + 封面取色**
+- [x] **C1（P0）主题引擎升级：动态取色 + 封面取色** ✅ 已落地（`ThemeEngine` 种子色配色 + `ImageSeedColorExtractor` 封面主色 + `NovelReaderTheme(colorScheme=)` 可选参数 + `MainActivity` 根接线 + 设置页「动态取色」开关与「从封面取色」）
   - 参考：`ui/theme/ThemeEngine.kt`、`ThemeResolver.kt`、`ImageSeedColorExtractor.kt`、`CustomColorScheme.kt`。
   - 现状：`ui/theme/Theme.kt` 为基础 MD3，无动态取色（`theme` 章节已有 #48 主题设置需求，本项为其底层能力）。
   - 涉及：`ui/theme/`、`ui/screens/settings/SettingsScreen.kt`。
@@ -1017,12 +1017,12 @@
   - 现状：`core/util/HomeFeedPlan.kt`（214 行）固定编排。
   - 涉及：`HomeFeedPlan.kt`、`HomeViewModel.kt`。
 
-- [ ] **C6（P1）智能伴生分组（已读/未读自动归类）**
+- [x] **C6（P1）智能伴生分组（已读/未读自动归类）** ✅ 已落地（`BookshelfAutoGroup` + 书架「全部/在读 N/未读 N/已读完 N」chips，与类型/搜索/排序叠加；空组 disabled）
   - 参考：`data/repository/BookshelfAutoGroupRepository.kt`、`BookshelfAutoGroupPromptRepository.kt`；参考项目 README 独有特性。
   - 现状：仅手动分组。
   - 涉及：`ui/screens/bookshelf/BookShelfViewModel.kt`。
 
-- [ ] **C7（P1）书籍备注 / 知识卡**
+- [x] **C7（P1）书籍备注 / 知识卡** ✅ 已落地（`book_notes` 表 Room v20 + `BookNoteRepository` + 详情页备注条与编辑弹窗；备注 key = FNV-1a 64 位(sourceId+itemId)，恒为负以避免撞 books 自增主键）
   - 参考：`data/entities/BookKnowledge.kt`、`BookMarking.kt`；参考项目 README 独有特性「书籍备注」。
   - 现状：无。
   - 涉及：书籍详情页新增备注入口 + 数据层。
@@ -1071,6 +1071,11 @@
   - 参考：`feature/onboarding/*`。
   - 现状：无。
   - 涉及：新建引导页 + 首启标记（`PreferencesManager.kt`）。
+
+### 十五章补充：夜间模式与顶栏修复（2026-11-17 完成，待发版）
+- [x] **夜间模式三连修**：① 全局夜间 ↔ 小说页夜间双向同步（`setDarkThemeMode`/`setNovelNight` 同一事务互写 + App 启动 `reconcileNightModes` 对齐老数据）；② 8 个裸容器页面（小说/漫画/视频详情、3 搜索页、VideoChannel、Explore）铺 `colorScheme.background` 并给裸 Text 补 `onSurface`，修复「夜间开但页面白底 / 简介黑字看不见」；③ 11 个 Scaffold 页 TopAppBar 显式 `windowInsets = WindowInsets.statusBars`，修复标题压状态栏、图标点不到。
+  - 验证：compileDebug + assembleRelease + 全量单测通过；真机确认详情页深色、简介可读、双向同步、顶栏 bounds y=59→159。
+- [x] **听书面板**（对应用户反馈）：阅读页「听书」按钮由盲切开关改为面板（开始/暂停/继续/停止 + 语速），系统 TTS 按段落续播实现真暂停；真机验证面板可见。
 
 ## 十六、漫画模块全面优化（参考 venera 官方源码）
 > 需求（用户提出，2026-11-17）：参考 `github.com/venera-app/venera` 官方源码，对**漫画阅读 / 漫画源解析 / 漫画预览 / 漫画页面**全面优化，先列清单不写码。

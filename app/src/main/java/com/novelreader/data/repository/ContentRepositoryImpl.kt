@@ -1,6 +1,7 @@
 package com.novelreader.data.repository
 
 import com.novelreader.core.source.SourceErrorLog
+import com.novelreader.core.text.ContentQualityChecker
 import com.novelreader.core.util.runCatchingCc
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.ChapterLine
@@ -460,11 +461,63 @@ class ContentRepositoryImpl(
             val adapter = resolveAdapter(chapter.sourceId)
                 ?: return@withContext ContentResult()
             // v1.7.1.0：同 chapterList，失败原因记进 SourceErrorLog 供 UI 提示
-            runCatching { adapter.content(chapter) }
+            val result = runCatching { adapter.content(chapter) }
                 .onSuccess { SourceErrorLog.clear(chapter.sourceId) }
                 .onFailure { SourceErrorLog.record(chapter.sourceId, "图片", it) }
                 .getOrDefault(ContentResult())
+            // B6：小说正文质量处理（去尾巴广告 + 低质量记账）。
+            // 时机：本层没有正文缓存，章节正文缓存（getCached/put）在 NovelReaderViewModel
+            // 里、位于本方法**之后**。所以在这里处理 = 每次真正联网只处理一遍，回写进缓存的
+            // 已是净化后的文本；之后读缓存不再经过本方法，不会重复处理、也不会重复记账。
+            refineNovelText(result, chapter.sourceId, adapter.info.name)
         }
+
+    /**
+     * 小说正文质量处理（B6）。
+     *
+     * 只碰 [ContentResult.novelText]：漫画 / 视频 / 图片分支的 `novelText` 为 null，
+     * 在第一步就原样返回，字段与对象都不变（零影响）。
+     *
+     * 处理顺序：
+     * 1. [ContentQualityChecker.stripAdTail] 去掉末尾广告行（只从末行往前看，最多 6 行）；
+     * 2. 对**净化后**的文本做一次 [ContentQualityChecker.isLikelyEmptyOrAd]。
+     *    正常章节只花这一次全文扫描；判低质量时才再 [ContentQualityChecker.check] 一次
+     *    取字段（罕见路径，可以接受）。
+     *
+     * 低质量**不抛异常**——正文再差也比打断阅读强：照样把净化后的文本交回上层
+     * （阅读页仍能显示），只额外记两条仅内存的诊断。日志只带 sourceId 与数字，
+     * 不带站点名 / 网址（项目文案红线）。
+     */
+    private fun refineNovelText(
+        result: ContentResult,
+        sourceId: String,
+        sourceName: String?,
+    ): ContentResult {
+        val raw = result.novelText ?: return result
+        // 空白正文由上层「本章暂无内容」链路兜底，这里不扫描、也不记账，免得刷屏
+        if (raw.isBlank()) return result
+
+        val cleaned = ContentQualityChecker.stripAdTail(raw)
+        if (!ContentQualityChecker.isLikelyEmptyOrAd(cleaned)) {
+            return result.copy(novelText = cleaned)
+        }
+
+        val q = ContentQualityChecker.check(cleaned)
+        android.util.Log.w(
+            "ContentQuality",
+            "低质量正文 sourceId=$sourceId chars=${q.chars} adHits=${q.adHits}",
+        )
+        SourceErrorLog.record(
+            sourceId,
+            "正文质量",
+            IllegalStateException(
+                "低质量正文 chars=${q.chars} adHits=${q.adHits} " +
+                    "gibberish=${(q.gibberishRatio * 100).toInt()}%",
+            ),
+            sourceName,
+        )
+        return result.copy(novelText = cleaned)
+    }
 
     /** 图片失败回退：目前只有 Venera 源支持（onImageLoad → onLoadFailed 多镜像 / 惰性解析） */
     override suspend fun fallbackImage(

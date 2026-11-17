@@ -3,7 +3,10 @@ package com.novelreader.ui.screens.bookshelf
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -20,6 +23,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
@@ -74,6 +78,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
+import com.novelreader.core.util.ShelfCompanionGroup
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
@@ -99,6 +104,10 @@ fun BookShelfScreen(
     val progressMap by viewModel.progressMap.collectAsState()
     val lastChapterMap by viewModel.lastChapterMap.collectAsState()
     val chapterCountMap by viewModel.chapterCountMap.collectAsState()
+    // 智能伴生分组（C6）：分组 → 成员（用于 chips 数量）、itemKey → 分组（用于过滤）、当前选中项
+    val companionGroups by viewModel.companionGroups.collectAsState()
+    val companionGroupOf by viewModel.companionGroupOf.collectAsState()
+    val selectedCompanion by viewModel.selectedCompanion.collectAsState()
 
     // 排序：0=最近阅读（默认），1=标题，2=作者，3=类型，4=加入时间
     var sortMode by rememberSaveable { mutableIntStateOf(0) }
@@ -157,14 +166,31 @@ fun BookShelfScreen(
         viewModel.enrichChapterInfo(books)
     }
 
-    val filtered = remember(books, groupTab, query, sortMode, progressMap) {
+    val filtered = remember(
+        books,
+        groupTab,
+        query,
+        sortMode,
+        progressMap,
+        companionGroupOf,
+        selectedCompanion,
+    ) {
         val byGroup = when (groupTab) {
             1 -> books.filter { it.type == SourceType.NOVEL }
             2 -> books.filter { it.type == SourceType.COMIC }
             3 -> books.filter { it.type == SourceType.VIDEO }
             else -> books
         }
-        val byQuery = if (query.isBlank()) byGroup else byGroup.filter {
+        // 智能分组叠加在类型 tab 之上（先按分组、再按智能分组），两者互不覆盖
+        val companionKeys = selectedCompanion?.let { sel ->
+            companionGroupOf.filterValues { it == sel }.keys
+        }
+        val byCompanion = if (companionKeys == null) {
+            byGroup
+        } else {
+            byGroup.filter { it.itemKey() in companionKeys }
+        }
+        val byQuery = if (query.isBlank()) byCompanion else byCompanion.filter {
             it.title.contains(query, ignoreCase = true) ||
                 (it.author?.contains(query, ignoreCase = true) == true)
         }
@@ -185,6 +211,8 @@ fun BookShelfScreen(
             if (selecting) {
                 // 多选模式顶栏
                 TopAppBar(
+                        // 顶栏避让状态栏：enableEdgeToEdge 下部分设备 Scaffold 默认 inset 失效
+                        windowInsets = WindowInsets.statusBars,
                     title = { Text("已选 ${selectedKeys.size} 项") },
                     navigationIcon = {
                         IconButton(onClick = {
@@ -240,6 +268,8 @@ fun BookShelfScreen(
                 )
             } else {
                 TopAppBar(
+                        // 顶栏避让状态栏：enableEdgeToEdge 下部分设备 Scaffold 默认 inset 失效
+                        windowInsets = WindowInsets.statusBars,
                     title = { Text("书架") },
                     navigationIcon = {
                         IconButton(onClick = onBack) {
@@ -394,6 +424,36 @@ fun BookShelfScreen(
                     )
                 }
             }
+            // 智能分组 chips（C6）：全部 / 在读 / 未读 / 已读完，带组内数量。
+            // 与上方类型 tab 叠加生效（先类型、再智能分组）；空组仍显示但禁用，避免用户以为书丢了。
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                androidx.compose.material3.FilterChip(
+                    selected = selectedCompanion == null,
+                    onClick = { viewModel.toggleCompanionFilter(null) },
+                    label = { Text("全部") },
+                )
+                listOf(
+                    ShelfCompanionGroup.READING,
+                    ShelfCompanionGroup.UNREAD,
+                    ShelfCompanionGroup.FINISHED,
+                ).forEach { group ->
+                    val count = companionGroups[group]?.size ?: 0
+                    androidx.compose.material3.FilterChip(
+                        selected = selectedCompanion == group,
+                        // 数量 0 时禁用：点击无反应，但 chip 仍在，说明该组确实没有书
+                        enabled = count > 0,
+                        onClick = { viewModel.toggleCompanionFilter(group) },
+                        label = { Text("${companionLabel(group)} $count") },
+                    )
+                }
+            }
             // 书架内搜索
             OutlinedTextField(
                 value = query,
@@ -422,7 +482,8 @@ fun BookShelfScreen(
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        text = "没有匹配的内容",
+                        // 叠加筛选时说明原因，免得用户以为书丢了
+                        text = "没有匹配的内容" + (selectedCompanion?.let { "（已按「${companionLabel(it)}」筛选）" } ?: ""),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -964,4 +1025,11 @@ internal fun typeLabel(type: SourceType): String = when (type) {
     SourceType.NOVEL -> "小说"
     SourceType.COMIC -> "漫画"
     SourceType.VIDEO -> "视频"
+}
+
+/** 智能分组中文名（C6，界面与空态提示共用一份） */
+internal fun companionLabel(group: ShelfCompanionGroup): String = when (group) {
+    ShelfCompanionGroup.READING -> "在读"
+    ShelfCompanionGroup.UNREAD -> "未读"
+    ShelfCompanionGroup.FINISHED -> "已读完"
 }

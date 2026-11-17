@@ -2,6 +2,9 @@ package com.novelreader.ui.screens.bookshelf
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.novelreader.core.util.AutoGroupInput
+import com.novelreader.core.util.BookshelfAutoGroup
+import com.novelreader.core.util.ShelfCompanionGroup
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.repository.BookRepository
@@ -91,6 +94,75 @@ class BookShelfViewModel(
         }
     }
 
+    // ===== 智能伴生分组（C6：在读 / 未读 / 已读完） =====
+
+    /**
+     * 智能分组结果：分组 → 组内书籍在书架列表里的下标。
+     *
+     * 这里刻意不查 `BookDao.observeShelfStates`：它只回 `books.bookId`（Room 自增主键），
+     * 而 `MediaItem` 不带这个主键，拿回来也映射不到界面条目，没法过滤列表。
+     * 归类需要的两个输入（是否有进度 / 是否读完）内存里都有：
+     * `_progressMap` 提供进度，`totalChapter` 配合 [BookshelfAutoGroup.approxFinished] 判断读完，
+     * 判定口径与 DAO 里那段 SQL 完全一致。所以下标只作组内占位标识，
+     * UI 过滤请用 [companionGroupOf]（按 itemKey 映射，稳定）。
+     */
+    private val _companionGroups = MutableStateFlow<Map<ShelfCompanionGroup, List<Long>>>(emptyMap())
+    val companionGroups: StateFlow<Map<ShelfCompanionGroup, List<Long>>> = _companionGroups.asStateFlow()
+
+    /** itemKey → 智能分组（界面按此过滤，避免依赖列表下标） */
+    private val _companionGroupOf = MutableStateFlow<Map<String, ShelfCompanionGroup>>(emptyMap())
+    val companionGroupOf: StateFlow<Map<String, ShelfCompanionGroup>> = _companionGroupOf.asStateFlow()
+
+    /** 当前选中的智能分组；null = 「全部」（不按智能分组过滤） */
+    private val _selectedCompanion = MutableStateFlow<ShelfCompanionGroup?>(null)
+    val selectedCompanion: StateFlow<ShelfCompanionGroup?> = _selectedCompanion.asStateFlow()
+
+    /**
+     * 切换智能分组筛选。
+     *
+     * - 传 null（点「全部」）：总是回到不过滤；
+     * - 再次点击当前已选分组：取消筛选，等价于「全部」；
+     * - 其他情况：切到该分组。
+     *
+     * 该筛选与上方「全部 / 小说 / 漫画 / 视频」tab 是**叠加**关系，互不覆盖。
+     */
+    fun toggleCompanionFilter(group: ShelfCompanionGroup?) {
+        val current = _selectedCompanion.value
+        _selectedCompanion.value = when {
+            group == null -> null
+            group == current -> null
+            else -> group
+        }
+    }
+
+    /**
+     * 计算智能分组快照（C6）。
+     *
+     * @return Pair(分组 → 下标列表, itemKey → 分组)
+     */
+    private fun computeCompanionGroups(
+        books: List<MediaItem>,
+        progressMap: Map<String, ReadingProgress>,
+    ): Pair<Map<ShelfCompanionGroup, List<Long>>, Map<String, ShelfCompanionGroup>> {
+        val inputs = books.mapIndexed { index, item ->
+            val progress = progressMap[itemKey(item)]
+            AutoGroupInput(
+                bookId = index.toLong(),
+                hasProgress = progress != null,
+                // totalChapter <= 0（目录未知）时 approxFinished 返回 false，不会把新书误判为读完
+                finished = progress != null &&
+                    BookshelfAutoGroup.approxFinished(progress.chapterIndex, progress.totalChapter),
+            )
+        }
+        val groups = BookshelfAutoGroup.classify(inputs)
+        val groupOf = buildMap {
+            groups.forEach { (group, ids) ->
+                ids.forEach { id -> books.getOrNull(id.toInt())?.let { put(itemKey(it), group) } }
+            }
+        }
+        return groups to groupOf
+    }
+
     init {
         observeBooks()
         preferencesManager?.let { prefs ->
@@ -124,6 +196,10 @@ class BookShelfViewModel(
                     } }.awaitAll().filterNotNull().toMap()
                 }
                 _progressMap.value = map
+                // 进度与列表同时更新，顺手刷新智能分组快照（C6），避免两处数据不同步
+                val (groups, groupOf) = computeCompanionGroups(list, map)
+                _companionGroups.value = groups
+                _companionGroupOf.value = groupOf
             }
         }
     }

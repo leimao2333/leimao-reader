@@ -122,6 +122,8 @@ class TtsController(
                 override fun onDone(utteranceId: String?) {
                     _systemSpeaking.value = false
                     refreshSpeaking()
+                    // 分段续播：系统引擎一段读完就通知上层播下一段
+                    runCatching { onUtteranceDone?.invoke() }
                 }
 
                 @Deprecated("旧版回调，保留空实现以兼容")
@@ -205,6 +207,24 @@ class TtsController(
     fun pause() {
         stop()
     }
+
+    /**
+     * 一段文本朗读完成的回调。
+     *
+     * 只由**系统 TTS** 触发（`onDone`）；离线引擎自己整段排队播放，没有单段回调。
+     * 上层用它做「按段落续播」，从而实现真正的暂停 / 继续。
+     */
+    @Volatile
+    var onUtteranceDone: (() -> Unit)? = null
+
+    /**
+     * 下一次 [speak] 是否会走离线引擎。
+     *
+     * 离线引擎内部按句切分并整段排队播放，无法逐段回调；上层据此决定
+     * 是「按段落续播（可暂停）」还是「整章一次播（暂停即停止）」。
+     */
+    val willUseOffline: Boolean
+        get() = offlineEnabled && modelStore.isInstalled(LocalModels.OFFLINE_TTS)
 
     /** 停止朗读（两个引擎一起停） */
     fun stop() {

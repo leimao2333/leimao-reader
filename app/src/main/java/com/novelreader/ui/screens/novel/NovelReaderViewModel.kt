@@ -58,6 +58,37 @@ class NovelReaderViewModel(
     private val _speechRate = MutableStateFlow(ttsController?.getSpeechRate() ?: 1.0f)
     val speechRate: StateFlow<Float> = _speechRate.asStateFlow()
 
+    /** 是否处于「暂停」态（分段续播模式下才有意义） */
+    private val _speechPaused = MutableStateFlow(false)
+    val speechPaused: StateFlow<Boolean> = _speechPaused.asStateFlow()
+
+    /** 分段朗读：把本章拆成段落，一段一段播，才能做到真暂停 / 继续 */
+    private var speechSegments: List<String> = emptyList()
+    private var speechIndex = 0
+    private var speechChaining = false
+
+    init {
+        // 系统 TTS 每读完一段就推进；暂停中不推进，继续时从**当前段**重新播，
+        // 而不是把整章从头再读一遍。
+        ttsController?.onUtteranceDone = {
+            if (speechChaining && !_speechPaused.value) {
+                speechIndex++
+                speakSegment()
+            }
+        }
+    }
+
+    /** 播当前段；越界即结束 */
+    private fun speakSegment() {
+        val controller = ttsController ?: return
+        if (speechIndex !in speechSegments.indices) {
+            speechChaining = false
+            _speechPaused.value = false
+            return
+        }
+        controller.speak(speechSegments[speechIndex])
+    }
+
     /** 朗读当前章节正文 */
     fun speakCurrentChapter() {
         val controller = ttsController
@@ -70,13 +101,57 @@ class NovelReaderViewModel(
             showToast("正文为空，无法朗读")
             return
         }
-        // 长文本分段：TTS 单次朗读有长度上限，按段落切分后逐段朗读
-        controller.speak(text)
+        _speechPaused.value = false
+        if (controller.willUseOffline) {
+            // 离线引擎内部按句切分、整段排队播放，没有单段回调：
+            // 只能整章一次下发，暂停即停止、继续会重播本章（面板上有说明）
+            speechChaining = false
+            speechSegments = emptyList()
+            speechIndex = 0
+            controller.speak(text)
+            showToast("开始朗读本章")
+            return
+        }
+        // 系统引擎：按段落分段播，靠 onUtteranceDone 续播，从而支持暂停/继续
+        speechSegments = text.split("\n").map { it.trim() }.filter { it.isNotBlank() }
+        speechIndex = 0
+        speechChaining = true
+        speakSegment()
         showToast("开始朗读本章")
     }
 
-    /** 停止朗读 */
+    /**
+     * 暂停朗读。
+     *
+     * 系统 TTS 没有原生 pause，只能 stop 并记住**当前段**；[resumeSpeaking] 从这一段
+     * 重新开始，听感上等于「停在这一句」。
+     */
+    fun pauseSpeaking() {
+        val controller = ttsController ?: return
+        if (!speaking.value) return
+        _speechPaused.value = true
+        speechChaining = false
+        controller.stop()
+    }
+
+    /** 继续朗读：从暂停的那一段接着播 */
+    fun resumeSpeaking() {
+        if (_speechPaused.value && speechSegments.isNotEmpty()) {
+            _speechPaused.value = false
+            speechChaining = true
+            speakSegment()
+            return
+        }
+        // 离线引擎 / 还没开始过：直接整章重播
+        speakCurrentChapter()
+    }
+
+    /** 停止朗读（并清空分段进度） */
     fun stopSpeaking() {
+        _speechPaused.value = false
+        speechChaining = false
+        speechSegments = emptyList()
+        speechIndex = 0
         ttsController?.stop()
     }
 
@@ -249,7 +324,11 @@ class NovelReaderViewModel(
     val sidePadding: StateFlow<Float> = stateOf(preferences.novelSidePaddingFlow, PreferencesManager.DEFAULT_SIDE_PADDING)
     val autoPage: StateFlow<Boolean> = stateOf(preferences.novelAutoPageFlow, false)
     val autoPageInterval: StateFlow<Int> = stateOf(preferences.novelAutoPageIntervalFlow, PreferencesManager.DEFAULT_AUTO_PAGE_INTERVAL)
+    /** 自动翻页倍速（A5） */
+    val autoPageSpeed: StateFlow<Float> = stateOf(preferences.novelAutoPageSpeedFlow, PreferencesManager.DEFAULT_AUTO_PAGE_SPEED)
     val volumePage: StateFlow<Boolean> = stateOf(preferences.novelVolumePageFlow, false)
+    /** 点击分区模式（A8）：0=三区，1=两区 */
+    val tapZone: StateFlow<Int> = stateOf(preferences.novelTapZoneFlow, 0)
 
     // 大修新增设置
     val fontFamily: StateFlow<Int> = stateOf(preferences.novelFontFamilyFlow, PreferencesManager.FONT_FAMILY_DEFAULT)
@@ -984,7 +1063,11 @@ class NovelReaderViewModel(
     fun setSidePadding(v: Float) = viewModelScope.launch { preferences.setNovelSidePadding(v) }
     fun setAutoPage(v: Boolean) = viewModelScope.launch { preferences.setNovelAutoPage(v) }
     fun setAutoPageInterval(v: Int) = viewModelScope.launch { preferences.setNovelAutoPageInterval(v) }
+    /** 设置自动翻页倍速（A5），内部会吸附到合法档位 */
+    fun setAutoPageSpeed(v: Float) = viewModelScope.launch { preferences.setNovelAutoPageSpeed(v) }
     fun setVolumePage(v: Boolean) = viewModelScope.launch { preferences.setNovelVolumePage(v) }
+    /** 设置点击分区模式（A8）：0=三区，1=两区 */
+    fun setTapZone(v: Int) = viewModelScope.launch { preferences.setNovelTapZone(v) }
     fun setVolumeUpPrev(v: Boolean) = viewModelScope.launch { preferences.setNovelVolumeUpPrev(v) }
     fun setFontFamily(v: Int) = viewModelScope.launch { preferences.setNovelFontFamily(v) }
     fun setBold(v: Boolean) = viewModelScope.launch { preferences.setNovelBold(v) }

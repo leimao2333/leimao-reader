@@ -19,8 +19,14 @@ import com.novelreader.domain.model.MediaItem
  */
 object NavCache {
 
-    /** 最多缓存几本书的目录（每本几千章，太占内存） */
-    private const val MAX_BOOKS = 12
+    /**
+     * 最多缓存几本书的目录（每本几千章，太占内存）。
+     *
+     * 12 本时书架一多就会出现「预热第 13 本把第 1 本挤掉」，用户点回老书又要等一次
+     * 目录网络 —— 表现为「有时秒开、有时几秒」。40 本是内存与命中率的折中
+     * （每本按几百章估算，最坏也就几 MB 的字符串引用）。
+     */
+    private const val MAX_BOOKS = 40
 
     /** accessOrder = true → 按访问顺序淘汰（LRU） */
     private val chapterCache = object : LinkedHashMap<String, List<ChapterItem>>(16, 0.75f, true) {

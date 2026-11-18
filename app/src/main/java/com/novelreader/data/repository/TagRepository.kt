@@ -51,7 +51,8 @@ class TagRepository(
     private val singleSourceLimit: suspend () -> Int = { SINGLE_SOURCES_ALL },
 ) {
 
-    private val memCache = HashMap<SourceType, TagPlan>()
+    /** 并发安全：读走 IO 线程，写来自收集线程（见 [tags] / [refresh]） */
+    private val memCache = java.util.concurrent.ConcurrentHashMap<SourceType, TagPlan>()
     private val refreshMutex = Mutex()
 
     /**
@@ -64,16 +65,25 @@ class TagRepository(
         // v1.9.2.1：设置里的「单标签搜索源数」改了要立刻生效。
         // 缓存里的关键词入口是按旧值绑的，光比对时间戳发现不了 ——
         // 所以把当时用的设置值记进快照，对不上就重建一次（每类型最多一次）。
-        val wanted = wantedSourceLimit()
-        memCache[type]?.let { if (it.keywordSourceLimit == wanted) return it }
-        store.load(type.name)?.let { cached ->
-            if (cached.keywordSourceLimit == wanted) {
-                memCache[type] = cached
-                return cached
-            }
+        //
+        // 性能（进页速度）：内存命中是绝大多数情况，先判内存，避免每次都去读一次
+        // DataStore；磁盘那条路（读 JSON + Gson 解析 2000+ 标签）必须离开主线程 ——
+        // 之前整个函数在 viewModelScope(Main.immediate) 上跑，冷启动进标签页会明显掉帧。
+        memCache[type]?.let { cached ->
+            if (cached.keywordSourceLimit == wantedSourceLimit()) return cached
         }
-        // 无任何缓存 / 设置已变：现场收集一次（首次使用，UI 应有 loading）
-        return refresh(type)
+        return withContext(Dispatchers.IO) {
+            val wanted = wantedSourceLimit()
+            memCache[type]?.let { if (it.keywordSourceLimit == wanted) return@withContext it }
+            store.load(type.name)?.let { cached ->
+                if (cached.keywordSourceLimit == wanted) {
+                    memCache[type] = cached
+                    return@withContext cached
+                }
+            }
+            // 无任何缓存 / 设置已变：现场收集一次（首次使用，UI 应有 loading）
+            refresh(type)
+        }
     }
 
     /** 强制重新收集（下拉菜单刷新 / 首次使用）；并发调用收敛为一次 */

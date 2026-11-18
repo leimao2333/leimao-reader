@@ -23,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -32,6 +33,7 @@ import com.novelreader.ui.components.SearchBar
 import com.novelreader.ui.components.SearchLoadMoreFooter
 import com.novelreader.ui.components.SearchProgressBar
 import com.novelreader.ui.components.SourceFilterDropdown
+import com.novelreader.ui.theme.adaptiveWidth
 
 /**
  * 小说搜索页。
@@ -67,7 +69,9 @@ fun NovelSearchScreen(
             .fillMaxSize()
             // 夜间模式跟随：裸 Column 不铺背景会透出 window 白底
             .background(MaterialTheme.colorScheme.background)
-            .statusBarsPadding(),
+            .statusBarsPadding()
+            // C3：平板大屏限宽居中，手机无变化
+            .adaptiveWidth(),
     ) {
         // 顶部：返回按钮 + 搜索框同行（紧凑，贴合开源阅读）
         Row(
@@ -170,6 +174,17 @@ fun NovelSearchScreen(
             }
             // 搜索完成且有结果
             else -> {
+                // C11：结果摘要——条数 + 覆盖源数，让用户一眼看出「搜了多少 / 来自几个源」
+                val sourceCount = remember(state.results) {
+                    state.results.mapNotNull { it.sourceId.takeIf { id -> id.isNotBlank() } }.toSet().size
+                }
+                Text(
+                    text = "找到 ${state.results.size} 条结果" +
+                        if (sourceCount > 1) " · 来自 $sourceCount 个源" else "",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
                 GroupedSearchResults(
                     results = state.results,
                     isEmptyHint = "",

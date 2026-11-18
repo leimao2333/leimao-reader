@@ -3,6 +3,9 @@ package com.novelreader.ui.screens.bookshelf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novelreader.core.util.AutoGroupInput
+import com.novelreader.core.util.BookConflictDetector
+import com.novelreader.core.util.BookEntry
+import com.novelreader.core.util.ConflictGroup
 import com.novelreader.core.util.BookshelfAutoGroup
 import com.novelreader.core.util.ShelfCompanionGroup
 import com.novelreader.domain.model.ChapterItem
@@ -23,6 +26,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withPermit
 
 /**
  * 书架 ViewModel。
@@ -38,6 +42,8 @@ class BookShelfViewModel(
     private val localBookStore: com.novelreader.core.local.LocalBookStore? = null,
     /** 删书清理器（v1.8.3.0）：书架行 + 章节缓存 + 阅读进度 + 漫画图片缓存一起清 */
     private val shelfPurger: com.novelreader.core.bookshelf.ShelfPurger? = null,
+    /** 本地漫画库（D20）：CBZ / 图片文件夹导入 */
+    private val localComicStore: com.novelreader.core.local.LocalComicStore? = null,
 ) : ViewModel() {
 
     /** 书架条目 */
@@ -213,6 +219,45 @@ class BookShelfViewModel(
     }
 
     /**
+     * 导入本地漫画（D20）：CBZ 整包按「一话」处理，落盘到私有目录后加入书架。
+     *
+     * 之所以复制而不是直接记 Uri：SAF 的 `content://` 授权通常只在本次会话有效，
+     * 重启后书架里的漫画会全部变成「无法打开」。
+     */
+    fun importLocalComic(uri: android.net.Uri, displayName: String?) {
+        val store = localComicStore ?: return
+        viewModelScope.launch {
+            runCatching { store.importCbz(uri, displayName) }
+                .onSuccess { meta ->
+                    val adapter = com.novelreader.source.local.LocalComicAdapter(meta, store)
+                    runCatching { bookRepository.addToBookshelf(adapter.item()) }
+                    _importMessage.value = "已导入「${meta.title}」（${meta.chapterCount} 话）"
+                }
+                .onFailure { e ->
+                    _importMessage.value = "导入失败：${e.message ?: "未知错误"}"
+                }
+        }
+    }
+
+    /**
+     * 导入本地漫画文件夹（D20）：顶层子目录各成一话，没有子目录则整个目录作为第 1 话。
+     */
+    fun importLocalComicFolder(treeUri: android.net.Uri, displayName: String?) {
+        val store = localComicStore ?: return
+        viewModelScope.launch {
+            runCatching { store.importFolder(treeUri, displayName) }
+                .onSuccess { meta ->
+                    val adapter = com.novelreader.source.local.LocalComicAdapter(meta, store)
+                    runCatching { bookRepository.addToBookshelf(adapter.item()) }
+                    _importMessage.value = "已导入「${meta.title}」（${meta.chapterCount} 话）"
+                }
+                .onFailure { e ->
+                    _importMessage.value = "导入失败：${e.message ?: "未知错误"}"
+                }
+        }
+    }
+
+    /**
      * 导入本地 TXT 书（v1.2.0.0）：解析章节 → 存入本地书库 → 加入书架。
      */
     fun importLocalBook(uri: android.net.Uri, displayName: String?) {
@@ -252,6 +297,57 @@ class BookShelfViewModel(
             if (purger != null) purger.purge(items)
             else bookRepository.removeFromBookshelfBatch(items)
         }
+    }
+
+    // ===== 冲突检测 / 去重（C9）=====
+
+    /** 书架里疑似「同一本书的多个来源」分组（空 = 未检测到 / 未运行） */
+    private val _conflicts = MutableStateFlow<List<ConflictGroup>>(emptyList())
+    val conflicts: StateFlow<List<ConflictGroup>> = _conflicts.asStateFlow()
+
+    /**
+     * 检测书架内的重复书籍（C9）。把每本 MediaItem 映射成 [BookEntry]，章节数取已补齐的
+     * [chapterCountMap]，交给纯逻辑 [BookConflictDetector.detect]。只在同一类型内比较
+     * （小说不会和漫画/视频混成一组），避免跨类型误判。
+     *
+     * @return 检测到的冲突组数（供 UI 提示「未发现重复」）
+     */
+    fun detectConflicts(): Int {
+        val byType = _books.value.groupBy { it.type }
+        val groups = byType.values.flatMap { items ->
+            val entries = items.map { item ->
+                BookEntry(
+                    id = itemKey(item),
+                    title = item.title,
+                    author = item.author,
+                    sourceId = item.sourceId,
+                    sourceName = item.sourceName.ifBlank { null },
+                    wordCount = null, // MediaItem 无字数字段；章节数已足够作为保留建议依据
+                    coverUrl = item.cover,
+                    chapterCount = _chapterCountMap.value[itemKey(item)],
+                    updatedAt = item.addedAt.takeIf { it > 0 },
+                )
+            }
+            BookConflictDetector.detect(entries)
+        }
+        _conflicts.value = groups
+        return groups.size
+    }
+
+    /** 关闭冲突检测结果面板 */
+    fun clearConflicts() {
+        _conflicts.value = emptyList()
+    }
+
+    /**
+     * 应用去重建议：删掉一组里除 [keepKey] 之外的所有条目（走批量清理，连缓存与进度）。
+     * [keepKey] 是建议保留的条目 id（来自 [ConflictGroup.recommendedId]），用户可改成组内其他 id。
+     */
+    fun keepOnlyInGroup(group: ConflictGroup, keepKey: String) {
+        val toRemove = group.members.filter { it.id != keepKey }
+        val items = _books.value.filter { it.itemKey() in toRemove.map { e -> e.id }.toSet() }
+        removeBatch(items)
+        _conflicts.value = _conflicts.value.filter { it !== group }
     }
 
     /** 批量清除已缓存章节（保留书架条目；v1.8.3.0 待办 #5） */
@@ -330,20 +426,44 @@ class BookShelfViewModel(
      */
     fun enrichChapterInfo(items: List<MediaItem>) {
         viewModelScope.launch {
-            items.forEach { item ->
-                val key = itemKey(item)
-                if (_lastChapterMap.value.containsKey(key)) return@forEach
-                val chapters = runCatching { contentRepository.chapterList(item) }.getOrDefault(emptyList())
-                if (chapters.isEmpty()) return@forEach
-                // v1.8.8.5：这次请求本来就是为「最新章节 / 章节总数」发的，
-                // 顺手把整份目录塞进导航缓存 —— 用户随后点击这本书时直接命中，
-                // 不用再等一次目录请求（点击响应的关键）。
-                com.novelreader.ui.navigation.NavCache.putChapters(item, chapters)
-                _chapterCountMap.value = _chapterCountMap.value + (key to chapters.size)
-                val last = chapters.lastOrNull()?.title
-                if (!last.isNullOrBlank()) {
-                    _lastChapterMap.value = _lastChapterMap.value + (key to last)
+            val todo = items.filterNot { _lastChapterMap.value.containsKey(itemKey(it)) }
+            if (todo.isEmpty()) return@launch
+
+            // 串行预热在几十本的书架上要跑几十秒，用户点到的书往往还没轮到；
+            // 3 路并发既不把源站点打挂，也能在头一两秒覆盖住首屏可见的书。
+            val gate = kotlinx.coroutines.sync.Semaphore(3)
+            val lastMap = HashMap<String, String>(todo.size)
+            val countMap = HashMap<String, Int>(todo.size)
+
+            kotlinx.coroutines.coroutineScope {
+                todo.forEach { item ->
+                    launch {
+                        val key = itemKey(item)
+                        val chapters = gate.withPermit {
+                            runCatching { contentRepository.chapterList(item) }.getOrDefault(emptyList())
+                        }
+                        if (chapters.isEmpty()) {
+                            // 负缓存：视频条目 / 失效源永远取不到目录，不写占位的话
+                            // 每次书架变化（收藏、改分组、进度回写）都会重打一次请求
+                            lastMap[key] = ""
+                            return@launch
+                        }
+                        // v1.8.8.5：这次请求本来就是为「最新章节 / 章节总数」发的，
+                        // 顺手把整份目录塞进导航缓存 —— 用户随后点击这本书时直接命中，
+                        // 不用再等一次目录请求（点击响应的关键）。
+                        com.novelreader.ui.navigation.NavCache.putChapters(item, chapters)
+                        countMap[key] = chapters.size
+                        lastMap[key] = chapters.lastOrNull()?.title.orEmpty()
+                    }
                 }
+            }
+
+            // 一次性合并写入：之前每本书各写一次 StateFlow，N 本书 = N 次整屏重组
+            if (countMap.isNotEmpty()) {
+                _chapterCountMap.value = _chapterCountMap.value + countMap
+            }
+            if (lastMap.isNotEmpty()) {
+                _lastChapterMap.value = _lastChapterMap.value + lastMap
             }
         }
     }

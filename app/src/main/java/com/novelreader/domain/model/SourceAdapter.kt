@@ -59,6 +59,27 @@ interface SourceAdapter {
      */
     suspend fun test(): Boolean = true
 
+    /**
+     * 章节预览样张（D15/D23）。
+     *
+     * 对齐 venera 的 `loadComicThumbnail(id, next)`：拿到某章的若干张图，
+     * 供详情页「先看几张再决定读」。默认实现直接解析本章正文取前 [limit] 张，
+     * 有独立缩略图接口的源可覆盖本方法，避免为预览多解析一整章。
+     */
+    /**
+     * 章节评论（D8 / D33）。
+     *
+     * 默认空列表：评论是**可选能力**，源不支持不该报错，UI 显示统一空态即可。
+     * 有评论接口的源（Venera 源若实现 `comments` op）覆盖本方法返回真实数据。
+     */
+    suspend fun comments(chapter: ChapterItem): List<com.novelreader.domain.model.WorkComment> =
+        emptyList()
+
+    suspend fun previewImages(chapter: ChapterItem, limit: Int = 6): List<String> {
+        val result = runCatching { content(chapter) }.getOrNull() ?: return emptyList()
+        return result.comicImages.orEmpty().filter { it.isNotBlank() }.take(limit)
+    }
+
     // ===== 发现页（v1.2.3.0 对标 legado exploreUrl/ruleExplore） =====
 
     /**

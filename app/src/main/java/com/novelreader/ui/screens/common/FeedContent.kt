@@ -80,12 +80,17 @@ fun FeedContent(
     onSelectCategory: (String) -> Unit,
     onOpenSearch: () -> Unit,
     modifier: Modifier = Modifier,
+    // C5 首页模块可配置
+    hiddenRows: Set<String> = emptySet(),
+    onToggleRowHidden: (String, Boolean) -> Unit = { _, _ -> },
 ) {
+    var showModuleConfig by androidx.compose.runtime.remember { mutableStateOf(false) }
     Column(modifier = modifier.fillMaxSize()) {
         FeedHeaderRow(
             state = state,
             onRefresh = onRefresh,
             onOpenSearch = onOpenSearch,
+            onOpenModuleConfig = { showModuleConfig = true },
         )
 
         // 栏目标签条：只有「推荐」一项时不必显示（没有任何真实栏目可选）
@@ -103,6 +108,15 @@ fun FeedContent(
         } else {
             FeedCategoryResults(state = state, onItemClick = onItemClick)
         }
+    }
+
+    if (showModuleConfig) {
+        HomeModuleConfigDialog(
+            titles = state.rows.map { it.title }.distinct(),
+            hidden = hiddenRows,
+            onToggle = onToggleRowHidden,
+            onDismiss = { showModuleConfig = false },
+        )
     }
 }
 
@@ -191,6 +205,7 @@ private fun FeedHeaderRow(
     state: HomeViewModel.FeedHomeState,
     onRefresh: () -> Unit,
     onOpenSearch: () -> Unit,
+    onOpenModuleConfig: () -> Unit = {},
 ) {
     Row(
         modifier = Modifier
@@ -232,6 +247,9 @@ private fun FeedHeaderRow(
                     strokeWidth = 2.dp,
                 )
             }
+        }
+        androidx.compose.material3.TextButton(onClick = onOpenModuleConfig) {
+            Text("模块", style = MaterialTheme.typography.labelMedium)
         }
         IconButton(onClick = onRefresh) {
             Icon(Icons.Filled.Refresh, contentDescription = "刷新")

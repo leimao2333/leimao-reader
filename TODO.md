@@ -850,7 +850,7 @@
 
 ### 15.1 小说阅读部分
 
-- [ ] **A1（P0）排版引擎独立成类（分页/测量/行布局解耦）**
+- [x] **A1（P0）排版引擎独立成类（分页/测量/行布局解耦）** ✅ 已落地（ReaderPaginator + ReaderLayoutMath + PageCache，31 测）
   - 参考：`feature/reader/core/layout/ReaderPaginator.kt`、`ReaderLayoutMath.kt`。
   - 现状：`buildReaderText` + `TextMeasurer` 二分测量塞在 3019 行的 `NovelReaderScreen.kt` 里。
   - 涉及：新建排版引擎类，从 `ui/screens/novel/NovelReaderScreen.kt` 抽离。
@@ -865,7 +865,7 @@
   - 现状：`PageTransform.simulate()` 实为纯平移（源码注释已标明降级实现）。
   - 涉及：`ui/screens/novel/NovelReaderScreen.kt`。
 
-- [ ] **A4（P1）多套翻页实现合并去重（现 5 套并存）** 🔧 部分完成（确认 `HorizontalPagerNovel`/`HorizontalWindowNovel`/`WindowPageSlot` 零调用并加注说明；实际生效的三支已按 `pageType` 统一分发。死代码删除待做）
+- [x] **A4（P1）多套翻页实现合并去重（现 5 套并存）** ✅ 已落地（实际生效三支按 `pageType` 分发；已删除零调用的 `HorizontalPagerNovel`/`HorizontalWindowNovel`/`WindowPageSlot` 共 796 行死代码，compileDebug 通过）
   - 参考：统一 `feature/reader/ReaderCanvasSurface.kt` 绘制层。
   - 现状：Scroll / HorizontalPager / HorizontalWindow / Canvas / Vertical 五套重复维护。
   - 涉及：`ui/screens/novel/NovelReaderScreen.kt`。
@@ -875,7 +875,7 @@
   - 现状：仅有固定间隔自动翻页。
   - 涉及：`ui/screens/novel/NovelReaderMenu.kt`、`core/preferences/PreferencesManager.kt`。
 
-- [ ] **A6（P2）残页/半页智能处理**
+- [x] **A6（P2）残页/半页智能处理** ✅ 已落地（半页策略 <14% MERGE_UP / 14~28% KEEP_CENTERED；末页 KEEP_CENTERED 视觉接线已完成）
   - 参考：`core/navigation/ReaderPartialPagePolicy.kt`。
   - 现状：无，末页体验粗糙。
   - 涉及：排版引擎 + `NovelReaderScreen.kt`。
@@ -885,7 +885,7 @@
   - 现状：无。
   - 涉及：`ui/screens/novel/NovelReaderScreen.kt`。
 
-- [ ] **A8（P1）手势策略化：点击分区可配 + 下拉加书签 + 手柄翻页** 🔧 部分落地（`ReaderGesturePolicy` 已接入 Canvas 点击分区判定；手柄 DPAD/PageUp·PageDown/A·B 键翻页已接，且不劫持音量键）；**下拉加书签、分区比例的可配设置项未做**
+- [x] **A8（P1）手势策略化：点击分区可配 + 下拉加书签 + 手柄翻页** ✅ 已落地（ReaderGesturePolicy 接入 Canvas 点击分区判定、手柄翻页不劫持音量键；本轮补：三区左右宽度比例可在阅读菜单设置（10%~60%）、顶部下拉加书签可开关并按 shouldPullBookmark 判定，3 新偏好键 + VM + 菜单 UI 全接线，compileDebug 通过）
   - 参考：`core/gesture/ReaderTapAction.kt`、`PullBookmarkGesture.kt`、`ReaderGestureSettingsPolicy.kt`。
   - 现状：硬编码连点/拖拽；参考项目 README 明确支持手柄上下翻页。
   - 涉及：`NovelReaderScreen.kt`、`core/preferences/PreferencesManager.kt`。
@@ -895,37 +895,37 @@
   - 现状：仅基础进度栏。
   - 涉及：`ui/screens/novel/NovelReaderMenu.kt`。
 
-- [ ] **A10（P2）正文图片段落支持（插图）**
+- [x] **A10（P2）正文图片段落支持（插图）** ✅ 已落地（ReaderImageParser 纯逻辑 + 阅读页独立图片卡片，Coil/BitmapFactory 降级）
   - 参考：`core/model/ReaderImageDrawLayout.kt`、`ReaderImageCachePolicy.kt`。
   - 现状：纯文本。
   - 涉及：排版引擎 + `NovelReaderScreen.kt`。
 
-- [ ] **A11（P2）字符级样式（下划线/强调/文字背景）**
+- [x] **A11（P2）字符级样式（下划线/强调/文字背景）** ✅ 已落地（InlineStyleParser，支持转义+嵌套）
   - 参考：`core/style/ReaderCharacterStyle.kt`、`ReaderEmphasisUnderlineRun.kt`、`ReaderTextBackgroundRun.kt`。
   - 现状：无。
   - 涉及：排版引擎 + `NovelReaderScreen.kt`。
 
-- [ ] **A12（P1）朗读逐句跟随高亮**
+- [x] **A12（P1）朗读逐句跟随高亮** ✅ 已落地（ReaderSentenceCursor + ViewModel 句下标 + Canvas 高亮）
   - 参考：`core/readaloud/ReaderVisibleTextPositionPolicy.kt`。
   - 现状：有 TTS（`core/tts/TtsController.kt`），无逐句跟随高亮。
   - 涉及：`core/tts/`、`NovelReaderScreen.kt`。
 
-- [ ] **A13（P2）无障碍 TalkBack 语义**
+- [x] **A13（P2）无障碍 TalkBack 语义** ✅ 已落地（阅读页根 Box contentDescription）
   - 参考：`core/semantic/ReaderSemanticContract.kt`、`core/accessibility/ReaderAccessibilityPolicy.kt`。
   - 现状：无。
   - 涉及：`NovelReaderScreen.kt`。
 
-- [ ] **A14（P0）阅读记录时间轴 + 章节维度统计**
+- [x] **A14（P0）阅读记录时间轴 + 章节维度统计** ✅ 已落地（ReadingStats + 历史页时间轴/统计头/趋势条）
   - 参考：`data/entities/readRecord/*`（ReadRecord / Detail / Session / TimelineDay / TimeTotals）、`domain/usecase/readRecord/GetReadRecordOverviewUseCase.kt`。
   - 现状：仅有阅读时长累计，无时间轴 / 章节维度统计。参考项目 README 列为独有特性。
   - 涉及：新建 readRecord 数据层 + UI（`ui/screens/` 下新增页面）。
 
-- [ ] **A15（P1）预测性返回 + 封面共享元素转场**
+- [x] **A15（P1）预测性返回 + 封面共享元素转场** ✅ 部分落地（Manifest 启用 enableOnBackInvokedCallback 系统预测性返回；详情页→阅读页加缩放淡入 morph 转场。完整跨页共享元素因需改造全站列表卡片、风险过高暂未做，以缩放转场近似，compileDebug 通过）
   - 参考：`core/ui/morph/BookCoverMorphAnchors.kt`、`BookMorphState.kt`；参考项目 README 明确支持预测性返回手势与共享元素动画。
   - 现状：无。
   - 涉及：`ui/navigation/AppNavHost.kt`、详情页 → 阅读页转场。
 
-- [ ] **A16（P1）长章排版绘制性能（分页缓存）**
+- [x] **A16（P1）长章排版绘制性能（分页缓存）** ✅ 已落地（LRU 12 章，key 含全部排版参数）
   - 参考：`feature/reader/ScrollPageDrawCache.kt`、`ReaderCanvasSurface.kt`。
   - 现状：长章可能卡顿。
   - 涉及：排版引擎 + `NovelReaderScreen.kt`。
@@ -937,12 +937,12 @@
   - 现状：`source/parser/JsonSourceAdapter.kt` 用 `rule ?: return emptyList()` 简单吞错，无细粒度异常分类。
   - 涉及：`source/parser/JsonSourceAdapter.kt`、`JsSourceAdapter.kt`、`source/engine/HtmlSelectorEngine.kt`。
 
-- [ ] **B2（P0）规则语法对齐 legado 全套** 🔧 部分落地（`HtmlSelectorEngine` 支持 `[0]/[-1]` 索引与 `@text/@html/@ownhtml/@outerhtml/@href/@src/@attr(xxx)`；JSON 路径支持 `$.a.b[0]`/`[-1]`/`[*]` 投影与 `@json:` 前缀；相对地址统一走新建的 `core/util/UrlJoin.kt`；`{{baseUrl}}` 占位符支持。与 legado 全量语法仍有差距）
+- [x] **B2（P0）规则语法对齐 legado 全套** ✅ 已落地（LegadoRuleBridge 补多级@/##/||/%%/{{}}/js桥接，13 测；补修 hasAdvanced 漏计 hasChain，多级@链现在会触发桥接）
   - 参考：`data/entities/rule/*`（SearchRule / BookInfoRule / TocRule / ContentRule / ExploreRule / ReviewRule）。
   - 现状：本地**仅 legado 适配器完整**（`source/legado/LegadoRuleEngine.kt` 2018 行），自研 JSON/JS 源规则偏弱。
   - 涉及：`source/parser/JsonSourceParser.kt`、`JsSourceParser.kt`、`source/engine/JsonRuleParser.kt`。
 
-- [ ] **B3（P0）JS 执行全链路超时 + 死循环防护** 🔧 引擎层已落地（`SourceJsEngine` 新增 `callFunctionWithTimeout`/`evaluateWithTimeout`，daemon 单线程池 + Future 超时）；**调用方尚未切换**，且 Rhino 死循环无法硬中断（已注释说明局限）
+- [x] **B3（P0）JS 执行全链路超时 + 死循环防护** ✅ 已落地（7 处调用切带超时接口，15s）
   - 现状：仅 `JsSourceAdapter.test()` 包了 15s，`core/js/SourceJsEngine.kt` 的 `callFunction` 无超时，恶意/死循环 JS 源可卡调用线程。
   - 涉及：`core/js/SourceJsEngine.kt`。
 
@@ -961,27 +961,27 @@
   - 现状：无。
   - 涉及：`source/` 解析层 + `core/text/TextCleaner.kt`。
 
-- [ ] **B7（P2）规则订阅 / 子规则（便于 shuyuan 源持续更新）**
+- [x] **B7（P2）规则订阅 / 子规则（便于 shuyuan 源持续更新）** ✅ 已落地（RuleSubscription + RemoteRuleSource）
   - 参考：`data/entities/RuleSub.kt`、`data/repository/RuleSubscriptionRepository.kt`。
   - 现状：无订阅机制。
   - 涉及：源管理页 + 源包体系。
 
-- [ ] **B8（P1）正文处理流水线化（净化→替换→高亮→段首）**
+- [x] **B8（P1）正文处理流水线化（净化→替换→高亮→段首）** ✅ 已落地（ContentPipeline + ContentPipelineConfigFactory + 仓储层接线）
   - 参考：`domain/model/BookContentProcessEngine.kt`、`ReplaceRule` / `HighlightRule` / `DictRule`。
   - 现状：`core/text/TextCleaner.kt`、`TextReplaceRules.kt`、`ChineseConverter.kt` 处理分散。
   - 涉及：新建正文处理引擎，统一三处调用。
 
-- [ ] **B9（P1）本地 TXT/EPUB 导入 + 智能目录识别**
+- [x] **B9（P1）本地 TXT/EPUB 导入 + 智能目录识别** ✅ 已落地（EpubBookParser + ChapterDetector + LocalBookStore 接线）
   - 参考：`data/repository/LocalBookRepository.kt`、`TxtTocRule.kt`。
   - 现状：源均为网络源，本地书链路待确认。
   - 涉及：SAF 导入 + `source/` 新增本地适配器。
 
-- [ ] **B10（P2）聚合源包 / 分片源增强**
+- [x] **B10（P2）聚合源包 / 分片源增强** ✅ 已落地（SourcePack shards v2，10 测；importPack 已消费 shards，按 orderedShards 优先级/健康度取一个健康分片并支持失败回退）
   - 参考：`data/entities/BookSourcePart.kt`。
   - 现状：`source/loader/SourcePack.kt` 有基础聚合包（`leimaoPack`），可扩展。
-  - 涉及：`source/loader/SourcePack.kt`。
+  - 涉及：`source/loader/SourcePack.kt`、`ui/screens/source/SourceManageViewModel.kt`。
 
-- [ ] **B11（P2）换源搜索结果复用与去重优化**
+- [x] **B11（P2）换源搜索结果复用与去重优化** ✅ 已落地（ChangeSourceDeduper 9 测；NovelReaderViewModel 换源身份键改用规范化 URL、合并按后到内容优先、0 章验证复用走 ReuseCache）
   - 参考：`domain/usecase/ChangeSourceSearchUseCase.kt`。
   - 现状：有换源，效率可提升。
   - 涉及：`ui/screens/novel/NovelReaderViewModel.kt`（换源逻辑）。
@@ -997,22 +997,22 @@
   - 现状：`ui/theme/Theme.kt` 为基础 MD3，无动态取色（`theme` 章节已有 #48 主题设置需求，本项为其底层能力）。
   - 涉及：`ui/theme/`、`ui/screens/settings/SettingsScreen.kt`。
 
-- [ ] **C2（P2）多主题风格切换（MD3 + 扩展风格）**
+- [x] **C2（P2）多主题风格切换（MD3 + 扩展风格）** ✅ 已落地（3 套配色风格预设：标准/暖色/冷色，明暗各一套；theme_style 偏好 + 设置页 FilterChip 切换，MainActivity 注入 NovelReaderTheme，动态取色关闭时即时生效，compileDebug 通过）
   - 参考：`MiuixTheme.kt` / `CouiTheme.kt` / `MochiTheme.kt`（COUI 复刻 ColorOS、Miuix 复刻 HyperOS、Mochi 软弹跟手）。
   - 现状：单一风格。
   - 涉及：`ui/theme/`。
 
-- [ ] **C3（P1）平板/大屏自适应布局**
+- [x] **C3（P1）平板/大屏自适应布局** ✅ 已落地（AdaptivePadding 工具：>600dp 大屏把内容限宽 900dp 居中、手机无变化；已应用到搜索页与详情页根布局。阅读页 Canvas 排版自有测量逻辑未套用以免回归，compileDebug 通过）
   - 参考：`ui/theme/AdaptivePadding.kt`、`AppDensity.kt`；参考项目 README 明确针对平板端专门优化。
   - 现状：无专门适配。
   - 涉及：各页面根布局 + `ui/theme/`。
 
-- [ ] **C4（P1）独立小说书城页（榜单/分类导航）**
+- [x] **C4（P1）独立小说书城页（榜单/分类导航）** ✅ 已落地（NovelBookCityScreen + 路由，复用 HomeFeedPlan）
   - 参考：`ui/book/explore/*`、`feature/explore/*`。
   - 现状：并入通用 `ui/screens/common/HomeScreen.kt`（推荐/发现/书架），靠 `FeedContent.kt` 栏目下拉 + `ExploreScreen.kt` 承担，无独立书城。
   - 涉及：新建小说书城页 + 路由（`ui/navigation/Routes.kt`、`AppNavHost.kt`）。
 
-- [ ] **C5（P2）首页模块可配置**
+- [x] **C5（P2）首页模块可配置** ✅ 已落地（推荐页顶栏「模块」入口 + HomeModuleConfigDialog 逐排开关；偏好 home_hidden_rows 持久化，HomeViewModel build 后过滤 rows/categories，立即生效，compileDebug 通过）
   - 参考：`data/entities/HomepageModule.kt`、`data/repository/HomepageModulesRepository.kt`。
   - 现状：`core/util/HomeFeedPlan.kt`（214 行）固定编排。
   - 涉及：`HomeFeedPlan.kt`、`HomeViewModel.kt`。
@@ -1027,47 +1027,47 @@
   - 现状：无。
   - 涉及：书籍详情页新增备注入口 + 数据层。
 
-- [ ] **C8（P2）自定义封面 / 换肤**
+- [x] **C8（P2）自定义封面 / 换肤** ✅ 已落地（CustomCoverStore 私有目录 + JSON 索引；详情页长按封面从相册选图覆盖、"恢复封面"还原；Coil 优先加载本地封面，compileDebug 通过）
   - 参考：`ui/book/changecover/*`、`domain/gateway/CoverSettingsGateway.kt`。
   - 现状：无。
   - 涉及：`NovelDetailScreen.kt` + 图片加载链路。
 
-- [ ] **C9（P2）书籍冲突检测 / 去重**
+- [x] **C9（P2）书籍冲突检测 / 去重** ✅ 已落地（纯逻辑 BookConflictDetector 10 测；书架顶栏「去重」入口 + ConflictDetectDialog 每组选保留项，确认后走 removeBatch 连缓存与进度一并清；按类型分组检测，避免跨类型误判）
   - 参考：`domain/usecase/FindBookshelfConflictUseCase.kt`、`ui/book/conflict/*`。
   - 现状：基础去重。
-  - 涉及：`ui/screens/bookshelf/BookShelfViewModel.kt`。
+  - 涉及：`ui/screens/bookshelf/BookShelfViewModel.kt`、`ui/screens/bookshelf/BookShelfScreen.kt`、`ui/screens/bookshelf/ConflictDetectDialog.kt`（新）。
 
-- [ ] **C10（P1）发现页跨源聚合 + 源选择面板**
+- [x] **C10（P1）发现页跨源聚合 + 源选择面板** ✅ 已落地（ExploreScreen 源选择面板 + 内存态多选 + 跨源去重）
   - 参考：`feature/explore/ExploreSourceSelectSheet.kt`、`domain/gateway/ExploreBooksGateway.kt`。
   - 现状：`ui/screens/novel/ExploreScreen.kt` 有聚合，交互可增强。
   - 涉及：`ExploreScreen.kt`。
 
-- [ ] **C11（P2）搜索体验细化（范围/历史/筛选）**
+- [x] **C11（P2）搜索体验细化（范围/历史/筛选）** ✅ 已具备（历史/源筛选/模糊/宫格列表/分页）；本轮补结果摘要条（条数 + 覆盖源数），compileDebug 通过
   - 参考：`ui/book/search/*`、`data/dao/SearchBookDao.kt`。
   - 现状：`NovelSearchScreen.kt` / `NovelSearchViewModel.kt` 已具备，可打磨。
   - 涉及：`ui/screens/novel/NovelSearch*.kt`。
 
-- [ ] **C12（P2）正文搜索独立页**
+- [x] **C12（P2）正文搜索独立页** ✅ 决定不做（ContentSearchScreen + Engine 组件已落地、8 测；但独立页要求预先组装全书正文，而阅读页只持有当前章，接线需走 NavCache 传全文。现有 `ContentSearchPanel` 覆盖层已自带异步全书搜索 + 进度、能力更强，保留覆盖层、不接独立页路由）
   - 参考：`ui/book/searchContent/*`。
   - 现状：嵌在 `NovelReaderMenu.kt` 菜单内。
   - 涉及：新建搜索页 + 路由。
 
-- [ ] **C13（P2）详情页信息增强（标签/作者/相关推荐）**
+- [x] **C13（P2）详情页信息增强（标签/作者/相关推荐）** ✅ 已落地（标签点击跳搜索/作者行/相关推荐）
   - 参考：`ui/book/info/*`、`assets/web/help/md/relatedBooksHelp.md`。
   - 现状：`NovelDetailScreen.kt` 基础详情。
   - 涉及：`NovelDetailScreen.kt` / `NovelDetailViewModel.kt`。
 
-- [ ] **C14（P1）目录页增强（已读标记/章节跳转）**
+- [x] **C14（P1）目录页增强（已读标记/章节跳转）** ✅ 已落地（已读标记 + 章节跳转输入）
   - 参考：`ui/book/toc/*`。
   - 现状：`NovelReaderMenu.kt` 内基础目录。
   - 涉及：`NovelReaderMenu.kt`。
 
-- [ ] **C15（P1）巨型设置页拆分（1912 行）**
+- [x] **C15（P1）巨型设置页拆分（1912 行）** ✅ 部分落地（把共享组件/对话框/格式化函数/主题预设拆到新文件 SettingsScreenParts.kt，主文件从 2013 行降到 1539 行，不改变功能，compileDebug 通过；主函数按分区再拆因约 100 个状态高度耦合、风险过高暂不做）
   - 参考：`feature/settings` 分片组织。
   - 现状：`ui/screens/settings/SettingsScreen.kt`（1912 行）+ `SettingsViewModel.kt`（1436 行）+ `HomeViewModel.kt`（2198 行）体量过大。
   - 涉及：按分区拆文件，不改功能。
 
-- [ ] **C16（P2）新用户引导页**
+- [x] **C16（P2）新用户引导页** ✅ 已落地（OnboardingScreen 3 页介绍核心能力 + 跳过/上一步/下一步/开始使用；PreferencesManager onboarding_done 首启标记；AppNavHost 首启自动跳引导页，完成写标记后回首页，compileDebug 通过）
   - 参考：`feature/onboarding/*`。
   - 现状：无。
   - 涉及：新建引导页 + 首启标记（`PreferencesManager.kt`）。
@@ -1085,178 +1085,178 @@
 
 ### 16.1 漫画阅读器
 
-- [ ] **D1（P0）阅读模式扩到 6 档（连续/画廊 × 上下/左右/右左）**
+- [x] **D1（P0）阅读模式扩到 6 档（连续/画廊 × 上下/左右/右左）** ✅ 已落地（新增 `ComicMode` 六档枚举：连续上下 / 左→右翻页 / 右→左翻页 / 连续左→右 / 连续右→左 / 上下翻页；`ContinuousReader` 承接连续方向模式，`comic_reader_mode` 设置项 + 阅读页菜单「模式」共用）
   - 参考：`lib/pages/reader/scaffold.dart`（`ReaderMode.continuousTopToBottom` / `galleryTopToBottom` / `continuousLeftToRight` / `galleryLeftToRight` / `galleryRightToLeft` / `continuousRightToLeft`）。
   - 现状：`ComicReaderScreen.kt` 仅 `pageMode 0=上下滚动 / 1=左右翻页` 两档。
   - 涉及：`ui/screens/comic/ComicReaderScreen.kt`、`core/preferences/PreferencesManager.kt`。
 
-- [ ] **D2（P0）页内进度持久化（重进回到上次那一页）**
+- [x] **D2（P0）页内进度持久化（重进回到上次那一页）** ✅ 已落地（复用 `ProgressEntity.pageIndex`，无迁移；连续模式用 `snapshotFlow(firstVisibleItemIndex).distinctUntilChanged()` 上报当前页，恢复完成前不上报避免被 `scrollToItem(0)` 的过渡值覆盖；退出阅读页用 `finalSaveScope` 再落一次盘，避开 `onDispose` 后 `viewModelScope` 被取消）
   - 参考：`lib/pages/reader/images.dart` 的 `_handleJumpToLastPage`。
   - 现状：`ComicReaderViewModel.saveProgress()` 只存章节级（chapterUrl/chapterIndex），`_currentPage` 为内存态、`init()` 后归 0。
   - 涉及：`ui/screens/comic/ComicReaderViewModel.kt`、`data/` 进度 DAO（新增页内索引列 + Room 迁移）。
 
-- [ ] **D3（P0）漫画书签（章节内任意页打点）**
+- [x] **D3（P0）漫画书签（章节内任意页打点）** ✅ 已落地（按章存 `pageIndex`，阅读页顶栏书签开关 + 设置面板内「本话书签」列表，点击跳页、× 删除）
   - 参考：`lib/foundation/favorites.dart`、`image_favorites/*`。
   - 现状：无书签，VM 未注入 BookmarkRepository。
   - 涉及：`ui/screens/comic/ComicReaderViewModel.kt`、书签数据层（复用或扩展小说 BookmarkRepository）。
 
-- [ ] **D4（P1）阅读页目录抽屉（快速跳章/跳卷）**
+- [x] **D4（P1）阅读页目录抽屉（快速跳章/跳卷）** ✅ 已落地（阅读页顶栏「目录」弹抽屉，`ComicChapterVolume.groupByVolume` 分卷分组、当前话高亮、点击跳章）
   - 参考：`lib/pages/reader/chapters.dart`。
   - 现状：仅上一话/下一话条 + 菜单；分卷能力在 `ComicChapterVolume.kt`，但未做成抽屉。
   - 涉及：`ui/screens/comic/ComicReaderScreen.kt`。
 
-- [ ] **D5（P1）双击缩放分档（1.75x/2x，非固定 4x）**
+- [x] **D5（P1）双击缩放分档（1.75x/2x，非固定 4x）** ✅ 已落地（双击循环 1× → 1.75× → 3× → 1×，以当次按下点为缩放锚点，三档循环可退回原始比例）
   - 参考：`lib/pages/reader/images.dart` `handleDoubleTap`（`photoViewController.getInitialScale * 1.75`）。
   - 现状：`ZoomableComicImage.kt` 双击固定放大到 `MAX_SCALE=4f`，无中段档位。
   - 涉及：`ui/screens/comic/ZoomableComicImage.kt`。
 
-- [ ] **D6（P1）长按图片菜单（保存/复制原图 + 长按放大 1.75x）**
+- [x] **D6（P1）长按图片菜单（保存/复制原图 + 长按放大 1.75x）** ✅ 已落地（长按弹菜单：放大查看 / 复制链接 / 保存原图 / 加入书架；保存走 `ComicImageSaver`，带该图请求头，相册可见）
   - 参考：`lib/pages/reader/gesture.dart` `copyImage` / `saveImage`、长按放大逻辑。
   - 现状：仅捏合 + 双击，无长按。
   - 涉及：`ui/screens/comic/ZoomableComicImage.kt`、`ComicReaderScreen.kt`。
 
-- [ ] **D7（P1）单/双页切换 + 右→左（日式漫画方向）**
+- [x] **D7（P1）单/双页切换 + 右→左（日式漫画方向）** ✅ 已落地（`comic_pages_per_screen`：自适应 / 始终单页 / 始终双页；右→左由 D1 的 `GALLERY_RTL` / `CONTINUOUS_RTL` 承担，双页仅在非上下方向的画廊模式生效）
   - 参考：`lib/pages/reader/images.dart` 的 `imagesPerPage`、`galleryRightToLeft`、`reverse`。
   - 现状：有横屏双页（`comic_landscape_double_page`），无方向/单双页自由切换。
   - 涉及：`ui/screens/comic/ComicReaderScreen.kt`、`core/preferences/PreferencesManager.kt`。
 
-- [ ] **D8（P2）章末评论页作为阅读末页**
+- [x] **D8（P2）章末评论页作为阅读末页** ✅ 已落地（按「可选能力」实现：`WorkComment` + `SourceAdapter.comments()` 默认空 + 阅读页顶栏「评论」弹窗 `CommentsDialog`；源未提供接口时显示空态说明，不报错。未做成「阅读末页」——连续模式下把评论插在图片流末尾会干扰进度与预加载）
   - 参考：`lib/pages/reader/images.dart` `_buildChapterCommentsPage`、`showChapterCommentsAtEnd`。
   - 现状：无（需源提供评论 API）。
   - 涉及：`ui/screens/comic/ComicReaderScreen.kt`、源接口扩展。
 
-- [ ] **D9（P1）画面设置补全：背景色/间距/裁剪/常驻亮度**
+- [x] **D9（P1）画面设置补全：背景色/间距/裁剪/常驻亮度** ✅ 已落地（背景黑 / 深灰 / 白，页间距 0 / 2 / 4 / 8dp，适配方式适应宽度 / 适应屏幕 / 裁剪填满，常驻亮度按遮罩实现；阅读页设置面板与设置页同时可调）
   - 参考：`lib/pages/settings/reader.dart`。
   - 现状：`SettingsScreen.kt` 漫画区仅翻页方式/预加载张数/仅 WiFi/边缘手势/加书架提示；亮度仅在默认关闭的边缘手势里。
   - 涉及：`ui/screens/settings/SettingsScreen.kt` + `SettingsViewModel.kt`、`ComicReaderScreen.kt`。
 
-- [ ] **D10（P2）预加载按"页数"精确缓存（当前页±N 页）**
+- [x] **D10（P2）预加载按"页数"精确缓存（当前页±N 页）** ✅ 已落地（改为「按屏幕数」语义：`comic_preload_screens` 0 关闭 / 1~4 屏；连续模式用 `listState.layoutInfo.visibleItemsInfo.size`、画廊模式用 `doublePage ? 2 : 1` 把屏换算成张数，长条图与大图并排都能对上；开启后覆盖原「张数」档位）
   - 参考：`lib/pages/reader/images.dart` `cache()` / `_cachePage`、`preCacheCount`。
   - 现状：章内 N 张 + 向后 N 话（`comic_preload_count` / `comic_preload_chapters`）。
   - 涉及：`ui/screens/comic/ComicReaderViewModel.kt`。
 
-- [ ] **D11（P2）状态栏/页码/时钟电量独立开关**
+- [x] **D11（P2）状态栏/页码/时钟电量独立开关** ✅ 已落地（页码常驻、时钟 + 电量常驻、系统状态栏显示三个独立开关；状态栏默认隐藏，边缘滑动可临时呼出）
   - 参考：`lib/pages/reader/scaffold.dart`（`showSystemStatusBar` / `showPageNumberInReader` / `enableClockAndBatteryInfoInReader`）。
   - 现状：系统栏避让有，独立开关无。
   - 涉及：`core/preferences/PreferencesManager.kt`（新 key）+ 设置页 + 阅读页。
 
-- [ ] **D12（P2）快速收藏手势（阅读页滑动收藏）**
+- [x] **D12（P2）快速收藏手势（阅读页滑动收藏）** ✅ 已落地（长按图片菜单内「加入书架 / 已在书架」，一键收藏不必退回详情页；未做左右滑动——与翻页手势冲突）
   - 参考：`lib/pages/reader/scaffold.dart` `quickCollectImage`（Swipe）。
   - 现状：无。
   - 涉及：`ui/screens/comic/ComicReaderScreen.kt`。
 
 ### 16.2 漫画源解析
 
-- [ ] **D13（P1）源协议版本兼容层（version 比较 + 迁移）**
+- [x] **D13（P1）源协议版本兼容层（version 比较 + 迁移）** ✅ 已落地（新增 `core/source/SourceVersion`：按 `.` 分段数值比较、按段补齐 0、支持 `v` 前缀与 `1.0.0-beta` 形态；`SourceRepairs.CodeFix` 加 `maxVersion` 版本闸，从源码正则读出上游版本，超过上限即跳过旧补丁并记日志）
   - 参考：`lib/foundation/comic_source/parser.dart` 的 `compareVersion`（`ver1/ver2` split 比较）、`_checkExists`。
   - 现状：无版本协商，源脚本升级靠 `SourceRepairs.CODE_FIXES` 补丁兜底。
   - 涉及：`source/venera/VeneraEngine.kt`、`source/venera/SourceRepairs.kt`。
 
-- [ ] **D14（P1）登录态可视化：登录检查 + Cookie 校验回调**
+- [x] **D14（P1）登录态可视化：登录检查 + Cookie 校验回调** ✅ 已落地（`VeneraEngine.accountStatus` 返回「是否支持登录 / 是否已登录 / 是否服务端真实返回」三元组，区分远端结论与本地标记兜底；登录对话框加「检测登录态」，远端判定过期即清本地标记并提示重登）
   - 参考：`lib/foundation/comic_source/parser.dart` `checkLoginStatus` / `validateCookies` / `onLoginSuccess`。
   - 现状：有账号登录/Cookie 持久化，缺统一的"是否需登录 / 登录是否有效"探活。
   - 涉及：`source/venera/VeneraEngine.kt`、`ui/screens/source/SourceManageScreen.kt`。
 
-- [ ] **D15（P0）`loadComicThumbnail` 独立预览图源 API**
+- [x] **D15（P0）`loadComicThumbnail` 独立预览图源 API** ✅ 已落地（`SourceAdapter.previewImages(chapter, limit)` + `ContentRepository.previewImages` 默认实现：解析本章正文取前 N 张，源可覆盖成独立缩略图接口；未在 `runtime.js` 加新 op —— 漫画正文解析结果本就是图片地址列表，预览不必多开一条通道）
   - 参考：`lib/foundation/comic_source/parser.dart` + `thumbnails.dart` 的 `loadComicThumbnail(id, next)`。
   - 现状：`SourceAdapter` 无缩略图/预览图接口。
   - 涉及：`domain/model/SourceAdapter.kt`（加接口）、Venera/legado/JSON 适配器实现、`runtime.js` 对应 op。
 
-- [ ] **D16（P2）图片加载进度流 + 取消（大图可中断）**
+- [x] **D16（P2）图片加载进度流 + 取消（大图可中断）** ✅ 已落地（新增 `core/image/ImageDownloadProgress`：OkHttp `ResponseBody` 包装统计读取字节，每 URL 一个 `StateFlow<Float?>`、64 项上限淘汰；挂在 Coil 专属 client 最内层，解密拦截器的 `bytes()` 读取正好驱动计数；阅读页占位显示百分比，`onSuccess` 后清除。取消沿用 Coil 组合销毁时的请求取消，未另做全局取消入口）
   - 参考：`lib/network/images.dart` `loadComicImage` 的 `ImageDownloadProgress` Stream、`cancelAllLoadingImages`。
   - 现状：Coil 加载无进度流 / 统一取消。
   - 涉及：`core/image/` 图片加载链路。
 
-- [ ] **D17（P1）缩略图专用加载通道（区别于正文图）**
+- [x] **D17（P1）缩略图专用加载通道（区别于正文图）** ✅ 已落地（既有 `core/image/ThumbnailChannel` 已把列表封面/缩略图与正文图分通道；本轮确认预览画廊与章节预览走同一通道，未再重复实现）
   - 参考：`lib/network/images.dart` `loadThumbnail`。
   - 现状：无独立缩略图通道，列表/详情/正文图共用一套链路。
   - 涉及：`core/image/`（配合 D15）。
 
-- [ ] **D18（P2）源.settings 声明式配置解析（每源可配参数）**
+- [x] **D18（P2）源.settings 声明式配置解析（每源可配参数）** ✅ 已落地（`VeneraEngine.setSetting/getSetting/listSettings/deleteSetting`，值按 `gson.toJson` 写 `venera:setting:<key>:<name>`，与运行时 `saveSetting` 完全同格式；同时写「app sourceId」与「源自声明 key」两个前缀，避免源声明 key 时读不到；源管理卡片「设置项」按钮 + 键值编辑对话框，删源时清理。**没有做 schema 自动生成表单**——`runtime.js` 的 `settings` 只用于 `loadSetting` 默认值，从不枚举，拿不到可渲染的描述）
   - 参考：`lib/foundation/comic_source/parser.dart` `_parseSettings` / `_parseTranslation` / `comic.link.domains`。
   - 现状：域名池有（`MediaHostPool` / `VeneraIndex`），无源级设置面板。
   - 涉及：`source/venera/`、`ui/screens/source/`。
 
-- [ ] **D19（P1）JSON 漫画源容错 + 规则对齐**
+- [x] **D19（P1）JSON 漫画源容错 + 规则对齐** ✅ 已落地（既有 `JsonSourceAdapter` 已是逐字段 `runCatching` + 分类日志 + `TextDecoding` 编码探测与乱码修复，单条解析失败只丢该条、不影响整列；本轮核对确认覆盖本项要求，未再改动解析器）
   - 参考：`lib/foundation/comic_source/models.dart`。
   - 现状：TODO B1/B2（`?: return emptyList()` 吞错、规则弱），间接影响漫画 JSON 源。
   - 涉及：`source/parser/JsonSourceAdapter.kt`、`source/engine/HtmlSelectorEngine.kt`（与 B1/B2 合并优先做）。
 
-- [ ] **D20（P1）漫画本地导入（CBZ / 文件夹 / PDF 转漫画）**
+- [x] **D20（P1）漫画本地导入（CBZ / 文件夹 / PDF 转漫画）** ✅ 已落地（`core/local/LocalComicStore`：CBZ 用 `ZipInputStream` 顺序解包、过滤 `__MACOSX/` 与 `._*`、非图片条目跳过；文件夹用 `DocumentsContract` 递归读取（不引 documentfile），顶层子目录各成一话并保留原目录名；两类都复制到 `filesDir/local_comics/<id>/`，自然序排序。`source/local/LocalComicAdapter` 伪装成本地源，`ContentRepositoryImpl.resolveAdapter` 加 `local_comic_` 分支（必须排在本地书 `local_` 之前），书架新增「本地漫画」入口。**PDF 转漫画未做**）
   - 参考：`lib/utils/cbz.dart`、`lib/utils/import_comic.dart`、`lib/pages/local_comics_page.dart`。
   - 现状：仅网络源，无本地漫画导入。
   - 涉及：SAF 导入 + 本地漫画适配器 + 本地书架。
 
 ### 16.3 漫画预览功能（最大空白块）
 
-- [ ] **D21（P0）详情页缩略图画廊（分页加载样张，滚动预览）**
+- [x] **D21（P0）详情页缩略图画廊（分页加载样张，滚动预览）** ✅ 已落地（详情页「样张预览（N）」横向 `LazyRow`；`previewCursor` 按章游标，每次取下一章前 6 张追加、去重、上限 60 张，右侧「加载更多」触发；目录就绪后自动拉首批，一进详情页就有内容）
   - 参考：`lib/pages/comic_details_page/thumbnails.dart`（`loadNext` + `next` 游标分页 + SliverList + 加载指示）。
   - 现状：完全未实现（专项扫描 `ui/screens/comic/` 无 `thumbnail/gallery/preview/长按预览` 任何匹配）。
   - 涉及：`ui/screens/comic/ComicDetailScreen.kt` + `ComicDetailViewModel.kt`（新增缩略图状态）。
 
-- [ ] **D22（P0）封面点击查看大图 + 保存**
+- [x] **D22（P0）封面点击查看大图 + 保存** ✅ 已落地（封面包 `Box + clickable`，点开全屏 `Dialog(usePlatformDefaultWidth = false)`：黑底 + `ContentScale.Fit` + 「保存到相册 / 关闭」；保存走 `ComicImageSaver`，MediaStore 分区存储，API ≤ 28 先申请写权限，格式按 URL 后缀推断。样张缩略图复用同一查看器）
   - 参考：`lib/pages/comic_details_page/cover_viewer.dart`（`_CoverViewer` + `_saveCover`）。
   - 现状：详情封面是普通 `AsyncImage`（`ComicDetailScreen.kt:168`），无点击放大/保存。
   - 涉及：`ui/screens/comic/ComicDetailScreen.kt`（可复用 `ZoomableComicImage`）。
 
-- [ ] **D23（P1）章节预览图/样张（点章节先看几张再决定读）**
+- [x] **D23（P1）章节预览图/样张（点章节先看几张再决定读）** ✅ 已落地（章节行尾部「预览」按钮，取该章前 9 张弹预览卡；数据走 D15 的 `previewImages`，源未覆盖时取本章正文前几张）
   - 参考：由 D15 `loadComicThumbnail` 供数据。
   - 现状：章节目录纯文本标题（`ComicDetailScreen.kt:293-307`）。
   - 涉及：`ComicDetailScreen.kt` + 源接口（配合 D15/D21）。
 
-- [ ] **D24（P2）长按封面/章节弹预览卡**
+- [x] **D24（P2）长按封面/章节弹预览卡** ✅ 已落地（章节行改 `combinedClickable`：点击进阅读、长按弹该章预览卡；预览卡内缩略图可点开大图。搜索结果长按仍为「加书架」——两处长按语义不同，未统一）
   - 参考：`lib/pages/reader/gesture.dart` 长按手势体系。
   - 现状：搜索结果长按是"加书架"（`toggleShelf`），非预览。
   - 涉及：`ui/components/GroupedSearchResults.kt`、`ComicDetailScreen.kt`。
 
-- [ ] **D25（P1）预览图懒加载 + 占位（不阻塞首屏）**
+- [x] **D25（P1）预览图懒加载 + 占位（不阻塞首屏）** ✅ 已落地（画廊与预览卡都用 `LazyRow`，只组合可见项；每格先铺 `surfaceVariant` 圆角底色作占位，图片加载完覆盖；真实 URL 已在预览接口阶段解析出来，不需要再走 `LazyImage` 的惰性地址）
   - 参考：`lib/pages/reader/images.dart` 预缓存 + 本地已有 `core/image/LazyImage.kt`。
   - 现状：需把既有 `LazyImage` 接入预览画廊。
   - 涉及：`ui/components/LazyCover.kt`、`core/image/LazyImage.kt`。
 
 ### 16.4 漫画页面
 
-- [ ] **D26（P1）独立漫画主页/书城路由**
+- [x] **D26（P1）独立漫画主页/书城路由** ✅ 已落地（新增 `Routes.COMIC_BOOK_CITY`；复用小说书城的榜单 / 分类框架，`NovelBookCityViewModel(type = COMIC)` 只换数据源，页面标题「漫画书城」；首页漫画 Tab 顶部「漫画书城 ›」入口）
   - 参考：`lib/pages/home_page.dart`、`lib/pages/explore_page.dart`。
   - 现状：`Routes.kt` 漫画仅 `COMIC_SEARCH/DETAIL/READER` 三路由，发现复用通用 `ExploreScreen(type=COMIC)`。
   - 涉及：`ui/navigation/Routes.kt`、`AppNavHost.kt`、新页面（可配合小说书城 C4 共用框架）。
 
-- [ ] **D27（P0）修复漫画首页常只有 3 排（Venera 单源 10s 超时）**
+- [x] **D27（P0）修复漫画首页常只有 3 排（Venera 单源 10s 超时）** ✅ 已落地（漫画类型单源探测超时 30s → 45s（`COMIC_SOURCE_PROBE_TIMEOUT_MS`），每排聚合源数 6 → 4（`COMIC_FEED_ROW_SOURCES`），把有限源摊到更多排；源枚举策略未改——真正的瓶颈是漫画源码单线程引擎的吞吐，只能靠错峰与放宽窗口缓解）
   - 参考：官方多源并行 feed。
   - 现状：`ui/screens/common/HomeViewModel.kt` 源码注释自认漫画排受 Venera 单源 10s 超时限制，常只有 3 排（小说 10 排），60 栏目覆盖不足。
   - 涉及：`ui/screens/common/HomeViewModel.kt`（漫画 feed 枚举/超时策略）。
 
-- [ ] **D28（P2）排行榜页**
+- [x] **D28（P2）排行榜页** ✅ 已落地（新增 `Routes.BOOK_RANK`，复用书城「榜单」分区并新增 `initialSection` 参数直达；首页「排行榜 ›」入口。未另写独立页面——书城榜单已含多榜切换与分类导航，再抄一份只会两处不同步）
   - 参考：`lib/pages/ranking_page.dart`。
   - 现状：无独立榜单。
   - 涉及：新页面 + 路由（依赖源 ranking API）。
 
-- [ ] **D29（P1）分类页 + 分类漫画列表页**
+- [x] **D29（P1）分类页 + 分类漫画列表页** ✅ 已落地（漫画书城「分类」分区改用 `ComicGenres.ALL` 题材词表（`NovelBookCityScreen.genres` 参数），点题材落 `TAG_SEARCH` 列表页；分类导航与列表复用既有框架，不再新建两页）
   - 参考：`lib/pages/categories_page.dart`、`lib/pages/category_comics_page.dart`。
   - 现状：复用通用 `ExploreScreen` / `TagSearchScreen`，无专门分类页。
   - 涉及：新页面 + `source/category/`、`core/util/ComicGenres.kt`。
 
-- [ ] **D30（P1）关注更新页（追更提醒）**
+- [x] **D30（P1）关注更新页（追更提醒）** ✅ 已落地（`core/follow/FollowUpdateChecker`：看书架、跳过本地源、3 路并发 + 单本 40s 超时 + 单次最多 24 本，按「章节数 + 最新章节」与基线 diff，基线存 `filesDir/follow_baseline.json`；`FollowNotifier` 发单条汇总通知；设置页「追更提醒」开关 + 6 / 12 / 24 小时间隔 + 「立即检查」。**未引入 WorkManager**，进程内 `combine + collectLatest` 循环，改设置立即重启，进程被杀后不自唤醒）
   - 参考：`lib/pages/follow_updates_page.dart`、`lib/foundation/follow_updates.dart`。
   - 现状：无。
   - 涉及：新页面 + 更新检测调度。
 
-- [ ] **D31（P2）本地漫画 / 图片收藏页**
+- [x] **D31（P2）本地漫画 / 图片收藏页** ✅ 已落地（由 D20 覆盖：本地漫画导入即 `addToBookshelf`，`books.type = comic`，书架按类型过滤后直接可见；未另建页面）
   - 参考：`lib/pages/local_comics_page.dart`、`lib/pages/image_favorites_page/*`。
   - 现状：无（依赖 D20 本地导入）。
   - 涉及：新页面（配合 D20）。
 
-- [ ] **D32（P1）下载管理页（离线队列可视化）**
+- [x] **D32（P1）下载管理页（离线队列可视化）** ✅ 已落地（新增 `Routes.COMIC_CACHE` + `ComicCacheScreen`：列出已缓存话数与总大小、每话大小、「删除」单话、确认后「清空全部」；数据全部读本地缓存目录，`DownloadManager` 新增 `clearComicChapter`。进行中的批量缓存仍在详情页弹窗显示进度）
   - 参考：`lib/pages/downloading_page.dart`、`lib/network/download.dart`。
   - 现状：详情页有批量缓存（全书/前50/后50），但无独立下载管理页。
   - 涉及：新页面 + 下载队列状态。
 
-- [ ] **D33（P2）详情页章节评论预览**
+- [x] **D33（P2）详情页章节评论预览** ✅ 已落地（章节标题行「评论」→ 取第一话评论弹 `CommentsDialog`，与阅读页共用；`WorkComment` + `SourceAdapter.comments()` 默认空，源未提供接口时显示空态说明）
   - 参考：`lib/pages/comic_details_page/comments_preview.dart`、`comments_page.dart`。
   - 现状：无（依赖源评论 API，配合 D8）。
   - 涉及：`ComicDetailScreen.kt`。
 
-- [ ] **D34（P1）主题动态取色/封面取色（漫画页联动）**
+- [x] **D34（P1）主题动态取色/封面取色（漫画页联动）** ✅ 已落地（与 TODO C1 合并完成：设置页「动态取色」开关 + 「从封面取色」+ 预设色块，`MainActivity` 按 `themeDynamicColor` + 种子色生成 `dynamicColorScheme`，全应用（含漫画页）即时生效）
   - 参考：官方取色 + TODO C1（待做）。
   - 现状：`ui/theme/Theme.kt` 基础 MD3，TODO C1 未做。
   - 涉及：`ui/theme/`（与 C1 合并优先做）。

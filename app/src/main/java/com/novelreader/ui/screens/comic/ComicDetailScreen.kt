@@ -2,10 +2,13 @@ package com.novelreader.ui.screens.comic
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -39,6 +42,16 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.novelreader.core.image.ComicImageSaver
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 
@@ -53,6 +66,8 @@ fun ComicDetailScreen(
     onRead: () -> Unit,
     onBack: () -> Unit,
     onTagClick: (String) -> Unit = {},
+    /** 打开下载管理页（D32） */
+    onOpenCache: () -> Unit = {},
 ) {
     val detail by viewModel.detail.collectAsState()
     val chapters by viewModel.chapters.collectAsState()
@@ -64,6 +79,36 @@ fun ComicDetailScreen(
     // 批量离线缓存（v1.2.11.0）
     val cacheProgress by viewModel.cacheProgress.collectAsState()
     var showCacheDialog by remember { mutableStateOf(false) }
+    // D22 / D21：大图查看（封面与样张共用一个查看器）
+    var viewerUrl by remember { mutableStateOf<String?>(null) }
+    val coverContext = LocalContext.current
+    val coverScope = rememberCoroutineScope()
+    // D21 / D23 / D24：样张画廊 + 章节预览
+    val previews by viewModel.previews.collectAsState()
+    val previewLoading by viewModel.previewLoading.collectAsState()
+    val chapterPreview by viewModel.chapterPreview.collectAsState()
+    // 样张请求头：图床有防盗链，不带 Referer/Cookie 会整片灰块
+    val previewHeaders by viewModel.previewHeaders.collectAsState()
+    // 「加载全部」状态与进度
+    val previewLoadingAll by viewModel.previewLoadingAll.collectAsState()
+    val previewLoadAllProgress by viewModel.previewLoadAllProgress.collectAsState()
+    val previewModel: (String) -> Any = remember(previewHeaders) {
+        { url ->
+            if (previewHeaders.isEmpty() || !url.startsWith("http")) {
+                url
+            } else {
+                coil.request.ImageRequest.Builder(coverContext)
+                    .data(url)
+                    .apply { previewHeaders.forEach { (k, v) -> addHeader(k, v) } }
+                    .build()
+            }
+        }
+    }
+    // D33：评论预览
+    val comments by viewModel.comments.collectAsState()
+    val commentsLoading by viewModel.commentsLoading.collectAsState()
+    val commentsTitle by viewModel.commentsTitle.collectAsState()
+    var showComments by remember { mutableStateOf(false) }
 
     LaunchedEffect(item) {
         viewModel.load(item)
@@ -168,12 +213,21 @@ fun ComicDetailScreen(
                         .fillMaxWidth()
                         .padding(16.dp),
                 ) {
-                    AsyncImage(
-                        model = display.cover,
-                        contentDescription = display.title,
-                        modifier = Modifier.size(width = 96.dp, height = 128.dp),
-                        contentScale = ContentScale.Crop,
-                    )
+                    // D22：封面点击查看大图 + 保存
+                    Box(
+                        modifier = Modifier
+                            .size(width = 96.dp, height = 128.dp)
+                            .clickable(enabled = !display.cover.isNullOrBlank()) {
+                                viewerUrl = display.cover
+                            },
+                    ) {
+                        AsyncImage(
+                            model = display.cover,
+                            contentDescription = display.title,
+                            modifier = Modifier.matchParentSize(),
+                            contentScale = ContentScale.Crop,
+                        )
+                    }
                     Spacer(Modifier.width(16.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
@@ -202,6 +256,7 @@ fun ComicDetailScreen(
                         // FlowRow 自动换行：窄屏下 4 个按钮放不进一行时不再溢出被裁
                         @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
                         androidx.compose.foundation.layout.FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             Button(
@@ -210,10 +265,12 @@ fun ComicDetailScreen(
                             ) {
                                 Text(if (chapters.isEmpty()) "暂无章节" else "开始阅读")
                             }
+                            // 文案收紧到「书架」，四个按钮才能在 360dp 宽的手机上排成一行；
+                            // 之前「加入书架」会把「缓存」挤到第二行居中，看着像布局错位
                             if (collected) {
                                 OutlinedButton(onClick = viewModel::toggleCollect) { Text("已收藏") }
                             } else {
-                                OutlinedButton(onClick = viewModel::toggleCollect) { Text("加入书架") }
+                                OutlinedButton(onClick = viewModel::toggleCollect) { Text("书架") }
                             }
                             OutlinedButton(onClick = viewModel::downloadComic) { Text("下载") }
                             OutlinedButton(onClick = { showCacheDialog = true }) { Text("缓存") }
@@ -256,6 +313,118 @@ fun ComicDetailScreen(
                 )
             }
 
+            // D21：样张预览（列表式，整页上下滑动看全部；「加载更多」就地追加）
+            if (previews.isNotEmpty() || previewLoading) {
+                item(key = "preview_header") {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "样张预览（${previews.size}）",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // 「加载全部」：串行拉完剩余所有章节，进度回显成「已处理/总数」
+                            when {
+                                previewLoadingAll -> {
+                                    val progress = previewLoadAllProgress
+                                    Text(
+                                        text = progress?.let { "${it.first}/${it.second}" } ?: "加载中…",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 8.dp),
+                                    )
+                                }
+                                else -> Text(
+                                    text = "加载全部",
+                                    color = MaterialTheme.colorScheme.primary,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier
+                                        .clickable(enabled = !previewLoading) {
+                                            viewModel.loadAllPreviews()
+                                        }
+                                        .padding(8.dp),
+                                )
+                            }
+                            Text(
+                                text = if (previewLoading) "加载中…" else "加载更多",
+                                color = MaterialTheme.colorScheme.primary,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier
+                                    .clickable(enabled = !previewLoading && !previewLoadingAll) {
+                                        viewModel.loadMorePreviews()
+                                    }
+                                    .padding(8.dp),
+                            )
+                        }
+                    }
+                }
+                // 每行 3 张，作为外层 LazyColumn 的 item —— 天然可上下滚动、能看全部，
+                // 且不与父级 LazyColumn 抢滚动（LazyRow 改 LazyVerticalGrid 会直接崩）
+                items(
+                    previews.chunked(3),
+                    key = { row -> "preview_row_${row.first()}" },
+                ) { row ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 3.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        row.forEach { url ->
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .aspectRatio(0.72f)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    // 夜间占位压暗：整块 surfaceVariant 在深色页面上像一块块灰板，
+                                    // 加载期间观感很脏，这里降到 40% 不透明度当作图片底座
+                                    .background(
+                                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                    )
+                                    .clickable { viewerUrl = url },
+                            ) {
+                                AsyncImage(
+                                    model = previewModel(url),
+                                    contentDescription = null,
+                                    modifier = Modifier.matchParentSize(),
+                                    contentScale = ContentScale.Crop,
+                                )
+                            }
+                        }
+                        // 末行不足 3 张时补空位，保持每格宽高比一致
+                        repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                    }
+                }
+                if (previewLoading) {
+                    item(key = "preview_loading") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "正在加载更多样张…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+
             item {
                 Row(
                     modifier = Modifier
@@ -269,6 +438,19 @@ fun ComicDetailScreen(
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f),
                     )
+                    // D33：第一话评论预览（源不支持时显示空态）
+                    Text(
+                        text = "评论",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clickable {
+                                viewModel.loadCommentsPreview()
+                                showComments = true
+                            }
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
                     OrderChip(
                         text = if (chapterDesc) "倒序" else "正序",
                         selected = chapterDesc,
@@ -296,11 +478,17 @@ fun ComicDetailScreen(
                     }
                 }
                 items(volumeChapters, key = { "${it.index}_${it.url}" }) { chapter ->
-                    Column(
+                    @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onChapterClick(chapter) }
+                            // D24：点击进章节，长按先看几张（预览卡）
+                            .combinedClickable(
+                                onClick = { onChapterClick(chapter) },
+                                onLongClick = { viewModel.previewChapter(chapter) },
+                            )
                             .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
                             text = chapter.title,
@@ -308,6 +496,16 @@ fun ComicDetailScreen(
                             color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        // D23：先看几张再决定读
+                        Text(
+                            text = "预览",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .clickable { viewModel.previewChapter(chapter) }
+                                .padding(start = 12.dp, top = 4.dp, bottom = 4.dp),
                         )
                     }
                     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
@@ -357,6 +555,11 @@ fun ComicDetailScreen(
                                 showCacheDialog = false
                                 viewModel.cacheNext50()
                             }) { Text("后50话") }
+                            // D32：已缓存章节的下载管理页
+                            androidx.compose.material3.TextButton(onClick = {
+                                showCacheDialog = false
+                                onOpenCache()
+                            }) { Text("管理") }
                             androidx.compose.material3.TextButton(onClick = { showCacheDialog = false }) { Text("取消") }
                         }
                     },
@@ -372,6 +575,162 @@ fun ComicDetailScreen(
                     },
                 )
             }
+
+        // ===== D33 评论预览 =====
+        if (showComments) {
+            CommentsDialog(
+                title = "评论 · " + commentsTitle.ifBlank { display.title },
+                comments = comments,
+                loading = commentsLoading,
+                onDismiss = { showComments = false },
+            )
+        }
+
+        // ===== D23 / D24 章节预览卡（长按章节或点「预览」，先看几张再决定读） =====
+        chapterPreview?.let { p ->
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { viewModel.dismissChapterPreview() },
+                title = { Text(p.title) },
+                text = {
+                    when {
+                        p.loading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text("正在加载样张…")
+                        }
+                        p.images.isEmpty() -> Text("该章没有可预览的图片")
+                        // 列表式预览（上下滑动看全部），与详情页样张区保持一致的观感
+                        else -> androidx.compose.foundation.lazy.LazyColumn(
+                            modifier = Modifier.heightIn(max = 420.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            items(p.images.chunked(3), key = { row -> row.first() }) { row ->
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    row.forEach { url ->
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .aspectRatio(0.72f)
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(
+                                                    MaterialTheme.colorScheme.surfaceVariant
+                                                        .copy(alpha = 0.4f),
+                                                )
+                                                .clickable { viewerUrl = url },
+                                        ) {
+                                            AsyncImage(
+                                                model = previewModel(url),
+                                                contentDescription = null,
+                                                modifier = Modifier.matchParentSize(),
+                                                contentScale = ContentScale.Crop,
+                                            )
+                                        }
+                                    }
+                                    repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(
+                        onClick = { viewModel.dismissChapterPreview() },
+                    ) { Text("关闭") }
+                },
+            )
+        }
+
+        // ===== D22 / D21 大图查看（封面、样张共用）+ 保存到相册 =====
+        viewerUrl?.let { viewer ->
+            var saving by remember(viewer) { mutableStateOf(false) }
+            var coverHint by remember(viewer) { mutableStateOf<String?>(null) }
+
+            // 下载原图并写入相册（阻塞 IO 放到 Dispatchers.IO）
+            fun startSave() {
+                if (saving || viewer.isBlank()) return
+                saving = true
+                coverHint = null
+                coverScope.launch {
+                    val saved = withContext(Dispatchers.IO) {
+                        // 带上防盗链头，否则保存下来的是 403 页面
+                        ComicImageSaver.saveToGallery(coverContext, viewer, previewHeaders)
+                    }
+                    saving = false
+                    coverHint = if (saved) "已保存到相册" else "保存失败，请重试"
+                }
+            }
+
+            // API 28 及以下写相册公共目录需要存储权限；29+ 走 MediaStore 分区存储免权限
+            val storagePermission = android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+            val needStoragePermission =
+                android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q &&
+                    androidx.core.content.ContextCompat.checkSelfPermission(
+                        coverContext,
+                        storagePermission,
+                    ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+                androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+            ) { granted ->
+                if (granted) startSave() else coverHint = "未授予存储权限，无法保存到相册"
+            }
+
+            Dialog(
+                onDismissRequest = { if (!saving) viewerUrl = null },
+                // 关掉默认宽度限制，让大图铺满屏幕
+                properties = DialogProperties(usePlatformDefaultWidth = false),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black),
+                ) {
+                    AsyncImage(
+                        // 大图与缩略图共用同一套请求头（防盗链站点不带就是 403）
+                        model = previewModel(viewer),
+                        contentDescription = display.title,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit,
+                    )
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        coverHint?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = Color.White,
+                                modifier = Modifier.padding(bottom = 12.dp),
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Button(
+                                onClick = {
+                                    if (needStoragePermission) {
+                                        permissionLauncher.launch(storagePermission)
+                                    } else {
+                                        startSave()
+                                    }
+                                },
+                                enabled = !saving,
+                            ) {
+                                Text(if (saving) "保存中…" else "保存到相册")
+                            }
+                            OutlinedButton(
+                                onClick = { viewerUrl = null },
+                                enabled = !saving,
+                            ) { Text("关闭") }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

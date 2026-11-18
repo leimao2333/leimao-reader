@@ -19,7 +19,8 @@ class JsSourceParser : SourceParser {
     override fun createAdapter(info: SourceInfo, rawContent: String): SourceAdapter {
         val scope = SourceJsEngine.createScope()
         SourceJsBridge.inject(scope)
-        SourceJsEngine.evaluate(scope, rawContent)
+        // B3：脚本求值走带超时接口，避免源里的顶层死循环卡住解析线程。
+        SourceJsEngine.evaluateWithTimeout(scope, rawContent)
         return JsSourceAdapter(info, scope)
     }
 }

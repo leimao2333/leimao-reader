@@ -14,6 +14,7 @@ import com.novelreader.core.util.TagSearchArg
 object Routes {
     // ===== 主框架 =====
     const val HOME = "home"                    // 首页（书架/发现/源管理入口）
+    const val ONBOARDING = "onboarding"        // 新用户引导页（C16，首启展示一次）
     const val SETTINGS = "settings"            // 设置中心
     const val CHANGELOG = "changelog"          // 更新日志
     const val CACHE_MANAGE = "cache_manage"    // 缓存管理（单章缓存 #30）
@@ -28,11 +29,20 @@ object Routes {
     const val NOVEL_READER = "novel_reader/{item}/{chapterIndex}"  // 章节列表走 NavCache
 
     const val EXPLORE = "explore?type={type}"   // 发现页（v1.2.3.0，按类型枚举源的发现分类）
+    const val NOVEL_BOOK_CITY = "novel_book_city"  // 独立小说书城（榜单/分类导航，TODO 第十五章 C4）
 
     // ===== 漫画 =====
     const val COMIC_SEARCH = "comic_search?keyword={keyword}"
     const val COMIC_DETAIL = "comic_detail/{item}"
     const val COMIC_READER = "comic_reader/{item}/{chapterIndex}"
+    /** 独立漫画书城（D26）：复用小说书城的榜单 / 分类框架，数据取漫画源 */
+    const val COMIC_BOOK_CITY = "comic_book_city"
+
+    /** 漫画下载管理页（D32）：已缓存章节可视化 + 单章删除 */
+    const val COMIC_CACHE = "comic_cache/{item}"
+
+    /** 排行榜页（D28）：书城榜单分区的独立入口 */
+    const val BOOK_RANK = "book_rank"
 
     // ===== 视频 =====
     const val VIDEO_SEARCH = "video_search?keyword={keyword}"
@@ -78,6 +88,10 @@ object Routes {
 
     fun comicDetail(item: com.novelreader.domain.model.MediaItem): String =
         "comic_detail/${NavArgs.encodeItem(item)}"
+
+    /** 漫画下载管理页（D32） */
+    fun comicCache(item: com.novelreader.domain.model.MediaItem): String =
+        "comic_cache/${NavArgs.encodeItem(item)}"
 
     fun comicReader(
         item: com.novelreader.domain.model.MediaItem,

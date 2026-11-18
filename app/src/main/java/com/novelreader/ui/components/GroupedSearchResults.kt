@@ -396,6 +396,8 @@ private fun GroupCard(
                 Text(
                     text = head.title,
                     style = MaterialTheme.typography.titleMedium,
+                    // 夜间：显式 onSurface，避免 Text 默认黑色内容色在深底上看不清
+                    color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -617,6 +619,7 @@ private fun GridResultCell(
         Text(
             text = head.title,
             style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
@@ -665,6 +668,7 @@ private fun GridSourceSheet(
             Text(
                 text = "选择来源 · ${group.size} 个",
                 style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
             )
             androidx.compose.material3.HorizontalDivider(
@@ -714,6 +718,7 @@ private fun GridSourceSheet(
                         Text(
                             text = member.title,
                             style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -789,6 +794,7 @@ private fun SearchResultActionSheet(
                     Text(
                         text = item.title,
                         style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )

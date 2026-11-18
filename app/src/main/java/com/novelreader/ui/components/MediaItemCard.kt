@@ -36,6 +36,7 @@ import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
 import com.novelreader.domain.model.MediaItem
+import com.novelreader.ui.theme.LocalAppDarkTheme
 
 /**
  * 通用媒体列表项。
@@ -77,6 +78,9 @@ fun MediaItemCard(
                 Text(
                     text = item.title,
                     style = MaterialTheme.typography.titleMedium,
+                    // 夜间模式：标题必须显式给 onSurface —— Text 默认走 LocalContentColor（黑色），
+                    // 这些卡片不在 Surface 里，不写就会在深色背景上变黑字看不清。
+                    color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -207,8 +211,12 @@ fun CoverPlaceholderLetter(modifier: Modifier = Modifier, title: String? = null)
     val letter = remember(title) {
         title?.trim()?.take(2) ?: ""
     }
-    // 低饱和 + 高明度：做背景不能抢封面本身的注意力，也要保证深色字够清晰
-    val (start, end) = remember(title) { placeholderColors(title) }
+    // 低饱和 + 高明度：做背景不能抢封面本身的注意力，也要保证字够清晰。
+    // 夜间模式优化：占位块底色与字色跟随应用明暗——白天浅底深字，夜间深底浅字。
+    // 此前字色写死近黑色、底色写死浅色，夜间搜索结果里一排无封面书就是浅块黑字，很扎眼。
+    val isDark = LocalAppDarkTheme.current
+    val (start, end) = remember(title, isDark) { placeholderColors(title, isDark) }
+    val ink = if (isDark) Color(0xFFD8D8D8) else PlaceholderInkLight
     Box(
         modifier = modifier.background(
             brush = Brush.linearGradient(listOf(start, end)),
@@ -219,13 +227,13 @@ fun CoverPlaceholderLetter(modifier: Modifier = Modifier, title: String? = null)
             Icon(
                 imageVector = Icons.Filled.Image,
                 contentDescription = "无封面",
-                tint = PlaceholderInk,
+                tint = ink,
             )
         } else {
             Text(
                 text = letter,
                 style = MaterialTheme.typography.titleLarge,
-                color = PlaceholderInk,
+                color = ink,
                 maxLines = 1,
                 overflow = TextOverflow.Clip,
                 textAlign = TextAlign.Center,
@@ -234,16 +242,19 @@ fun CoverPlaceholderLetter(modifier: Modifier = Modifier, title: String? = null)
     }
 }
 
-/** 占位块上的字色：固定在浅底上足够深的墨色，不随主题的深浅漂移 */
-private val PlaceholderInk = Color(0xFF3B3B3B)
+/** 白天占位块上的字色：浅底上足够深的墨色 */
+private val PlaceholderInkLight = Color(0xFF3B3B3B)
 
-/** 由书名推出一对柔和的邻近色（同一书名每次结果一致） */
-private fun placeholderColors(title: String?): Pair<Color, Color> {
+/** 由书名推出一对柔和的邻近色（同一书名每次结果一致）；夜间改用深色渐变配浅字 */
+private fun placeholderColors(title: String?, dark: Boolean): Pair<Color, Color> {
     val seed = (title?.trim()?.hashCode() ?: 0)
     // 取绝对值避免负号把色相压到少数几个值上；乘个奇数打散相邻 hash 的连续性
     val hue = (kotlin.math.abs(seed * 2_654_435_761L) % 360).toFloat()
-    return Color.hsv(hue, 0.22f, 0.93f) to
-        Color.hsv((hue + 26f) % 360f, 0.30f, 0.86f)
+    return if (dark) {
+        Color.hsv(hue, 0.30f, 0.30f) to Color.hsv((hue + 26f) % 360f, 0.34f, 0.24f)
+    } else {
+        Color.hsv(hue, 0.22f, 0.93f) to Color.hsv((hue + 26f) % 360f, 0.30f, 0.86f)
+    }
 }
 
 @Composable

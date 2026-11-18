@@ -91,11 +91,15 @@ class MainActivity : ComponentActivity() {
                     null
                 }
             }
+            // C2：主题风格（标准/暖色/冷色），动态取色关闭时生效
+            val themeStyle by app.container.preferencesManager.themeStyleFlow
+                .collectAsState(initial = 0)
             NovelReaderTheme(
                 darkTheme = darkTheme,
                 appFont = appFont,
                 customFontPath = customFontPath,
                 colorScheme = dynamicColorScheme,
+                style = themeStyle,
             ) {
                 // 系统栏图标明暗跟随**应用**主题（v1.8.8.2）。
                 //
@@ -103,8 +107,14 @@ class MainActivity : ComponentActivity() {
                 // 的主题是用户设置项：系统深色 + 应用浅色时，白色图标就落在白色页面上 ——
                 // 整条状态栏看着像被顶栏盖住了（用户反馈原话）。这里在每次主题确定后覆盖一次，
                 // 后续各页若整屏是黑底（播放器全屏 / 漫画阅读）再由页面自己改成白色图标。
-                LaunchedEffect(darkTheme) {
+                LaunchedEffect(darkTheme, themeMode) {
                     applySystemBarIcons(darkIcons = !darkTheme)
+                    // 夜间模式优化：「跟随系统」模式下系统昼夜切换后，把折算值实时同步给
+                    // 小说阅读页夜间（此前只在切换设置那一刻拍一次快照，系统切换后不跟随）。
+                    // 只写 novelNight、不改 themeMode，保持「跟随系统」状态。
+                    if (themeMode == com.novelreader.core.preferences.PreferencesManager.THEME_MODE_SYSTEM) {
+                        app.container.preferencesManager.syncNovelNightForSystem(darkTheme)
+                    }
                 }
 
                 // 深链支持：novelreader://search?keyword=xxx&type=novel|comic|video

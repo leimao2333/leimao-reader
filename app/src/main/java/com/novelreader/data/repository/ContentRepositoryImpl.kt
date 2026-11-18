@@ -1,6 +1,8 @@
 package com.novelreader.data.repository
 
 import com.novelreader.core.source.SourceErrorLog
+import com.novelreader.core.text.ContentPipeline
+import com.novelreader.core.text.ContentPipelineConfigFactory
 import com.novelreader.core.text.ContentQualityChecker
 import com.novelreader.core.util.runCatchingCc
 import com.novelreader.domain.model.ChapterItem
@@ -47,6 +49,8 @@ class ContentRepositoryImpl(
     private val preferencesManager: com.novelreader.core.preferences.PreferencesManager? = null,
     /** 目录本地缓存（v1.8.8.5）；为空则退化为纯网络 */
     private val chapterListCache: com.novelreader.data.database.ChapterListCacheDao? = null,
+    /** 本地漫画库（D20）；为空则本地漫画不可用 */
+    private val localComicStore: com.novelreader.core.local.LocalComicStore? = null,
 ) : ContentRepository {
 
     /**
@@ -55,6 +59,15 @@ class ContentRepositoryImpl(
      */
     private fun resolveAdapter(sourceId: String): com.novelreader.domain.model.SourceAdapter? {
         sourceManager.getAdapter(sourceId)?.let { return it }
+        // 本地漫画（D20）：前缀 local_comic_ 同样以 local_ 开头，必须排在本地书之前判，
+        // 否则会被本地书分支吃掉（getBook 查不到 → 返回 null → 书架里的书点开全是错误）
+        if (sourceId.startsWith(com.novelreader.core.local.LocalComicStore.SOURCE_PREFIX) &&
+            localComicStore != null
+        ) {
+            val comicId = sourceId.removePrefix(com.novelreader.core.local.LocalComicStore.SOURCE_PREFIX)
+            val meta = localComicStore.getComic(comicId) ?: return null
+            return com.novelreader.source.local.LocalComicAdapter(meta, localComicStore)
+        }
         if (sourceId.startsWith(com.novelreader.core.local.LocalBookStore.SOURCE_PREFIX) && localBookStore != null) {
             val localId = sourceId.removePrefix(com.novelreader.core.local.LocalBookStore.SOURCE_PREFIX)
             val meta = localBookStore.getBook(localId) ?: return null
@@ -465,7 +478,7 @@ class ContentRepositoryImpl(
                 .onSuccess { SourceErrorLog.clear(chapter.sourceId) }
                 .onFailure { SourceErrorLog.record(chapter.sourceId, "图片", it) }
                 .getOrDefault(ContentResult())
-            // B6：小说正文质量处理（去尾巴广告 + 低质量记账）。
+            // B6 + B8：小说正文走处理流水线（净化 + 质量检查两段式）。
             // 时机：本层没有正文缓存，章节正文缓存（getCached/put）在 NovelReaderViewModel
             // 里、位于本方法**之后**。所以在这里处理 = 每次真正联网只处理一遍，回写进缓存的
             // 已是净化后的文本；之后读缓存不再经过本方法，不会重复处理、也不会重复记账。
@@ -473,16 +486,42 @@ class ContentRepositoryImpl(
         }
 
     /**
-     * 小说正文质量处理（B6）。
+     * 章节评论（D8 / D33）。
+     *
+     * 走与正文相同的适配器解析，但**不记失败日志**：评论是可选能力，
+     * 源没实现（默认空列表）不该在诊断页里堆一堆「评论失败」。
+     */
+    override suspend fun comments(
+        chapter: ChapterItem,
+    ): List<com.novelreader.domain.model.WorkComment> = withContext(Dispatchers.IO) {
+        val adapter = resolveAdapter(chapter.sourceId) ?: return@withContext emptyList()
+        runCatching { adapter.comments(chapter) }.getOrDefault(emptyList())
+    }
+
+    /**
+     * 小说正文处理（B6 + B8）：交给 [ContentPipeline] 流水线统一执行。
      *
      * 只碰 [ContentResult.novelText]：漫画 / 视频 / 图片分支的 `novelText` 为 null，
      * 在第一步就原样返回，字段与对象都不变（零影响）。
      *
      * 处理顺序：
-     * 1. [ContentQualityChecker.stripAdTail] 去掉末尾广告行（只从末行往前看，最多 6 行）；
-     * 2. 对**净化后**的文本做一次 [ContentQualityChecker.isLikelyEmptyOrAd]。
-     *    正常章节只花这一次全文扫描；判低质量时才再 [ContentQualityChecker.check] 一次
-     *    取字段（罕见路径，可以接受）。
+     * 1. [ContentQualityChecker.stripAdTail] 去掉末尾广告行（只从末行往前看，最多 6 行）。
+     *    这一步**留在流水线上游**：流水线没有「整行裁剪」这个阶段（净化只清字符与空行），
+     *    而末尾广告是整行删掉，语义不同；沿用既有组件，口径不变、行为不回退。
+     * 2. [ContentPipeline] 净化：统一换行符、清控制字符 / BOM、去行尾空白、折叠多余空行。
+     * 3. **快判**：对净化后的文本做一次 [ContentQualityChecker.isLikelyEmptyOrAd]。
+     *    正常章节只花这一次全文扫描；判低质量时才让流水线补一次完整评分
+     *    （罕见路径，可以接受）。
+     * 4. 完整评分拿到的字段沿用既有记账口径（一条日志 + 一条仅内存的诊断）。
+     *
+     * **两段式为什么必须保留**：[ContentQualityChecker.check] 要把全文扫一遍
+     * （字数 / 广告命中 / 乱码占比），一章正文动辄几千字，连续翻页时每章都做一次
+     * 完整评分是实打实的开销；而「判低质量」只需要一个布尔结论，
+     * 用 [ContentQualityChecker.isLikelyEmptyOrAd] 判一次就够 —— 两者判空口径
+     * 完全一致（同一个组件、同一组阈值），所以「先快判、后复评」既不改变结论，
+     * 又把绝大多数章节的全文扫描压到 1 次。
+     * 流水线正好用 [ContentPipelineConfig.qualityCheck] 这个阶段开关表达这两段：
+     * 快路径**不开**（不产生完整评分），复评路径才**打开**（且只开这一个阶段）。
      *
      * 低质量**不抛异常**——正文再差也比打断阅读强：照样把净化后的文本交回上层
      * （阅读页仍能显示），只额外记两条仅内存的诊断。日志只带 sourceId 与数字，
@@ -497,26 +536,41 @@ class ContentRepositoryImpl(
         // 空白正文由上层「本章暂无内容」链路兜底，这里不扫描、也不记账，免得刷屏
         if (raw.isBlank()) return result
 
-        val cleaned = ContentQualityChecker.stripAdTail(raw)
-        if (!ContentQualityChecker.isLikelyEmptyOrAd(cleaned)) {
-            return result.copy(novelText = cleaned)
+        // ① 末尾广告行：既有组件负责（流水线的净化阶段只清字符 / 空行，不裁整行）
+        val stripped = ContentQualityChecker.stripAdTail(raw)
+
+        // ② 净化：走流水线（换行统一 / 控制字符 / BOM / 行尾空白 / 多余空行）
+        val processed = ContentPipeline.process(
+            stripped,
+            ContentPipelineConfigFactory.forRepository(),
+        )
+        val text = processed.text
+
+        // ③ 快判：一次全文扫描，正常章节到此为止（完整评分不在这一步做）
+        if (!ContentQualityChecker.isLikelyEmptyOrAd(text)) {
+            return result.copy(novelText = text)
         }
 
-        val q = ContentQualityChecker.check(cleaned)
+        // ④ 低质量（罕见路径）：让流水线补一次完整评分。
+        //    这里只开「质量检查」一个阶段 —— 正文已经净化过，不必再净化一遍。
+        val scored = ContentPipeline.process(text, ContentPipelineConfigFactory.forRescoring())
+        val quality = scored.quality
+        val chars = quality?.chars ?: 0
+        val adHits = quality?.adHits ?: 0
+        val gibberish = ((quality?.gibberishRatio ?: 0f) * 100).toInt()
         android.util.Log.w(
             "ContentQuality",
-            "低质量正文 sourceId=$sourceId chars=${q.chars} adHits=${q.adHits}",
+            "低质量正文 sourceId=$sourceId chars=$chars adHits=$adHits",
         )
         SourceErrorLog.record(
             sourceId,
             "正文质量",
             IllegalStateException(
-                "低质量正文 chars=${q.chars} adHits=${q.adHits} " +
-                    "gibberish=${(q.gibberishRatio * 100).toInt()}%",
+                "低质量正文 chars=$chars adHits=$adHits gibberish=$gibberish%",
             ),
             sourceName,
         )
-        return result.copy(novelText = cleaned)
+        return result.copy(novelText = text)
     }
 
     /** 图片失败回退：目前只有 Venera 源支持（onImageLoad → onLoadFailed 多镜像 / 惰性解析） */

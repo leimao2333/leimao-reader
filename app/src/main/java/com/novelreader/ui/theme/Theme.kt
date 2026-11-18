@@ -53,6 +53,49 @@ private val DarkColorScheme = darkColorScheme(
     onSurface = Color(0xFFE0E0E0),
 )
 
+// ===== C2 主题风格预设 =====
+const val THEME_STYLE_STANDARD = 0
+const val THEME_STYLE_WARM = 1
+const val THEME_STYLE_COOL = 2
+
+/** 按风格微调白天配色：暖色偏米黄/橙，冷色偏青蓝，标准即原 MD3 配色 */
+private fun styleLightScheme(style: Int): ColorScheme = when (style) {
+    THEME_STYLE_WARM -> LightColorScheme.copy(
+        primary = Color(0xFFB26A3D),
+        onPrimary = Color.White,
+        secondary = Color(0xFF9A7B5F),
+        background = Color(0xFFFBF6EF),
+        surface = Color(0xFFFFF9F2),
+    )
+    THEME_STYLE_COOL -> LightColorScheme.copy(
+        primary = Color(0xFF2E7D8F),
+        onPrimary = Color.White,
+        secondary = Color(0xFF4A8C97),
+        background = Color(0xFFF4FAFB),
+        surface = Color(0xFFFFFFFF),
+    )
+    else -> LightColorScheme
+}
+
+/** 按风格微调夜间配色 */
+private fun styleDarkScheme(style: Int): ColorScheme = when (style) {
+    THEME_STYLE_WARM -> DarkColorScheme.copy(
+        primary = Color(0xFFE0A878),
+        onPrimary = Color(0xFF3A2418),
+        secondary = Color(0xFFC9A884),
+        background = Color(0xFF1C1815),
+        surface = Color(0xFF26211C),
+    )
+    THEME_STYLE_COOL -> DarkColorScheme.copy(
+        primary = Color(0xFF7FCBD9),
+        onPrimary = Color(0xFF0A2429),
+        secondary = Color(0xFF8FBFC9),
+        background = Color(0xFF10181A),
+        surface = Color(0xFF182326),
+    )
+    else -> DarkColorScheme
+}
+
 /**
  * 阅读页纸张背景色（白天模式下可选）。
  * 预留多种配色，供小说阅读页切换。
@@ -144,10 +187,12 @@ fun NovelReaderTheme(
      * 给默认值是为了让所有现有调用点不用改。
      */
     colorScheme: ColorScheme? = null,
+    /** 主题风格（C2）：0 标准 / 1 暖色 / 2 冷色；仅在没有动态取色配色时生效 */
+    style: Int = THEME_STYLE_STANDARD,
     content: @Composable () -> Unit,
 ) {
-    // 参数名与局部变量同名会遮蔽，这里换个名字：有外部配色就优先用，否则按明暗取写死的那套
-    val activeColorScheme = colorScheme ?: if (darkTheme) DarkColorScheme else LightColorScheme
+    // 参数名与局部变量同名会遮蔽，这里换个名字：有外部配色就优先用，否则按风格 + 明暗取预设
+    val activeColorScheme = colorScheme ?: if (darkTheme) styleDarkScheme(style) else styleLightScheme(style)
     // 自定义字体：每次路径变化都重建 FontFamily（Compose 按 FontFamily 缓存字形，
     // 复用旧实例会拿到旧字体）。文件读不到时回落到系统字体，不让整个界面变成豆腐块。
     val customFamily = remember(customFontPath) {

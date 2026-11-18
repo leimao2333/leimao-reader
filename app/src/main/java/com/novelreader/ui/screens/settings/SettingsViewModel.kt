@@ -726,6 +726,76 @@ class SettingsViewModel(
     private val _themeDynamicColor = MutableStateFlow(false)
     val themeDynamicColor: StateFlow<Boolean> = _themeDynamicColor.asStateFlow()
 
+    /** 主题风格（C2）：0 标准 / 1 暖色 / 2 冷色 */
+    private val _themeStyle = MutableStateFlow(0)
+    val themeStyle: StateFlow<Int> = _themeStyle.asStateFlow()
+
+    // ===== 追更提醒（D30）=====
+
+    /** 追更提醒开关 */
+    private val _followEnabled = MutableStateFlow(false)
+    val followEnabled: StateFlow<Boolean> = _followEnabled.asStateFlow()
+
+    /** 追更检查间隔（小时） */
+    private val _followIntervalHours = MutableStateFlow(
+        com.novelreader.core.preferences.PreferencesManager.DEFAULT_FOLLOW_INTERVAL_HOURS,
+    )
+    val followIntervalHours: StateFlow<Int> = _followIntervalHours.asStateFlow()
+
+    /** 是否正在手动检查追更（按钮置灰） */
+    private val _followChecking = MutableStateFlow(false)
+    val followChecking: StateFlow<Boolean> = _followChecking.asStateFlow()
+
+    /** 手动检查结果提示 */
+    private val _followMessage = MutableStateFlow<String?>(null)
+    val followMessage: StateFlow<String?> = _followMessage.asStateFlow()
+
+    fun dismissFollowMessage() {
+        _followMessage.value = null
+    }
+
+    fun setFollowEnabled(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setFollowEnabled(value) }
+    }
+
+    fun setFollowIntervalHours(value: Int) {
+        viewModelScope.launch { preferencesManager.setFollowIntervalHours(value) }
+    }
+
+    /**
+     * 手动跑一轮追更检查（D30）。
+     *
+     * 与后台循环同一套逻辑：首次见到某本书只记基线不通知，所以点第一次可能「没有更新」，
+     * 再点才会按新章节数比对 —— 这是刻意的，避免刚收藏就报「更新 200 话」。
+     */
+    fun checkFollowUpdatesNow() {
+        val checker = followChecker ?: run {
+            _followMessage.value = "追更检查不可用"
+            return
+        }
+        if (_followChecking.value) return
+        _followChecking.value = true
+        viewModelScope.launch {
+            val updates = runCatching { checker.runOnce() }.getOrDefault(emptyList())
+            _followMessage.value = when {
+                updates.isEmpty() -> "暂未发现新章节（首次检查只记录基线）"
+                else -> "发现 ${updates.size} 本有更新：" +
+                    updates.take(3).joinToString("，") { "${it.itemTitle} +${it.newCount}" }
+            }
+            _followChecking.value = false
+        }
+    }
+
+    /** 追更检查器：构造点没注入时从 Application 容器取（与 [recentReadings] 同一套兜底） */
+    private val followChecker: com.novelreader.core.follow.FollowUpdateChecker? = runCatching {
+        (appContext?.applicationContext as? com.novelreader.NovelReaderApp)
+            ?.container?.followUpdateChecker
+    }.getOrNull()
+
+    /** PDF 夜间反色（夜间模式优化）：与 PDF 阅读页顶栏开关同源 */
+    private val _pdfNightInvert = MutableStateFlow(false)
+    val pdfNightInvert: StateFlow<Boolean> = _pdfNightInvert.asStateFlow()
+
     /** 是否正在从封面取色（按钮置灰，避免连点重复下载封面） */
     private val _themeSeedBusy = MutableStateFlow(false)
     val themeSeedBusy: StateFlow<Boolean> = _themeSeedBusy.asStateFlow()
@@ -782,6 +852,14 @@ class SettingsViewModel(
             preferencesManager.setThemeSeedColor(argb)
             preferencesManager.setThemeDynamicColor(true)
         }
+    }
+
+    fun setThemeStyle(value: Int) {
+        viewModelScope.launch { preferencesManager.setThemeStyle(value) }
+    }
+
+    fun setPdfNightInvert(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setPdfNightInvert(value) }
     }
 
     fun setThemeDynamicColor(value: Boolean) {
@@ -853,6 +931,10 @@ class SettingsViewModel(
     private val _comicPreloadCount = MutableStateFlow(PreferencesManager.DEFAULT_COMIC_PRELOAD_COUNT)
     val comicPreloadCount: StateFlow<Int> = _comicPreloadCount.asStateFlow()
 
+    /** 按屏幕数预加载（D10）：0=关闭，1~4 屏 */
+    private val _comicPreloadScreens = MutableStateFlow(0)
+    val comicPreloadScreens: StateFlow<Int> = _comicPreloadScreens.asStateFlow()
+
     /** 漫画仅 WiFi 下预加载（C5） */
     private val _comicPreloadWifiOnly = MutableStateFlow(false)
     val comicPreloadWifiOnly: StateFlow<Boolean> = _comicPreloadWifiOnly.asStateFlow()
@@ -860,6 +942,38 @@ class SettingsViewModel(
     /** 漫画阅读页「边缘竖滑调亮度 / 音量」手势（v1.7.6.0，默认关闭） */
     private val _comicEdgeGesture = MutableStateFlow(false)
     val comicEdgeGesture: StateFlow<Boolean> = _comicEdgeGesture.asStateFlow()
+
+    /** 漫画每屏页数（0=自适应 / 1=单页 / 2=双页；D7） */
+    private val _comicPagesPerScreen = MutableStateFlow(0)
+    val comicPagesPerScreen: StateFlow<Int> = _comicPagesPerScreen.asStateFlow()
+
+    /** 漫画阅读背景（0=纯黑 / 1=深灰 / 2=纯白；D9） */
+    private val _comicReaderBg = MutableStateFlow(0)
+    val comicReaderBg: StateFlow<Int> = _comicReaderBg.asStateFlow()
+
+    /** 漫画图片间距（dp；D9） */
+    private val _comicPageGap = MutableStateFlow(0)
+    val comicPageGap: StateFlow<Int> = _comicPageGap.asStateFlow()
+
+    /** 漫画图片适配方式（0=适应宽度 / 1=适应屏幕 / 2=裁剪填满；D9） */
+    private val _comicImageScale = MutableStateFlow(0)
+    val comicImageScale: StateFlow<Int> = _comicImageScale.asStateFlow()
+
+    /** 漫画常驻亮度（0=跟随系统；D9） */
+    private val _comicBrightness = MutableStateFlow(0f)
+    val comicBrightness: StateFlow<Float> = _comicBrightness.asStateFlow()
+
+    /** 阅读页显示页码（D11） */
+    private val _comicShowPageNumber = MutableStateFlow(true)
+    val comicShowPageNumber: StateFlow<Boolean> = _comicShowPageNumber.asStateFlow()
+
+    /** 阅读页显示时钟 / 电量（D11） */
+    private val _comicShowClock = MutableStateFlow(false)
+    val comicShowClock: StateFlow<Boolean> = _comicShowClock.asStateFlow()
+
+    /** 阅读页显示系统状态栏（D11） */
+    private val _comicShowSystemBar = MutableStateFlow(false)
+    val comicShowSystemBar: StateFlow<Boolean> = _comicShowSystemBar.asStateFlow()
 
     /** 并行搜索线程数 */
     private val _searchConcurrency = MutableStateFlow(PreferencesManager.DEFAULT_SEARCH_CONCURRENCY)
@@ -1203,7 +1317,20 @@ class SettingsViewModel(
             preferencesManager.themeSeedColorFlow.collect { _themeSeedColor.value = it }
         }
         viewModelScope.launch {
+            preferencesManager.themeStyleFlow.collect { _themeStyle.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.pdfNightInvertFlow.collect { _pdfNightInvert.value = it }
+        }
+        viewModelScope.launch {
             preferencesManager.themeDynamicColorFlow.collect { _themeDynamicColor.value = it }
+        }
+        viewModelScope.launch {
+            // D30：追更提醒开关与间隔
+            preferencesManager.followEnabledFlow.collect { _followEnabled.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.followIntervalHoursFlow.collect { _followIntervalHours.value = it }
         }
         viewModelScope.launch {
             preferencesManager.comicPageModeFlow.collect { _comicPageMode.value = it }
@@ -1212,10 +1339,37 @@ class SettingsViewModel(
             preferencesManager.comicPreloadCountFlow.collect { _comicPreloadCount.value = it }
         }
         viewModelScope.launch {
+            preferencesManager.comicPreloadScreensFlow.collect { _comicPreloadScreens.value = it }
+        }
+        viewModelScope.launch {
             preferencesManager.comicPreloadWifiOnlyFlow.collect { _comicPreloadWifiOnly.value = it }
         }
         viewModelScope.launch {
             preferencesManager.comicEdgeGestureFlow.collect { _comicEdgeGesture.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.comicPagesPerScreenFlow.collect { _comicPagesPerScreen.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.comicReaderBgFlow.collect { _comicReaderBg.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.comicPageGapFlow.collect { _comicPageGap.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.comicImageScaleFlow.collect { _comicImageScale.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.comicBrightnessFlow.collect { _comicBrightness.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.comicShowPageNumberFlow.collect { _comicShowPageNumber.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.comicShowClockFlow.collect { _comicShowClock.value = it }
+        }
+        viewModelScope.launch {
+            preferencesManager.comicShowSystemBarFlow.collect { _comicShowSystemBar.value = it }
         }
         viewModelScope.launch {
             preferencesManager.searchConcurrencyFlow.collect { _searchConcurrency.value = it }
@@ -1401,12 +1555,48 @@ class SettingsViewModel(
         viewModelScope.launch { preferencesManager.setComicPreloadCount(value) }
     }
 
+    fun setComicPreloadScreens(value: Int) {
+        viewModelScope.launch { preferencesManager.setComicPreloadScreens(value) }
+    }
+
     fun setComicPreloadWifiOnly(value: Boolean) {
         viewModelScope.launch { preferencesManager.setComicPreloadWifiOnly(value) }
     }
 
     fun setComicEdgeGesture(value: Boolean) {
         viewModelScope.launch { preferencesManager.setComicEdgeGesture(value) }
+    }
+
+    fun setComicPagesPerScreen(value: Int) {
+        viewModelScope.launch { preferencesManager.setComicPagesPerScreen(value) }
+    }
+
+    fun setComicReaderBg(value: Int) {
+        viewModelScope.launch { preferencesManager.setComicReaderBg(value) }
+    }
+
+    fun setComicPageGap(value: Int) {
+        viewModelScope.launch { preferencesManager.setComicPageGap(value) }
+    }
+
+    fun setComicImageScale(value: Int) {
+        viewModelScope.launch { preferencesManager.setComicImageScale(value) }
+    }
+
+    fun setComicBrightness(value: Float) {
+        viewModelScope.launch { preferencesManager.setComicBrightness(value) }
+    }
+
+    fun setComicShowPageNumber(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setComicShowPageNumber(value) }
+    }
+
+    fun setComicShowClock(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setComicShowClock(value) }
+    }
+
+    fun setComicShowSystemBar(value: Boolean) {
+        viewModelScope.launch { preferencesManager.setComicShowSystemBar(value) }
     }
 
     fun setSearchConcurrency(value: Int) {

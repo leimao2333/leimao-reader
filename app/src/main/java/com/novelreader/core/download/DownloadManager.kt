@@ -285,6 +285,20 @@ class DownloadManager(
         runCatching { comicCacheRoot.walkTopDown().filter { it.isFile }.sumOf { it.length() } }
             .getOrDefault(0L)
 
+    /**
+     * 删除单章缓存，返回释放的字节数（D32 漫画下载管理页）。
+     *
+     * 与批量缓存互不冲突：正在下载的章节会写入 `.tmp` 目录，这里只删已完成的正式目录。
+     */
+    fun clearComicChapter(item: MediaItem, chapterIndex: Int): Long {
+        val dir = comicChapterCacheDir(item, chapterIndex)
+        val freed = runCatching {
+            dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        }.getOrDefault(0L)
+        runCatching { dir.deleteRecursively() }
+        return freed
+    }
+
     /** 清除某本漫画的缓存（按缓存目录名，缓存管理列表用） */
     fun clearComicCacheByDir(dirName: String): Long {
         val dir = File(comicCacheRoot, dirName)

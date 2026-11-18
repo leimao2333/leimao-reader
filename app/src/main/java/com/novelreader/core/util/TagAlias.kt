@@ -657,10 +657,16 @@ object TagAlias {
      */
     fun membersOfGroup(head: String): List<String> {
         val key = norm(head)
+        // 这一步在「组内标签」面板与热词行里被调用上万次，每次都要遍历 GROUPS 并 norm
+        // 每个别名。GROUPS 是编译期常量，结果可以永久缓存（含空结果，避免反复扫）。
+        membersCache[key]?.let { return it }
         val group = GROUPS.firstOrNull { aliases -> aliases.any { norm(it) == key } }
-            ?: return emptyList()
-        return group.toList()
+        val result = group?.toList().orEmpty()
+        membersCache[key] = result
+        return result
     }
+
+    private val membersCache = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
 
     /**
      * 搜索口径的等价写法：

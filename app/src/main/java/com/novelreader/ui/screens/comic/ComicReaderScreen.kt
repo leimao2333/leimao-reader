@@ -1,6 +1,8 @@
 package com.novelreader.ui.screens.comic
 
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -8,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -15,9 +18,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -25,13 +30,19 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.BrokenImage
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -54,6 +65,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -70,7 +82,12 @@ import coil.request.ImageRequest
 import com.novelreader.core.image.ComicImageScramble
 import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
+import com.novelreader.domain.repository.Bookmark
 import com.novelreader.ui.theme.SystemBarIconsOn
+import com.novelreader.ui.theme.LocalAppDarkTheme
+import com.novelreader.ui.theme.applySystemBarIcons
+import androidx.compose.runtime.DisposableEffect
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /**
@@ -96,6 +113,11 @@ fun ComicReaderScreen(
     val error by viewModel.error.collectAsState()
     val pageMode by viewModel.pageMode.collectAsState()
     val currentPage by viewModel.currentPage.collectAsState()
+    val initialPage by viewModel.initialPage.collectAsState()
+    // D3 书签
+    val bookmarks by viewModel.bookmarks.collectAsState()
+    val currentPageBookmarked by viewModel.currentPageBookmarked.collectAsState()
+    val scrollRequest by viewModel.scrollRequest.collectAsState()
     val chapterTitle by viewModel.chapterTitle.collectAsState()
     val imageHeaders by viewModel.imageHeaders.collectAsState()
     val imageScripts by viewModel.imageScripts.collectAsState()
@@ -104,15 +126,46 @@ fun ComicReaderScreen(
     val hasPrevChapter by viewModel.hasPrevChapter.collectAsState()
     val hasNextChapter by viewModel.hasNextChapter.collectAsState()
     val preloadCount by viewModel.preloadCount.collectAsState()
+    // D10：按屏幕数预加载（0 = 关闭，用上面的张数档位）
+    val preloadScreens by viewModel.preloadScreens.collectAsState()
     val preloadWifiOnly by viewModel.preloadWifiOnly.collectAsState()
     val landscapeDoublePage by viewModel.landscapeDoublePage.collectAsState()
     val edgeGesture by viewModel.edgeGesture.collectAsState()
     val collected by viewModel.collected.collectAsState()
     val shelfStateReady by viewModel.shelfStateReady.collectAsState()
     val shelfPromptEnabled by viewModel.shelfPromptEnabled.collectAsState()
+    // D7 / D9 / D11：每屏页数 + 画面设置 + 状态信息
+    val pagesPerScreen by viewModel.pagesPerScreen.collectAsState()
+    val readerBg by viewModel.readerBg.collectAsState()
+    val pageGap by viewModel.pageGap.collectAsState()
+    val imageScale by viewModel.imageScale.collectAsState()
+    val readerBrightness by viewModel.readerBrightness.collectAsState()
+    val showPageNumber by viewModel.showPageNumber.collectAsState()
+    val showClock by viewModel.showClock.collectAsState()
+    val showSystemBar by viewModel.showSystemBar.collectAsState()
+
+    // D1：六档阅读模式
+    val mode = ComicMode.of(pageMode)
+    val bgColor = when (readerBg) {
+        1 -> Color(0xFF1B1B1B)
+        2 -> Color.White
+        else -> Color.Black
+    }
+    // D9 适配方式：0=适应宽度（条漫） 1=适应屏幕 2=裁剪填满
+    val contentScale = when (imageScale) {
+        1 -> ContentScale.Fit
+        2 -> ContentScale.Crop
+        else -> ContentScale.FillWidth
+    }
 
     LaunchedEffect(item, chapter) {
         viewModel.init(item, chapters, chapter)
+    }
+
+    // D2：退出阅读页时再落一次页内进度。滚动刚停 / 翻页刚落定时页面可能还没来得及写库，
+    // 这里用脱离 viewModelScope 的写入兜底，避免「看到第 30 页直接返回」丢掉位置。
+    DisposableEffect(Unit) {
+        onDispose { viewModel.saveCurrentProgress() }
     }
 
     // v1.8.3.0：漫画未加入书架时提示一次（设置里可关；必须等 shelfStateReady 防误弹）
@@ -146,15 +199,58 @@ fun ComicReaderScreen(
     // 是否允许预加载：未开启「仅 WiFi」时总是允许；开启时仅在 WiFi 下允许
     val canPreload = !preloadWifiOnly ||
         com.novelreader.core.util.NetworkStatus.isWifi(context)
-    LaunchedEffect(images, imageHeaders, imageScripts, preloadCount, canPreload) {
+    LaunchedEffect(images, imageHeaders, imageScripts, preloadCount, preloadScreens, canPreload) {
         if (!canPreload) return@LaunchedEffect
-        images.take(preloadCount).forEach { preloadImage(context, it, imageHeaders, imageScripts[it]) }
+        // D10：按屏模式下用「2 屏」的保守量预热开篇（此时还不知道当屏能放几张）
+        val warmup = if (preloadScreens > 0) (preloadScreens * 2).coerceIn(1, 16) else preloadCount
+        images.take(warmup).forEach { preloadImage(context, it, imageHeaders, imageScripts[it]) }
     }
 
-    // C3 横屏双页：仅左右翻页模式 + 开启横屏双页 + 设备处于横屏时生效
+    // C3 横屏双页 + D7 单/双页自由切换：
+    // 0=自适应（横屏画廊并排） 1=始终单页 2=始终双页
     val configuration = androidx.compose.ui.platform.LocalConfiguration.current
     val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-    val doublePage = landscapeDoublePage && pageMode == 1 && isLandscape
+    val doublePage = when (pagesPerScreen) {
+        1 -> false
+        2 -> true
+        else -> landscapeDoublePage && isLandscape
+    }
+    // 双页只在「非上下方向」的画廊模式下有意义
+    val effectiveDoublePage = doublePage && mode.isGallery && !mode.vertical
+
+    // D6：长按图片菜单 + 外部缩放指令
+    var longPressImage by remember { mutableStateOf<String?>(null) }
+    var zoomToken by remember { mutableIntStateOf(0) }
+    var zoomTarget by remember { mutableStateOf<ImageZoom?>(null) }
+    val onImageLongPress: (String) -> Unit = { url -> longPressImage = url }
+    // D4：目录抽屉
+    var showToc by remember { mutableStateOf(false) }
+    // D8：章末评论
+    val comments by viewModel.comments.collectAsState()
+    val commentsLoading by viewModel.commentsLoading.collectAsState()
+    var showComments by remember { mutableStateOf(false) }
+    // D6：保存原图 / 复制链接
+    val readerScope = rememberCoroutineScope()
+    fun saveImageToGallery(url: String) {
+        if (url.isBlank()) return
+        readerScope.launch {
+            val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.novelreader.core.image.ComicImageSaver.saveToGallery(context, url, imageHeaders)
+            }
+            android.widget.Toast.makeText(
+                context,
+                if (ok) "已保存到相册" else "保存失败，请重试",
+                android.widget.Toast.LENGTH_SHORT,
+            ).show()
+        }
+    }
+
+    fun copyImageLink(url: String) {
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE)
+            as? android.content.ClipboardManager
+        cm?.setPrimaryClip(android.content.ClipData.newPlainText("image_url", url))
+        android.widget.Toast.makeText(context, "图片链接已复制", android.widget.Toast.LENGTH_SHORT).show()
+    }
 
     // 统一菜单：顶部栏（返回 / 章节名 / 设置）+ 设置面板 + 底部章节条，
     // 三者由「点击画面」统一呼出与收起；默认隐藏，图片占满整屏。
@@ -204,14 +300,40 @@ fun ComicReaderScreen(
     // 底部章节条总占位 = 条高 + 手势条高度（滚动列表的 contentPadding 要用这个值）
     val barTotalHeight = CHAPTER_BAR_HEIGHT + navBottomInset
 
-    // 漫画阅读页整屏是纯黑，状态栏图标必须用白色（v1.8.8.2）。
-    // 此前不设，图标跟着主题走：浅色主题下是深色图标落在黑底上，状态栏等于看不见。
-    SystemBarIconsOn(Color.Black)
+    // 状态栏图标跟随阅读背景：深色底用白图标、白底用深色图标（v1.8.8.2 / D9）。
+    SystemBarIconsOn(bgColor)
+    // D11：系统栏显隐（默认隐藏让图片占满；菜单里可打开）
+    val readerView = androidx.compose.ui.platform.LocalView.current
+    DisposableEffect(showSystemBar) {
+        val window = activity?.window
+        val controller = window?.let {
+            androidx.core.view.WindowCompat.getInsetsController(it, readerView)
+        }
+        if (controller != null) {
+            val bars = androidx.core.view.WindowInsetsCompat.Type.systemBars()
+            if (showSystemBar) controller.show(bars) else controller.hide(bars)
+            controller.systemBarsBehavior =
+                androidx.core.view.WindowInsetsControllerCompat
+                    .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+        onDispose {
+            controller?.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+        }
+    }
+    // 夜间模式优化：离开漫画页时把系统栏图标还原成应用主题，避免白色图标被带到浅色上一页。
+    val comicAppDarkTheme by rememberUpdatedState(LocalAppDarkTheme.current)
+    DisposableEffect(Unit) {
+        onDispose {
+            var ctx = context
+            while (ctx is ContextWrapper && ctx !is Activity) ctx = ctx.baseContext
+            (ctx as? Activity)?.applySystemBarIcons(darkIcons = !comicAppDarkTheme)
+        }
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black),
+            .background(bgColor),
     ) {
         when {
             loading -> {
@@ -251,9 +373,9 @@ fun ComicReaderScreen(
                     }
                 }
             }
-            pageMode == 0 -> {
-                // 上下滚动模式
-                VerticalScrollReader(
+            // D1 连续滚动族：上下 / 左→右 / 右→左
+            !mode.isGallery -> {
+                ContinuousReader(
                     images = images,
                     headers = imageHeaders,
                     scripts = imageScripts,
@@ -263,13 +385,24 @@ fun ComicReaderScreen(
                     onTap = toggleMenu,
                     bottomContentPadding = barTotalHeight,
                     preloadCount = preloadCount,
+                    preloadScreens = preloadScreens,
                     canPreload = canPreload,
                     onImageFailed = viewModel::onImageFailed,
+                    initialPage = initialPage,
+                    scrollRequest = scrollRequest,
+                    // D2：滚动到第几页就上报第几页，由 VM 落库（重进同一章可回到这里）
+                    onPageChange = viewModel::goToPage,
+                    vertical = mode == ComicMode.CONTINUOUS_TTB,
+                    reverse = mode.rtl,
+                    gapDp = pageGap,
+                    contentScale = contentScale,
+                    onLongPress = { url -> onImageLongPress(url) },
+                    zoomTarget = zoomTarget,
                 )
             }
+            // D1 画廊族：左右（可右→左）/ 上下
             else -> {
-                // 左右翻页模式
-                HorizontalPagerReader(
+                GalleryReader(
                     images = images,
                     headers = imageHeaders,
                     scripts = imageScripts,
@@ -280,11 +413,147 @@ fun ComicReaderScreen(
                     onPrevChapter = { viewModel.prevChapter() },
                     onNextChapter = { viewModel.nextChapter() },
                     preloadCount = preloadCount,
+                    preloadScreens = preloadScreens,
                     canPreload = canPreload,
-                    doublePage = doublePage,
+                    doublePage = effectiveDoublePage,
+                    vertical = mode == ComicMode.GALLERY_TTB,
+                    reverse = mode.rtl,
+                    gapDp = pageGap,
+                    contentScale = contentScale,
+                    zoomTarget = zoomTarget,
+                    onLongPress = { url -> onImageLongPress(url) },
                     onImageFailed = viewModel::onImageFailed,
                 )
             }
+        }
+
+        // ===== D9 常驻亮度（黑色遮罩，0 = 跟随系统）=====
+        if (readerBrightness > 0f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Color.Black.copy(alpha = (1f - readerBrightness).coerceIn(0f, 0.9f))
+                    ),
+            )
+        }
+
+        // ===== D11 页码 / 时钟电量 =====
+        val pageTotal = if (effectiveDoublePage) (images.size + 1) / 2 else images.size
+        val pageShown = if (effectiveDoublePage) currentPage / 2 + 1 else currentPage + 1
+        if (showClock) {
+            ReaderClock(
+                dark = readerBg == 2,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 8.dp, end = 12.dp),
+            )
+        }
+        if (showPageNumber && images.isNotEmpty()) {
+            Text(
+                text = "$pageShown/$pageTotal",
+                color = if (readerBg == 2) Color(0xFF444444) else Color.White.copy(alpha = 0.85f),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 12.dp, bottom = barTotalHeight + 4.dp),
+            )
+        }
+
+        // ===== D8 章末评论 =====
+        if (showComments) {
+            CommentsDialog(
+                title = "评论 · $chapterTitle",
+                comments = comments,
+                loading = commentsLoading,
+                onDismiss = { showComments = false },
+            )
+        }
+
+        // ===== D4 目录抽屉（分卷 + 当前话高亮）=====
+        if (showToc) {
+            val volumes = remember(chapters) { ComicChapterVolume.groupByVolume(chapters) }
+            AlertDialog(
+                onDismissRequest = { showToc = false },
+                title = { Text("目录（${chapters.size}）") },
+                text = {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 420.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        volumes.forEach { (volume, list) ->
+                            Text(
+                                text = "$volume（${list.size}）",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(vertical = 6.dp),
+                            )
+                            list.forEach { ch ->
+                                val current = ch.url == chapter.url
+                                Text(
+                                    text = ch.title,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (current) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            showToc = false
+                                            val idx = chapters.indexOfFirst { it.url == ch.url }
+                                            if (idx >= 0) viewModel.jumpToChapter(idx)
+                                        }
+                                        .padding(vertical = 8.dp),
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showToc = false }) { Text("关闭") }
+                },
+            )
+        }
+
+        // ===== D6 长按图片菜单：放大 / 复制链接 / 保存原图 =====
+        longPressImage?.let { url ->
+            AlertDialog(
+                onDismissRequest = { longPressImage = null },
+                title = { Text("图片操作") },
+                text = { Text("第 ${(images.indexOf(url) + 1).coerceAtLeast(1)} 页") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        longPressImage = null
+                        zoomToken += 1
+                        zoomTarget = ImageZoom(url, zoomToken, 1.75f)
+                    }) { Text("放大查看") }
+                },
+                dismissButton = {
+                    Column(horizontalAlignment = Alignment.End) {
+                        Row {
+                            TextButton(onClick = {
+                                longPressImage = null
+                                copyImageLink(url)
+                            }) { Text("复制链接") }
+                            TextButton(onClick = {
+                                longPressImage = null
+                                saveImageToGallery(url)
+                            }) { Text("保存图片") }
+                        }
+                        Row {
+                            // D12：长按即可收藏，不必退出阅读页回详情页
+                            TextButton(onClick = {
+                                longPressImage = null
+                                viewModel.toggleCollect()
+                            }) { Text(if (collected) "已在书架" else "加入书架") }
+                            TextButton(onClick = { longPressImage = null }) { Text("取消") }
+                        }
+                    }
+                },
+            )
         }
 
         // ===== 边缘竖滑调亮度 / 音量（C2）=====
@@ -328,6 +597,36 @@ fun ComicReaderScreen(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Spacer(Modifier.weight(1f))
+                // D4：目录抽屉（分卷 + 快速跳章）
+                Text(
+                    text = "目录",
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier
+                        .clickable { showToc = true }
+                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                )
+                // D8：本话评论（源不支持时显示空态）
+                Text(
+                    text = "评论",
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier
+                        .clickable {
+                            viewModel.loadComments()
+                            showComments = true
+                        }
+                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                )
+                // D3：当前页书签开关（实心=已打点）
+                IconButton(onClick = { viewModel.toggleBookmark() }) {
+                    Icon(
+                        imageVector = if (currentPageBookmarked) Icons.Filled.Bookmark
+                        else Icons.Filled.BookmarkBorder,
+                        contentDescription = if (currentPageBookmarked) "取消书签" else "加书签",
+                        tint = if (currentPageBookmarked) Color(0xFFFFC107) else Color.White,
+                    )
+                }
                 IconButton(onClick = { showSettings.value = !showSettings.value }) {
                     Icon(Icons.Filled.Settings, contentDescription = "设置", tint = Color.White)
                 }
@@ -351,13 +650,117 @@ fun ComicReaderScreen(
                 color = Color(0xFF1E1E1E),
                 shadowElevation = 8.dp,
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("翻页方式", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                Column(
+                    modifier = Modifier
+                        .padding(16.dp)
+                        .heightIn(max = 440.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    // D1：六档阅读模式
+                    Text("阅读模式", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(8.dp))
+                    @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+                    androidx.compose.foundation.layout.FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        ComicMode.values().forEach { m ->
+                            PageModeButton(m.label, pageMode == m.value) {
+                                viewModel.setPageMode(m.value)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    // D7：每屏页数（自适应 / 单页 / 双页）
+                    Text("每屏页数", color = Color.White, style = MaterialTheme.typography.titleSmall)
                     Spacer(Modifier.height(8.dp))
                     Row {
-                        PageModeButton("上下滚动", pageMode == 0) { viewModel.setPageMode(0) }
-                        Spacer(Modifier.width(12.dp))
-                        PageModeButton("左右翻页", pageMode == 1) { viewModel.setPageMode(1) }
+                        PageModeButton("自适应", pagesPerScreen == 0) { viewModel.setPagesPerScreen(0) }
+                        Spacer(Modifier.width(8.dp))
+                        PageModeButton("单页", pagesPerScreen == 1) { viewModel.setPagesPerScreen(1) }
+                        Spacer(Modifier.width(8.dp))
+                        PageModeButton("双页", pagesPerScreen == 2) { viewModel.setPagesPerScreen(2) }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    // D9：背景 / 间距 / 适配
+                    Text("背景", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(8.dp))
+                    Row {
+                        PageModeButton("纯黑", readerBg == 0) { viewModel.setReaderBg(0) }
+                        Spacer(Modifier.width(8.dp))
+                        PageModeButton("深灰", readerBg == 1) { viewModel.setReaderBg(1) }
+                        Spacer(Modifier.width(8.dp))
+                        PageModeButton("纯白", readerBg == 2) { viewModel.setReaderBg(2) }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text("图片间距", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(8.dp))
+                    Row {
+                        listOf(0, 2, 4, 8).forEachIndexed { i, g ->
+                            if (i > 0) Spacer(Modifier.width(8.dp))
+                            PageModeButton("${g}dp", pageGap == g) { viewModel.setPageGap(g) }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text("图片适配", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(8.dp))
+                    Row {
+                        PageModeButton("适应宽度", imageScale == 0) { viewModel.setImageScale(0) }
+                        Spacer(Modifier.width(8.dp))
+                        PageModeButton("适应屏幕", imageScale == 1) { viewModel.setImageScale(1) }
+                        Spacer(Modifier.width(8.dp))
+                        PageModeButton("裁剪填满", imageScale == 2) { viewModel.setImageScale(2) }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    // D9：亮度（0 = 跟随系统）
+                    var brightnessDraft by remember(readerBrightness) {
+                        mutableStateOf(readerBrightness)
+                    }
+                    Text(
+                        text = if (readerBrightness <= 0f) "亮度：跟随系统"
+                        else "亮度：${(readerBrightness * 100).toInt()}%",
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    androidx.compose.material3.Slider(
+                        value = brightnessDraft,
+                        onValueChange = { brightnessDraft = it },
+                        onValueChangeFinished = { viewModel.setReaderBrightness(brightnessDraft) },
+                        valueRange = 0f..1f,
+                    )
+                    // D11：状态信息开关
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("显示页码", color = Color.White, style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = showPageNumber,
+                            onCheckedChange = { viewModel.setShowPageNumber(it) },
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("时钟 / 电量", color = Color.White, style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = showClock,
+                            onCheckedChange = { viewModel.setShowClock(it) },
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("显示系统状态栏", color = Color.White,
+                            style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = showSystemBar,
+                            onCheckedChange = { viewModel.setShowSystemBar(it) },
+                        )
                     }
                     Spacer(Modifier.height(12.dp))
                     // C3 横屏双页开关
@@ -405,6 +808,49 @@ fun ComicReaderScreen(
                             onCheckedChange = { orientationLocked.value = it },
                         )
                     }
+                    // D3：本话书签列表（点击跳页 / × 删除）
+                    if (bookmarks.isNotEmpty()) {
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "本话书签（${bookmarks.size}）",
+                            color = Color.White,
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 200.dp)
+                                .verticalScroll(rememberScrollState()),
+                        ) {
+                            bookmarks.forEach { bm ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { viewModel.jumpToBookmark(bm) }
+                                        .padding(vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        "第 ${bm.textPosition + 1} 页",
+                                        color = Color.White,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    IconButton(
+                                        onClick = { viewModel.removeBookmark(bm.id) },
+                                        modifier = Modifier.size(28.dp),
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.Close,
+                                            contentDescription = "删除书签",
+                                            tint = Color(0xFF9E9E9E),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Spacer(Modifier.height(4.dp))
                     Text(
                         text = "点击画面呼出 / 收起菜单；滚到本话结尾继续拖 → 下一话，滚到开头继续拖 → 上一话（左右翻页同理）",
@@ -434,6 +880,51 @@ fun ComicReaderScreen(
         }
     }
 }
+
+/**
+ * 六档阅读模式（D1，对齐 venera 的 `ReaderMode`）。
+ *
+ * - **连续族**（continuous）：上下滚动 / 左右连续滑动，图片首尾相接；
+ * - **画廊族**（gallery）：整页翻页并吸附，可上→下、左→右、右→左。
+ */
+private enum class ComicMode(val value: Int) {
+    CONTINUOUS_TTB(0),
+    GALLERY_LTR(1),
+    GALLERY_RTL(2),
+    CONTINUOUS_LTR(3),
+    CONTINUOUS_RTL(4),
+    GALLERY_TTB(5);
+
+    /** 是否画廊（整页翻页）族 */
+    val isGallery: Boolean
+        get() = this == GALLERY_LTR || this == GALLERY_RTL || this == GALLERY_TTB
+
+    /** 是否从右往左（日式漫画） */
+    val rtl: Boolean
+        get() = this == GALLERY_RTL || this == CONTINUOUS_RTL
+
+    /** 是否上下方向 */
+    val vertical: Boolean
+        get() = this == CONTINUOUS_TTB || this == GALLERY_TTB
+
+    /** 展示名（菜单 / 设置里用） */
+    val label: String
+        get() = when (this) {
+            CONTINUOUS_TTB -> "连续上下"
+            GALLERY_LTR -> "左→右翻页"
+            GALLERY_RTL -> "右→左翻页"
+            CONTINUOUS_LTR -> "连续左→右"
+            CONTINUOUS_RTL -> "连续右→左"
+            GALLERY_TTB -> "上下翻页"
+        }
+
+    companion object {
+        fun of(value: Int): ComicMode = values().firstOrNull { it.value == value } ?: CONTINUOUS_TTB
+    }
+}
+
+/** 长按菜单「放大查看」的目标：token 递增保证每次点击都生效 */
+private data class ImageZoom(val url: String, val token: Int, val scale: Float)
 
 /**
  * 底部常驻章节导航条：`‹ 上一话 ｜ 第 x/y 话 · 话名 ｜ 下一话 ›`。
@@ -507,9 +998,13 @@ private fun ComicChapterBar(
     }
 }
 
-/** 上下滚动阅读（滚动时预加载后续图片；拖到底 / 顶继续拖切话） */
+/**
+ * 连续滚动阅读（D1 连续族）：`vertical=true` 上下滚动，否则左右连续滑动（可右→左）。
+ *
+ * 滚动时预加载后续图片；拖到底 / 顶继续拖切话。
+ */
 @Composable
-private fun VerticalScrollReader(
+private fun ContinuousReader(
     images: List<String>,
     headers: Map<String, String>,
     scripts: Map<String, String>,
@@ -519,9 +1014,21 @@ private fun VerticalScrollReader(
     onTap: () -> Unit,
     bottomContentPadding: Dp,
     preloadCount: Int,
+    /** D10：>0 时按「屏」换算张数，覆盖 [preloadCount] */
+    preloadScreens: Int = 0,
     canPreload: Boolean,
     onImageFailed: (String) -> Unit = {},
+    initialPage: Int = 0,
+    scrollRequest: Pair<Int, Int>? = null,
+    onPageChange: (Int) -> Unit = {},
+    vertical: Boolean = true,
+    reverse: Boolean = false,
+    gapDp: Int = 0,
+    contentScale: ContentScale = ContentScale.FillWidth,
+    onLongPress: (String) -> Unit = {},
+    zoomTarget: ImageZoom? = null,
 ) {
+    val gap = gapDp.dp
     val listState = rememberLazyListState()
     val context = LocalContext.current
 
@@ -540,55 +1047,137 @@ private fun VerticalScrollReader(
         listState.scrollToItem(0)
     }
 
+    // D2：首次进入同一章时恢复到上次阅读页（仅一次；换章 initialPage=0 不触发）。
+    // 用 remember(chapterIndex) 复位标记，避免整章重解析导致 size 变化时再次跳页。
+    var restoredInitial by remember(chapterIndex) { mutableStateOf(false) }
+    LaunchedEffect(images.size, initialPage) {
+        if (!restoredInitial && images.isNotEmpty() && initialPage > 0) {
+            listState.scrollToItem(initialPage.coerceIn(0, images.size - 1))
+            restoredInitial = true
+        }
+    }
+
+    // D2：滚动读到的位置回写页内进度。
+    // `firstVisibleItemIndex` 只在跨页时变化，天然比「每帧上报」稀疏；
+    // 恢复完成前不上报 —— 否则 `scrollToItem(0)` 的过渡值会把上次存的页覆盖成 0。
+    LaunchedEffect(chapterIndex, images.size) {
+        snapshotFlow { listState.firstVisibleItemIndex }
+            .distinctUntilChanged()
+            .collect { idx ->
+                if (restoredInitial || initialPage <= 0) onPageChange(idx)
+            }
+    }
+
+    // D3：书签 / 外部跳页请求（token 变化即定位）
+    LaunchedEffect(scrollRequest) {
+        val req = scrollRequest ?: return@LaunchedEffect
+        if (images.isNotEmpty()) {
+            listState.scrollToItem(req.second.coerceIn(0, images.size - 1))
+            restoredInitial = true
+        }
+    }
+
     // 预加载：当前可见项之后的 [preloadCount] 张
-    LaunchedEffect(listState.firstVisibleItemIndex, images, headers, scripts, preloadCount, canPreload) {
+    // D10：开启「按屏幕数」时，用当屏实际可见张数 × 屏数换算 —— 长条图一屏 1 张、
+    // 短图一屏 3 张，两种版式下都能保持「滑一屏，下一屏已就绪」。
+    LaunchedEffect(
+        listState.firstVisibleItemIndex,
+        images,
+        headers,
+        scripts,
+        preloadCount,
+        preloadScreens,
+        canPreload,
+    ) {
         if (!canPreload) return@LaunchedEffect
+        val perScreen = listState.layoutInfo.visibleItemsInfo.size.coerceAtLeast(1)
+        val ahead = if (preloadScreens > 0) {
+            (preloadScreens * perScreen).coerceIn(1, 16)
+        } else {
+            preloadCount
+        }
         val start = listState.firstVisibleItemIndex + 1
-        for (i in start until (start + preloadCount).coerceAtMost(images.size)) {
+        for (i in start until (start + ahead).coerceAtMost(images.size)) {
             if (i >= 0) preloadImage(context, images[i], headers, scripts[images[i]])
         }
     }
 
-    LazyColumn(
-        state = listState,
-        modifier = Modifier
-            .fillMaxSize()
-            // 放大查看细节时锁住滚动切话（图片平移由缩放组件自己消费，列表不再滚）
-            .edgeOverscroll(
-                resetKey = chapterIndex,
-                vertical = true,
-                canScrollBackward = { listState.canScrollBackward && !anyZoomed },
-                canScrollForward = { listState.canScrollForward && !anyZoomed },
-                onOverscrollStart = onPrevChapter,
-                onOverscrollEnd = onNextChapter,
-            )
-            .clickable(
-                interactionSource = null,
-                indication = null,
-                onClick = onTap,
-            ),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        contentPadding = PaddingValues(bottom = bottomContentPadding),
-    ) {
-        itemsIndexed(images) { _, url ->
-            ZoomableComicImage(
-                url = url,
-                // 不再给每张图加 vertical padding：黑底会从缝里透出来，
-                // 在条漫 / 分镜图上表现为一条条横向黑线。图片直接上下相接即为连续的一页。
-                modifier = Modifier.fillMaxWidth(),
-                contentScale = ContentScale.FillWidth,
-                placeholderModifier = Modifier
-                    .fillMaxWidth()
-                    .height(240.dp),
-                headers = headers,
-                script = scripts[url],
-                onZoomStateChanged = { z ->
-                    zoomedUrl = if (z) url else if (zoomedUrl == url) null else zoomedUrl
-                },
-                // 点击呼出菜单必须走图片自己的手势（它 consume 了 down，父容器 clickable 收不到）
-                onTap = { _ -> onTap() },
-                onLoadFailed = onImageFailed,
-            )
+    val edgeModifier = Modifier
+        .fillMaxSize()
+        // 放大查看细节时锁住滚动切话（图片平移由缩放组件自己消费，列表不再滚）
+        .edgeOverscroll(
+            resetKey = chapterIndex,
+            vertical = vertical,
+            canScrollBackward = { listState.canScrollBackward && !anyZoomed },
+            canScrollForward = { listState.canScrollForward && !anyZoomed },
+            onOverscrollStart = onPrevChapter,
+            onOverscrollEnd = onNextChapter,
+        )
+        .clickable(
+            interactionSource = null,
+            indication = null,
+            onClick = onTap,
+        )
+
+    if (vertical) {
+        LazyColumn(
+            state = listState,
+            modifier = edgeModifier,
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = if (gap > 0.dp) Arrangement.spacedBy(gap) else Arrangement.Top,
+            contentPadding = PaddingValues(bottom = bottomContentPadding),
+        ) {
+            itemsIndexed(images) { _, url ->
+                ZoomableComicImage(
+                    url = url,
+                    // 不再给每张图加 vertical padding：黑底会从缝里透出来，
+                    // 在条漫 / 分镜图上表现为一条条横向黑线。间距由 gap 统一控制。
+                    modifier = Modifier.fillMaxWidth(),
+                    contentScale = contentScale,
+                    placeholderModifier = Modifier
+                        .fillMaxWidth()
+                        .height(240.dp),
+                    headers = headers,
+                    script = scripts[url],
+                    onZoomStateChanged = { z ->
+                        zoomedUrl = if (z) url else if (zoomedUrl == url) null else zoomedUrl
+                    },
+                    // 点击呼出菜单必须走图片自己的手势（它 consume 了 down，父容器 clickable 收不到）
+                    onTap = { _ -> onTap() },
+                    onLongPress = { onLongPress(url) },
+                    zoomRequest = zoomTarget?.takeIf { it.url == url }?.let { it.token to it.scale },
+                    onLoadFailed = onImageFailed,
+                )
+            }
+        }
+    } else {
+        // 横向连续：每项占满一屏宽，按 Fit 显示（右→左时 reverseLayout 反转排布）
+        LazyRow(
+            state = listState,
+            modifier = edgeModifier,
+            reverseLayout = reverse,
+            horizontalArrangement = if (gap > 0.dp) Arrangement.spacedBy(gap) else Arrangement.Start,
+            contentPadding = PaddingValues(end = bottomContentPadding),
+        ) {
+            itemsIndexed(images) { _, url ->
+                ZoomableComicImage(
+                    url = url,
+                    modifier = Modifier
+                        .fillParentMaxWidth()
+                        .fillMaxHeight(),
+                    contentScale = ContentScale.Fit,
+                    placeholderModifier = Modifier.fillParentMaxSize(),
+                    headers = headers,
+                    script = scripts[url],
+                    onZoomStateChanged = { z ->
+                        zoomedUrl = if (z) url else if (zoomedUrl == url) null else zoomedUrl
+                    },
+                    onTap = { _ -> onTap() },
+                    onLongPress = { onLongPress(url) },
+                    zoomRequest = zoomTarget?.takeIf { it.url == url }?.let { it.token to it.scale },
+                    onLoadFailed = onImageFailed,
+                )
+            }
         }
     }
 }
@@ -597,9 +1186,14 @@ private fun VerticalScrollReader(
 // 它和「翻到底继续拖 → 下一话」（edgeOverscroll）功能重复，且会占掉一整屏的最后一段，
 // 让读者以为本话只有这些内容。现在读完本话继续往下拖即可切话，入口只保留菜单里的底部章节条。
 
-/** 左右翻页阅读（预加载相邻页；三区点击：左=上一页/上一话，中=设置，右=下一页/下一话） */
+/**
+ * 画廊翻页阅读（D1 画廊族）：左右翻页（`reverse=true` 时右→左）或上下整页翻页。
+ *
+ * 三区点击：横向时左/右为上一页/下一页（右→左阅读时互换），纵向时上/下为上一页/下一页，
+ * 中间呼出菜单。
+ */
 @Composable
-private fun HorizontalPagerReader(
+private fun GalleryReader(
     images: List<String>,
     headers: Map<String, String>,
     scripts: Map<String, String>,
@@ -610,8 +1204,16 @@ private fun HorizontalPagerReader(
     onPrevChapter: () -> Unit = {},
     onNextChapter: () -> Unit = {},
     preloadCount: Int,
+    /** D10：>0 时按「屏」换算张数（双页一屏 2 张），覆盖 [preloadCount] */
+    preloadScreens: Int = 0,
     canPreload: Boolean,
     doublePage: Boolean,
+    vertical: Boolean = false,
+    reverse: Boolean = false,
+    gapDp: Int = 0,
+    contentScale: ContentScale = ContentScale.FillWidth,
+    zoomTarget: ImageZoom? = null,
+    onLongPress: (String) -> Unit = {},
     onImageFailed: (String) -> Unit = {},
 ) {
     // C3 双页模式：每屏并排展示两张图（左图 = 偶数下标），页数 = ceil(n/2)。
@@ -652,13 +1254,30 @@ private fun HorizontalPagerReader(
         if (imgIdx < images.size) onPageChange(imgIdx)
     }
 
+    val gap = gapDp.dp
+
     // 预加载相邻页（双页模式翻一页前进两图）
-    LaunchedEffect(pagerState.currentPage, images, headers, scripts, preloadCount, canPreload, doublePage) {
+    LaunchedEffect(
+        pagerState.currentPage,
+        images,
+        headers,
+        scripts,
+        preloadCount,
+        preloadScreens,
+        canPreload,
+        doublePage,
+    ) {
         if (!canPreload) return@LaunchedEffect
         val page = pagerState.currentPage
         val step = if (doublePage) 2 else 1
         val startImg = page * step
-        val ahead = ((preloadCount - 1).coerceAtLeast(0)) * step
+        // D10：按屏换算时，一屏 = step 张图
+        val aheadCount = if (preloadScreens > 0) {
+            (preloadScreens * step).coerceIn(1, 16)
+        } else {
+            preloadCount
+        }
+        val ahead = ((aheadCount - 1).coerceAtLeast(0)) * step
         for (i in (startImg - step)..(startImg + ahead)) {
             if (i in images.indices) preloadImage(context, images[i], headers, scripts[images[i]])
         }
@@ -672,114 +1291,164 @@ private fun HorizontalPagerReader(
         zoomedUrl = if (z) url else if (zoomedUrl == url) null else zoomedUrl
     }
 
+    fun goPrevPage() {
+        if (pagerState.currentPage > 0) {
+            scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+        } else {
+            onPrevChapter()
+        }
+    }
+
+    fun goNextPage() {
+        if (pagerState.currentPage < pageCountSafe - 1) {
+            scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
+        } else {
+            onNextChapter()
+        }
+    }
+
     // 三区点击：左 1/3 上一页 / 上一话，右 1/3 下一页 / 下一话，中间呼出菜单。
+    // 右→左阅读（reverse）时左右语义互换：点左侧才是「往后读」。
     // 入参是「点击位置在**整屏**里的横向比例」—— 双页模式下由两张图各自换算。
-    // （点在图片上时由图片冒泡上来；点在 Fit 留出的黑边上由下方 comicPagerTap 兜住。）
     fun zoneTap(screenFraction: Float) {
         when {
-            screenFraction < 1f / 3f -> {
-                if (pagerState.currentPage > 0) {
-                    scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
-                } else {
-                    onPrevChapter()
-                }
-            }
-            screenFraction > 2f / 3f -> {
-                if (pagerState.currentPage < pageCountSafe - 1) {
-                    scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
-                } else {
-                    onNextChapter()
-                }
-            }
+            screenFraction < 1f / 3f -> if (reverse) goNextPage() else goPrevPage()
+            screenFraction > 2f / 3f -> if (reverse) goPrevPage() else goNextPage()
             else -> onTap()
         }
     }
 
-    HorizontalPager(
-        state = pagerState,
-        // 放大查看细节时禁止滑动翻页（缩放组件会自己吞掉拖动事件，这里双保险）
-        userScrollEnabled = !anyZoomed,
-        modifier = Modifier
-            .fillMaxSize()
-            // 末页继续拖 → 下一话；首页往前拖 → 上一话
-            .edgeOverscroll(
-                resetKey = chapterIndex,
-                vertical = false,
-                canScrollBackward = { pagerState.currentPage > 0 && !anyZoomed },
-                canScrollForward = { pagerState.currentPage < pageCountSafe - 1 && !anyZoomed },
-                onOverscrollStart = onPrevChapter,
-                onOverscrollEnd = onNextChapter,
-            ),
-    ) { page ->
+    // 纵向翻页：上 1/3 上一页、下 1/3 下一页
+    fun zoneTapVertical(screenFraction: Float) {
+        when {
+            screenFraction < 1f / 3f -> goPrevPage()
+            screenFraction > 2f / 3f -> goNextPage()
+            else -> onTap()
+        }
+    }
+
+    val edgeModifier = Modifier
+        .fillMaxSize()
+        // 末页继续拖 → 下一话；首页往前拖 → 上一话（右→左阅读时方向与回调互换）
+        .edgeOverscroll(
+            resetKey = chapterIndex,
+            vertical = vertical,
+            canScrollBackward = {
+                (if (reverse) pagerState.currentPage < pageCountSafe - 1
+                else pagerState.currentPage > 0) && !anyZoomed
+            },
+            canScrollForward = {
+                (if (reverse) pagerState.currentPage > 0
+                else pagerState.currentPage < pageCountSafe - 1) && !anyZoomed
+            },
+            onOverscrollStart = if (reverse) onNextChapter else onPrevChapter,
+            onOverscrollEnd = if (reverse) onPrevChapter else onNextChapter,
+        )
+
+    @Composable
+    fun PageContent(page: Int) {
         val leftImg = if (doublePage) page * 2 else page
         val rightImg = if (doublePage) leftImg + 1 else -1
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .comicPagerTap(
-                    onLeft = {
-                        if (pagerState.currentPage > 0) {
-                            scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
-                        } else {
-                            onPrevChapter()
-                        }
-                    },
-                    onCenter = onTap,
-                    onRight = {
-                        if (pagerState.currentPage < pageCountSafe - 1) {
-                            scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
-                        } else {
-                            onNextChapter()
-                        }
+                .then(
+                    if (vertical) {
+                        Modifier.comicPagerTapVertical(
+                            onTop = { goPrevPage() },
+                            onCenter = onTap,
+                            onBottom = { goNextPage() },
+                        )
+                    } else {
+                        Modifier.comicPagerTap(
+                            onLeft = { if (reverse) goNextPage() else goPrevPage() },
+                            onCenter = onTap,
+                            onRight = { if (reverse) goPrevPage() else goNextPage() },
+                        )
                     },
                 ),
             contentAlignment = Alignment.Center,
         ) {
             if (doublePage) {
-                // 双页并排：左右各占一半，各用 FillWidth 适配（保持图片原始比例）
+                // 双页并排：左右各占一半，各用 Fit 适配（保持图片原始比例）
                 Row(modifier = Modifier.fillMaxSize()) {
                     // 双页并排时每张图只占半屏，把图内比例折算回整屏比例再判区
+                    val lUrl = images.getOrNull(leftImg).orEmpty()
                     ZoomableComicImage(
-                        url = images.getOrNull(leftImg) ?: "",
+                        url = lUrl,
                         modifier = Modifier
                             .weight(1f)
-                            .fillMaxSize(),
+                            .fillMaxSize()
+                            .padding(horizontal = gap / 2),
                         contentScale = ContentScale.Fit,
                         placeholderModifier = Modifier.fillMaxSize(),
                         headers = headers,
-                        script = scripts[images.getOrNull(leftImg) ?: ""],
-                        onZoomStateChanged = { z -> onImgZoom(images.getOrNull(leftImg) ?: "", z) },
+                        script = scripts[lUrl],
+                        onZoomStateChanged = { z -> onImgZoom(lUrl, z) },
                         onTap = { f -> zoneTap(f * 0.5f) },
+                        onLongPress = { onLongPress(lUrl) },
+                        zoomRequest = zoomTarget?.takeIf { it.url == lUrl }
+                            ?.let { it.token to it.scale },
                         onLoadFailed = onImageFailed,
                     )
+                    val rUrl = images.getOrNull(rightImg).orEmpty()
                     ZoomableComicImage(
-                        url = images.getOrNull(rightImg) ?: "",
+                        url = rUrl,
                         modifier = Modifier
                             .weight(1f)
-                            .fillMaxSize(),
+                            .fillMaxSize()
+                            .padding(horizontal = gap / 2),
                         contentScale = ContentScale.Fit,
                         placeholderModifier = Modifier.fillMaxSize(),
                         headers = headers,
-                        script = scripts[images.getOrNull(rightImg) ?: ""],
-                        onZoomStateChanged = { z -> onImgZoom(images.getOrNull(rightImg) ?: "", z) },
+                        script = scripts[rUrl],
+                        onZoomStateChanged = { z -> onImgZoom(rUrl, z) },
                         onTap = { f -> zoneTap(0.5f + f * 0.5f) },
+                        onLongPress = { onLongPress(rUrl) },
+                        zoomRequest = zoomTarget?.takeIf { it.url == rUrl }
+                            ?.let { it.token to it.scale },
                         onLoadFailed = onImageFailed,
                     )
                 }
             } else {
+                val url = images.getOrNull(page).orEmpty()
                 ZoomableComicImage(
-                    url = images.getOrNull(page) ?: "",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.FillWidth,
+                    url = url,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(
+                            horizontal = if (vertical) 0.dp else gap / 2,
+                            vertical = if (vertical) gap / 2 else 0.dp,
+                        ),
+                    contentScale = contentScale,
                     placeholderModifier = Modifier.fillMaxSize(),
                     headers = headers,
-                    script = scripts[images.getOrNull(page) ?: ""],
-                    onZoomStateChanged = { z -> onImgZoom(images.getOrNull(page) ?: "", z) },
-                    onTap = { f -> zoneTap(f) },
+                    script = scripts[url],
+                    onZoomStateChanged = { z -> onImgZoom(url, z) },
+                    onTap = { f -> if (vertical) zoneTapVertical(f) else zoneTap(f) },
+                    onLongPress = { onLongPress(url) },
+                    zoomRequest = zoomTarget?.takeIf { it.url == url }
+                        ?.let { it.token to it.scale },
                     onLoadFailed = onImageFailed,
                 )
             }
         }
+    }
+
+    if (vertical) {
+        androidx.compose.foundation.pager.VerticalPager(
+            state = pagerState,
+            // 放大查看细节时禁止滑动翻页（缩放组件会自己吞掉拖动事件，这里双保险）
+            userScrollEnabled = !anyZoomed,
+            modifier = edgeModifier,
+        ) { page -> PageContent(page) }
+    } else {
+        HorizontalPager(
+            state = pagerState,
+            userScrollEnabled = !anyZoomed,
+            reverseLayout = reverse,
+            modifier = edgeModifier,
+        ) { page -> PageContent(page) }
     }
 }
 
@@ -802,6 +1471,25 @@ private fun Modifier.comicPagerTap(
             when {
                 offset.x < w / 3f -> onLeft()
                 offset.x > w * 2f / 3f -> onRight()
+                else -> onCenter()
+            }
+        },
+    )
+}
+
+/** 纵向翻页三区点击（D1 画廊上→下）：上 1/3 上一页、下 1/3 下一页、中间菜单 */
+private fun Modifier.comicPagerTapVertical(
+    onTop: () -> Unit,
+    onCenter: () -> Unit,
+    onBottom: () -> Unit,
+): Modifier = this.pointerInput(Unit) {
+    detectTapGestures(
+        onTap = { offset ->
+            val h = size.height.toFloat()
+            if (h <= 0f) return@detectTapGestures
+            when {
+                offset.y < h / 3f -> onTop()
+                offset.y > h * 2f / 3f -> onBottom()
                 else -> onCenter()
             }
         },
@@ -921,6 +1609,10 @@ internal fun ComicImage(
             // 失败时把「原因」落到日志，便于区分 403 防盗链 / DNS / 解码失败。
             // 只记异常类名：异常消息里往往带图片地址，日志不出现具体站点。
             .listener(
+                // D16：加载结束清掉进度，避免残留一个停在 99% 的旧值
+                onSuccess = { _, _ ->
+                    com.novelreader.core.image.ImageDownloadProgress.clear(url)
+                },
                 onError = { _, result ->
                     android.util.Log.w(
                         IMAGE_LOG_TAG,
@@ -940,13 +1632,13 @@ internal fun ComicImage(
         contentDescription = null,
         modifier = modifier,
         contentScale = contentScale,
-        loading = { ComicLoading(placeholderModifier) },
+        loading = { ComicLoading(placeholderModifier, url) },
         error = {
             // 惰性占位地址（v1.9.2.3）：这张图还没解析过真实地址，Coil 必然打不开。
             // 这不是「加载失败」，而 onLoadFailed 已经在上面触发解析了 —— 此时应该
             // 继续显示加载占位，别让用户看到一闪而过的「图片加载失败」。
             if (com.novelreader.core.image.LazyImage.isLazy(url)) {
-                ComicLoading(placeholderModifier)
+                ComicLoading(placeholderModifier, url)
             } else {
                 ComicError(
                     placeholderModifier,
@@ -983,14 +1675,76 @@ private fun isNetworkUnreachable(t: Throwable?): Boolean {
     return false
 }
 
-/** 加载中占位 */
+/** D11：右上角时钟 + 电量（每 30 秒刷新） */
 @Composable
-private fun ComicLoading(modifier: Modifier) {
-    Box(modifier, contentAlignment = Alignment.Center) {
-        CircularProgressIndicator(
-            color = Color(0xFF888888),
-            strokeWidth = 2.dp,
+private fun ReaderClock(dark: Boolean, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var text by remember { mutableStateOf(clockText(context)) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(30_000)
+            text = clockText(context)
+        }
+    }
+    Text(
+        text = text,
+        color = if (dark) Color(0xFF444444) else Color.White.copy(alpha = 0.85f),
+        style = MaterialTheme.typography.labelSmall,
+        modifier = modifier,
+    )
+}
+
+/** `HH:mm  电量%` —— 电量取自 BATTERY_CHANGED 粘性广播，读不到就只显示时间 */
+private fun clockText(context: Context): String {
+    val cal = java.util.Calendar.getInstance()
+    val time = String.format(
+        "%02d:%02d",
+        cal.get(java.util.Calendar.HOUR_OF_DAY),
+        cal.get(java.util.Calendar.MINUTE),
+    )
+    val battery = runCatching {
+        val intent = context.registerReceiver(
+            null,
+            android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED),
         )
+        val level = intent?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = intent?.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1) ?: -1
+        if (level >= 0 && scale > 0) level * 100 / scale else null
+    }.getOrNull()
+    return if (battery != null) "$time  $battery%" else time
+}
+
+/**
+ * 加载中占位。
+ *
+ * D16：有字节进度时在转圈下方显示百分比。网络命中磁盘缓存时拦截器不跑，
+ * 进度为 null，就退回原来的纯转圈（不算异常，是缓存命中）。
+ */
+@Composable
+private fun ComicLoading(modifier: Modifier, url: String = "") {
+    val progress: Float? by remember(url) {
+        if (url.isBlank()) {
+            kotlinx.coroutines.flow.MutableStateFlow<Float?>(null)
+        } else {
+            com.novelreader.core.image.ImageDownloadProgress.flow(url)
+        }
+    }.collectAsState()
+    Box(modifier, contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            CircularProgressIndicator(
+                color = Color(0xFF888888),
+                strokeWidth = 2.dp,
+            )
+            val p = progress
+            if (p != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "${(p * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF888888),
+                )
+            }
+        }
     }
 }
 

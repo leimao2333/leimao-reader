@@ -1,8 +1,11 @@
 package com.novelreader.ui.navigation
 
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.Box
@@ -27,6 +30,8 @@ import com.novelreader.ui.screens.bookshelf.BookShelfScreen
 import com.novelreader.ui.screens.bookshelf.BookShelfViewModel
 import com.novelreader.ui.screens.common.HomeScreen
 import com.novelreader.ui.screens.common.HomeViewModel
+import com.novelreader.ui.screens.common.OnboardingScreen
+import com.novelreader.ui.screens.comic.ComicCacheScreen
 import com.novelreader.ui.screens.comic.ComicDetailScreen
 import com.novelreader.ui.screens.comic.ComicDetailViewModel
 import com.novelreader.ui.screens.comic.ComicReaderScreen
@@ -35,6 +40,8 @@ import com.novelreader.ui.screens.comic.ComicSearchScreen
 import com.novelreader.ui.screens.comic.ComicSearchViewModel
 import com.novelreader.ui.screens.novel.ExploreScreen
 import com.novelreader.ui.screens.novel.ExploreViewModel
+import com.novelreader.ui.screens.novel.NovelBookCityScreen
+import com.novelreader.ui.screens.novel.NovelBookCityViewModel
 import com.novelreader.ui.screens.novel.NovelDetailScreen
 import com.novelreader.ui.screens.novel.NovelDetailViewModel
 import com.novelreader.ui.screens.novel.NovelReaderScreen
@@ -73,6 +80,15 @@ fun AppNavHost(
     onIncomingPdfConsumed: () -> Unit = {},
 ) {
     val navController = rememberNavController()
+
+    // C16：首启判定。DataStore 异步读取，先用 true 起步避免首帧闪引导页；
+    // 读到 false 时跳一次引导页（onDone 写回 true 后不会重复触发）。
+    val onboardingDone by container.preferencesManager.onboardingDoneFlow.collectAsState(initial = true)
+    androidx.compose.runtime.LaunchedEffect(onboardingDone) {
+        if (!onboardingDone) navController.navigate(Routes.ONBOARDING) {
+            launchSingleTop = true
+        }
+    }
 
     // 深链预搜索：进入首页后按类型自动跳转搜索页
     androidx.compose.runtime.LaunchedEffect(initialNovelSearchKeyword) {
@@ -158,6 +174,9 @@ fun AppNavHost(
                 onOpenVideoSearch = { navController.navigate(Routes.videoSearch()) },
                 onOpenRss = { navController.navigate(Routes.RSS) },
                 onOpenHistory = { navController.navigate(Routes.HISTORY) },
+                onOpenNovelBookCity = { navController.navigate(Routes.NOVEL_BOOK_CITY) },
+                onOpenComicBookCity = { navController.navigate(Routes.COMIC_BOOK_CITY) },
+                onOpenRank = { navController.navigate(Routes.BOOK_RANK) },
                 onOpenTagSearch = { type, tag -> navController.navigate(Routes.tagSearch(type, tag)) },
                 onContinueReading = { item, chapters, target ->
                     NavCache.putChapters(item, chapters)
@@ -181,6 +200,17 @@ fun AppNavHost(
                                 navController.navigate(Routes.videoPlayer(item, index))
                         }
                     }
+                },
+            )
+        }
+
+        // ===== 新用户引导（C16，首启一次）=====
+        composable(Routes.ONBOARDING) {
+            val scope = androidx.compose.runtime.rememberCoroutineScope()
+            OnboardingScreen(
+                onDone = {
+                    scope.launch { container.preferencesManager.setOnboardingDone() }
+                    navController.popBackStack()
                 },
             )
         }
@@ -215,6 +245,86 @@ fun AppNavHost(
             )
         }
 
+        // ===== 小说书城（TODO 第十五章 C4）=====
+        composable(Routes.NOVEL_BOOK_CITY) {
+            val viewModel: NovelBookCityViewModel = viewModel(
+                factory = NovelViewModelFactory(container) {
+                    NovelBookCityViewModel(it.contentRepository)
+                }
+            )
+            NovelBookCityScreen(
+                viewModel = viewModel,
+                onItemClick = { item -> navController.navigate(Routes.novelDetail(item)) },
+                // 题材入口复用现有 TAG_SEARCH 路由，不新建跳转逻辑
+                onTagClick = { tag ->
+                    navController.navigate(
+                        Routes.tagSearch(com.novelreader.domain.model.SourceType.NOVEL, tag)
+                    )
+                },
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        // ===== 排行榜（D28）：直接落在书城的榜单分区 =====
+        composable(Routes.BOOK_RANK) {
+            val viewModel: NovelBookCityViewModel = viewModel(
+                factory = NovelViewModelFactory(container) { NovelBookCityViewModel(it.contentRepository) }
+            )
+            NovelBookCityScreen(
+                viewModel = viewModel,
+                title = "排行榜",
+                initialSection = 0,
+                onItemClick = { item -> navController.navigate(Routes.novelDetail(item)) },
+                onTagClick = { tag ->
+                    navController.navigate(
+                        Routes.tagSearch(com.novelreader.domain.model.SourceType.NOVEL, tag)
+                    )
+                },
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        // ===== 漫画下载管理（D32）=====
+        composable(
+            Routes.COMIC_CACHE,
+            arguments = listOf(
+                navArgument("item") { type = NavType.StringType },
+            ),
+        ) { backStackEntry ->
+            val item = NavArgs.decodeItem(backStackEntry.arguments?.getString("item") ?: "")
+            ComicCacheScreen(
+                item = item,
+                chapters = NavCache.getChapters(item),
+                downloadManager = container.downloadManager,
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        // ===== 漫画书城（D26）：同一套榜单 / 分类框架，数据换漫画源 =====
+        composable(Routes.COMIC_BOOK_CITY) {
+            val viewModel: NovelBookCityViewModel = viewModel(
+                factory = NovelViewModelFactory(container) {
+                    NovelBookCityViewModel(
+                        it.contentRepository,
+                        com.novelreader.domain.model.SourceType.COMIC,
+                    )
+                }
+            )
+            NovelBookCityScreen(
+                viewModel = viewModel,
+                title = "漫画书城",
+                // D29：分类分区用漫画题材词表（复用同一套分类导航框架）
+                genres = com.novelreader.core.util.ComicGenres.ALL,
+                onItemClick = { item -> navController.navigate(Routes.comicDetail(item)) },
+                onTagClick = { tag ->
+                    navController.navigate(
+                        Routes.tagSearch(com.novelreader.domain.model.SourceType.COMIC, tag)
+                    )
+                },
+                onBack = { navController.popBackStack() },
+            )
+        }
+
         // ===== 书架 =====
         composable(Routes.BOOKSHELF) {
             val viewModel: BookShelfViewModel = viewModel(
@@ -226,6 +336,7 @@ fun AppNavHost(
                         it.preferencesManager,
                         it.localBookStore,
                         it.shelfPurger,
+                        it.localComicStore,
                     )
                 }
             )
@@ -598,6 +709,7 @@ fun AppNavHost(
             NovelDetailScreen(
                 viewModel = viewModel,
                 item = currentItem,
+                customCoverStore = container.customCoverStore,
                 onChapterClick = { chapter ->
                     // 章节列表走内存缓存（3461 章编码进路由会 ANR）
                     val chapters = viewModel.chapters.value
@@ -641,12 +753,28 @@ fun AppNavHost(
         }
 
         // ===== 小说：阅读 =====
+        // A15：从详情页进入阅读页用「缩放 + 淡入」转场，视觉上接近封面 morph；
+        // 配合 Manifest 已启用的预测性返回，系统返回手势同样按此动画反向播放。
         composable(
             route = Routes.NOVEL_READER,
             arguments = listOf(
                 navArgument("item") { type = NavType.StringType },
                 navArgument("chapterIndex") { type = NavType.IntType },
             ),
+            enterTransition = {
+                fadeIn(tween(300)) + scaleIn(
+                    animationSpec = tween(300, easing = FastOutSlowInEasing),
+                    initialScale = 0.92f,
+                )
+            },
+            exitTransition = { fadeOut(tween(180)) },
+            popEnterTransition = { fadeIn(tween(240)) },
+            popExitTransition = {
+                fadeOut(tween(200)) + scaleOut(
+                    animationSpec = tween(200, easing = FastOutSlowInEasing),
+                    targetScale = 0.94f,
+                )
+            },
         ) { backStackEntry ->
             val item = NavArgs.decodeItem(backStackEntry.arguments?.getString("item") ?: "")
             val chapterIndex = backStackEntry.arguments?.getInt("chapterIndex") ?: 0
@@ -741,6 +869,7 @@ fun AppNavHost(
                         Routes.tagSearch(com.novelreader.domain.model.SourceType.COMIC, tag)
                     )
                 },
+                onOpenCache = { navController.navigate(Routes.comicCache(item)) },
             )
         }
 
@@ -765,6 +894,7 @@ fun AppNavHost(
                         it.preferencesManager,
                         it.downloadManager,
                         it.bookRepository,
+                        it.bookmarkRepository,
                     )
                 }
             )

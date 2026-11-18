@@ -26,9 +26,13 @@ class JsSourceAdapter(
 
     private val type = info.type
 
+    // B3：所有网络相关 JS 调用统一走带超时接口。超时值复用引擎公开常量（15s），
+    // 避免与引擎默认预算漂移；看门狗保证调用线程永不被死循环无限期阻塞。
+    private val jsTimeoutMs: Long = SourceJsEngine.DEFAULT_TIMEOUT_MS
+
     // ===== 搜索 =====
     override suspend fun search(keyword: String, page: Int): List<MediaItem> {
-        val result = SourceJsEngine.callFunction(scope, "search", keyword, page)
+        val result = SourceJsEngine.callFunctionWithTimeout(scope, "search", jsTimeoutMs, keyword, page)
         val list = unwrapList(result)
         return list.map { obj ->
             val map = toMap(obj)
@@ -48,7 +52,7 @@ class JsSourceAdapter(
 
     // ===== 详情 =====
     override suspend fun detail(item: MediaItem): MediaItem {
-        val result = SourceJsEngine.callFunction(scope, "detail", item.detailUrl)
+        val result = SourceJsEngine.callFunctionWithTimeout(scope, "detail", jsTimeoutMs, item.detailUrl)
         val map = toMap(result)
         return item.copy(
             cover = com.novelreader.core.util.CoverUrl.sanitize(map.str("cover")) ?: item.cover,
@@ -59,7 +63,7 @@ class JsSourceAdapter(
 
     // ===== 目录 =====
     override suspend fun chapterList(item: MediaItem): List<ChapterItem> {
-        val result = SourceJsEngine.callFunction(scope, "chapterList", item.detailUrl)
+        val result = SourceJsEngine.callFunctionWithTimeout(scope, "chapterList", jsTimeoutMs, item.detailUrl)
         val list = unwrapList(result)
         return list.mapIndexed { index, obj ->
             val map = toMap(obj)
@@ -75,7 +79,7 @@ class JsSourceAdapter(
 
     // ===== 正文 =====
     override suspend fun content(chapter: ChapterItem): ContentResult {
-        val result = SourceJsEngine.callFunction(scope, "content", chapter.url)
+        val result = SourceJsEngine.callFunctionWithTimeout(scope, "content", jsTimeoutMs, chapter.url)
         val map = toMap(result)
 
         val text = map.str("text")

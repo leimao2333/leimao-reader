@@ -54,6 +54,10 @@ fun ZoomableComicImage(
     enabled: Boolean = true,
     onZoomStateChanged: (Boolean) -> Unit = {},
     onTap: ((Float) -> Unit)? = null,
+    /** 长按回调（D6）：参数是长按位置在本图内的横向比例，供阅读器弹「保存 / 复制 / 放大」菜单 */
+    onLongPress: ((Float) -> Unit)? = null,
+    /** 外部缩放指令 (token, 目标倍数)：token 变化即应用，用于长按菜单里的「放大查看」（D6） */
+    zoomRequest: Pair<Int, Float>? = null,
     onLoadFailed: (String) -> Unit = {},
 ) {
     // 逐页独立状态：翻页 / 切图后重置为 1x
@@ -69,6 +73,13 @@ fun ZoomableComicImage(
     // 缩放态变化时通知外部（锁住 / 解锁父容器翻页、滚动）
     LaunchedEffect(isZoomed) {
         onZoomStateChanged(isZoomed)
+    }
+
+    // 外部缩放指令（长按菜单「放大查看」）：幂等，token 不变不重复执行
+    LaunchedEffect(zoomRequest) {
+        val req = zoomRequest ?: return@LaunchedEffect
+        scale = req.second.coerceIn(1f, MAX_SCALE)
+        offset = Offset.Zero
     }
 
     // 把位移约束在「图片放大后不拖出空白」的范围内
@@ -96,21 +107,30 @@ fun ZoomableComicImage(
                 translationX = offset.x
                 translationY = offset.y
             }
-            // 双击：1x ↔ 放大；单击：冒泡给阅读器（呼出菜单 / 三区翻页）
-            .pointerInput(url, enabled, onTap) {
+            // 双击：1x → 1.75x → 3x → 1x（D5 分档，不再一步跳到 4x）；
+            // 单击：冒泡给阅读器（呼出菜单 / 三区翻页）；长按：交给阅读器弹菜单（D6）
+            .pointerInput(url, enabled, onTap, onLongPress) {
                 if (!enabled) return@pointerInput
+                val fraction = { pos: Offset ->
+                    val w = size.width.toFloat()
+                    if (w > 0f) (pos.x / w).coerceIn(0f, 1f) else 0.5f
+                }
                 detectTapGestures(
                     onTap = { pos ->
                         val cb = onTap ?: return@detectTapGestures
-                        val w = size.width.toFloat()
-                        cb(if (w > 0f) (pos.x / w).coerceIn(0f, 1f) else 0.5f)
+                        cb(fraction(pos))
                     },
                     onDoubleTap = { pos ->
-                        if (scale > 1f) {
+                        val target = when {
+                            scale <= 1.01f -> DOUBLE_TAP_STEP_1
+                            scale < DOUBLE_TAP_STEP_2 - 0.01f -> DOUBLE_TAP_STEP_2
+                            else -> 1f
+                        }
+                        if (target <= 1f) {
                             scale = 1f
                             offset = Offset.Zero
                         } else {
-                            scale = MAX_SCALE
+                            scale = target
                             // 以双击点为中心：把点击点偏移到 viewport 中心
                             val center = Offset(
                                 viewportSize.width / 2f,
@@ -120,6 +140,7 @@ fun ZoomableComicImage(
                             constrainOffset()
                         }
                     },
+                    onLongPress = { pos -> onLongPress?.invoke(fraction(pos)) },
                 )
             }
             // 捏合缩放 + 放大后平移（自己实现，见 detectComicGestures 的说明）
@@ -228,3 +249,9 @@ private suspend fun PointerInputScope.detectComicGestures(
 
 /** 最大缩放倍数 */
 private const val MAX_SCALE = 4f
+
+/** 双击第一档（对齐 venera：初始倍率 × 1.75） */
+private const val DOUBLE_TAP_STEP_1 = 1.75f
+
+/** 双击第二档 */
+private const val DOUBLE_TAP_STEP_2 = 3f

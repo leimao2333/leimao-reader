@@ -43,6 +43,24 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
+/** 读回持久化的选源时剔除已删除 / 停用的源；纯函数便于离线单测时序之外的这层口径。 */
+internal fun restoredTagSearchSourceIds(
+    remembered: Set<String>,
+    availableIds: Set<String>,
+): Set<String> = remembered intersect availableIds
+
+/**
+ * 本地标签索引是跨源缓存：选中源之后必须按 sourceIds 过滤，否则会把别的源内容混进来。
+ *
+ * 更隐蔽的是 [SearchResultMerge.merge] 的跨源同名收敛 —— 它保留**先出现**的那条
+ * （本地索引里的旧条目），连带封面 / 详情链接都是那个来源的。所以过滤必须在合并之前、
+ * 在索引结果刚取回时就做，不能等收尾再处理。
+ */
+internal fun tagItemsInSelectedSources(
+    items: List<MediaItem>,
+    selectedIds: Set<String>,
+): List<MediaItem> = if (selectedIds.isEmpty()) items else items.filter { it.sourceId in selectedIds }
+
 /**
  * 标签搜索 ViewModel（v1.5.10.0 起；v1.6.1.0 重做 UI 后保留全量 + 新增热门标签；
  * v1.7.0.0 重修复合搜索；v1.7.9.9 改为并集相交；v1.8.9.1 按「召回 / 判定分离」重构）。
@@ -797,8 +815,40 @@ class TagSearchViewModel(
 
     /** 选择源（**多选**；空集合 = 全部源，v1.8.1.2）。已有查询时立即按新范围重搜。 */
     fun setSelectedSources(ids: Set<String>) {
+        // 用户已表态，后面到达的「读回记忆」协程不许再覆盖这次选择（时序见下）
+        sourcesRestored = true
         _selectedSourceIds.value = ids
+        // preferencesManager 可空（部分老调用方不注入），没注入就只是不记忆，不影响搜索
+        preferencesManager?.let { prefs ->
+            viewModelScope.launch { prefs.setTagSearchSelectedSourceIds(ids) }
+        }
         if (_query.value.isNotBlank()) search()
+    }
+
+    /**
+     * 是否已用「当前可用源列表」校验过持久化选择。
+     *
+     * 刚进页面时源列表是空的；若这会儿就读持久化取交集，空 ∩ 记忆 = 空，
+     * 等于把用户上次选的源静默清掉。因此只在源列表到位后才恢复，
+     * 且写回只发生在用户主动改选（[setSelectedSources]）这一条路径上。
+     */
+    private var sourcesRestored = false
+
+    private suspend fun restoreSelectedSourcesIfNeeded() {
+        if (sourcesRestored) return
+        val available = _sources.value
+        if (available.isEmpty()) return
+        sourcesRestored = true
+        val remembered = runCatching { preferencesManager?.tagSearchSelectedSourceIdsFlow?.first() }
+            .getOrNull()
+            .orEmpty()
+        val restored = restoredTagSearchSourceIds(remembered, available.map { it.id }.toSet())
+        if (restored.isNotEmpty()) {
+            _selectedSourceIds.value = restored
+            // 带 initialTag 进来时 collectTags 可能已经按「全部源」发起过一轮搜索；
+            // 记忆恢复后必须重搜，否则界面上选着源 A、结果却是全部源混在一起的。
+            if (_query.value.isNotBlank()) search()
+        }
     }
 
     /** 标签池是否正在收集（首次使用要逐源探测，视频源较慢） */
@@ -1176,6 +1226,8 @@ class TagSearchViewModel(
             _sources.value = runCatching {
                 sourceRepository?.getSourcesByType(type)?.filter { it.enabled }.orEmpty()
             }.getOrDefault(emptyList())
+            // 源列表到位后再读回记忆取交集（顺序反了会把用户上次选的源清空）
+            restoreSelectedSourcesIfNeeded()
         }
         // v1.9.3.0：源分组 / 启停改动即时同步到「按源搜索」下拉（只管列表，不动正在跑的搜索）
         viewModelScope.launch {
@@ -1183,6 +1235,8 @@ class TagSearchViewModel(
                 sourceRepository?.observeSources()?.collect { list ->
                     val enabled = list.filter { it.type == type && it.enabled }
                     if (enabled.isNotEmpty()) _sources.value = enabled
+                    // 首次加载为空、Flow 稍后才推来源列表时在这里补一次恢复
+                    restoreSelectedSourcesIfNeeded()
                 }
             }
         }
@@ -1199,10 +1253,14 @@ class TagSearchViewModel(
         viewModelScope.launch {
             _collecting.value = true
             tagPlan = runCatching { tagRepository.tags(type) }.getOrDefault(TagPlan.EMPTY)
-            applyTagPlan(tagPlan)
+            // 排序 / 分组 / 组内成员遍历都是 O(n·m)（2000+ 标签 × 每组词表），
+            // 放主线程会让进页第一帧直接卡住；StateFlow 支持跨线程赋值，算完再写即可
+            withContext(Dispatchers.Default) {
+                applyTagPlan(tagPlan)
+                // 标签池刚到位时补算一次提示：用户可能在池子到之前就输入了一半
+                _suggestions.value = computeSuggestions(_query.value)
+            }
             _collecting.value = false
-            // 标签池刚到位时补算一次提示：用户可能在池子到之前就输入了一半
-            _suggestions.value = computeSuggestions(_query.value)
             if (thenSearch && _results.value.isEmpty()) search()
         }
     }
@@ -1285,6 +1343,9 @@ class TagSearchViewModel(
      * 排序规则全部在 [TagSuggestions.of]，这里只负责喂「按覆盖源数倒序的池子」。
      */
     private fun computeSuggestions(raw: String): List<String> {
+        // 进页时 query 为空：以前也会先建一个 2000+ 的提示池再遍历词表，
+        // 纯属白算（弹窗根本没打开），这里直接短路
+        if (raw.isBlank()) return emptyList()
         val pool = _tagsByCount.value.ifEmpty { _allTags.value }
         return TagSuggestions.of(suggestionPool(pool), raw)
     }
@@ -2514,6 +2575,9 @@ class TagSearchViewModel(
                 val explicitAdultIntent = tags.any(TagAlias::isExplicitAdultIntent) ||
                     uniqueSpecs.any { (spec, _) -> spec.category == TagTagger.CATEGORY_ADULT }
 
+                // 按源搜索：本次明确选中的源（空集合 = 全部源）。
+                // 本地索引与下面的网络入口必须同用这一份口径，否则「选了 A 却混进 B 的内容」。
+                val selectedIds = _selectedSourceIds.value.takeIf { it.isNotEmpty() }
                 var localItems: List<MediaItem> = emptyList()
                 if (indexedTotal > 0 && clauses.isNotEmpty()) {
                     localItems = tagIndexRepository?.search(
@@ -2522,6 +2586,10 @@ class TagSearchViewModel(
                         excludeTags = excludeNames,
                         hideAdult = hideAdultForSearch && !explicitAdultIntent,
                     ).orEmpty()
+                        // 索引自身只按大类过滤，**不含源口径**：选源后必须在这里按 sourceIds
+                        // 收窄。放在 merge 之前是关键 —— 跨源同名收敛会保留先出现的索引条目，
+                        // 不先过滤的话其它源的封面 / 链接就会顶着选中源的名字留在结果里。
+                        .let { tagItemsInSelectedSources(it, selectedIds ?: emptySet()) }
                         // 索引自身只按大类过滤，源级的成人口径在这里补齐，免得收尾再砍一遍
                         .let { applyAdultFilter(it, tags) }
                         .let { withoutExcluded(it, excludeTerms) }
@@ -2566,8 +2634,9 @@ class TagSearchViewModel(
                         listOf(spec.name)
                     }
                 }
-                // 按源搜索：选了某个源就只保留它的入口（优先级高于「已启用源」集合）
-                val allowedIds = _selectedSourceIds.value.takeIf { it.isNotEmpty() } ?: enabledIds
+                // 按源搜索：选了某个源就只保留它的入口（优先级高于「已启用源」集合）。
+                // selectedIds 在上面算好，本地索引与网络入口共用，避免两条路径口径分叉。
+                val allowedIds = selectedIds ?: enabledIds
                 val entriesPerTag: List<List<TagEntry>> = uniqueSpecs.mapIndexed { index, (spec, _) ->
                     // 单标签搜索只取该标签自己的入口，不借用整组的分类页
                     val exact = !TagAlias.isGroupQuery(spec.name)

@@ -145,7 +145,7 @@ fun PdfViewerScreen(
                 },
                 actions = {
                     // 夜间反色（待办 #23）：写的是全局偏好，退出再进来还保持，
-                    // 设置页里也有同一个开关，两边同源
+                    // 设置页「PDF 夜间反色」开关与这里同源
                     IconButton(onClick = { viewModel.toggleNightInvert() }) {
                         Icon(
                             imageVector = Icons.Filled.InvertColors,

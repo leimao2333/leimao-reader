@@ -79,6 +79,10 @@ class HomeViewModel(
     private val _rssEntryBelow = MutableStateFlow(false)
     val rssEntryBelow: StateFlow<Boolean> = _rssEntryBelow.asStateFlow()
 
+    /** 首页隐藏的推荐排标题（C5），由设置页驱动，首页即时跟随 */
+    private val _homeHiddenRows = MutableStateFlow<Set<String>>(emptySet())
+    val homeHiddenRows: StateFlow<Set<String>> = _homeHiddenRows.asStateFlow()
+
     init {
         preferencesManager?.let { pm ->
             viewModelScope.launch {
@@ -87,7 +91,18 @@ class HomeViewModel(
             viewModelScope.launch {
                 pm.rssEntryBelowFlow.collect { _rssEntryBelow.value = it }
             }
+            viewModelScope.launch {
+                pm.homeHiddenRowsFlow.collect { _homeHiddenRows.value = it }
+            }
         }
+    }
+
+    /** 设置某排是否隐藏（C5） */
+    fun setHomeRowHidden(title: String, hidden: Boolean) {
+        val pm = preferencesManager ?: return
+        val next = _homeHiddenRows.value.toMutableSet()
+        if (hidden) next.add(title) else next.remove(title)
+        viewModelScope.launch { pm.setHomeHiddenRows(next) }
     }
 
     /** 本地 TXT 导入结果提示（首页 Toast 展示） */
@@ -1417,11 +1432,14 @@ class HomeViewModel(
             // 成人源内容统一沉底（与影视首页一致的既有约定），不抢占首屏
             val adultIds = adultSourceIds(usable.map { it.first })
             feedAdultIds[type] = adultIds
+            // D27：漫画源多为 Venera 单线程引擎，每源能覆盖的排有限。
+            // 每排少放两个源（6 → 4）可以把同样的源摊到更多排，首页不再「永远 3 排」。
+            val maxPerRow = if (type == SourceType.COMIC) COMIC_FEED_ROW_SOURCES else MAX_FEED_ROW_SOURCES
             val fullPlan = com.novelreader.core.util.HomeFeedPlan.build(
                 sourceOrder = sourceOrder,
                 catsBySource = catsBySource,
                 maxRows = MAX_FEED_ROWS,
-                maxSourcesPerRow = MAX_FEED_ROW_SOURCES,
+                maxSourcesPerRow = maxPerRow,
             )
             if (fullPlan.rows.isEmpty()) {
                 flow.value = flow.value.copy(
@@ -1430,9 +1448,16 @@ class HomeViewModel(
                 )
                 return@launch
             }
+            // C5：应用用户隐藏的排（设置页可配）。隐藏后排不再加载内容、栏目下拉里也不出现。
+            val hidden = _homeHiddenRows.value
+            val visibleRows = if (hidden.isEmpty()) fullPlan.rows
+            else fullPlan.rows.filterNot { it.title in hidden }
             // 栏目下拉限长：合起来能有一千多个栏目名（各站自造栏目），
             // 全塞进下拉菜单既没法用也会把菜单拖慢；按覆盖源数取前 N 个足够。
-            val plan = fullPlan.copy(categories = fullPlan.categories.take(MAX_FEED_CATEGORIES))
+            val plan = fullPlan.copy(
+                rows = visibleRows,
+                categories = fullPlan.categories.filterNot { it in hidden }.take(MAX_FEED_CATEGORIES),
+            )
             feedPlans[type] = plan
 
             // 顶栏「聚合 N 个源」= 这些横滑排真正会去访问的源数（去重）。
@@ -1488,7 +1513,11 @@ class HomeViewModel(
                                 val ts = System.currentTimeMillis()
                                 val r = gate.withPermit {
                                     runCatchingCc {
-                                        withTimeoutOrNull(SOURCE_PROBE_TIMEOUT_MS) {
+                                        // D27：漫画源的探测窗口单独放宽（Venera 10s+ 是常态）
+                                        withTimeoutOrNull(
+                                            if (type == SourceType.COMIC) COMIC_SOURCE_PROBE_TIMEOUT_MS
+                                            else SOURCE_PROBE_TIMEOUT_MS,
+                                        ) {
                                             contentRepository.explore(t.sourceId, t.url, 1)
                                         }
                                     }.getOrNull().orEmpty()
@@ -2070,6 +2099,19 @@ class HomeViewModel(
          * 被孤儿工作占住，30s 花得起。
          */
         private const val SOURCE_PROBE_TIMEOUT_MS = 30_000L
+
+        /**
+         * 漫画源的单源探测超时（D27）。
+         *
+         * 漫画几乎全是 Venera 源，引擎单线程 + 远程 JS 评估，实测 copy_manga / mh18 /
+         * komiic 等单源普遍 10s+。沿用 30s 时一轮刷新只够跑完 3~4 排，于是「漫画首页
+         * 永远只有 3 排」。这里单独放宽到 45s，配合每排 4 个源（[COMIC_FEED_ROW_SOURCES]）
+         * 把有限源摊到更多排。
+         */
+        private const val COMIC_SOURCE_PROBE_TIMEOUT_MS = 45_000L
+
+        /** 漫画推荐页每排聚合几个源（D27：6 → 4，排数优先于单排丰富度） */
+        private const val COMIC_FEED_ROW_SOURCES = 4
 
         /** 「继续观看」最多展示条数 */
         private const val MAX_CONTINUE_ITEMS = 12

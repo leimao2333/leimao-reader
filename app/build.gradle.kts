@@ -39,8 +39,8 @@ android {
         // 版本规范：四段式 顶端版本.大版本.小版本.修订
         // 小版本每版 +1；小版本满 10 进大版本；大版本满 10 进顶端版本
         // versionCode = 顶端版本 * 1000000 + 大版本 * 10000 + 小版本 * 100 + 修订
-        versionCode = 1090601
-        versionName = "1.9.6.1"
+        versionCode = 1090602
+        versionName = "1.9.6.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -76,6 +76,8 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // 配合 coreLibraryDesugaring：让 java.time 等高版本 API 在 minSdk 24 上可用
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -163,6 +165,13 @@ dependencies {
     implementation("androidx.room:room-runtime:$roomVersion")
     implementation("androidx.room:room-ktx:$roomVersion")
     kapt("androidx.room:room-compiler:$roomVersion")
+
+    // ---- java.time 脱糖（core library desugaring）----
+    // minSdk = 24，而 java.time 是 API 26 才有的。不开脱糖的话，
+    // core/reader/ReadingStats.kt 里的 java.time 在 Android 7.0/7.1 上直接
+    // NoClassDefFoundError 崩溃。AGP 官方支持用 desugar_jdk_libs 把
+    // java.time / java.util.stream 等回填到低版本 API。
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.2")
 
     // ---- 图片加载 ----
     implementation("io.coil-kt:coil-compose:2.7.0")

@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -33,6 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.BookmarkBorder
@@ -67,6 +67,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -223,8 +224,9 @@ internal fun BoxScope.ReaderTopBar(
             .align(Alignment.TopStart)
             .fillMaxWidth()
             .background(backgroundColor.copy(alpha = 0.97f))
-            // 阅读页是 edge-to-edge：不避让状态栏的话，书名会和系统时间 / 信号图标叠在一起
-            .statusBarsPadding()
+            // 顶栏重叠修复（v1.9.6.x）：状态栏避让统一由阅读页根容器的 statusBarsPadding()
+            // 处理——这里若再避让一次就是双重 padding（状态栏可见时顶栏被推下两倍高度）。
+            // 根容器按实际 inset 自适应：hide 生效时=0，状态栏意外可见时自动下移。
             .padding(horizontal = 4.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -685,6 +687,8 @@ private fun DirectoryPanel(
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    // C14 章节跳转输入：用 rememberSaveable，菜单收起再展开时草稿不丢
+    var jumpInput by rememberSaveable { mutableStateOf("") }
 
     // 过滤 + 排序（保留原始下标，点击用下标定位，避免源 index 漂移）
     val visible = remember(chapters, chapterQuery, chapterDesc) {
@@ -724,6 +728,45 @@ private fun DirectoryPanel(
             },
         )
         Spacer(Modifier.height(6.dp))
+        // C14 章节跳转：输入「第几章」（1 起）直接切章。
+        // 千章大书拖滑块一格就是几十章，输入跳章更准；范围外的输入给 toast 不静默失败。
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = jumpInput,
+                // 只收数字：章节号没有负号 / 小数点，顺手挡掉软键盘上误触的符号
+                onValueChange = { jumpInput = it.filter { c -> c.isDigit() } },
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 48.dp),
+                singleLine = true,
+                placeholder = {
+                    Text(
+                        text = "跳到第几章（1-${chapters.size}）",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                },
+                textStyle = MaterialTheme.typography.bodyMedium,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = "跳转",
+                color = AccentColor,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier
+                    .clickable {
+                        val n = jumpInput.toIntOrNull()
+                        if (n != null && n in 1..chapters.size) {
+                            viewModel.switchChapter(n - 1) // 输入 1 起、列表下标 0 起
+                            viewModel.closeMenu()
+                            jumpInput = ""
+                        } else {
+                            viewModel.showToast("请输入 1-${chapters.size} 之间的章节号")
+                        }
+                    }
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+            )
+        }
+        Spacer(Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = "目录（${visible.size}/${chapters.size}章）",
@@ -747,6 +790,10 @@ private fun DirectoryPanel(
                     val ch = entry.value
                     val isCurrent = index == chapterPosition
                     val cached = ch.index in cachedIndices
+                    // C14 已读标记：进度只记「当前章」，无法知道跳过没读，
+                    // 故把当前章之前的章节视为已读（线性阅读下最贴近直觉）。
+                    // 用原始下标 index 比较，正序/倒序/搜索过滤后标记依然正确。
+                    val isRead = index < chapterPosition
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -757,9 +804,23 @@ private fun DirectoryPanel(
                             .padding(vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        if (isRead && !isCurrent) {
+                            // 勾选图标 + 淡色：扫一眼就知道哪些读过了，不抢当前章的高亮
+                            Icon(
+                                Icons.Filled.Check,
+                                contentDescription = "已读",
+                                tint = AccentColor.copy(alpha = 0.7f),
+                                modifier = Modifier.size(14.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                        }
                         Text(
                             text = ch.title,
-                            color = if (isCurrent) AccentColor else textColor,
+                            color = when {
+                                isCurrent -> AccentColor
+                                isRead -> textColor.copy(alpha = 0.5f)
+                                else -> textColor
+                            },
                             fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -984,6 +1045,29 @@ private fun SettingsPanel(
             style = MaterialTheme.typography.labelSmall,
         )
     }
+    if (tapZone == 0) {
+        // A8：三区左右边界可调（中间自动为剩余部分），范围 10%~60%
+        val leftRatio by viewModel.tapLeftRatio.collectAsState()
+        val rightRatio by viewModel.tapRightRatio.collectAsState()
+        SettingSlider(
+            label = "左区宽度",
+            value = leftRatio,
+            display = "${(leftRatio * 100).toInt()}%",
+            valueRange = 0.1f..0.6f,
+            textColor = textColor,
+            onChange = { viewModel.setTapLeftRatio(it) },
+        )
+        SettingSlider(
+            label = "右区宽度",
+            value = rightRatio,
+            display = "${(rightRatio * 100).toInt()}%",
+            valueRange = 0.1f..0.6f,
+            textColor = textColor,
+            onChange = { viewModel.setTapRightRatio(it) },
+        )
+    }
+    val pullBookmark by viewModel.pullBookmark.collectAsState()
+    SettingSwitch("顶部下拉加书签", pullBookmark, textColor) { viewModel.setPullBookmark(it) }
     SettingSwitch("自动翻页", autoPage, textColor) { viewModel.setAutoPage(it) }
     if (autoPage) {
         SettingSlider(

@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.WindowInsets
@@ -846,6 +848,8 @@ fun SourceManageScreen(
                                 onEdit = { viewModel.openEditSource(source) },
                                 onDelete = { viewModel.deleteSource(source) },
                                 onLogin = { loginTarget = source },
+                                // D18：打开该源的设置项编辑
+                                onSettings = { viewModel.openSourceSettings(source) },
                                 onAssignGroup = { assignIds = listOf(source.id) },
                                 onLongClick = {
                                     selectionMode = true
@@ -865,6 +869,19 @@ fun SourceManageScreen(
 
     // ===== 源规则编辑对话框 =====
     SourceEditDialog(viewModel = viewModel)
+
+    // ===== 源自定义设置项（D18）=====
+    val settingTarget = viewModel.settingTarget.collectAsState().value
+    val sourceSettings = viewModel.sourceSettings.collectAsState().value
+    if (settingTarget != null) {
+        VeneraSourceSettingDialog(
+            source = settingTarget,
+            settings = sourceSettings,
+            onSave = { name, value -> viewModel.saveSourceSetting(settingTarget, name, value) },
+            onDelete = { name -> viewModel.deleteSourceSetting(settingTarget, name) },
+            onDismiss = { viewModel.closeSourceSettings() },
+        )
+    }
 
     // ===== 错误诊断对话框（B12）=====
     if (showDiagnostics) {
@@ -895,6 +912,7 @@ fun SourceManageScreen(
                 viewModel.logout(target)
                 loginTarget = null
             },
+            onVerify = { viewModel.verifyLogin(target) },
             onDismiss = { loginTarget = null },
         )
     }
@@ -912,6 +930,8 @@ private fun VeneraLoginDialog(
     loggedIn: Boolean,
     onConfirm: (String, String) -> Unit,
     onLogout: () -> Unit,
+    /** D14：主动探活一次登录态（服务端会话可能已过期） */
+    onVerify: () -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     var account by remember { mutableStateOf("") }
@@ -972,6 +992,10 @@ private fun VeneraLoginDialog(
                 if (loggedIn) {
                     TextButton(
                         enabled = !loggingIn,
+                        onClick = onVerify,
+                    ) { Text("检测登录态") }
+                    TextButton(
+                        enabled = !loggingIn,
                         onClick = onLogout,
                     ) { Text("退出登录") }
                 }
@@ -980,6 +1004,100 @@ private fun VeneraLoginDialog(
                     onClick = onDismiss,
                 ) { Text("取消") }
             }
+        },
+    )
+}
+
+/**
+ * 源自定义设置项对话框（D18）。
+ *
+ * Venera 运行时没有 `setting` schema（`runtime.js` 也不枚举），所以这里不做「动态生成
+ * 表单」，而是直接编辑源 `loadSetting(name)` 读的那批键：
+ * `venera:setting:<源key>:<name>`。用户按源的文档 / 源码填名字即可，值原样传给源。
+ */
+@Composable
+private fun VeneraSourceSettingDialog(
+    source: SourceInfo,
+    settings: Map<String, String>,
+    onSave: (String, String) -> Unit,
+    onDelete: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    var value by remember { mutableStateOf("") }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("设置项 · ${source.name}") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+            ) {
+                Text(
+                    text = "设置名要与源 JS 里 loadSetting('名字') 一致；值按字符串写入，" +
+                        "源读取时会自动还原类型。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                if (settings.isEmpty()) {
+                    Text(
+                        text = "该源还没有自定义设置",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    settings.forEach { (key, raw) ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = key,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Text(
+                                    text = raw,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            TextButton(onClick = { onDelete(key) }) { Text("删除") }
+                        }
+                        HorizontalDivider()
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                androidx.compose.material3.OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("设置名") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                androidx.compose.material3.OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    label = { Text("值") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = name.isNotBlank(),
+                onClick = {
+                    onSave(name, value)
+                    name = ""
+                    value = ""
+                },
+            ) { Text("保存") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
         },
     )
 }
@@ -1612,6 +1730,8 @@ private fun SourceCard(
     loggingIn: Boolean = false,
     /** 点击「登录」按钮（仅 Venera 源） */
     onLogin: () -> Unit = {},
+    /** 点击「设置项」按钮（D18，仅 Venera 源） */
+    onSettings: () -> Unit = {},
     /** 点击分组标签：把这个源放进某个用户分组（v1.9.3.0） */
     onAssignGroup: () -> Unit = {},
     /** 手动排序模式（v1.5.8.0；v1.5.9.0 起为拖拽）：显示拖拽把手 */
@@ -1753,6 +1873,8 @@ private fun SourceCard(
                             }
                         )
                     }
+                    // D18：源自定义设置项（名字与源 JS 的 loadSetting('name') 对应）
+                    TextButton(onClick = onSettings) { Text("设置项") }
                 }
                 TextButton(onClick = onEdit) { Text("编辑") }
                 TextButton(onClick = onDelete) { Text("删除") }

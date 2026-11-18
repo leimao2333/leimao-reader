@@ -244,10 +244,88 @@ class VeneraEngine(private val context: Context) {
         prefs().edit().putString(prefKey, gson.toJson(value)).apply()
     }
 
+    // ===== 源自定义设置项（D18）=====
+
+    /**
+     * 源自己声明的 key。
+     *
+     * runtime.js 里 `loadSetting(name)` 读的是 `venera:setting:<this.key>:<name>`，
+     * 而 `this.key` 来自源 JS（`registerSource` 只在源没声明 key 时才回填 app 的 id）。
+     * 所以写设置时要同时照顾两个前缀，否则「源声明了 key」的场景写了也读不到。
+     */
+    private fun declaredKey(sourceKey: String): String? {
+        val code = sources[sourceKey] ?: return null
+        return DECLARED_KEY_PATTERN.find(code)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+    }
+
+    /** 该源设置项在 prefs 里的全部候选前缀（app sourceId + 源自声明 key） */
+    private fun settingPrefixes(sourceKey: String): List<String> =
+        listOfNotNull(sourceKey, declaredKey(sourceKey)).distinct()
+
+    /**
+     * 写入一个源设置项（D18）。
+     *
+     * 值按 `gson.toJson(value)` 存 —— 与运行时的 `saveSetting` 完全一致，
+     * 源的 `loadSetting` 会 `JSON.parse` 回来，所以字符串 / 数字都按字符串写即可。
+     */
+    fun setSetting(sourceKey: String, name: String, value: String) {
+        val json = gson.toJson(value)
+        prefs().edit().apply {
+            settingPrefixes(sourceKey).forEach { prefix ->
+                putString("venera:setting:$prefix:$name", json)
+            }
+        }.apply()
+    }
+
+    /** 读取设置项（优先 app sourceId 前缀，回落到源自声明 key） */
+    fun getSetting(sourceKey: String, name: String): String? {
+        settingPrefixes(sourceKey).forEach { prefix ->
+            prefs().getString("venera:setting:$prefix:$name", null)?.let { return it }
+        }
+        return null
+    }
+
+    /** 某源已保存的所有设置：name -> 原始 JSON 值（UI 列表用） */
+    fun listSettings(sourceKey: String): Map<String, String> {
+        val prefixes = settingPrefixes(sourceKey)
+        val result = LinkedHashMap<String, String>()
+        prefs().all.forEach { (key, raw) ->
+            if (!key.startsWith("venera:setting:")) return@forEach
+            val body = key.removePrefix("venera:setting:")
+            val prefix = prefixes.firstOrNull { body.startsWith("$it:") } ?: return@forEach
+            val name = body.removePrefix("$prefix:")
+            if (name.isNotBlank()) result[name] = raw as? String ?: ""
+        }
+        return result
+    }
+
+    /** 删除一个设置项（回到源声明的默认值） */
+    fun deleteSetting(sourceKey: String, name: String) {
+        prefs().edit().apply {
+            settingPrefixes(sourceKey).forEach { prefix ->
+                remove("venera:setting:$prefix:$name")
+            }
+        }.apply()
+    }
+
+    /** 删源时清掉它的设置项（避免换源后残留同名设置把新源带偏） */
+    private fun clearSettings(sourceKey: String) {
+        val prefixes = settingPrefixes(sourceKey)
+        prefs().edit().apply {
+            prefs().all.keys
+                .filter { key -> prefixes.any { key.startsWith("venera:setting:$it:") } }
+                .forEach { remove(it) }
+        }.apply()
+    }
+
     fun removeSource(key: String) {
         sources.remove(key)
         registered.remove(key)
+        runCatching { clearSettings(key) }
     }
+
+    private val DECLARED_KEY_PATTERN =
+        Regex("""\bkey\s*[:=]\s*["']([A-Za-z0-9_\-@.]{2,64})["']""")
 
     /**
      * 执行一个操作：op ∈ ping / search / info / chapters / content。
@@ -1051,12 +1129,45 @@ class VeneraEngine(private val context: Context) {
      * @return (是否支持登录, 是否已登录)——后者依赖源实现 checkLogin；未实现时回退本地标记
      */
     suspend fun accountInfo(sourceKey: String): Pair<Boolean, Boolean> {
-        val json = call(sourceKey, "accountInfo")
-        val obj = runCatching { JsonParser.parseString(json).asJsonObject }
-            .getOrElse { return Pair(false, isLoginMarked(sourceKey)) }
+        val status = accountStatus(sourceKey)
+        return Pair(status.supported, status.loggedIn)
+    }
+
+    /**
+     * 源账号能力 + 登录态（D14）。
+     *
+     * [remote] 表示 [loggedIn] 是源主动返回的（而不是本地标记兜底）—— 只有它才能
+     * 作为「会话是否被服务端作废」的判据，否则会在源未实现 checkLogin 时误清标记。
+     */
+    data class AccountStatus(
+        val supported: Boolean,
+        val loggedIn: Boolean,
+        val remote: Boolean,
+    )
+
+    /**
+     * 登录态探活（D14）：主动向源要一次真实登录态。
+     *
+     * 登出接口只是清本地 Cookie，服务端会话过期（换设备 / 被踢）时本地仍显示「已登录」，
+     * 直到下一次请求 401 才发现。这里在打开登录对话框时主动问一次，过期即提示重登。
+     */
+    suspend fun accountStatus(sourceKey: String): AccountStatus {
+        val json = runCatching { call(sourceKey, "accountInfo") }.getOrNull()
+        val obj = json?.let {
+            runCatching { JsonParser.parseString(it).asJsonObject }.getOrNull()
+        } ?: return AccountStatus(false, isLoginMarked(sourceKey), remote = false)
         val supported = obj.get("supported")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
-        val loggedInRemote = obj.get("loggedIn")?.takeIf { it.isJsonPrimitive }?.asBoolean
-        return Pair(supported, loggedInRemote ?: isLoginMarked(sourceKey))
+        val remoteLoggedIn = obj.get("loggedIn")?.takeIf { it.isJsonPrimitive }?.asBoolean
+        return AccountStatus(
+            supported = supported,
+            loggedIn = remoteLoggedIn ?: isLoginMarked(sourceKey),
+            remote = remoteLoggedIn != null,
+        )
+    }
+
+    /** 清除本地登录标记（D14：探活发现会话过期时调用） */
+    fun clearLoginMark(sourceKey: String) {
+        prefs().edit().remove(loginMarkKey(sourceKey)).apply()
     }
 
     /** 账号密码登录：成功后写本地登录标记（Cookie 由 saveFromResponse 自动持久化） */

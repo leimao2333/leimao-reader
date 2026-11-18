@@ -44,8 +44,14 @@ object SourceJsEngine {
      */
     private val ENGINE_LOCK = Any()
 
-    /** 看门狗默认预算 */
-    private const val DEFAULT_TIMEOUT_MS = 15_000L
+    /**
+     * 看门狗默认预算（也是全项目 JS 执行的统一超时值）。
+     *
+     * B3：暴露为 public 供调用方（JsSourceAdapter / JsSourceLoader / JsSourceParser）
+     * 复用，避免各处硬编码 15_000 导致口径漂移。项目里没有统一的偏好项存 JS 超时
+     * （PreferencesManager 由其它组维护，不在此改动），故沿用引擎既有的 15s 默认值。
+     */
+    const val DEFAULT_TIMEOUT_MS = 15_000L
 
     /**
      * 看门狗执行器：**单线程 + daemon**。

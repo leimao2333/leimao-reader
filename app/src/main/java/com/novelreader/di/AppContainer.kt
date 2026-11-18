@@ -161,6 +161,8 @@ class AppContainer(context: Context) {
             localBookStore,
             preferencesManager,
             database.chapterListCacheDao(),
+            // D20：本地漫画库（CBZ / 图片文件夹导入）
+            localComicStore,
         )
     }
 
@@ -240,6 +242,25 @@ class AppContainer(context: Context) {
     /** 本地 TXT 书库（v1.2.0.0 对标 legado 本地书） */
     val localBookStore: com.novelreader.core.local.LocalBookStore by lazy {
         com.novelreader.core.local.LocalBookStore(appContext)
+    }
+    /** 追更检查器（D30）：进程内定时比对书架章节数，有新章发汇总通知 */
+    val followUpdateChecker: com.novelreader.core.follow.FollowUpdateChecker by lazy {
+        com.novelreader.core.follow.FollowUpdateChecker(
+            appContext,
+            bookRepository,
+            contentRepository,
+            preferencesManager,
+        )
+    }
+
+    /** 本地漫画库（D20）：CBZ / 图片文件夹导入，目录布局与本地书同构 */
+    val localComicStore: com.novelreader.core.local.LocalComicStore by lazy {
+        com.novelreader.core.local.LocalComicStore(appContext)
+    }
+
+    /** 自定义封面（C8） */
+    val customCoverStore: com.novelreader.core.local.CustomCoverStore by lazy {
+        com.novelreader.core.local.CustomCoverStore(appContext)
     }
 
     /** 本地备份 / 恢复（v1.2.0.0 对标 legado 备份的本地版） */

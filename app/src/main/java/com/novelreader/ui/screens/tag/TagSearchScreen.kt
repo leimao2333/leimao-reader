@@ -364,6 +364,9 @@ fun TagSearchScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // 夜间模式跟随：本页是裸 Column（不是 Scaffold），不铺背景就会透出 window 的
+            // 白底 —— 全局夜间时这里仍是刺眼白底，浅色文字压白底也几乎看不见
+            .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding(),
     ) {
         // ===== 顶栏：返回 + 标题（显示当前 Type，让用户分辨小说/漫画/视频）=====
@@ -1797,6 +1800,7 @@ private fun TagPosterCard(
             text = item.title,
             style = MaterialTheme.typography.bodySmall,
             fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )

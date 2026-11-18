@@ -14,6 +14,12 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
+/** 读回持久化的选源时剔除已删除 / 停用的源（与小说搜索同一口径，便于离线单测）。 */
+internal fun restoredVideoSearchSourceIds(
+    remembered: Set<String>,
+    availableIds: Set<String>,
+): Set<String> = remembered intersect availableIds
+
 /**
  * 视频搜索 ViewModel。
  */
@@ -40,8 +46,26 @@ class VideoSearchViewModel(
         loadMoreJob?.cancel()
         resultsAcc.reset(emptyList())
         _loadingMore.value = false
+        // 用户已表态，后面到达的「读回记忆」协程不许再覆盖
+        sourcesRestored = true
         _selectedSourceIds.value = ids
+        // 下次进搜索页还原这次选择，而不是重置成全部源
+        viewModelScope.launch { preferencesManager.setVideoSearchSelectedSourceIds(ids) }
         if (_query.value.isNotBlank()) search()
+    }
+
+    /** 见 NovelSearchViewModel：源列表异步加载，加载完成前不许拿空列表覆盖记忆。 */
+    private var sourcesRestored = false
+
+    private suspend fun restoreSelectedSourcesIfNeeded() {
+        if (sourcesRestored) return
+        val available = _sources.value
+        if (available.isEmpty()) return
+        sourcesRestored = true
+        val remembered = runCatching { preferencesManager.videoSearchSelectedSourceIdsFlow.first() }
+            .getOrDefault(emptySet())
+        val restored = restoredVideoSearchSourceIds(remembered, available.map { it.id }.toSet())
+        if (restored.isNotEmpty()) _selectedSourceIds.value = restored
     }
 
     private val _query = MutableStateFlow("")
@@ -111,6 +135,8 @@ class VideoSearchViewModel(
                     ?.filter { it.enabled }
                     .orEmpty()
             }.getOrDefault(emptyList())
+            // 先有可用源再读回记忆取交集（顺序反了会用空列表把记忆清掉）
+            restoreSelectedSourcesIfNeeded()
         }
         // v1.9.3.0：源管理页改分组 / 启停后即时同步到「按源搜索」下拉
         viewModelScope.launch {
@@ -118,6 +144,7 @@ class VideoSearchViewModel(
                 sourceRepository?.observeSources()?.collect { list ->
                     val enabled = list.filter { it.type == SourceType.VIDEO && it.enabled }
                     if (enabled.isNotEmpty()) _sources.value = enabled
+                    restoreSelectedSourcesIfNeeded()
                 }
             }
         }

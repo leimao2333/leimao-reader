@@ -2,6 +2,7 @@ package com.novelreader.source.engine
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.novelreader.source.parser.LegadoRuleBridge
 
 /**
  * JSON 源规则解析器。
@@ -43,13 +44,17 @@ object JsonRuleParser {
         return Rule(
             url = url,
             method = str("method") ?: "GET",
-            list = str("list"),
-            fields = obj("fields")?.toStringMap() ?: emptyMap(),
-            text = str("text"),
-            images = str("images"),
-            videoUrl = str("videoUrl"),
+            // B2：在解析阶段把 `%%正则%%替换` 规范化为 legado 的 `##` 口径，
+            // 让自研 JSON 源也能用正则替换语法；无 `%%` 的规则原样返回，不回退。
+            list = str("list")?.let { LegadoRuleBridge.normalize(it) },
+            fields = obj("fields")?.toStringMap()
+                ?.mapValues { (_, v) -> LegadoRuleBridge.normalize(v) ?: v }
+                ?: emptyMap(),
+            text = str("text")?.let { LegadoRuleBridge.normalize(it) },
+            images = str("images")?.let { LegadoRuleBridge.normalize(it) },
+            videoUrl = str("videoUrl")?.let { LegadoRuleBridge.normalize(it) },
             headers = obj("headers")?.toStringMap() ?: emptyMap(),
-            remove = arr("remove")?.map { it.asString } ?: emptyList(),
+            remove = arr("remove")?.map { LegadoRuleBridge.normalize(it.asString) ?: "" } ?: emptyList(),
         )
     }
 

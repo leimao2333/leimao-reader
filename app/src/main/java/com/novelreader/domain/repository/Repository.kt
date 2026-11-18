@@ -216,6 +216,25 @@ interface ContentRepository {
     suspend fun content(chapter: ChapterItem): ContentResult
 
     /**
+     * 章节预览样张（D15/D21/D23）。
+     *
+     * 默认实现用 [content] 取本章前 [limit] 张图 —— 漫画正文的解析结果本就是
+     * 图片地址列表，预览不必另开一条通道；有独立缩略图接口的源可在实现类覆盖。
+     */
+    suspend fun previewImages(chapter: ChapterItem, limit: Int = 6): List<String> {
+        val result = runCatching { content(chapter) }.getOrNull() ?: return emptyList()
+        return result.comicImages.orEmpty().filter { it.isNotBlank() }.take(limit)
+    }
+
+    /**
+     * 章节评论（D8 / D33）。
+     *
+     * 默认空列表 —— 评论是可选能力，源不支持时 UI 走统一空态，不应该当成错误。
+     */
+    suspend fun comments(chapter: ChapterItem): List<com.novelreader.domain.model.WorkComment> =
+        emptyList()
+
+    /**
      * 图片加载失败后的**备用地址**（v1.7.1.0）。
      *
      * Venera 源可用 `onImageLoad → onLoadFailed` 声明多镜像回退（禁漫天堂内置 5 个

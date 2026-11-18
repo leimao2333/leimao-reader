@@ -108,6 +108,8 @@ fun BookShelfScreen(
     val companionGroups by viewModel.companionGroups.collectAsState()
     val companionGroupOf by viewModel.companionGroupOf.collectAsState()
     val selectedCompanion by viewModel.selectedCompanion.collectAsState()
+    // C9 冲突检测
+    val conflicts by viewModel.conflicts.collectAsState()
 
     // 排序：0=最近阅读（默认），1=标题，2=作者，3=类型，4=加入时间
     var sortMode by rememberSaveable { mutableIntStateOf(0) }
@@ -146,6 +148,69 @@ fun BookShelfScreen(
             viewModel.importLocalBook(uri, displayName)
         }
     }
+
+    // ===== 本地漫画导入（D20）：CBZ 压缩包 / 图片文件夹 =====
+    var comicImportMenu by remember { mutableStateOf(false) }
+    val cbzPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            val displayName = runCatching {
+                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx) else null
+                }
+            }.getOrNull() ?: uri.lastPathSegment
+            viewModel.importLocalComic(uri, displayName)
+        }
+    }
+    val comicFolderPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) {
+            // 目录树取不到 DISPLAY_NAME，用 docId 末段兜底；失败时 Store 会生成默认名
+            val name = runCatching { android.provider.DocumentsContract.getTreeDocumentId(uri) }
+                .getOrNull()?.substringAfterLast(':')?.substringAfterLast('/')
+            viewModel.importLocalComicFolder(uri, name?.takeIf { it.isNotBlank() })
+        }
+    }
+
+    // 导入方式选择（D20）
+    if (comicImportMenu) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { comicImportMenu = false },
+            title = { Text("导入本地漫画") },
+            text = {
+                Text(
+                    "CBZ 压缩包会作为一话导入；图片文件夹会把顶层子目录各作为一话。" +
+                        "文件会复制到应用私有目录，源文件删掉也能继续看。",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    comicImportMenu = false
+                    cbzPicker.launch(
+                        arrayOf(
+                            "application/vnd.comicbook+zip",
+                            "application/zip",
+                            "application/octet-stream",
+                            "*/*",
+                        ),
+                    )
+                }) { Text("选 CBZ") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        comicImportMenu = false
+                        comicFolderPicker.launch(null)
+                    }) { Text("选文件夹") }
+                    TextButton(onClick = { comicImportMenu = false }) { Text("取消") }
+                }
+            },
+        )
+    }
+
     // 多选
     var selecting by remember { mutableStateOf(false) }
     var selectedKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -277,6 +342,18 @@ fun BookShelfScreen(
                         }
                     },
                     actions = {
+                        // C9：冲突检测 / 去重入口
+                        TextButton(
+                            onClick = {
+                                val n = viewModel.detectConflicts()
+                                if (n == 0) {
+                                    scope.launch { snackbarHostState.showSnackbar("未发现重复书籍") }
+                                }
+                            },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                        ) {
+                            Text("去重", style = MaterialTheme.typography.labelMedium)
+                        }
                         TextButton(
                             onClick = {
                                 txtPicker.launch(arrayOf("text/plain", "text/*", "application/octet-stream"))
@@ -284,6 +361,13 @@ fun BookShelfScreen(
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                         ) {
                             Text("加载本地资源", style = MaterialTheme.typography.labelMedium)
+                        }
+                        // D20：本地漫画（CBZ / 图片文件夹）
+                        TextButton(
+                            onClick = { comicImportMenu = true },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                        ) {
+                            Text("本地漫画", style = MaterialTheme.typography.labelMedium)
                         }
                         Box {
                             IconButton(onClick = { layoutMenuOpen = true }) {
@@ -634,6 +718,15 @@ fun BookShelfScreen(
             dismissButton = {
                 TextButton(onClick = { moveGroupOpen = false }) { Text("取消") }
             },
+        )
+    }
+
+    // C9：冲突检测结果（每组选一条保留，删掉其余）
+    if (conflicts.isNotEmpty()) {
+        ConflictDetectDialog(
+            groups = conflicts,
+            onDismiss = { viewModel.clearConflicts() },
+            onKeep = { group, keepKey -> viewModel.keepOnlyInGroup(group, keepKey) },
         )
     }
 }

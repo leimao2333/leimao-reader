@@ -16,6 +16,19 @@ class JsonSourceParser : SourceParser {
 
     override fun createAdapter(info: SourceInfo, rawContent: String): SourceAdapter {
         val ruleSet = JsonRuleParser.parse(rawContent)
-        return JsonSourceAdapter(info, ruleSet)
+        // B2：规则含 legado 高级语法（多级 @ 链 / ## / {{}} / || / @js: / java.* 等）时，
+        // 改走桥接 adapter 复用 legado 引擎能力；纯简单规则仍用原适配器，行为不回退。
+        val advanced = listOf(
+            ruleSet.search, ruleSet.detail, ruleSet.chapterList, ruleSet.content,
+        ).any { rule ->
+            rule != null && LegadoRuleBridge.hasAdvancedSyntax(
+                listOf(rule.list, rule.text, rule.images, rule.videoUrl) + rule.fields.values,
+            )
+        }
+        return if (advanced) {
+            LegadoBridgeJsonAdapter(info, ruleSet)
+        } else {
+            JsonSourceAdapter(info, ruleSet)
+        }
     }
 }

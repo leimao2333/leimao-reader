@@ -9,6 +9,11 @@ import java.io.File
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.domain.repository.ProgressRepository
 import com.novelreader.domain.repository.BookRepository
+import com.novelreader.domain.repository.BookmarkRepository
+import com.novelreader.domain.repository.Bookmark
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,11 +32,37 @@ class ComicReaderViewModel(
     private val preferences: PreferencesManager,
     private val downloadManager: com.novelreader.core.download.DownloadManager? = null,
     private val bookRepository: BookRepository? = null,
+    private val bookmarkRepository: BookmarkRepository? = null,
 ) : ViewModel() {
 
     /** 当前漫画是否已在书架（初始 false，须等 [shelfStateReady] 为 true 才可信） */
     private val _collected = MutableStateFlow(false)
     val collected: StateFlow<Boolean> = _collected.asStateFlow()
+
+    // ===== 章节评论（D8）=====
+
+    /** 当前话的评论（源不提供时为空列表） */
+    private val _comments = MutableStateFlow<List<com.novelreader.domain.model.WorkComment>>(emptyList())
+    val comments: StateFlow<List<com.novelreader.domain.model.WorkComment>> = _comments.asStateFlow()
+
+    private val _commentsLoading = MutableStateFlow(false)
+    val commentsLoading: StateFlow<Boolean> = _commentsLoading.asStateFlow()
+
+    /**
+     * 拉当前话评论（D8 章末评论）。
+     *
+     * 只在用户主动点开时请求：评论接口对多数源不存在，预取等于白跑一次网络。
+     */
+    fun loadComments() {
+        val chapter = currentChapter ?: return
+        if (_commentsLoading.value) return
+        _commentsLoading.value = true
+        viewModelScope.launch {
+            _comments.value = runCatching { contentRepository.comments(chapter) }
+                .getOrDefault(emptyList())
+            _commentsLoading.value = false
+        }
+    }
 
     /** 收藏状态是否已加载完成（防止初始 false 误弹「加入书架」） */
     private val _shelfStateReady = MutableStateFlow(false)
@@ -95,7 +126,7 @@ class ComicReaderViewModel(
     private val _hasNextChapter = MutableStateFlow(false)
     val hasNextChapter: StateFlow<Boolean> = _hasNextChapter.asStateFlow()
 
-    /** 翻页方式：0=上下滚动，1=左右翻页 */
+    /** 阅读模式（D1）：0=连续上下 1=画廊左→右 2=画廊右→左 3=连续左→右 4=连续右→左 5=画廊上→下 */
     val pageMode: StateFlow<Int> = preferences.comicPageModeFlow
         .let { flow ->
             val state = MutableStateFlow(0)
@@ -103,10 +134,95 @@ class ComicReaderViewModel(
             state
         }
 
+    /** 把一个偏好 Flow 桥接成 StateFlow（新增外观设置的统一入口） */
+    private fun <T> prefState(
+        flow: kotlinx.coroutines.flow.Flow<T>,
+        initial: T,
+    ): StateFlow<T> {
+        val state = MutableStateFlow(initial)
+        viewModelScope.launch { flow.collectLatest { state.value = it } }
+        return state
+    }
+
+    /** 每屏图片数（D7）：0=自适应（横屏并排）/ 1=单页 / 2=双页 */
+    val pagesPerScreen: StateFlow<Int> = prefState(preferences.comicPagesPerScreenFlow, 0)
+
+    fun setPagesPerScreen(value: Int) {
+        viewModelScope.launch { preferences.setComicPagesPerScreen(value) }
+    }
+
+    /** 阅读背景（D9）：0=纯黑 / 1=深灰 / 2=纯白 */
+    val readerBg: StateFlow<Int> = prefState(preferences.comicReaderBgFlow, 0)
+
+    fun setReaderBg(value: Int) {
+        viewModelScope.launch { preferences.setComicReaderBg(value) }
+    }
+
+    /** 图片间距（dp，D9） */
+    val pageGap: StateFlow<Int> = prefState(preferences.comicPageGapFlow, 0)
+
+    fun setPageGap(value: Int) {
+        viewModelScope.launch { preferences.setComicPageGap(value) }
+    }
+
+    /** 图片适配方式（D9）：0=适应宽度 / 1=适应屏幕 / 2=裁剪填满 */
+    val imageScale: StateFlow<Int> = prefState(preferences.comicImageScaleFlow, 0)
+
+    fun setImageScale(value: Int) {
+        viewModelScope.launch { preferences.setComicImageScale(value) }
+    }
+
+    /** 常驻亮度（D9）：0=跟随系统，否则是黑色遮罩的不透明度 */
+    val readerBrightness: StateFlow<Float> = prefState(preferences.comicBrightnessFlow, 0f)
+
+    fun setReaderBrightness(value: Float) {
+        viewModelScope.launch { preferences.setComicBrightness(value) }
+    }
+
+    /** 阅读页页码开关（D11） */
+    val showPageNumber: StateFlow<Boolean> = prefState(preferences.comicShowPageNumberFlow, true)
+
+    fun setShowPageNumber(value: Boolean) {
+        viewModelScope.launch { preferences.setComicShowPageNumber(value) }
+    }
+
+    /** 阅读页时钟 / 电量开关（D11） */
+    val showClock: StateFlow<Boolean> = prefState(preferences.comicShowClockFlow, false)
+
+    fun setShowClock(value: Boolean) {
+        viewModelScope.launch { preferences.setComicShowClock(value) }
+    }
+
+    /** 阅读页系统状态栏开关（D11） */
+    val showSystemBar: StateFlow<Boolean> = prefState(preferences.comicShowSystemBarFlow, false)
+
+    fun setShowSystemBar(value: Boolean) {
+        viewModelScope.launch { preferences.setComicShowSystemBar(value) }
+    }
+
+    /** 目录抽屉跳章（D4）：按目录列表下标切换 */
+    fun jumpToChapter(listIndex: Int) {
+        val target = _chapters.value.getOrNull(listIndex) ?: return
+        if (target.url == currentChapter?.url) return
+        loadContent(target)
+    }
+
     /** 预加载张数（1~8，默认 4；C5） */
     val preloadCount: StateFlow<Int> = preferences.comicPreloadCountFlow
         .let { flow ->
             val state = MutableStateFlow(com.novelreader.core.preferences.PreferencesManager.DEFAULT_COMIC_PRELOAD_COUNT)
+            viewModelScope.launch { flow.collectLatest { state.value = it } }
+            state
+        }
+
+    /**
+     * 按屏幕数预加载（D10）：0 = 关闭（用 [preloadCount] 的张数），1~4 = 提前 N 屏。
+     *
+     * 换算成张数在阅读器里做（要用当屏实际可见张数），VM 只负责透传设置值。
+     */
+    val preloadScreens: StateFlow<Int> = preferences.comicPreloadScreensFlow
+        .let { flow ->
+            val state = MutableStateFlow(0)
             viewModelScope.launch { flow.collectLatest { state.value = it } }
             state
         }
@@ -168,14 +284,49 @@ class ComicReaderViewModel(
     private val _currentPage = MutableStateFlow(0)
     val currentPage: StateFlow<Int> = _currentPage.asStateFlow()
 
+    /**
+     * 首次进入章节时要恢复到的页下标（D2 页内进度持久化）。
+     *
+     * 一次性初值：只在 `init` 恢复时可能 >0，换章时归 0。滚动模式由阅读页据此
+     * `scrollToItem`，翻页模式由 `currentPage` 驱动 pager 初始页。
+     */
+    private val _initialPage = MutableStateFlow(0)
+    val initialPage: StateFlow<Int> = _initialPage.asStateFlow()
+
+    /** 上次已保存的页下标，避免每次翻页都写库（去抖） */
+    private var lastSavedPage = 0
+
+    /** 当前章书签列表（D3） */
+    private val _bookmarks = MutableStateFlow<List<Bookmark>>(emptyList())
+    val bookmarks: StateFlow<List<Bookmark>> = _bookmarks.asStateFlow()
+
+    /** 当前页是否已打书签（驱动顶栏图标 实心/空心） */
+    private val _currentPageBookmarked = MutableStateFlow(false)
+    val currentPageBookmarked: StateFlow<Boolean> = _currentPageBookmarked.asStateFlow()
+
+    /** 跳页请求 (token, page)：滚动模式据此定位（翻页模式由 currentPage 驱动） */
+    private val _scrollRequest = MutableStateFlow<Pair<Int, Int>?>(null)
+    val scrollRequest: StateFlow<Pair<Int, Int>?> = _scrollRequest.asStateFlow()
+
     fun init(item: MediaItem, chapters: List<ChapterItem>, chapter: ChapterItem) {
         currentItem = item
         _chapters.value = chapters
         currentChapter = chapter
         _chapterTitle.value = chapter.title
         syncPosition()
-        loadContent(chapter)
         viewModelScope.launch {
+            // D2：先读进度再加载，命中同一章则恢复到上次页（不再每次从第 0 页开始）
+            val saved = runCatching { progressRepository.getProgress(item.sourceId, item.id) }.getOrNull()
+            val restore = if (saved != null && saved.chapterUrl == chapter.url) {
+                saved.pageIndex.coerceAtLeast(0)
+            } else {
+                0
+            }
+            _initialPage.value = restore
+            _currentPage.value = restore
+            lastSavedPage = restore
+            loadContent(chapter, resetPage = false)
+            // 书架状态
             runCatching { bookRepository?.isCollected(item) == true }
                 .onSuccess { _collected.value = it; _shelfStateReady.value = true }
                 .onFailure { _shelfStateReady.value = true }
@@ -310,11 +461,16 @@ class ComicReaderViewModel(
         )
     }
 
-    fun loadContent(chapter: ChapterItem) {
+    fun loadContent(chapter: ChapterItem, resetPage: Boolean = true) {
         currentChapter = chapter
         lastChapter = chapter
         _chapterTitle.value = chapter.title
-        _currentPage.value = 0
+        // D2：换章才归零；init 恢复同一章时 resetPage=false，保留已恢复的页
+        if (resetPage) {
+            _currentPage.value = 0
+            _initialPage.value = 0
+            lastSavedPage = 0
+        }
         _images.value = emptyList()
         _imageScripts.value = emptyMap()
         // 换章后重置图片回退记录，避免同一地址在别的话里被误判为「已回退过」
@@ -323,6 +479,7 @@ class ComicReaderViewModel(
         refreshCount = 0
         lastRefreshAt = 0L
         syncPosition()
+        refreshBookmarks()
         viewModelScope.launch {
             _loading.value = true
             _error.value = null
@@ -405,9 +562,9 @@ class ComicReaderViewModel(
         }
     }
 
-    /** 失败重试：重新加载当前章节 */
+    /** 失败重试：重新加载当前章节（保留当前页，避免重试后跳回开头） */
     fun retry() {
-        lastChapter?.let { loadContent(it) }
+        lastChapter?.let { loadContent(it, resetPage = false) }
     }
 
     /** 切换翻页方式 */
@@ -434,11 +591,97 @@ class ComicReaderViewModel(
         }
     }
 
-    /** 跳转到指定页 */
+    /** 跳转到指定页（翻页后按需持久化页内进度，D2） */
     fun goToPage(index: Int) {
         if (index in _images.value.indices) {
             _currentPage.value = index
+            recomputeBookmarked()
+            if (index != lastSavedPage) {
+                lastSavedPage = index
+                saveProgress()
+            }
         }
+    }
+
+    /** 跳页（书签/外部定位）：翻页模式由 currentPage 驱动，滚动模式走 scrollRequest（D3） */
+    fun jumpToPage(page: Int) {
+        if (page in _images.value.indices) {
+            _currentPage.value = page
+            _scrollRequest.value = ((_scrollRequest.value?.first ?: 0) + 1) to page
+            recomputeBookmarked()
+            if (page != lastSavedPage) {
+                lastSavedPage = page
+                saveProgress()
+            }
+        }
+    }
+
+    private fun recomputeBookmarked() {
+        _currentPageBookmarked.value = _bookmarks.value.any { it.textPosition == _currentPage.value }
+    }
+
+    /** 刷新当前章书签列表（D3） */
+    fun refreshBookmarks() {
+        val repo = bookmarkRepository ?: return
+        val item = currentItem ?: return
+        val chapter = currentChapter ?: return
+        viewModelScope.launch {
+            val list = runCatching { repo.listForChapter(item.sourceId, item.id, chapter.url) }
+                .getOrDefault(emptyList())
+            _bookmarks.value = list.sortedBy { it.textPosition }
+            recomputeBookmarked()
+        }
+    }
+
+    /** 当前页打书签 / 取消书签（D3） */
+    fun toggleBookmark() {
+        val repo = bookmarkRepository ?: return
+        val item = currentItem ?: return
+        val chapter = currentChapter ?: return
+        val page = _currentPage.value
+        viewModelScope.launch {
+            runCatching {
+                val exists = repo.exists(item.sourceId, item.id, chapter.url, page)
+                if (exists) {
+                    repo.removeAt(item.sourceId, item.id, chapter.url, page)
+                } else {
+                    repo.add(
+                        item = item,
+                        chapterIndex = chapter.index,
+                        chapterUrl = chapter.url,
+                        chapterTitle = chapter.title,
+                        textPosition = page,
+                        snippet = "第 ${page + 1} 页",
+                    )
+                }
+            }
+            refreshBookmarks()
+        }
+    }
+
+    /** 删除书签（D3） */
+    fun removeBookmark(id: Long) {
+        val repo = bookmarkRepository ?: return
+        viewModelScope.launch {
+            runCatching { repo.removeById(id) }
+            refreshBookmarks()
+        }
+    }
+
+    /** 跳到书签（同章跳页；跨章切话后定位到对应页，D3） */
+    fun jumpToBookmark(bm: Bookmark) {
+        val target = _chapters.value.firstOrNull {
+            it.url == bm.chapterUrl || it.index == bm.chapterIndex
+        } ?: return
+        if (target.url != currentChapter?.url) {
+            _initialPage.value = bm.textPosition
+            _currentPage.value = bm.textPosition
+            lastSavedPage = bm.textPosition
+            loadContent(target, resetPage = false)
+        } else {
+            jumpToPage(bm.textPosition)
+        }
+        refreshBookmarks()
     }
 
     /** 当前章节在列表中的位置（防御式：同一性 → 双重匹配 → url → index） */
@@ -481,10 +724,20 @@ class ComicReaderViewModel(
         return false
     }
 
-    private fun saveProgress() {
+    /**
+     * 退出阅读页时的最后一笔进度写入（D2）。
+     *
+     * 不能复用 [viewModelScope]：`onDispose` 之后 ViewModel 随即被 clear，作用域取消会把
+     * 正在进行的写入掐掉，于是「滚到第 20 页直接返回」这次的位置就丢了。
+     * 写入是一次性短任务，跑完自行回收（与 VideoPlayerViewModel 的处理一致）。
+     */
+    private val finalSaveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private fun saveProgress(detached: Boolean = false) {
         val item = currentItem ?: return
         val chapter = currentChapter ?: return
-        viewModelScope.launch {
+        val scope = if (detached) finalSaveScope else viewModelScope
+        scope.launch {
             progressRepository.saveProgress(
                 sourceId = item.sourceId,
                 itemId = item.id,
@@ -495,9 +748,16 @@ class ComicReaderViewModel(
                 itemTitle = item.title,
                 itemCover = item.cover,
                 itemAuthor = item.author,
+                // D2：记录页内位置，重进同一章可回到上次那一页
+                pageIndex = _currentPage.value,
                 totalChapter = _chapters.value.size,
             )
         }
+    }
+
+    /** 离开阅读页时调用：立即把当前页写进进度（脱离 viewModelScope 以免被取消） */
+    fun saveCurrentProgress() {
+        saveProgress(detached = true)
     }
 
     private companion object {

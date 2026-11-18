@@ -336,6 +336,77 @@ class SourceManageViewModel(
         }
     }
 
+    /**
+     * 登录态探活（D14）：主动问一次源。
+     *
+     * 服务端会话被作废（换设备 / 被踢 / Cookie 过期）时本地仍显示「已登录」，
+     * 直到下次请求失败才发现。这里提前探活并清掉过期标记。
+     */
+    fun verifyLogin(source: SourceInfo) {
+        if (veneraEngine == null) return
+        viewModelScope.launch {
+            try {
+                val status = veneraEngine.accountStatus(source.id)
+                when {
+                    !status.supported -> _message.value = "「${source.name}」这个源不需要登录"
+                    status.remote && !status.loggedIn -> {
+                        veneraEngine.clearLoginMark(source.id)
+                        refreshLoginStates()
+                        _message.value = "「${source.name}」登录已过期，请重新登录"
+                    }
+                    status.loggedIn -> _message.value = "「${source.name}」登录态有效"
+                    else -> _message.value = "「${source.name}」尚未登录"
+                }
+            } catch (e: Exception) {
+                _message.value = "检测失败：${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+    }
+
+    // ===== 源自定义设置项（D18）=====
+
+    /** 正在编辑设置项的源（非空 = 弹设置对话框） */
+    private val _settingTarget = MutableStateFlow<SourceInfo?>(null)
+    val settingTarget: StateFlow<SourceInfo?> = _settingTarget.asStateFlow()
+
+    /** 当前源已保存的设置：name -> 原始 JSON 值 */
+    private val _sourceSettings = MutableStateFlow<Map<String, String>>(emptyMap())
+    val sourceSettings: StateFlow<Map<String, String>> = _sourceSettings.asStateFlow()
+
+    fun openSourceSettings(source: SourceInfo) {
+        _settingTarget.value = source
+        _sourceSettings.value = runCatching { veneraEngine?.listSettings(source.id) }
+            .getOrNull().orEmpty()
+    }
+
+    fun closeSourceSettings() {
+        _settingTarget.value = null
+    }
+
+    /**
+     * 写入一项源设置（D18）。
+     *
+     * 名字要与源 JS 里 `loadSetting('name')` 完全一致；值按字符串存，
+     * engine 会 `JSON.stringify` 成源认识的格式（数字 / 布尔源自己会 parse）。
+     */
+    fun saveSourceSetting(source: SourceInfo, name: String, value: String) {
+        val engine = veneraEngine ?: run {
+            _message.value = "该源不支持设置项"
+            return
+        }
+        val key = name.trim()
+        if (key.isBlank()) return
+        engine.setSetting(source.id, key, value)
+        _sourceSettings.value = runCatching { engine.listSettings(source.id) }.getOrDefault(emptyMap())
+        _message.value = "已保存设置「$key」"
+    }
+
+    fun deleteSourceSetting(source: SourceInfo, name: String) {
+        val engine = veneraEngine ?: return
+        engine.deleteSetting(source.id, name)
+        _sourceSettings.value = runCatching { engine.listSettings(source.id) }.getOrDefault(emptyMap())
+    }
+
     /** 退出登录：调用源的 account.logout 并清 Cookie / 本地标记 */
     fun logout(source: SourceInfo) {
         viewModelScope.launch {
@@ -709,17 +780,20 @@ class SourceManageViewModel(
      * @param packUrl 清单自身 URL（子包相对路径按它的目录解析）
      */
     private suspend fun importPack(packUrl: String, manifest: SourcePack.Manifest) {
-        val total = manifest.files.size.coerceAtLeast(1)
+        // B10：普通子包 + 每个分片逻辑源各算一个下载项（一个逻辑源只导入一个健康分片）
+        val total = (manifest.files.size + manifest.shards.size).coerceAtLeast(1)
         val files = mutableListOf<PackFile>()
         val failedPacks = mutableListOf<String>()
+        var done = 0
 
-        manifest.files.forEachIndexed { i, rel ->
-            _message.value = "正在下载源包 ${i + 1}/$total：$rel"
-            _downloadProgress.value = i.toFloat() / total
+        manifest.files.forEach { rel ->
+            _message.value = "正在下载源包 ${done + 1}/$total：$rel"
+            _downloadProgress.value = done.toFloat() / total
+            done++
             val fileUrl = SourcePack.resolveUrl(packUrl, rel)
             if (fileUrl == null) {
                 failedPacks += "$rel（地址无法解析）"
-                return@forEachIndexed
+                return@forEach
             }
             runCatching {
                 withContext(Dispatchers.IO) {
@@ -727,6 +801,36 @@ class SourceManageViewModel(
                 }
             }.onSuccess { files += PackFile(rel, fileUrl, it) }
                 .onFailure { failedPacks += "$rel（${it.message ?: "下载失败"}）" }
+        }
+
+        // 分片源（v2）：按优先级 / 健康度（SourcePack.orderedShards）依次尝试，
+        // 取第一个下载成功的物理分片作为该逻辑源的实现；主分片失败自动回退下一个。
+        // 同一个逻辑源只落一个分片，避免把互为备份的多个分片导成重复源。
+        manifest.shards.forEach { group ->
+            val label = group.name.ifBlank { group.logicalId }
+            _message.value = "正在下载源包 ${done + 1}/$total：$label"
+            _downloadProgress.value = done.toFloat() / total
+            done++
+            val ordered = SourcePack.orderedShards(group)
+            if (ordered.isEmpty()) {
+                failedPacks += "$label（无健康分片）"
+                return@forEach
+            }
+            var picked: PackFile? = null
+            for (shard in ordered) {
+                val fileUrl = SourcePack.resolveUrl(packUrl, shard.file) ?: continue
+                val content = runCatching {
+                    withContext(Dispatchers.IO) {
+                        com.novelreader.core.network.HttpClient.get(fileUrl, timeoutMs = PACK_FILE_TIMEOUT_MS)
+                    }
+                }.getOrNull()
+                if (content != null) {
+                    picked = PackFile(shard.file, fileUrl, content)
+                    break
+                }
+            }
+            if (picked != null) files += picked
+            else failedPacks += "$label（全部分片下载失败）"
         }
         _downloadProgress.value = 1f
 
@@ -768,7 +872,8 @@ class SourceManageViewModel(
         _importCandidates.value = candidates
         _message.value = buildString {
             append("聚合包「${manifest.name.ifBlank { "未命名" }}」")
-            append("共 ${candidates.size} 个源（${manifest.files.size} 个源包），请勾选要添加的")
+            val packCount = manifest.files.size + manifest.shards.size
+            append("共 ${candidates.size} 个源（$packCount 个源包${if (manifest.shards.isNotEmpty()) "，含 ${manifest.shards.size} 组分片" else ""}），请勾选要添加的")
             if (batch.skippedEntries > 0) {
                 append("；另有 ${batch.skippedEntries} 个条目解析失败已跳过")
             }

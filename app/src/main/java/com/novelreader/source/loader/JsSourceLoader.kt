@@ -19,10 +19,12 @@ class JsSourceLoader : SourceLoader {
     override fun load(rawContent: String, fileName: String?): SourceInfo {
         val scope = SourceJsEngine.createScope()
         SourceJsBridge.inject(scope)
-        SourceJsEngine.evaluate(scope, rawContent)
+        // B3：脚本求值与 getMeta 都走带超时接口，恶意/死循环源不会卡住导入线程。
+        // 超时值复用引擎公开常量，避免与看门狗预算漂移。
+        SourceJsEngine.evaluateWithTimeout(scope, rawContent)
 
         // 调用 getMeta() 获取元信息
-        val metaResult = SourceJsEngine.callFunction(scope, "getMeta")
+        val metaResult = SourceJsEngine.callFunctionWithTimeout(scope, "getMeta")
         val meta = metaResult as? Map<*, *>
             ?: throw IllegalArgumentException("getMeta() 返回格式错误")
 

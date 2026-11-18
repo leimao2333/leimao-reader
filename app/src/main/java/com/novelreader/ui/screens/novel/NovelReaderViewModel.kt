@@ -3,6 +3,9 @@ package com.novelreader.ui.screens.novel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novelreader.core.preferences.PreferencesManager
+import com.novelreader.core.reader.ReaderImageParser
+import com.novelreader.core.reader.ReaderSentenceCursor
+import com.novelreader.core.util.ChangeSourceDeduper
 import com.novelreader.core.text.ReplaceRule
 import com.novelreader.core.text.TextCleaner
 import com.novelreader.core.text.TextReplaceRules
@@ -62,10 +65,20 @@ class NovelReaderViewModel(
     private val _speechPaused = MutableStateFlow(false)
     val speechPaused: StateFlow<Boolean> = _speechPaused.asStateFlow()
 
-    /** 分段朗读：把本章拆成段落，一段一段播，才能做到真暂停 / 继续 */
+    /** 分段朗读：把本章拆成句子，一句一句播，才能做到真暂停 / 继续 */
     private var speechSegments: List<String> = emptyList()
     private var speechIndex = 0
     private var speechChaining = false
+
+    /**
+     * 当前正在朗读的句子下标（A12 逐句跟随高亮）。
+     *
+     * 与 [speechSegments] 一一对应，即「当前章去掉图片段后、按句切分」的下标；
+     * -1 表示当前没有在朗读（停止 / 暂停 / 离线整章模式）。
+     * 阅读页据此算出当前句文本，在正文里高亮。
+     */
+    private val _currentSentenceIndex = MutableStateFlow(-1)
+    val currentSentenceIndex: StateFlow<Int> = _currentSentenceIndex.asStateFlow()
 
     init {
         // 系统 TTS 每读完一段就推进；暂停中不推进，继续时从**当前段**重新播，
@@ -78,14 +91,16 @@ class NovelReaderViewModel(
         }
     }
 
-    /** 播当前段；越界即结束 */
+    /** 播当前句；越界即结束 */
     private fun speakSegment() {
         val controller = ttsController ?: return
         if (speechIndex !in speechSegments.indices) {
             speechChaining = false
             _speechPaused.value = false
+            _currentSentenceIndex.value = -1
             return
         }
+        _currentSentenceIndex.value = speechIndex
         controller.speak(speechSegments[speechIndex])
     }
 
@@ -102,18 +117,23 @@ class NovelReaderViewModel(
             return
         }
         _speechPaused.value = false
+        // 朗读正文前先剔除图片段落：`![alt](url)` / 裸 URL 念出来是噪音。
+        // 与阅读页分页用的是同一份「纯文本」，保证句下标在两端对齐。
+        val speakable = ReaderImageParser.strip(text)
         if (controller.willUseOffline) {
             // 离线引擎内部按句切分、整段排队播放，没有单段回调：
             // 只能整章一次下发，暂停即停止、继续会重播本章（面板上有说明）
             speechChaining = false
             speechSegments = emptyList()
             speechIndex = 0
-            controller.speak(text)
+            _currentSentenceIndex.value = -1
+            controller.speak(speakable)
             showToast("开始朗读本章")
             return
         }
-        // 系统引擎：按段落分段播，靠 onUtteranceDone 续播，从而支持暂停/继续
-        speechSegments = text.split("\n").map { it.trim() }.filter { it.isNotBlank() }
+        // 系统引擎：按句分段播，靠 onUtteranceDone 续播，从而支持暂停/继续；
+        // 段下标即句下标，阅读页据此做逐句跟随高亮。
+        speechSegments = ReaderSentenceCursor.sentences(speakable)
         speechIndex = 0
         speechChaining = true
         speakSegment()
@@ -131,6 +151,7 @@ class NovelReaderViewModel(
         if (!speaking.value) return
         _speechPaused.value = true
         speechChaining = false
+        _currentSentenceIndex.value = -1
         controller.stop()
     }
 
@@ -152,6 +173,7 @@ class NovelReaderViewModel(
         speechChaining = false
         speechSegments = emptyList()
         speechIndex = 0
+        _currentSentenceIndex.value = -1
         ttsController?.stop()
     }
 
@@ -311,6 +333,8 @@ class NovelReaderViewModel(
 
     val fontSize: StateFlow<Float> = stateOf(preferences.novelFontSizeFlow, PreferencesManager.DEFAULT_FONT_SIZE)
     val bgIndex: StateFlow<Int> = stateOf(preferences.novelBgIndexFlow, 0)
+    /** 夜间背景索引（夜间模式优化）：与白天各自独立 */
+    val nightBgIndex: StateFlow<Int> = stateOf(preferences.novelNightBgIndexFlow, 0)
     val nightMode: StateFlow<Boolean> = stateOf(preferences.novelNightFlow, false)
 
     /** 统一翻页方式：0=覆盖 1=仿真 2=滑动 3=滚动 4=上下 5=无动画 */
@@ -329,6 +353,11 @@ class NovelReaderViewModel(
     val volumePage: StateFlow<Boolean> = stateOf(preferences.novelVolumePageFlow, false)
     /** 点击分区模式（A8）：0=三区，1=两区 */
     val tapZone: StateFlow<Int> = stateOf(preferences.novelTapZoneFlow, 0)
+    /** 三区点击左 / 右区宽度比例（A8） */
+    val tapLeftRatio: StateFlow<Float> = stateOf(preferences.novelTapLeftRatioFlow, 1f / 3f)
+    val tapRightRatio: StateFlow<Float> = stateOf(preferences.novelTapRightRatioFlow, 1f / 3f)
+    /** 顶部下拉加书签（A8） */
+    val pullBookmark: StateFlow<Boolean> = stateOf(preferences.novelPullBookmarkFlow, true)
 
     // 大修新增设置
     val fontFamily: StateFlow<Int> = stateOf(preferences.novelFontFamilyFlow, PreferencesManager.FONT_FAMILY_DEFAULT)
@@ -670,8 +699,8 @@ class NovelReaderViewModel(
     private var _allCandidates: List<MediaItem> = emptyList()
     /** 候选验证任务（0 章 / 无内容过滤），换源关闭或重新搜索时取消 */
     private var verifyJob: Job? = null
-    /** 已验证「0 章」的候选 key 集合（在候选中排除） */
-    private val emptyChapterKeys = HashSet<String>()
+    /** 已搜 / 已验证「0 章」候选的复用缓存（B11）。换源面板重开时 clear，面板内串行复用 */
+    private val changeSourceReuse = ChangeSourceDeduper.ReuseCache()
 
     private val _currentTitle = MutableStateFlow("")
     val currentTitle: StateFlow<String> = _currentTitle.asStateFlow()
@@ -1052,7 +1081,11 @@ class NovelReaderViewModel(
         viewModelScope.launch { preferences.setNovelFontSize(next) }
     }
 
-    fun setBackground(index: Int) = viewModelScope.launch { preferences.setNovelBgIndex(index) }
+    /** 设背景色（夜间模式优化）：按当前明暗写各自的索引，切换不串色 */
+    fun setBackground(index: Int) = viewModelScope.launch {
+        if (nightMode.value) preferences.setNovelNightBgIndex(index)
+        else preferences.setNovelBgIndex(index)
+    }
     fun toggleNightMode() = viewModelScope.launch { preferences.setNovelNight(!nightMode.value) }
     fun setPageType(type: Int) = viewModelScope.launch { preferences.setNovelPageType(type) }
     fun setHideTopBar(v: Boolean) = viewModelScope.launch { preferences.setNovelHideTopBar(v) }
@@ -1068,6 +1101,10 @@ class NovelReaderViewModel(
     fun setVolumePage(v: Boolean) = viewModelScope.launch { preferences.setNovelVolumePage(v) }
     /** 设置点击分区模式（A8）：0=三区，1=两区 */
     fun setTapZone(v: Int) = viewModelScope.launch { preferences.setNovelTapZone(v) }
+    /** 设置三区点击的左 / 右比例、下拉加书签开关（A8） */
+    fun setTapLeftRatio(v: Float) = viewModelScope.launch { preferences.setNovelTapLeftRatio(v) }
+    fun setTapRightRatio(v: Float) = viewModelScope.launch { preferences.setNovelTapRightRatio(v) }
+    fun setPullBookmark(v: Boolean) = viewModelScope.launch { preferences.setNovelPullBookmark(v) }
     fun setVolumeUpPrev(v: Boolean) = viewModelScope.launch { preferences.setNovelVolumeUpPrev(v) }
     fun setFontFamily(v: Int) = viewModelScope.launch { preferences.setNovelFontFamily(v) }
     fun setBold(v: Boolean) = viewModelScope.launch { preferences.setNovelBold(v) }
@@ -1233,7 +1270,7 @@ class NovelReaderViewModel(
     // ===== 换源 =====
     fun openChangeSource() {
         _changeSourceOpen.value = true
-        emptyChapterKeys.clear()
+        changeSourceReuse.clear()
         searchSameTitle()
     }
 
@@ -1312,24 +1349,40 @@ class NovelReaderViewModel(
     }
 
     /**
-     * 合并换源候选：按「源 + 源内 ID」去重。
+     * 合并换源候选（B11）：按 [candidateKey] 折叠同源内重复，跨源各留一条。
      * 换源语义是「同一本书在每个源各一条」——同名书来自不同源必须保留每一条，
-     * 供用户挑选切换。因此不能按书名+作者合并（会把不同源误并成一条）。
-     * 同一源内同 id 的重复条目才需要去重。
+     * 供用户挑选切换。因此身份键里带 sourceId，不会跨源合并。
+     * 与 `ChangeSourceDeduper.dedupe` 同口径：位置保持首次出现，内容以后到一批为准
+     * （翻页 / 重搜时标题、封面可能更新）。
      */
     private fun mergeCandidates(base: List<MediaItem>, incoming: List<MediaItem>): List<MediaItem> {
-        val merged = base.toMutableList()
-        val seen = HashSet<String>(base.size)
-        base.forEach { seen.add(candidateKey(it)) }
-        for (item in incoming) {
-            if (seen.add(candidateKey(item))) merged.add(item)
+        val byKey = LinkedHashMap<String, MediaItem>()
+        val order = ArrayList<String>()
+        fun take(list: List<MediaItem>) {
+            for (item in list) {
+                val key = candidateKey(item)
+                if (!byKey.containsKey(key)) order.add(key)
+                byKey[key] = item // 后到覆盖内容，位置仍按首次出现
+            }
         }
-        return merged
+        take(base)
+        take(incoming)
+        return order.mapNotNull { byKey[it] }
     }
 
-    /** 候选去重键：源 + 源内 ID（同名书跨源不去重，换源需展示每个源） */
+    /**
+     * 候选身份键（B11）：优先用 `ChangeSourceDeduper` 的规范化 URL 身份键——同一个源
+     * 翻页重复返回同一本书时 `id` 会变、`detailUrl` 只差协议 / 结尾斜杠 / 片段，按
+     * `sourceId|id` 挡不住；规范化 URL 键能折叠这类重复。算不出身份（URL 与书名都空）
+     * 时退回老的 `sourceId|id`，保证不比修复前差。
+     *
+     * 身份键已含 sourceId，跨源天然各留一条，换源语义不受影响。
+     */
     private fun candidateKey(item: MediaItem): String {
-        return "${item.sourceId}|${item.id.ifBlank { item.detailUrl }}"
+        return ChangeSourceDeduper.identityKey(
+            ChangeSourceDeduper.Candidate.of(item),
+            ChangeSourceDeduper.KeyMode.NORMALIZED_URL,
+        ) ?: "${item.sourceId}|${item.id.ifBlank { item.detailUrl }}"
     }
 
     private fun filterCandidates(verify: Boolean = true) {
@@ -1358,12 +1411,12 @@ class NovelReaderViewModel(
                 else candAuthor == curAuthor
             } else true
         }
-        // 按「书名 + 作者」归一化合并去重，彻底消除同名书跨源重复
+        // 按身份键（B11：规范化 URL，含 sourceId）合并去重——同源同书折叠、跨源各留一条
         val deduped = linkedMapOf<String, MediaItem>()
         for (cand in filtered) {
             val key = candidateKey(cand)
             // 排除已验证为「0 章」的候选
-            if (key in emptyChapterKeys) continue
+            if (changeSourceReuse.isEmpty(key)) continue
             deduped.putIfAbsent(key, cand)
         }
         _changeSourceCandidates.value = deduped.values.toList()
@@ -1385,11 +1438,11 @@ class NovelReaderViewModel(
                     async {
                         semaphore.withPermit {
                             val key = candidateKey(cand)
-                            if (key in emptyChapterKeys) return@withPermit
+                            if (changeSourceReuse.isEmpty(key)) return@withPermit
                             val chapters = runCatching { contentRepository.chapterList(cand) }
                                 .getOrDefault(emptyList())
                             if (chapters.isEmpty()) {
-                                emptyChapterKeys.add(key)
+                                changeSourceReuse.markEmpty(key)
                                 // 从候选列表剔除该 0 章候选
                                 _changeSourceCandidates.value =
                                     _changeSourceCandidates.value.filter { candidateKey(it) != key }
@@ -1399,7 +1452,7 @@ class NovelReaderViewModel(
                             val sample = runCatching { contentRepository.content(chapters.first()) }
                                 .getOrNull()?.novelText?.trim().orEmpty()
                             if (sample.isEmpty()) {
-                                emptyChapterKeys.add(key)
+                                changeSourceReuse.markEmpty(key)
                                 _changeSourceCandidates.value =
                                     _changeSourceCandidates.value.filter { candidateKey(it) != key }
                             }

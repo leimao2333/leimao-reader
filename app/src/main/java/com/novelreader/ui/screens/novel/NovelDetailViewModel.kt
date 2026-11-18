@@ -19,6 +19,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
+/** 相关推荐最多展示几本（C13）：横滑一排，太多既滑不完也拖慢搜索 */
+private const val RELATED_LIMIT = 12
+
 /**
  * 小说详情 ViewModel。
  *
@@ -53,6 +56,16 @@ class NovelDetailViewModel(
     /** 是否有阅读进度（决定按钮文案：开始阅读 / 继续阅读） */
     private val _hasProgress = MutableStateFlow(false)
     val hasProgress: StateFlow<Boolean> = _hasProgress.asStateFlow()
+
+    /**
+     * 相关推荐（C13）：同标签 / 同作者的其他作品。
+     *
+     * 异步加载、失败静默——推荐是锦上添花，网络失败不该在详情页弹错或卡住页面；
+     * 列表为空时 UI 整块隐藏，用户甚至感知不到这次请求。
+     */
+    private val _related = MutableStateFlow<List<MediaItem>>(emptyList())
+    val related: StateFlow<List<MediaItem>> = _related.asStateFlow()
+    private var relatedJob: kotlinx.coroutines.Job? = null
 
     /** 轻量提示（原地换源后展示） */
     private val _notice = MutableStateFlow<String?>(null)
@@ -244,6 +257,36 @@ class NovelDetailViewModel(
     private suspend fun loadChapters(item: MediaItem) {
         runCatching { contentRepository.chapterList(item) }
             .onSuccess { _chapters.value = it }
+    }
+
+    /**
+     * 加载相关推荐（C13）。
+     *
+     * 关键词优先级：来源声明的题材标签（如「玄幻」）> 作者名。
+     * 用标签而不是书名——书名搜出来只会是不同源的同一本书（换源候选），
+     * 标签/作者才代表「同类作品」。复用现有跨源搜索 [ContentRepository.search]，
+     * 12 秒超时兜底（源多且慢时不能让评论区一直空着），失败静默置空。
+     */
+    fun loadRelated(item: MediaItem, tags: List<String>) {
+        relatedJob?.cancel()
+        _related.value = emptyList()
+        val keyword = tags.firstOrNull { it.isNotBlank() && it.length >= 2 }
+            ?: item.author?.takeIf { it.isNotBlank() }
+            ?: return
+        relatedJob = viewModelScope.launch {
+            val found = runCatching {
+                withTimeoutOrNull(12_000L) {
+                    contentRepository.search(SourceType.NOVEL, keyword, 1)
+                }
+            }.getOrNull().orEmpty()
+            val seen = HashSet<String>()
+            _related.value = found.filter { cand ->
+                // 排除自己（同源同 id 或详情地址一致），并按 sourceId:id 去重
+                val self = cand.sourceId == item.sourceId &&
+                    (cand.id == item.id || (cand.id.isBlank() && cand.detailUrl == item.detailUrl))
+                !self && seen.add("${cand.sourceId}:${cand.id}")
+            }.take(RELATED_LIMIT)
+        }
     }
 
     private suspend fun loadCollected(item: MediaItem) {

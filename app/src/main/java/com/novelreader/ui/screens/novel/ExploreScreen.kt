@@ -47,9 +47,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.novelreader.domain.model.ExploreCategory
 import com.novelreader.domain.model.MediaItem
+import com.novelreader.domain.model.SourceInfo
 import com.novelreader.domain.model.SourceType
 import com.novelreader.domain.repository.ContentRepository
 import com.novelreader.ui.components.MediaItemCard
+import com.novelreader.ui.components.SourceFilterDropdown
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -77,9 +79,29 @@ class ExploreViewModel(
     private val _categories = MutableStateFlow<List<ExploreCategory>>(emptyList())
     val categories: StateFlow<List<ExploreCategory>> = _categories.asStateFlow()
 
-    /** 存活源数量（顶栏展示「聚合 N 个源」） */
+    /**
+     * 当前参与聚合的源数量（顶栏展示「聚合 N 个源」）。
+     *
+     * C10：跟随源选择变化——选中部分源时只统计这些源，避免「显示聚合 30 个源、
+     * 内容却只有 3 个源」这种自相矛盾的提示。
+     */
     private val _aliveCount = MutableStateFlow(0)
     val aliveCount: StateFlow<Int> = _aliveCount.asStateFlow()
+
+    /** 探测到的全部发现源（供源选择面板展示，直接复用搜索页的 SourceFilterDropdown） */
+    private val _sources = MutableStateFlow<List<SourceInfo>>(emptyList())
+    val sources: StateFlow<List<SourceInfo>> = _sources.asStateFlow()
+
+    /**
+     * 选中的源 id 集合；空集 = 全部源（与搜索页「一个都不选 = 不限源」同一语义）。
+     *
+     * C10 取舍：这里只做 ViewModel 内存记忆（配置变更不丢），没有落 DataStore——
+     * ExploreViewModel 在 AppNavHost 里只用 (contentRepository, type) 构造，
+     * 拿不到 PreferencesManager；按任务硬约束不改 PreferencesManager / AppNavHost，
+     * 也就不去碰另一个 agent 正在改的搜索源记忆键。
+     */
+    private val _selectedSourceIds = MutableStateFlow<Set<String>>(emptySet())
+    val selectedSourceIds: StateFlow<Set<String>> = _selectedSourceIds.asStateFlow()
 
     /** 当前选中的分类（null = 推荐区） */
     private val _selectedCategory = MutableStateFlow<ExploreCategory?>(null)
@@ -101,16 +123,76 @@ class ExploreViewModel(
 
     private var loadJob: kotlinx.coroutines.Job? = null
 
-    /** 会话内缓存：分类名 → 各（源id, 该源该分类的 url） */
-    private var catPlan: Map<String, List<Pair<String, String>>>? = null
+    /** 全部源的计划：分类名 → 各（源id, 该源该分类的 url） */
+    private var fullPlan: Map<String, List<Pair<String, String>>> = emptyMap()
+
+    /** 按当前源选择过滤后的计划；发现内容只看这些源（C10） */
+    private var catPlan: Map<String, List<Pair<String, String>>> = emptyMap()
 
     init {
         refresh()
     }
 
+    /**
+     * 切换选中源（空集 = 全部源）。
+     *
+     * 不重新探测源，只按新选择重建分类与内容——源列表本身是所有发现源共用的。
+     */
+    fun setSelectedSourceIds(ids: Set<String>) {
+        val valid = ids.filter { it in fullPlan.values.asSequence().flatten().map { it.first }.toSet() }.toSet()
+        if (_selectedSourceIds.value == valid) return
+        _selectedSourceIds.value = valid
+        applySourceFilter()
+        reloadDisplay()
+    }
+
+    /**
+     * 按选中源重建生效计划 / 分类 / 聚合源数。
+     *
+     * 被过滤掉的分类直接从下拉里消失（否则点了只会得到「该分类暂无内容」），
+     * 当前选中分类若已不存在则回退到第一个分类。
+     */
+    private fun applySourceFilter() {
+        val selected = _selectedSourceIds.value
+        val plan = if (selected.isEmpty()) {
+            fullPlan
+        } else {
+            fullPlan.mapValues { (_, entries) -> entries.filter { (srcId, _) -> srcId in selected } }
+                .filterValues { it.isNotEmpty() }
+        }
+        catPlan = plan
+        _aliveCount.value = plan.values.asSequence().flatten().map { it.first }.distinct().count()
+        val rebuilt = plan.map { (title, entries) ->
+            ExploreCategory(title, entries.firstOrNull()?.second.orEmpty())
+        }
+        _categories.value = rebuilt
+        val current = _selectedCategory.value
+        if (current != null && current.title !in plan) {
+            _selectedCategory.value = rebuilt.firstOrNull()
+        }
+    }
+
+    /** 推荐区要聚合的分类名：优先「推荐/热门/排行」语义分类，没有则用第一个兜底 */
+    private fun recommendTitles(): List<String> {
+        val keys = catPlan.keys
+        val recommend = keys.filter { it.isRecommendLike() }
+        return if (recommend.isNotEmpty()) recommend else keys.firstOrNull()?.let { listOf(it) } ?: emptyList()
+    }
+
+    /** 源选择变化后重载内容（不重新探测源，也不重置分类选择） */
+    private fun reloadDisplay() {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
+            _loading.value = true
+            _recommended.value = aggregate(recommendTitles())
+            val cat = _selectedCategory.value
+            _results.value = if (cat == null) emptyList() else aggregate(listOf(cat.title))
+            _loading.value = false
+        }
+    }
+
     /** 重新探测存活源 + 合并分类 + 加载推荐区 */
     fun refresh() {
-        catPlan = null
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
             _loading.value = true
@@ -119,12 +201,14 @@ class ExploreViewModel(
             // 1) 探测存活源（有发现分类且能拉到内容）
             val allSources = runCatching { contentRepository.exploreSources(type) }
                 .getOrDefault(emptyList())
+            _sources.value = allSources.map { it.first }
             if (allSources.isEmpty()) {
-                _loading.value = false
-                _aliveCount.value = 0
-                _categories.value = emptyList()
+                fullPlan = emptyMap()
+                applySourceFilter()
+                _selectedCategory.value = null
                 _recommended.value = emptyList()
                 _results.value = emptyList()
+                _loading.value = false
                 return@launch
             }
 
@@ -137,24 +221,23 @@ class ExploreViewModel(
                     plan.getOrPut(cat.title) { mutableListOf() }.add(src.id to cat.url)
                 }
             }
-            catPlan = plan
-            _categories.value = plan.map { (title, entries) ->
-                ExploreCategory(title, entries.firstOrNull()?.second.orEmpty())
-            }
-            _aliveCount.value = allSources.size
+            fullPlan = plan
 
-            // 3) 加载推荐区：聚合各源「推荐/热门/排行」语义分类
-            val recommendCats = plan.filterKeys { it.isRecommendLike() }
-            _recommended.value = if (recommendCats.isNotEmpty()) {
-                aggregate(recommendCats.keys.toList())
-            } else {
-                // 没有推荐类分类时，用第一个分类兜底
-                plan.keys.firstOrNull()?.let { aggregate(listOf(it)) } ?: emptyList()
+            // 3) 源选择里可能混进已失效的源 id：按本次探测结果收敛，
+            //    否则用户会看到「选了源却是空的」而找不到原因。
+            if (_selectedSourceIds.value.isNotEmpty()) {
+                val alive = allSources.mapTo(HashSet()) { it.first.id }
+                val valid = _selectedSourceIds.value intersect alive
+                if (valid != _selectedSourceIds.value) _selectedSourceIds.value = valid
             }
+            applySourceFilter()
 
-            // 4) 默认选中第一个分类（或推荐区为空时选第一个）
+            // 4) 加载推荐区：聚合选中源里「推荐/热门/排行」语义分类（跨源去重）
+            _recommended.value = aggregate(recommendTitles())
+
+            // 5) 默认选中第一个分类并加载其聚合内容
             _selectedCategory.value = _categories.value.firstOrNull()
-            _selectedCategory.value?.let { loadCategory(it) }
+            _results.value = _selectedCategory.value?.let { aggregate(listOf(it.title)) } ?: emptyList()
 
             _loading.value = false
         }
@@ -171,14 +254,21 @@ class ExploreViewModel(
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
             _loading.value = true
+            // catPlan 已按选中源过滤，聚合结果天然只含选中源的内容（C10）
             _results.value = aggregate(listOf(category.title))
             _loading.value = false
         }
     }
 
-    /** 跨源聚合某分类名的内容（去重） */
+    /**
+     * 跨源聚合某分类名的内容（去重）。
+     *
+     * C10 去重口径：`sourceId:id`——不同源的同名书是不同条目（换源场景要分别展示），
+     * 同一源内 id 相同的重复条目才合并。这也是发现页跨源聚合不会「一本书刷屏」的关键。
+     */
     private suspend fun aggregate(categoryTitles: List<String>): List<MediaItem> {
-        val plan = catPlan ?: return emptyList()
+        val plan = catPlan
+        if (plan.isEmpty()) return emptyList()
         val entries = categoryTitles.flatMap { plan[it].orEmpty() }
         if (entries.isEmpty()) return emptyList()
         val merged = coroutineScope {
@@ -375,6 +465,31 @@ private fun ExploreBody(
     val results by viewModel.results.collectAsState()
     val loading by viewModel.loading.collectAsState()
     val error by viewModel.error.collectAsState()
+    val sources by viewModel.sources.collectAsState()
+    val selectedSourceIds by viewModel.selectedSourceIds.collectAsState()
+
+    // C10 源选择面板：与搜索页共用同一套多选下拉组件（一个都不选 = 全部源）。
+    // 选中后只聚合这些源的发现内容，top 的「聚合 N 个源」也同步收敛。
+    if (sources.isNotEmpty()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "源",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(8.dp))
+            SourceFilterDropdown(
+                sources = sources,
+                selectedIds = selectedSourceIds,
+                onSelectionChange = viewModel::setSelectedSourceIds,
+            )
+        }
+    }
 
     // 栏目下拉（v1.5.10.0：从横滑 chips 改为下拉框，栏目多时不用来回划）
     if (categories.isNotEmpty()) {

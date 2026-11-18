@@ -92,6 +92,15 @@ class NovelReaderApp : Application(), ImageLoaderFactory {
                     }
             }
         }
+
+        // 追更提醒（D30）：进程内循环，开关 / 间隔改动即时生效（combine + collectLatest）。
+        // 首次检查延迟 90s，避开上面首页源探测与 Venera 预热的高峰。
+        applicationScope.launch {
+            runCatching {
+                com.novelreader.core.follow.FollowNotifier.ensureChannel(this@NovelReaderApp)
+                container.followUpdateChecker.runLoop()
+            }
+        }
     }
 
     /**
@@ -134,6 +143,10 @@ class NovelReaderApp : Application(), ImageLoaderFactory {
                     .addInterceptor(com.novelreader.core.image.ImageHostFallbackInterceptor())
                     .addInterceptor(ImageDecryptInterceptor())
                     .addInterceptor(com.novelreader.core.image.CoverDefaultsInterceptor())
+                    // D16：图片下载进度。必须放在最后（最靠近网络）—— 解密拦截器会一次性
+                    // bytes() 读完，读取动作正好驱动这里的字节计数；放在解密之前只能统计到
+                    // 「已经读完」的瞬间值。
+                    .addInterceptor(com.novelreader.core.image.ImageDownloadProgressInterceptor())
                     .build()
             }
             // 内存缓存：占应用堆 25%（漫画 / 封面长图解码后很大，缓存越多翻页越快）

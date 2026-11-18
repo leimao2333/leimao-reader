@@ -30,16 +30,21 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -47,6 +52,9 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
+import com.novelreader.core.reader.GlobalStats
+import com.novelreader.core.reader.ReadingStats
+import com.novelreader.core.reader.TimelineBucket
 import com.novelreader.domain.model.RecentReading
 import com.novelreader.domain.model.SourceType
 import com.novelreader.ui.components.BookMeta
@@ -57,6 +65,12 @@ import com.novelreader.ui.components.CoverPlaceholderLetter
  *
  * 按类型筛选所有阅读/播放记录，支持多选批量清除与「清空全部」。
  * 点击单条继续阅读（跳转对应阅读/播放页）。
+ *
+ * A14：新增「统计」页签 —— 统计头部（总时长 / 连续天数 / 本月时长 / 日均时长 / 已读书目数）、
+ * 阅读时间轴（日 / 周 / 月粒度切换）、每日趋势条，以及点书目看章节维度统计。
+ *
+ * 为什么时间轴不是独立路由：导航集中在 `AppNavHost`，A14 明确不许改它，
+ * 所以时间轴做成本页的第二个页签。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -71,6 +85,17 @@ fun HistoryScreen(
     val selecting by viewModel.selecting.collectAsState()
     val selectedKeys by viewModel.selectedKeys.collectAsState()
 
+    // A14 统计相关
+    val globalStats by viewModel.globalStats.collectAsState()
+    val buckets by viewModel.timeline.collectAsState()
+    val trend by viewModel.trend.collectAsState()
+    val granularity by viewModel.granularity.collectAsState()
+    val bookStats by viewModel.selectedBookStats.collectAsState()
+    val chapters by viewModel.selectedChapters.collectAsState()
+
+    // 页签：0 = 记录，1 = 统计（时间轴）
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+
     // 回前台刷新（进度可能已变化）
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
@@ -81,14 +106,14 @@ fun HistoryScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    var confirmClearAll by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    var confirmClearAll by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
             TopAppBar(
                     // 顶栏避让状态栏：enableEdgeToEdge 下部分设备 Scaffold 默认 inset 失效
                     windowInsets = WindowInsets.statusBars,
-                title = { Text("阅读历史") },
+                title = { Text(if (tab == 0) "阅读历史" else "阅读统计") },
                 navigationIcon = {
                     Text(
                         text = "‹ 返回",
@@ -100,7 +125,8 @@ fun HistoryScreen(
                     )
                 },
                 actions = {
-                    if (items.isNotEmpty()) {
+                    // 多选 / 清空只对「记录」页签有意义，统计页签不显示
+                    if (tab == 0 && items.isNotEmpty()) {
                         TextButton(onClick = { viewModel.toggleSelecting() }) {
                             Text(if (selecting) "取消" else "选择")
                         }
@@ -114,7 +140,7 @@ fun HistoryScreen(
             )
         },
         bottomBar = {
-            if (selecting) {
+            if (selecting && tab == 0) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -142,49 +168,66 @@ fun HistoryScreen(
             }
         },
     ) { padding ->
-        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                // 类型筛选 chips
-                TypeFilterRow(selectedType, viewModel::selectType)
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize(),
+        ) {
+            TabRow(selectedTabIndex = tab) {
+                Tab(
+                    selected = tab == 0,
+                    onClick = { tab = 0 },
+                    text = { Text("记录") },
+                )
+                Tab(
+                    selected = tab == 1,
+                    onClick = { tab = 1 },
+                    text = { Text("统计") },
+                )
+            }
 
-                if (items.isEmpty() && !loading) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            text = "暂无阅读记录\n去搜索并阅读喜欢的内容吧",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(bottom = 16.dp),
-                    ) {
-                        items(items, key = { HistoryViewModel.keyOf(it) }) { r ->
-                            HistoryRow(
-                                item = r,
-                                selecting = selecting,
-                                selected = HistoryViewModel.keyOf(r) in selectedKeys,
-                                onToggleSelect = { viewModel.toggleSelect(HistoryViewModel.keyOf(r)) },
-                                onClick = {
-                                    if (selecting) viewModel.toggleSelect(HistoryViewModel.keyOf(r))
-                                    else onContinue(r)
-                                },
-                                onLongClick = {
-                                    if (!selecting) {
-                                        viewModel.toggleSelecting()
-                                        viewModel.toggleSelect(HistoryViewModel.keyOf(r))
-                                    }
-                                },
-                                // 单条快速删除（v1.5.10.0 历史编辑）：不用先进多选模式
-                                onDelete = { viewModel.remove(r) },
-                            )
-                            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            // 类型筛选：记录页与统计页共用同一份筛选结果，
+            // 避免「列表是小说、统计是全部」这种对不上的情况
+            TypeFilterRow(selectedType, viewModel::selectType)
+
+            when (tab) {
+                0 -> RecordsTab(
+                    modifier = Modifier.weight(1f),
+                    items = items,
+                    loading = loading,
+                    selecting = selecting,
+                    selectedKeys = selectedKeys,
+                    onToggleSelect = viewModel::toggleSelect,
+                    onClick = onContinue,
+                    onLongClick = {
+                        if (!selecting) {
+                            viewModel.toggleSelecting()
+                            viewModel.toggleSelect(HistoryViewModel.keyOf(it))
                         }
-                    }
-                }
+                    },
+                    onDelete = viewModel::remove,
+                )
+
+                else -> StatisticsTab(
+                    modifier = Modifier.weight(1f),
+                    stats = globalStats,
+                    buckets = buckets,
+                    trend = trend,
+                    granularity = granularity,
+                    onGranularityChange = viewModel::setGranularity,
+                    onBookClick = viewModel::selectBook,
+                )
             }
         }
+    }
+
+    // 章节维度统计面板（点时间轴里的书目弹出）
+    if (bookStats != null) {
+        BookChapterStatsSheet(
+            stats = bookStats!!,
+            chapters = chapters,
+            onDismiss = viewModel::clearSelectedBook,
+        )
     }
 
     if (confirmClearAll) {
@@ -202,6 +245,91 @@ fun HistoryScreen(
                 TextButton(onClick = { confirmClearAll = false }) { Text("取消") }
             },
         )
+    }
+}
+
+/**
+ * 「统计」页签内容：统计头部 + 阅读时间轴。
+ *
+ * 统计头部与时间轴放在一起：两者讲的是同一件事的两面
+ * （「一共读了多久」与「什么时候读的」），拆成两个页面反而割裂。
+ */
+@Composable
+private fun StatisticsTab(
+    stats: GlobalStats,
+    buckets: List<TimelineBucket>,
+    trend: List<DailyTrendPoint>,
+    granularity: ReadingStats.Granularity,
+    onGranularityChange: (ReadingStats.Granularity) -> Unit,
+    onBookClick: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        HistoryStatsHeader(
+            stats = stats,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        ReaderTimelineScreen(
+            modifier = Modifier.weight(1f),
+            buckets = buckets,
+            trend = trend,
+            granularity = granularity,
+            onGranularityChange = onGranularityChange,
+            onBookClick = onBookClick,
+        )
+    }
+}
+
+/**
+ * 「记录」页签内容：历史记录列表。
+ *
+ * 列表保持原来的样子（统计头部挪到了「统计」页签），
+ * 这样「记录」页签仍然是一屏能看完的纯列表。
+ */
+@Composable
+private fun RecordsTab(
+    items: List<RecentReading>,
+    loading: Boolean,
+    selecting: Boolean,
+    selectedKeys: Set<String>,
+    onToggleSelect: (String) -> Unit,
+    onClick: (RecentReading) -> Unit,
+    onLongClick: (RecentReading) -> Unit,
+    onDelete: (RecentReading) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (items.isEmpty() && !loading) {
+        // modifier 已带 weight(1f)：占满页签剩余高度，空态文案居中
+        Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Text(
+                text = "暂无阅读记录\n去搜索并阅读喜欢的内容吧",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
+
+    LazyColumn(
+        modifier = modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(bottom = 16.dp),
+    ) {
+        items(items, key = { HistoryViewModel.keyOf(it) }) { r ->
+            HistoryRow(
+                item = r,
+                selecting = selecting,
+                selected = HistoryViewModel.keyOf(r) in selectedKeys,
+                onToggleSelect = { onToggleSelect(HistoryViewModel.keyOf(r)) },
+                onClick = {
+                    if (selecting) onToggleSelect(HistoryViewModel.keyOf(r))
+                    else onClick(r)
+                },
+                onLongClick = { onLongClick(r) },
+                // 单条快速删除（v1.5.10.0 历史编辑）：不用先进多选模式
+                onDelete = { onDelete(r) },
+            )
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+        }
     }
 }
 

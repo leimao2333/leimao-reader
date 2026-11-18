@@ -1,7 +1,10 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+
 package com.novelreader.ui.screens.novel
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -39,6 +42,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -55,6 +59,7 @@ import com.novelreader.domain.model.ChapterItem
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.ui.components.BookMeta
 import com.novelreader.ui.components.CoverPlaceholderLetter
+import com.novelreader.ui.theme.adaptiveWidth
 import com.novelreader.ui.components.DetailTagBar
 
 /**
@@ -73,7 +78,26 @@ fun NovelDetailScreen(
     onBack: () -> Unit,
     onSearchAuthor: (String) -> Unit = {},
     onTagClick: (String) -> Unit = {},
+    customCoverStore: com.novelreader.core.local.CustomCoverStore? = null,
 ) {
+    // C8：自定义封面。选图 → 存到私有目录 → 刷新版本让 Coil 重新按 file:// 加载。
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var coverVersion by androidx.compose.runtime.remember { mutableStateOf(0) }
+    val bookKey = "${item.sourceId}|${item.id}"
+    val customCoverPath = androidx.compose.runtime.remember(item, coverVersion) {
+        customCoverStore?.pathFor(bookKey)
+    }
+    val coverPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null && customCoverStore != null) {
+            scope.launch {
+                val ok = customCoverStore.save(bookKey, uri)
+                if (ok) coverVersion++
+            }
+        }
+    }
     val detail by viewModel.detail.collectAsState()
     val chapters by viewModel.chapters.collectAsState()
     val loading by viewModel.loading.collectAsState()
@@ -88,6 +112,7 @@ fun NovelDetailScreen(
     val notice by viewModel.notice.collectAsState()
     val cacheProgress by viewModel.cacheProgress.collectAsState()
     val note by viewModel.note.collectAsState()
+    val related by viewModel.related.collectAsState()
 
     LaunchedEffect(item) {
         viewModel.load(item)
@@ -202,6 +227,13 @@ fun NovelDetailScreen(
 
     val display = detail ?: item
 
+    // C13 相关推荐：详情（含详情规则解析出的标签）到位后再按标签/作者异步搜同类作品。
+    // 用 display 而非 item 作 key——换源 / 详情补全后标签会变，推荐也要跟着换。
+    val displayTags = com.novelreader.core.util.ItemTags.of(display)
+    LaunchedEffect(display) {
+        viewModel.loadRelated(display, displayTags)
+    }
+
     // 目录是否展开（默认折叠，点击"目录"按钮展开）
     var showChapters by rememberSaveable { mutableStateOf(false) }
     // 目录排序：false=正序，true=倒序（#28）
@@ -216,7 +248,9 @@ fun NovelDetailScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding(),
+                .statusBarsPadding()
+                // C3：平板大屏详情页限宽居中
+                .adaptiveWidth(),
         ) {
             // 顶部返回按钮（简化处理）
             Row(
@@ -257,6 +291,16 @@ fun NovelDetailScreen(
                         onOpenCacheDialog = { showCacheDialog = true },
                         onAuthorClick = onSearchAuthor,
                         hasProgress = hasProgress,
+                        customCoverPath = customCoverPath,
+                        onPickCover = { coverPicker.launch("image/*") },
+                        onClearCover = if (customCoverPath != null && customCoverStore != null) {
+                            {
+                                scope.launch {
+                                    customCoverStore.clear(bookKey)
+                                    coverVersion++
+                                }
+                            }
+                        } else null,
                         onReadLatest = {
                             // 点「最新章节」直达该章阅读；目录里匹配不到则退回「阅读」按钮逻辑
                             val last = BookMeta.lastChapter(display)
@@ -370,6 +414,13 @@ fun NovelDetailScreen(
                         ChapterRow(chapter = chapter, onClick = { onChapterClick(chapter) })
                         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                     }
+                }
+
+                // C13 相关推荐（同标签/同作者作品）：空列表时组件自身不渲染。
+                // 点击复用「原地换源」回调就地载入目标作品（AppNavHost 是禁改文件，
+                // 不能为推荐再加一条导航回调；换源底层就是 load(target)，语义足够）。
+                item {
+                    RelatedRecommendations(items = related, onItemClick = onSwitchSource)
                 }
             }
         }
@@ -615,6 +666,10 @@ private fun DetailHeader(
     onAuthorClick: ((String) -> Unit)? = null,
     hasProgress: Boolean = false,
     onReadLatest: () -> Unit = {},
+    // C8 自定义封面
+    customCoverPath: String? = null,
+    onPickCover: (() -> Unit)? = null,
+    onClearCover: (() -> Unit)? = null,
 ) {
     Column {
         Row(
@@ -622,24 +677,44 @@ private fun DetailHeader(
                 .fillMaxWidth()
                 .padding(16.dp),
         ) {
-            val cover = item.cover
-            if (cover.isNullOrBlank()) {
-                CoverPlaceholderLetter(
-                    Modifier.size(width = 96.dp, height = 128.dp),
-                    item.title,
+            // C8：自定义封面优先；长按封面换图，已自定义时长按恢复网络封面
+            val cover = customCoverPath ?: item.cover
+            val coverModifier = Modifier
+                .size(width = 96.dp, height = 128.dp)
+                .then(
+                    if (onPickCover != null) {
+                        Modifier.combinedClickable(
+                            onClick = {},
+                            onLongClick = onPickCover,
+                        )
+                    } else Modifier,
                 )
-            } else {
-                SubcomposeAsyncImage(
-                    model = cover,
-                    contentDescription = item.title,
-                    modifier = Modifier.size(width = 96.dp, height = 128.dp),
-                    contentScale = ContentScale.Crop,
-                ) {
-                    when (painter.state) {
-                        is AsyncImagePainter.State.Error -> CoverPlaceholderLetter(Modifier.fillMaxSize(), item.title)
-                        is AsyncImagePainter.State.Loading -> CoverPlaceholderLetter(Modifier.fillMaxSize(), item.title)
-                        else -> SubcomposeAsyncImageContent()
+            Column {
+                if (cover.isNullOrBlank()) {
+                    CoverPlaceholderLetter(coverModifier, item.title)
+                } else {
+                    SubcomposeAsyncImage(
+                        model = cover,
+                        contentDescription = item.title,
+                        modifier = coverModifier,
+                        contentScale = ContentScale.Crop,
+                    ) {
+                        when (painter.state) {
+                            is AsyncImagePainter.State.Error -> CoverPlaceholderLetter(Modifier.fillMaxSize(), item.title)
+                            is AsyncImagePainter.State.Loading -> CoverPlaceholderLetter(Modifier.fillMaxSize(), item.title)
+                            else -> SubcomposeAsyncImageContent()
+                        }
                     }
+                }
+                if (onClearCover != null) {
+                    Text(
+                        text = "恢复封面",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .padding(top = 2.dp)
+                            .clickable { onClearCover() },
+                    )
                 }
             }
             Spacer(Modifier.width(16.dp))
@@ -652,20 +727,41 @@ private fun DetailHeader(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(8.dp))
-                // 作者 + 状态（连载中/已完结）——点击作者搜索其作品（#31）
-                val authorLine = listOfNotNull(
-                    item.author?.takeIf { it.isNotBlank() },
-                    BookMeta.statusText(item),
-                ).joinToString(" · ")
-                if (authorLine.isNotEmpty()) {
-                    Text(
-                        text = authorLine,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.clickable(enabled = onAuthorClick != null) {
-                            item.author?.takeIf { it.isNotBlank() }?.let { onAuthorClick?.invoke(it) }
-                        },
-                    )
+                // C13 作者信息增强：作者独立成行、以主题色标出，点作者搜其作品（#31）；
+                // 状态词（连载中/已完结）挪到右侧小字，避免和作者混成一句让人看不出哪段可点。
+                val author = item.author?.takeIf { it.isNotBlank() }
+                val status = BookMeta.statusText(item)
+                if (author != null || status != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (author != null) {
+                            Text(
+                                text = "作者：$author",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .weight(1f, fill = false)
+                                    .clickable(enabled = onAuthorClick != null) {
+                                        onAuthorClick?.invoke(author)
+                                    },
+                            )
+                        } else {
+                            Spacer(Modifier.weight(1f))
+                        }
+                        if (!status.isNullOrBlank()) {
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = status,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                            )
+                        }
+                    }
                 }
                 // 元信息：字数 · 更新时间（「最新章节」拆成独立可点行，见下）
                 val meta = BookMeta.summaryLine(item, showLastChapter = false, showUpdateTime = true)

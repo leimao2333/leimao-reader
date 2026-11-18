@@ -20,6 +20,17 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
 /**
+ * 读回持久化的选源时，只保留当前可用的源。
+ *
+ * 源会被删除 / 停用；若不加交集校验，记忆里的 id 还在、实际已没有源可搜，
+ * 用户看到的就是「明明选了源却一条都搜不出来」。纯函数便于离线单测这层口径。
+ */
+internal fun restoredNovelSearchSourceIds(
+    remembered: Set<String>,
+    availableIds: Set<String>,
+): Set<String> = remembered intersect availableIds
+
+/**
  * 小说搜索 ViewModel。
  *
  * 使用带进度的跨源搜索，边搜边更新结果与进度。
@@ -53,8 +64,33 @@ class NovelSearchViewModel(
         verifyJob?.cancel()
         resultsAcc.reset(emptyList())
         _loadingMore.value = false
+        // 用户已经明确表过态：后面到达的「读回记忆」协程不许再覆盖这次选择。
+        sourcesRestored = true
         _selectedSourceIds.value = ids
+        // 记忆写回所见即所得：下次进搜索页直接还原这次选的源，而不是重置成全部源。
+        viewModelScope.launch { preferencesManager.setNovelSearchSelectedSourceIds(ids) }
         if (_query.value.isNotBlank()) search()
+    }
+
+    /**
+     * 是否已经用「当前可用源列表」校验过持久化选择。
+     *
+     * 时序要点：源列表是异步加载的，刚进页面时它是空的。若这时就读持久化并取交集，
+     * 空集合 ∩ 记忆 = 空，等于把用户上次的选源悄悄清掉。所以加载完成前一律不写入，
+     * 也不写回偏好（写回只发生在用户主动改选的 [setSelectedSources]）。
+     */
+    private var sourcesRestored = false
+
+    /** 源列表到位后再读回记忆，并剔除已被删除 / 停用的源，避免选了却搜不到任何东西。 */
+    private suspend fun restoreSelectedSourcesIfNeeded() {
+        if (sourcesRestored) return
+        val available = _sources.value
+        if (available.isEmpty()) return
+        sourcesRestored = true
+        val remembered = runCatching { preferencesManager.novelSearchSelectedSourceIdsFlow.first() }
+            .getOrDefault(emptySet())
+        val restored = restoredNovelSearchSourceIds(remembered, available.map { it.id }.toSet())
+        if (restored.isNotEmpty()) _selectedSourceIds.value = restored
     }
 
     private val _query = MutableStateFlow("")
@@ -147,6 +183,8 @@ class NovelSearchViewModel(
                     ?.filter { it.enabled }
                     .orEmpty()
             }.getOrDefault(emptyList())
+            // 先有可用源、再读回记忆取交集，顺序不能反（见 restoreSelectedSourcesIfNeeded）
+            restoreSelectedSourcesIfNeeded()
         }
         // v1.9.3.0：源管理页新建/改名/删除分组、给源换组、启停源之后，搜索页要立刻看到，
         // 不能等下次进页面才刷新。observeSources 默认空流，测试里的 fake 仓库不受影响。
@@ -155,6 +193,8 @@ class NovelSearchViewModel(
                 sourceRepository?.observeSources()?.collect { list ->
                     val enabled = list.filter { it.type == SourceType.NOVEL && it.enabled }
                     if (enabled.isNotEmpty()) _sources.value = enabled
+                    // 冷启动首次加载为空、但 Flow 稍后才推来真实源列表时，在这里补一次恢复
+                    restoreSelectedSourcesIfNeeded()
                 }
             }
         }

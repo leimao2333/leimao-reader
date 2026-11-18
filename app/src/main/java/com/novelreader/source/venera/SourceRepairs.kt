@@ -30,7 +30,18 @@ object SourceRepairs {
      * @param from 上游原文片段（字面量匹配，含缩进，尽量取短且唯一的一行）
      * @param to 替换后的片段
      */
-    data class CodeFix(val name: String, val from: String, val to: String)
+    data class CodeFix(
+        val name: String,
+        val from: String,
+        val to: String,
+        /**
+         * D13：补丁只适用于**该版本及以下**的上游源码。
+         *
+         * 上游升版通常意味着「同一个问题已经自修」，这时再按字面量替换只会改坏新逻辑。
+         * 传 null 表示不做版本闸（历史行为）。
+         */
+        val maxVersion: String? = null,
+    )
 
     /** 源 key →（设置名 → 修复值） */
     private val FIXES: Map<String, Map<String, String>> = mapOf(
@@ -66,6 +77,8 @@ object SourceRepairs {
         }
         return s || "";
       });""",
+                // D13：补丁按 1.0.0 的章节页结构编写；上游越过 1.0.0 后优先复查
+                maxVersion = "1.0.0",
             ),
         ),
     )
@@ -92,9 +105,19 @@ object SourceRepairs {
         // **一次都没生效过**；而探针是按文件名取裸名跑的，所以「探针正常、装机不生效」。
         // 两种写法都接受，谁先命中用谁。
         val fixes = CODE_FIXES[key] ?: CODE_FIXES[VeneraSourceId.bareName(key)] ?: return code
+        // D13：版本闸 —— 从源码里读出上游版本，超过补丁适用上限就跳过
+        val sourceVersion = com.novelreader.core.source.SourceVersion.fromCode(code)
         var out = code
         for (fix in fixes) {
             if (out.contains(fix.to)) continue // 已经打过了（同一份源码被反复 putSource）
+            if (!com.novelreader.core.source.SourceVersion.isAtMost(sourceVersion, fix.maxVersion)) {
+                Log.i(
+                    LOG_TAG,
+                    "源码补丁跳过（上游 $sourceVersion 高于补丁上限 ${fix.maxVersion}，可能已自修）：" +
+                        "$key/${fix.name}",
+                )
+                continue
+            }
             if (!out.contains(fix.from)) {
                 // 上游改版导致片段对不上：只记日志，保持上游行为
                 Log.w(LOG_TAG, "源码补丁未命中（上游可能已改版）：$key/${fix.name}")

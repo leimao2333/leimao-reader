@@ -47,6 +47,10 @@ class PreferencesManager(private val context: Context) {
         /** 动态取色开关（关着时即使有种子色也用写死的两套配色） */
         val KEY_THEME_DYNAMIC_COLOR = booleanPreferencesKey("theme_dynamic_color")
 
+        // ===== 追更提醒（D30）=====
+        val KEY_FOLLOW_ENABLED = booleanPreferencesKey("follow_enabled")
+        val KEY_FOLLOW_INTERVAL_HOURS = intPreferencesKey("follow_interval_hours")
+
         // ===== 小说阅读 =====
         val KEY_NOVEL_FONT_SIZE = floatPreferencesKey("novel_font_size")
         /** 详细日志开关（v1.9.0.2）：设置 → 开发者选项，默认关 */
@@ -56,6 +60,8 @@ class PreferencesManager(private val context: Context) {
         val KEY_CUSTOM_FONT_PATH = stringPreferencesKey("custom_font_path")
         val KEY_DEBUG_LOGGING = booleanPreferencesKey("debug_logging")
         val KEY_NOVEL_BG_INDEX = intPreferencesKey("novel_bg_index")
+        /** 夜间背景索引（夜间模式优化）：白天/夜间各自记住选中的纸张色，切换不串色 */
+        val KEY_NOVEL_BG_INDEX_NIGHT = intPreferencesKey("novel_bg_index_night")
         val KEY_NOVEL_NIGHT = booleanPreferencesKey("novel_night")
         /** 翻页方式：0=上下滚动，1=左右翻页 */
         val KEY_NOVEL_PAGE_MODE = intPreferencesKey("novel_page_mode")
@@ -81,6 +87,18 @@ class PreferencesManager(private val context: Context) {
         val KEY_NOVEL_AUTO_PAGE_SPEED = floatPreferencesKey("novel_auto_page_speed")
         /** 点击分区模式（A8）：0 = 三区，1 = 两区 */
         val KEY_NOVEL_TAP_ZONE = intPreferencesKey("novel_tap_zone")
+        /** 三区点击的左区宽度比例（A8，0.1~0.6，默认 1/3） */
+        val KEY_NOVEL_TAP_LEFT_RATIO = floatPreferencesKey("novel_tap_left_ratio")
+        /** 三区点击的右区宽度比例（A8，0.1~0.6，默认 1/3） */
+        val KEY_NOVEL_TAP_RIGHT_RATIO = floatPreferencesKey("novel_tap_right_ratio")
+        /** 顶部下拉加书签开关（A8，默认开） */
+        val KEY_NOVEL_PULL_BOOKMARK = booleanPreferencesKey("novel_pull_bookmark")
+        /** 新用户引导页是否已展示过（C16） */
+        val KEY_ONBOARDING_DONE = booleanPreferencesKey("onboarding_done")
+        /** 首页隐藏的推荐排标题（C5），逗号分隔；空 = 全部显示 */
+        val KEY_HOME_HIDDEN_ROWS = stringPreferencesKey("home_hidden_rows")
+        /** 主题风格（C2）：0 = MD3 标准，1 = 暖色柔和，2 = 冷色清爽 */
+        val KEY_THEME_STYLE = intPreferencesKey("theme_style")
         /** 音量键翻页开关（开启后音量键上/下翻页，不调音量） */
         val KEY_NOVEL_VOLUME_PAGE = booleanPreferencesKey("novel_volume_page")
 
@@ -172,6 +190,14 @@ class PreferencesManager(private val context: Context) {
         val KEY_COMIC_PAGE_MODE = intPreferencesKey("comic_page_mode")
         /** 预加载张数（向前预加载的图片数量，1~8，默认 4；v1.4.5.0 C5） */
         val KEY_COMIC_PRELOAD_COUNT = intPreferencesKey("comic_preload_count")
+        /**
+         * 按屏幕数预加载（D10）：0 = 关闭（沿用 [KEY_COMIC_PRELOAD_COUNT] 的张数语义），
+         * 1~4 = 提前加载接下来 N 屏能看到的量。
+         *
+         * 与「张数」不是一个量纲：一屏可能只放 1 张长条图，也可能并排 2~3 张短图，
+         * 按屏数换算才能在两种版式下都保持「滑一屏，下一屏已就绪」的手感。
+         */
+        val KEY_COMIC_PRELOAD_SCREENS = intPreferencesKey("comic_preload_screens")
         /** 仅在 WiFi 下预加载（v1.4.5.0 C5） */
         val KEY_COMIC_PRELOAD_WIFI_ONLY = booleanPreferencesKey("comic_preload_wifi_only")
         /** 横屏双页（左右翻页模式下，横屏时并排展示两页；v1.4.5.0 C3） */
@@ -191,6 +217,27 @@ class PreferencesManager(private val context: Context) {
          * 设置里自行开启。
          */
         val KEY_COMIC_EDGE_GESTURE = booleanPreferencesKey("comic_edge_gesture")
+        /**
+         * 每屏图片数（D7）：0=自适应（横屏并排两页）、1=始终单页、2=始终双页。
+         *
+         * 与横屏双页开关（[KEY_COMIC_LANDSCAPE_DOUBLE_PAGE]）的关系：后者只在
+         * 「自适应」下生效，显式选了单页 / 双页就以这里为准。
+         */
+        val KEY_COMIC_PAGES_PER_SCREEN = intPreferencesKey("comic_pages_per_screen")
+        /** 阅读背景（D9）：0=纯黑，1=深灰，2=纯白 */
+        val KEY_COMIC_READER_BG = intPreferencesKey("comic_reader_bg")
+        /** 图片间距（D9，dp）：0 / 2 / 4 / 8，仅连续滚动模式生效 */
+        val KEY_COMIC_PAGE_GAP = intPreferencesKey("comic_page_gap")
+        /** 图片适配方式（D9）：0=适应宽度（条漫），1=适应屏幕，2=裁剪填满 */
+        val KEY_COMIC_IMAGE_SCALE = intPreferencesKey("comic_image_scale")
+        /** 常驻亮度（D9）：0=跟随系统；>0 为 0.10~1.00 的黑色遮罩不透明度 */
+        val KEY_COMIC_BRIGHTNESS = floatPreferencesKey("comic_brightness")
+        /** 阅读页显示页码（D11） */
+        val KEY_COMIC_SHOW_PAGE_NUMBER = booleanPreferencesKey("comic_show_page_number")
+        /** 阅读页显示时钟 / 电量（D11） */
+        val KEY_COMIC_SHOW_CLOCK = booleanPreferencesKey("comic_show_clock")
+        /** 阅读页显示系统状态栏（D11，默认隐藏以让图片占满） */
+        val KEY_COMIC_SHOW_SYSTEM_BAR = booleanPreferencesKey("comic_show_system_bar")
 
         // ===== 视频 =====
         val KEY_VIDEO_AUTO_PLAY = booleanPreferencesKey("video_auto_play")
@@ -275,6 +322,19 @@ class PreferencesManager(private val context: Context) {
         val KEY_WEBDAV_PATH = stringPreferencesKey("webdav_path")
 
         // ===== 搜索 =====
+        /**
+         * 各搜索页上次选中的源 id 集合（v1.9.7.0）。
+         *
+         * 用 DataStore 原生 String Set 而不是 JSON 字符串：成员是纯 id、无序、要去重，
+         * 正是 Set 的语义；读写各一次 edit，也省掉序列化那层出错的可能。
+         * 四个页面各自独立：小说 / 漫画 / 视频是不同 SourceType，标签页又是另一种搜索口径，
+         * 共用一个 key 会互相把对方的记忆冲掉。
+         */
+        val KEY_SEARCH_SELECTED_SOURCES_NOVEL = stringSetPreferencesKey("search_selected_sources_novel")
+        val KEY_SEARCH_SELECTED_SOURCES_COMIC = stringSetPreferencesKey("search_selected_sources_comic")
+        val KEY_SEARCH_SELECTED_SOURCES_VIDEO = stringSetPreferencesKey("search_selected_sources_video")
+        val KEY_SEARCH_SELECTED_SOURCES_TAG = stringSetPreferencesKey("search_selected_sources_tag")
+
         /** 并行搜索线程数（并发搜索的源数量） */
         val KEY_SEARCH_CONCURRENCY = intPreferencesKey("search_concurrency")
 
@@ -470,6 +530,8 @@ class PreferencesManager(private val context: Context) {
         const val DEFAULT_COMIC_PRELOAD_COUNT = 4
         /** 默认漫画预加载话数（v1.6.0.0） */
         const val DEFAULT_COMIC_PRELOAD_CHAPTERS = 3
+        /** 默认追更检查间隔（小时，D30） */
+        const val DEFAULT_FOLLOW_INTERVAL_HOURS = 12
         /** 默认小说预缓存话数（v1.6.0.0） */
         const val DEFAULT_NOVEL_PRELOAD_CHAPTERS = 3
         /** 默认视频预加载集数（v1.6.0.0） */
@@ -607,6 +669,24 @@ class PreferencesManager(private val context: Context) {
         context.dataStore.edit { it[KEY_THEME_DYNAMIC_COLOR] = value }
     }
 
+    // ===== 追更提醒（D30）=====
+
+    /** 追更提醒开关（默认关：不发任何通知） */
+    val followEnabledFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_FOLLOW_ENABLED] ?: false }
+
+    suspend fun setFollowEnabled(value: Boolean) {
+        context.dataStore.edit { it[KEY_FOLLOW_ENABLED] = value }
+    }
+
+    /** 追更检查间隔（小时，默认 12；UI 提供 6 / 12 / 24） */
+    val followIntervalHoursFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_FOLLOW_INTERVAL_HOURS] ?: DEFAULT_FOLLOW_INTERVAL_HOURS }
+
+    suspend fun setFollowIntervalHours(value: Int) {
+        context.dataStore.edit { it[KEY_FOLLOW_INTERVAL_HOURS] = value }
+    }
+
     // ===== 小说 =====
     val novelFontSizeFlow: Flow<Float> = context.dataStore.data
         .map { it[KEY_NOVEL_FONT_SIZE] ?: DEFAULT_FONT_SIZE }
@@ -622,6 +702,14 @@ class PreferencesManager(private val context: Context) {
         context.dataStore.edit { it[KEY_NOVEL_BG_INDEX] = value }
     }
 
+    /** 夜间背景索引（默认 0）——白天 / 夜间各自独立记忆，切换不串色 */
+    val novelNightBgIndexFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_NOVEL_BG_INDEX_NIGHT] ?: DEFAULT_BG_INDEX }
+
+    suspend fun setNovelNightBgIndex(value: Int) {
+        context.dataStore.edit { it[KEY_NOVEL_BG_INDEX_NIGHT] = value }
+    }
+
     val novelNightFlow: Flow<Boolean> = context.dataStore.data
         .map { it[KEY_NOVEL_NIGHT] ?: false }
 
@@ -631,6 +719,17 @@ class PreferencesManager(private val context: Context) {
         context.dataStore.edit { prefs ->
             prefs[KEY_NOVEL_NIGHT] = value
             prefs[KEY_DARK_THEME_MODE] = if (value) THEME_MODE_DARK else THEME_MODE_LIGHT
+        }
+    }
+
+    /**
+     * 「跟随系统」模式下系统明暗变化后，把折算值同步给小说页夜间（夜间模式优化）。
+     * 与 [setNovelNight] 不同：**不写 KEY_DARK_THEME_MODE**，否则会退出「跟随系统」。
+     * 只在值真的变化时写，避免每次重组都触发一轮 DataStore 写入。
+     */
+    suspend fun syncNovelNightForSystem(value: Boolean) {
+        if (context.dataStore.data.first()[KEY_NOVEL_NIGHT] != value) {
+            context.dataStore.edit { it[KEY_NOVEL_NIGHT] = value }
         }
     }
 
@@ -775,6 +874,60 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setNovelTapZone(value: Int) {
         context.dataStore.edit { it[KEY_NOVEL_TAP_ZONE] = value.coerceIn(0, 1) }
+    }
+
+    /** 三区点击左区比例（A8）：0.1~0.6，默认 1/3 */
+    val novelTapLeftRatioFlow: Flow<Float> = context.dataStore.data
+        .map { (it[KEY_NOVEL_TAP_LEFT_RATIO] ?: (1f / 3f)).coerceIn(0.1f, 0.6f) }
+
+    suspend fun setNovelTapLeftRatio(value: Float) {
+        context.dataStore.edit { it[KEY_NOVEL_TAP_LEFT_RATIO] = value.coerceIn(0.1f, 0.6f) }
+    }
+
+    /** 三区点击右区比例（A8）：0.1~0.6，默认 1/3 */
+    val novelTapRightRatioFlow: Flow<Float> = context.dataStore.data
+        .map { (it[KEY_NOVEL_TAP_RIGHT_RATIO] ?: (1f / 3f)).coerceIn(0.1f, 0.6f) }
+
+    suspend fun setNovelTapRightRatio(value: Float) {
+        context.dataStore.edit { it[KEY_NOVEL_TAP_RIGHT_RATIO] = value.coerceIn(0.1f, 0.6f) }
+    }
+
+    /** 顶部下拉加书签（A8）：默认开 */
+    val novelPullBookmarkFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_NOVEL_PULL_BOOKMARK] ?: true }
+
+    suspend fun setNovelPullBookmark(value: Boolean) {
+        context.dataStore.edit { it[KEY_NOVEL_PULL_BOOKMARK] = value }
+    }
+
+    /** 新用户引导是否已展示（C16）：默认未展示 */
+    val onboardingDoneFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_ONBOARDING_DONE] ?: false }
+
+    suspend fun setOnboardingDone() {
+        context.dataStore.edit { it[KEY_ONBOARDING_DONE] = true }
+    }
+
+    /** 首页隐藏的推荐排标题集合（C5） */
+    val homeHiddenRowsFlow: Flow<Set<String>> = context.dataStore.data
+        .map { raw ->
+            (raw[KEY_HOME_HIDDEN_ROWS] ?: "")
+                .split(',')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .toSet()
+        }
+
+    suspend fun setHomeHiddenRows(titles: Set<String>) {
+        context.dataStore.edit { it[KEY_HOME_HIDDEN_ROWS] = titles.joinToString(",") }
+    }
+
+    /** 主题风格（C2）：0 标准 / 1 暖色 / 2 冷色 */
+    val themeStyleFlow: Flow<Int> = context.dataStore.data
+        .map { (it[KEY_THEME_STYLE] ?: 0).coerceIn(0, 2) }
+
+    suspend fun setThemeStyle(value: Int) {
+        context.dataStore.edit { it[KEY_THEME_STYLE] = value.coerceIn(0, 2) }
     }
 
     /**
@@ -997,6 +1150,14 @@ class PreferencesManager(private val context: Context) {
         context.dataStore.edit { it[KEY_COMIC_PRELOAD_COUNT] = value.coerceIn(1, 8) }
     }
 
+    /** 按屏幕数预加载（D10）：0 = 关闭，1~4 = 提前 N 屏 */
+    val comicPreloadScreensFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_COMIC_PRELOAD_SCREENS] ?: 0 }
+
+    suspend fun setComicPreloadScreens(value: Int) {
+        context.dataStore.edit { it[KEY_COMIC_PRELOAD_SCREENS] = value.coerceIn(0, 4) }
+    }
+
     /** 仅在 WiFi 下预加载 */
     val comicPreloadWifiOnlyFlow: Flow<Boolean> = context.dataStore.data
         .map { it[KEY_COMIC_PRELOAD_WIFI_ONLY] ?: false }
@@ -1035,6 +1196,70 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setComicEdgeGesture(value: Boolean) {
         context.dataStore.edit { it[KEY_COMIC_EDGE_GESTURE] = value }
+    }
+
+    /** 每屏图片数（0=自适应 / 1=单页 / 2=双页；D7） */
+    val comicPagesPerScreenFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_COMIC_PAGES_PER_SCREEN] ?: 0 }
+
+    suspend fun setComicPagesPerScreen(value: Int) {
+        context.dataStore.edit { it[KEY_COMIC_PAGES_PER_SCREEN] = value.coerceIn(0, 2) }
+    }
+
+    /** 阅读背景（0=纯黑 / 1=深灰 / 2=纯白；D9） */
+    val comicReaderBgFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_COMIC_READER_BG] ?: 0 }
+
+    suspend fun setComicReaderBg(value: Int) {
+        context.dataStore.edit { it[KEY_COMIC_READER_BG] = value.coerceIn(0, 2) }
+    }
+
+    /** 图片间距（dp，0/2/4/8；D9） */
+    val comicPageGapFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_COMIC_PAGE_GAP] ?: 0 }
+
+    suspend fun setComicPageGap(value: Int) {
+        context.dataStore.edit { it[KEY_COMIC_PAGE_GAP] = value.coerceIn(0, 16) }
+    }
+
+    /** 图片适配方式（0=适应宽度 / 1=适应屏幕 / 2=裁剪填满；D9） */
+    val comicImageScaleFlow: Flow<Int> = context.dataStore.data
+        .map { it[KEY_COMIC_IMAGE_SCALE] ?: 0 }
+
+    suspend fun setComicImageScale(value: Int) {
+        context.dataStore.edit { it[KEY_COMIC_IMAGE_SCALE] = value.coerceIn(0, 2) }
+    }
+
+    /** 常驻亮度（0=跟随系统；0.10~1.00 为遮罩不透明度；D9） */
+    val comicBrightnessFlow: Flow<Float> = context.dataStore.data
+        .map { it[KEY_COMIC_BRIGHTNESS] ?: 0f }
+
+    suspend fun setComicBrightness(value: Float) {
+        context.dataStore.edit { it[KEY_COMIC_BRIGHTNESS] = value.coerceIn(0f, 1f) }
+    }
+
+    /** 阅读页显示页码（D11） */
+    val comicShowPageNumberFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_COMIC_SHOW_PAGE_NUMBER] ?: true }
+
+    suspend fun setComicShowPageNumber(value: Boolean) {
+        context.dataStore.edit { it[KEY_COMIC_SHOW_PAGE_NUMBER] = value }
+    }
+
+    /** 阅读页显示时钟 / 电量（D11） */
+    val comicShowClockFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_COMIC_SHOW_CLOCK] ?: false }
+
+    suspend fun setComicShowClock(value: Boolean) {
+        context.dataStore.edit { it[KEY_COMIC_SHOW_CLOCK] = value }
+    }
+
+    /** 阅读页显示系统状态栏（D11） */
+    val comicShowSystemBarFlow: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_COMIC_SHOW_SYSTEM_BAR] ?: false }
+
+    suspend fun setComicShowSystemBar(value: Boolean) {
+        context.dataStore.edit { it[KEY_COMIC_SHOW_SYSTEM_BAR] = value }
     }
 
     // ===== 视频 =====
@@ -1211,6 +1436,44 @@ class PreferencesManager(private val context: Context) {
     }
 
     // ===== 搜索 =====
+    // ===== 搜索源选择记忆（v1.9.7.0）=====
+    // 说明：项目里所有偏好都是 DataStore 冷 Flow（取一次用 first()），这里保持一致；
+    // 「StateFlow」语义由各搜索 ViewModel 的 selectedSourceIds 承担（UI 订阅的就是它）。
+    private fun searchSelectedSourceIdsFlow(key: Preferences.Key<Set<String>>): Flow<Set<String>> =
+        context.dataStore.data.map { it[key] ?: emptySet() }
+
+    private suspend fun setSearchSelectedSourceIds(key: Preferences.Key<Set<String>>, ids: Set<String>) {
+        context.dataStore.edit { it[key] = ids }
+    }
+
+    /** 小说搜索上次选中的源（空集合 = 全部源） */
+    val novelSearchSelectedSourceIdsFlow: Flow<Set<String>> =
+        searchSelectedSourceIdsFlow(KEY_SEARCH_SELECTED_SOURCES_NOVEL)
+
+    suspend fun setNovelSearchSelectedSourceIds(ids: Set<String>) =
+        setSearchSelectedSourceIds(KEY_SEARCH_SELECTED_SOURCES_NOVEL, ids)
+
+    /** 漫画搜索上次选中的源 */
+    val comicSearchSelectedSourceIdsFlow: Flow<Set<String>> =
+        searchSelectedSourceIdsFlow(KEY_SEARCH_SELECTED_SOURCES_COMIC)
+
+    suspend fun setComicSearchSelectedSourceIds(ids: Set<String>) =
+        setSearchSelectedSourceIds(KEY_SEARCH_SELECTED_SOURCES_COMIC, ids)
+
+    /** 视频搜索上次选中的源 */
+    val videoSearchSelectedSourceIdsFlow: Flow<Set<String>> =
+        searchSelectedSourceIdsFlow(KEY_SEARCH_SELECTED_SOURCES_VIDEO)
+
+    suspend fun setVideoSearchSelectedSourceIds(ids: Set<String>) =
+        setSearchSelectedSourceIds(KEY_SEARCH_SELECTED_SOURCES_VIDEO, ids)
+
+    /** 标签搜索上次选中的源 */
+    val tagSearchSelectedSourceIdsFlow: Flow<Set<String>> =
+        searchSelectedSourceIdsFlow(KEY_SEARCH_SELECTED_SOURCES_TAG)
+
+    suspend fun setTagSearchSelectedSourceIds(ids: Set<String>) =
+        setSearchSelectedSourceIds(KEY_SEARCH_SELECTED_SOURCES_TAG, ids)
+
     val searchConcurrencyFlow: Flow<Int> = context.dataStore.data
         .map { it[KEY_SEARCH_CONCURRENCY] ?: DEFAULT_SEARCH_CONCURRENCY }
 

@@ -108,6 +108,12 @@ fun HomeScreen(
     onOpenShortDrama: (MediaItem) -> Unit = {},
     /** 打开阅读历史（v1.4.3.0） */
     onOpenHistory: () -> Unit = {},
+    /** 打开小说书城（D26） */
+    onOpenNovelBookCity: () -> Unit = {},
+    /** 打开漫画书城（D26） */
+    onOpenComicBookCity: () -> Unit = {},
+    /** 打开排行榜（D28） */
+    onOpenRank: () -> Unit = {},
     /** 打开标签搜索（v1.5.10.0）；[initialTag] 为预填标签（可空 = 用户主动进入 / 复合搜索页可展示热门推荐） */
     onOpenTagSearch: (SourceType, String) -> Unit = { _, _ -> },
 ) {
@@ -143,6 +149,7 @@ fun HomeScreen(
     // 小说 / 漫画「推荐」视图状态（v1.7.1.0）
     val novelFeedState by viewModel.novelFeed.collectAsState()
     val comicFeedState by viewModel.comicFeed.collectAsState()
+    val homeHiddenRows by viewModel.homeHiddenRows.collectAsState()
     // 小说 / 漫画 Tab 的视图：0=推荐 1=发现 2=书架（v1.7.1.0；与视频 Tab 的频道胶囊同构）
     var contentSubTab by rememberSaveable { mutableIntStateOf(0) }
     // 视频 Tab 频道栏目：0=首页 1=电影 2=动漫 3=短剧 4=收藏（v1.5.0.0 持久化，重启恢复）
@@ -314,6 +321,40 @@ fun HomeScreen(
                     )
                 }
 
+                // 书城入口（D26）：小说 / 漫画各有独立书城（榜单 + 分类导航）
+                if (selectedTab == 0 || selectedTab == 1) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = if (selectedTab == 0) "小说书城 ›" else "漫画书城 ›",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .clickable {
+                                    if (selectedTab == 0) onOpenNovelBookCity()
+                                    else onOpenComicBookCity()
+                                }
+                                .padding(horizontal = 4.dp, vertical = 4.dp),
+                        )
+                        // D28：排行榜直达（落书城「榜单」分区）
+                        if (selectedTab == 0) {
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                text = "排行榜 ›",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier
+                                    .clickable { onOpenRank() }
+                                    .padding(horizontal = 4.dp, vertical = 4.dp),
+                            )
+                        }
+                    }
+                }
+
                 Spacer(Modifier.height(8.dp))
 
                 // 视频 Tab：首页（多分区）/ 电影 / 动漫 / 短剧（竖屏沉浸）/ 收藏 五视图切换
@@ -441,6 +482,8 @@ fun HomeScreen(
                         onRefresh = { viewModel.refreshFeed(currentType) },
                         onSelectCategory = { viewModel.selectFeedCategory(currentType, it) },
                         onOpenSearch = onOpenSearch,
+                        hiddenRows = homeHiddenRows,
+                        onToggleRowHidden = viewModel::setHomeRowHidden,
                     )
                     else -> BookshelfContent(
                         books = books,

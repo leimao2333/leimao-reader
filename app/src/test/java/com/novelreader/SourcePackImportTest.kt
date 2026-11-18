@@ -122,6 +122,39 @@ class SourcePackImportTest {
         assertTrue("提示应说明有几个包失败：$msg", msg.contains("源包失败"))
     }
 
+    @Test
+    fun `v2 分片清单按优先级选主分片且失败时回退`() {
+        // 清单只有 shards、没有 files；主分片 high.json 下架（404），按优先级回退到 legado-a.json
+        val shardManifest = """
+            {
+              "leimaoPack": 2,
+              "name": "test-shards",
+              "files": [],
+              "shards": [
+                {
+                  "logicalId": "logical-a",
+                  "name": "test-shard-source",
+                  "members": [
+                    { "file": "high.json", "priority": 10, "health": 1.0 },
+                    { "file": "legado-a.json", "priority": 5, "health": 0.9 },
+                    { "file": "dead.json", "priority": 99, "health": 0.0 }
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+        server.routes["/shards.json"] = shardManifest
+
+        vm.importFromUrl("${server.baseUrl}/shards.json")
+        awaitTrue("分片清单候选未出现") { vm.importCandidates.value.isNotEmpty() }
+
+        // health=0 的 dead.json 被排除、high.json 404 → 回退到 legado-a.json（3 个源）
+        assertEquals("应回退到次优先分片", 3, vm.importCandidates.value.size)
+        assertEquals("high.json 应先被尝试", 1, server.hits["/high.json"] ?: 0)
+        assertEquals("失效分片不应发请求", 0, server.hits["/dead.json"] ?: 0)
+        assertTrue("提示应说明分片组：${vm.message.value}", vm.message.value!!.contains("分片"))
+    }
+
     /** 文件方式导入清单：没有清单 URL 就解析不了相对路径，必须给出明确指引而不是「无法识别格式」 */
     @Test
     fun `文件方式导入清单提示改用网址`() {

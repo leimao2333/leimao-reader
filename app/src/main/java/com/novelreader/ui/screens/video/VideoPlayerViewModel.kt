@@ -14,6 +14,7 @@ import androidx.media3.common.Format
 import androidx.media3.common.Tracks
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.TrackSelectionParameters
+import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
@@ -144,6 +145,16 @@ class VideoPlayerViewModel(
     var player: ExoPlayer? = null
         private set
     private var playerListener: Player.Listener? = null
+
+    /**
+     * 当前视频的画面宽高比（宽 / 高），未知时按 16:9（v1.9.6.3）。
+     *
+     * 窗口态播放区此前**固定 16:9**：竖屏内容（9:16）塞进去后只剩中间窄窄一条，
+     * 两侧大片黑边，而播放器上下又是页面的浅色底 —— 观感就是「一块白色背景里
+     * 嵌了个小视频」。拿到真实比例后由 UI 按内容比例决定窗口高度。
+     */
+    private val _videoAspect = MutableStateFlow(16f / 9f)
+    val videoAspect: StateFlow<Float> = _videoAspect.asStateFlow()
 
     private val _state = MutableStateFlow(VideoPlaybackState())
     val state: StateFlow<VideoPlaybackState> = _state.asStateFlow()
@@ -527,6 +538,16 @@ class VideoPlayerViewModel(
                 // 全部试完才如实把错误抛给用户
                 if (tryAutoSwitchOnError()) return
                 _error.value = friendlyError(error)
+            }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                val w = videoSize.width
+                val h = videoSize.height
+                if (w > 0 && h > 0) {
+                    // 0.2~5 是兜底区间：个别源会先报异常尺寸（0 或未应用旋转的值），
+                    // 超出范围的比例直接忽略，窗口维持上一次的合理值
+                    _videoAspect.value = (w.toFloat() / h.toFloat()).coerceIn(0.2f, 5f)
+                }
             }
 
             override fun onTracksChanged(tracks: Tracks) {
@@ -1220,6 +1241,9 @@ class VideoPlayerViewModel(
         // 换集 / 换源时清空清晰度状态，待新流的轨道就绪后由 onTracksChanged 重建
         _qualityTracks.value = emptyList()
         _selectedQuality.value = null
+        // 画面比例同样要清：否则上一集是竖屏、下一集是横屏时，窗口会先按旧比例
+        // 撑一下再跳变。先回到 16:9，等 onVideoSizeChanged 报出真实尺寸再修正。
+        _videoAspect.value = 16f / 9f
 
         // 缓存当前播放地址与请求头（外挂字幕重载时复用，见 loadSubtitle）
         lastVideoUrl = url

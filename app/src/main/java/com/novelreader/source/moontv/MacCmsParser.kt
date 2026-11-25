@@ -3,6 +3,7 @@ package com.novelreader.source.moontv
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.novelreader.core.util.CoverUrl
 import com.novelreader.domain.model.ExploreCategory
 import com.novelreader.domain.model.MediaItem
 import com.novelreader.domain.model.SourceType
@@ -159,19 +160,65 @@ object MacCmsParser {
     private fun urlEncode(value: String): String =
         runCatching { java.net.URLEncoder.encode(value, "UTF-8") }.getOrDefault(value)
 
-    /** 解析影片列表 */
-    fun parseList(json: String, sourceId: String, sourceName: String): List<MediaItem> =
+    /**
+     * 解析影片列表。
+     *
+     * @param base 站点基址（一般传 `site.api` 或 `site.detail`）。只用于把封面
+     *             相对路径补成绝对地址 —— 不少采集站把 `vod_pic` 写成 `/upload/xx.jpg`
+     *             甚至 `//cdn.xx.com/xx.jpg`，此前一律被丢掉，表现就是「整排没有图」。
+     */
+    fun parseList(
+        json: String,
+        sourceId: String,
+        sourceName: String,
+        base: String? = null,
+    ): List<MediaItem> =
         listArray(json)?.mapNotNull { el ->
-            (el as? JsonObject)?.let { toItem(it, sourceId, sourceName) }
+            (el as? JsonObject)?.let { toItem(it, sourceId, sourceName, base) }
         }.orEmpty()
 
     /** 解析「详情」响应里的第一条影片（按 id 精确命中优先） */
-    fun findItem(json: String, vodId: String, sourceId: String, sourceName: String): MediaItem? {
+    fun findItem(
+        json: String,
+        vodId: String,
+        sourceId: String,
+        sourceName: String,
+        base: String? = null,
+    ): MediaItem? {
         val arr = listArray(json) ?: return null
         val objs = arr.mapNotNull { it as? JsonObject }
         val hit = objs.firstOrNull { str(it, "vod_id") == vodId } ?: objs.firstOrNull()
-        return hit?.let { toItem(it, sourceId, sourceName) }
+        return hit?.let { toItem(it, sourceId, sourceName, base) }
     }
+
+    /**
+     * 从任意站点地址里取出「协议 + 主机」（`https://host`）。
+     *
+     * 采集地址通常是 `https://host/api.php/provide/vod`，把相对封面直接拼在它后面
+     * 会得到 `/api.php/provide/vod/upload/1.jpg` 这种不存在的路径，所以先退到根。
+     */
+    private fun siteRoot(base: String?): String? {
+        val text = base?.trim().orEmpty()
+        if (text.isEmpty()) return null
+        return runCatching { java.net.URI(text) }.getOrNull()?.let { u ->
+            val scheme = u.scheme
+            val authority = u.rawAuthority
+            if (!scheme.isNullOrEmpty() && !authority.isNullOrEmpty()) "$scheme://$authority" else null
+        }
+    }
+
+    /** 封面字段候选：不同采集站 / 不同改版用的键名不一样，按可靠性从高到低取 */
+    private val COVER_KEYS = listOf(
+        "vod_pic",
+        "vod_pic_slide",
+        "vod_pic_thumb",
+        "vod_pic_screenshot",
+        "pic",
+        "cover",
+        "img",
+        "poster",
+        "thumbnail",
+    )
 
     /** 解析分类响应里的影片剧集（详情接口专用，含 `vod_play_url`） */
     fun episodesOf(json: String, vodId: String): List<Episode> {
@@ -271,7 +318,10 @@ object MacCmsParser {
     fun parseCategoryTree(json: String): List<ExploreCategory> {
         val root = runCatching { JsonParser.parseString(json) }.getOrNull() ?: return emptyList()
         if (!root.isJsonObject) return emptyList()
-        val arr = root.asJsonObject.getAsJsonArray("class") ?: return emptyList()
+        // 部分站点不返回 `class`（只在列表项里带 type_id / type_name），
+        // 这时分类树为空 → 首页只剩一行「全部」，看起来像「这个源没内容」。
+        // 退化成「从当前页条目归纳分类」，至少能让分区与筛选有东西可用（v1.9.6.3）。
+        val arr = arrOf(root.asJsonObject, "class") ?: return categoriesFromList(json)
 
         // 先建 id → 名字映射，才能把子分类的 type_pid 还原成父级名字
         val raw = arr.mapNotNull { el -> (el as? JsonObject)?.let { str(it, "type_id") to it } }
@@ -286,6 +336,27 @@ object MacCmsParser {
             val parent = if (pid.isNotBlank() && pid != "0") nameById[pid].orEmpty() else ""
             ExploreCategory(title = name, url = id, parent = parent)
         }
+    }
+
+    /**
+     * 从列表条目归纳分类（站点不返回 `class` 时的兜底，v1.9.6.3）。
+     *
+     * 只认 `type_id` + `type_name` 同时存在的条目，按首次出现顺序去重。
+     * 归纳出的分类都当一级用（`parent` 为空）—— 没有 `type_pid` 就推不出层级，
+     * 硬造层级只会让二级下拉出现幽灵条目。
+     */
+    private fun categoriesFromList(json: String): List<ExploreCategory> {
+        val items = listArray(json) ?: return emptyList()
+        val seen = LinkedHashMap<String, String>()
+        items.forEach { el ->
+            val o = el as? JsonObject ?: return@forEach
+            val id = str(o, "type_id")
+            val name = str(o, "type_name")
+            if (id.isNotBlank() && name.isNotBlank() && !seen.containsKey(id)) {
+                seen[id] = name
+            }
+        }
+        return seen.map { (id, name) -> ExploreCategory(title = name, url = id, parent = "") }
     }
 
     /** 响应里是否代表成功（`code`=1 或直接给出 list） */
@@ -303,23 +374,53 @@ object MacCmsParser {
 
     // ===== 内部工具 =====
 
+    /** 安全取数组字段（字段存在但不是数组时不抛异常） */
+    private fun arrOf(o: JsonObject, key: String): JsonArray? =
+        runCatching { o.get(key)?.takeIf { it.isJsonArray }?.asJsonArray }.getOrNull()
+
+    /**
+     * 取响应里的影片数组。
+     *
+     * 标准 maccms10 是顶层 `list`，但部分站点的接口套了一层包装：
+     * - `{"code":1,"data":{"list":[...]}}`（PHP 框架统一外壳）
+     * - `{"code":1,"data":[...]}`
+     *
+     * 此前只认顶层 `list`，这类站点会被当成「返回空」——分类树、列表、搜索、
+     * 详情全部为空，表现就是「这个源没有内容」（v1.9.6.3 补兜底）。
+     */
     private fun listArray(json: String): JsonArray? {
         val root = runCatching { JsonParser.parseString(json) }.getOrNull() ?: return null
         return when {
             root.isJsonArray -> root.asJsonArray
-            root.isJsonObject -> root.asJsonObject.getAsJsonArray("list")
+            root.isJsonObject -> {
+                val o = root.asJsonObject
+                arrOf(o, "list")
+                    ?: runCatching { o.getAsJsonObject("data") }.getOrNull()?.let { arrOf(it, "list") }
+                    ?: arrOf(o, "data")
+            }
             else -> null
         }
     }
 
-    private fun toItem(o: JsonObject, sourceId: String, sourceName: String): MediaItem? {
+    private fun toItem(
+        o: JsonObject,
+        sourceId: String,
+        sourceName: String,
+        base: String? = null,
+    ): MediaItem? {
         val id = str(o, "vod_id")
         val name = str(o, "vod_name")
         if (id.isBlank() || name.isBlank()) return null
+        val root = siteRoot(base)
         return MediaItem(
             id = id,
             title = name,
-            cover = str(o, "vod_pic").takeIf { it.isNotBlank() && it.startsWith("http") },
+            // 多字段兜底 + 相对路径补全：只认 `vod_pic` 且必须是 http 开头，
+            // 会让「封面写成 /upload/x.jpg」或「封面只放在 vod_pic_slide 里」的站点
+            // 整排没有图（v1.9.6.3）。补全过程复用 CoverUrl.resolve 的脏值过滤。
+            cover = COVER_KEYS.asSequence()
+                .map { str(o, it) }
+                .firstNotNullOfOrNull { CoverUrl.resolve(it, root) },
             author = str(o, "type_name").takeIf { it.isNotBlank() },
             desc = stripHtml(str(o, "vod_blurb").ifBlank { str(o, "vod_content") })
                 .takeIf { it.isNotBlank() }?.take(200),

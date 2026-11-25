@@ -28,7 +28,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -75,6 +78,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -140,6 +144,8 @@ fun VideoPlayerScreen(
     val episodesList by viewModel.episodes.collectAsState()
     val currentEpisodeUrl by viewModel.currentEpisodeUrl.collectAsState()
     val playback by viewModel.state.collectAsState()
+    // 当前视频真实画面比例（宽/高）：决定窗口态播放区高度（v1.9.6.3）
+    val videoAspect by viewModel.videoAspect.collectAsState()
     val prefs by viewModel.prefs.collectAsState()
     val message by viewModel.message.collectAsState()
     val lines by viewModel.lines.collectAsState()
@@ -311,7 +317,11 @@ fun VideoPlayerScreen(
         } else {
             controller?.show(WindowInsetsCompat.Type.systemBars())
             val darkIcons = !appDarkTheme
-            controller?.isAppearanceLightStatusBars = darkIcons
+            // v1.9.6.3：窗口态的播放区**顶部也是黑底**了（状态栏那一块用黑色填满，
+            // 视频紧贴其下），所以状态栏图标固定白色。继续按主题给深色图标的话，
+            // 浅色主题下就是「黑底 + 深色图标」，等于整条状态栏看不见。
+            controller?.isAppearanceLightStatusBars = false
+            // 导航栏在底部，仍是页面底色，继续跟随主题
             controller?.isAppearanceLightNavigationBars = darkIcons
         }
         onDispose { }
@@ -409,19 +419,41 @@ fun VideoPlayerScreen(
         window.attributes = attrs
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .then(if (isFullscreen) Modifier else Modifier.statusBarsPadding()),
-    ) {
-        // ===== 播放区（窗口态 16:9，全屏态铺满） =====
+    // 窗口态播放区高度（v1.9.6.3）：
+    // 横屏内容维持 16:9 的观感；竖屏内容按自身比例放大 —— 9:16 塞进 16:9 时
+    // 只剩中间窄窄一条，两侧全是黑边，看着像「白底里嵌了个小视频」。
+    // 上限取屏高 62%，再高就等于变相全屏，下面的选集区没地方了。
+    val conf = LocalConfiguration.current
+    val screenWidthDp = conf.screenWidthDp.dp
+    val screenHeightDp = conf.screenHeightDp.dp
+    val safeAspect = if (videoAspect in 0.2f..5f) videoAspect else 16f / 9f
+    val windowPlayerHeight = if (safeAspect >= 1f) {
+        screenWidthDp * 9f / 16f
+    } else {
+        minOf(screenWidthDp / safeAspect, screenHeightDp * 0.62f)
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // 窗口态把状态栏那一块也用黑底填满，视频紧贴其下。
+        // 此前这里是 statusBarsPadding 让出的页面底色 —— 浅色主题下就是一条白，
+        // 黑色视频顶着一道白边；全屏时系统栏被隐藏所以看不到，问题只在竖屏窗口态出现。
+        if (!isFullscreen) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsTopHeight(WindowInsets.statusBars)
+                    .background(Color.Black),
+            )
+        }
+
+        // ===== 播放区（窗口态按内容比例，全屏态铺满） =====
         Box(
             modifier = Modifier
                 .then(
                     if (isFullscreen) Modifier.fillMaxSize()
                     else Modifier
                         .fillMaxWidth()
-                        .aspectRatio(16f / 9f)
+                        .height(windowPlayerHeight)
                 )
                 .background(Color.Black),
         ) {

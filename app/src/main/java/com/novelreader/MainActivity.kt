@@ -7,10 +7,16 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.lifecycleScope
 import com.novelreader.core.pdf.IncomingPdf
 import com.novelreader.core.pdf.PdfIntentImport
@@ -101,37 +107,53 @@ class MainActivity : ComponentActivity() {
                 colorScheme = dynamicColorScheme,
                 style = themeStyle,
             ) {
-                // 系统栏图标明暗跟随**应用**主题（v1.8.8.2）。
+                // 夜间模式下页面不该露白（v1.9.6.3）。
                 //
-                // enableEdgeToEdge() 在 onCreate 里按**系统**深色模式设过一次图标颜色，而本应用
-                // 的主题是用户设置项：系统深色 + 应用浅色时，白色图标就落在白色页面上 ——
-                // 整条状态栏看着像被顶栏盖住了（用户反馈原话）。这里在每次主题确定后覆盖一次，
-                // 后续各页若整屏是黑底（播放器全屏 / 漫画阅读）再由页面自己改成白色图标。
-                LaunchedEffect(darkTheme, themeMode) {
-                    applySystemBarIcons(darkIcons = !darkTheme)
-                    // 夜间模式优化：「跟随系统」模式下系统昼夜切换后，把折算值实时同步给
-                    // 小说阅读页夜间（此前只在切换设置那一刻拍一次快照，系统切换后不跟随）。
-                    // 只写 novelNight、不改 themeMode，保持「跟随系统」状态。
-                    if (themeMode == com.novelreader.core.preferences.PreferencesManager.THEME_MODE_SYSTEM) {
-                        app.container.preferencesManager.syncNovelNightForSystem(darkTheme)
-                    }
+                // 窗口主题只有一份 `Theme.Material.Light.NoActionBar`（没有 values-night），
+                // windowBackground 恒为白色；Compose 的夜间模式只换 MaterialTheme 里的配色，
+                // 改不到窗口底色。于是夜间模式下凡是「页面没自己铺背景」的地方 —— 播放页
+                // 下方选集区、页面转场、加载态 —— 全是白底（用户原话：夜间模式就该深色，
+                // 和主题无关）。这里给整个 App 兜一层 Surface 取当前配色的 background，
+                // 同时把窗口底色也一起换掉，转场时不会闪一下白。
+                val appBackground = MaterialTheme.colorScheme.background
+                val windowBackground = remember(appBackground) {
+                    android.graphics.drawable.ColorDrawable(appBackground.toArgb())
                 }
+                SideEffect { window.setBackgroundDrawable(windowBackground) }
 
-                // 深链支持：novelreader://search?keyword=xxx&type=novel|comic|video
-                // 直达对应类型搜索（自动化测试/外部调用；缺省 type=novel）
-                val deepLink = remember(intent?.data) {
-                    val data = intent?.data
-                    if (data?.scheme == "novelreader" && data.host == "search") {
-                        (data.getQueryParameter("keyword") ?: "") to (data.getQueryParameter("type") ?: "novel")
-                    } else null
+                Surface(modifier = Modifier.fillMaxSize(), color = appBackground) {
+                    // 系统栏图标明暗跟随**应用**主题（v1.8.8.2）。
+                    //
+                    // enableEdgeToEdge() 在 onCreate 里按**系统**深色模式设过一次图标颜色，而本应用
+                    // 的主题是用户设置项：系统深色 + 应用浅色时，白色图标就落在白色页面上 ——
+                    // 整条状态栏看着像被顶栏盖住了（用户反馈原话）。这里在每次主题确定后覆盖一次，
+                    // 后续各页若整屏是黑底（播放器全屏 / 漫画阅读）再由页面自己改成白色图标。
+                    LaunchedEffect(darkTheme, themeMode) {
+                        applySystemBarIcons(darkIcons = !darkTheme)
+                        // 夜间模式优化：「跟随系统」模式下系统昼夜切换后，把折算值实时同步给
+                        // 小说阅读页夜间（此前只在切换设置那一刻拍一次快照，系统切换后不跟随）。
+                        // 只写 novelNight、不改 themeMode，保持「跟随系统」状态。
+                        if (themeMode == com.novelreader.core.preferences.PreferencesManager.THEME_MODE_SYSTEM) {
+                            app.container.preferencesManager.syncNovelNightForSystem(darkTheme)
+                        }
+                    }
+
+                    // 深链支持：novelreader://search?keyword=xxx&type=novel|comic|video
+                    // 直达对应类型搜索（自动化测试/外部调用；缺省 type=novel）
+                    val deepLink = remember(intent?.data) {
+                        val data = intent?.data
+                        if (data?.scheme == "novelreader" && data.host == "search") {
+                            (data.getQueryParameter("keyword") ?: "") to (data.getQueryParameter("type") ?: "novel")
+                        } else null
+                    }
+                    AppNavHost(
+                        container = app.container,
+                        initialNovelSearchKeyword = deepLink?.first?.takeIf { it.isNotBlank() },
+                        initialSearchType = deepLink?.second ?: "novel",
+                        incomingPdf = incomingPdf,
+                        onIncomingPdfConsumed = { _incomingPdf.value = null },
+                    )
                 }
-                AppNavHost(
-                    container = app.container,
-                    initialNovelSearchKeyword = deepLink?.first?.takeIf { it.isNotBlank() },
-                    initialSearchType = deepLink?.second ?: "novel",
-                    incomingPdf = incomingPdf,
-                    onIncomingPdfConsumed = { _incomingPdf.value = null },
-                )
             }
         }
 

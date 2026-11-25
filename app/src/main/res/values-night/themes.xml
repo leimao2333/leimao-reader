@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        系统处于深色模式时的窗口底色（v1.9.6.3）。
+
+        默认那份 themes.xml 继承的是 Material.Light，windowBackground 恒为白色；
+        Compose 的夜间模式只改 MaterialTheme 配色，改不到窗口底色，于是夜间模式下
+        页面没铺背景的地方（播放页下方、转场、加载态）会露白。
+
+        应用内「夜间模式」是独立设置项（可以系统浅色 + 应用深色），那种情况由
+        MainActivity 里的 SideEffect 直接改 window 背景兜住；这里负责系统深色这一半，
+        让冷启动和转场在系统深色时也不会闪一下白。
+    -->
+    <style name="Theme.NovelReader" parent="android:Theme.Material.NoActionBar" />
+</resources>

@@ -799,6 +799,13 @@ class HomeViewModel(
         //    v1.6.7.0：取**完整分类树**（含二级），供首页「类型 → 分类」二级下拉用。
         val alive = java.util.Collections.synchronizedList(mutableListOf<com.novelreader.domain.model.SourceInfo>())
         val catsBySource = java.util.concurrent.ConcurrentHashMap<String, List<ExploreCategory>>()
+        // 探测阶段的「聚合 N 个源」增量刷新节流（v1.9.6.3）。
+        //
+        // 此前每探到一个存活源就写一次 _videoHome，60 多个源 = 60 多次整页重组；
+        // 重组发生在主线程，探测又恰好与「点开视频页」同时进行，主线程被打满后
+        // 输入事件排不上队，实测触发 ANR（Input dispatching timed out ... Waited 5001ms）。
+        // 现在最多每 ALIVE_PUSH_INTERVAL_MS 刷一次，结束时下面还会写一次最终值。
+        var lastAlivePush = 0L
         coroutineScope {
             all.map { src -> async {
                 val cats = runCatchingCc {
@@ -810,7 +817,11 @@ class HomeViewModel(
                 if (ok) {
                     if (cats.isNotEmpty()) catsBySource[src.id] = cats
                     alive.add(src)
-                    _videoHome.value = _videoHome.value.copy(availableSources = alive.toList().map { it.id })
+                    val now = System.currentTimeMillis()
+                    if (now - lastAlivePush >= ALIVE_PUSH_INTERVAL_MS) {
+                        lastAlivePush = now
+                        _videoHome.value = _videoHome.value.copy(availableSources = alive.toList().map { it.id })
+                    }
                 }
             } }.awaitAll()
         }
@@ -842,10 +853,15 @@ class HomeViewModel(
         //       v1.6.8.0：归不进去的名字不再丢弃，全部进**「其他」**兜底类型
         //       （按覆盖源数倒序），一个都不少。
         //    纯逻辑见 VideoCategoryPlan。
-        val catPlan = com.novelreader.core.util.VideoCategoryPlan.build(
-            sourceOrder = orderedAlive.map { it.id },
-            catsBySource = catsBySource,
-        )
+        // 合并几十个源的分类是纯 CPU 计算（每源几十个分类、逐个归一/归位），
+        // 跑在主线程会与探测完成后的重组叠在一起，实测能把输入事件挤到 5 秒外
+        // 触发 ANR（v1.9.6.3）。
+        val catPlan = withContext(Dispatchers.Default) {
+            com.novelreader.core.util.VideoCategoryPlan.build(
+                sourceOrder = orderedAlive.map { it.id },
+                catsBySource = catsBySource,
+            )
+        }
         val tree = catPlan.tree
         // 分区行 = 规范类型（顺序恒定）；一个类型都没有时用「全部」兜底一行
         val rowPlan: List<String> = if (tree.isEmpty()) listOf("") else tree.keys.toList().take(MAX_VIDEO_ROWS)
@@ -869,10 +885,14 @@ class HomeViewModel(
                         }.getOrNull().orEmpty()
                     } }.awaitAll().flatten()
                 }
-                val dedup = com.novelreader.core.util.VideoDedupe.byTitle(merged)
-                    // v1.6.5.0：分区标题（分类名）写进 tags，详情页标签小栏用
-                    //（「全部」兜底行不是真分类，跳过）
-                    .map { if (title.isNotBlank()) it.copy(tags = it.tags + title) else it }
+                // 一行最多能合进几十个源的几百条，标题归一化 + 逐条 copy 都是 CPU 活，
+                // 放到 Default 线程（v1.9.6.3 ANR 修复）
+                val dedup = withContext(Dispatchers.Default) {
+                    com.novelreader.core.util.VideoDedupe.byTitle(merged)
+                        // v1.6.5.0：分区标题（分类名）写进 tags，详情页标签小栏用
+                        //（「全部」兜底行不是真分类，跳过）
+                        .map { if (title.isNotBlank()) it.copy(tags = it.tags + title) else it }
+                }
                 // v1.5.8.0：分区行内成人源内容沉底
                 val sunk = sinkAdults(dedup, adultIds)
                 if (sunk.isNotEmpty()) {
@@ -956,12 +976,16 @@ class HomeViewModel(
         // v1.6.5.0：网格视图的分类名写进 tags，详情页标签小栏用
         // v1.6.7.0：分类身份改为「名字」，直接用 effectiveCategory（二级优先，其次一级）
         val gridTag = current.effectiveCategory.takeIf { it.isNotBlank() }
-        _videoHome.value = current.copy(
-            items = sinkAdults(
+        // 翻页后 merged 会累积到上千条，去重 + 逐条 copy 放 Default 线程（v1.9.6.3）
+        val mergedDedup = withContext(Dispatchers.Default) {
+            sinkAdults(
                 com.novelreader.core.util.VideoDedupe.byTitle(merged)
                     .map { if (gridTag != null) it.copy(tags = it.tags + gridTag) else it },
                 adultIds,
-            ),
+            )
+        }
+        _videoHome.value = current.copy(
+            items = mergedDedup,
             loading = false,
             loadingMore = false,
             hasMore = fetched.isNotEmpty(),
@@ -2099,6 +2123,15 @@ class HomeViewModel(
          * 被孤儿工作占住，30s 花得起。
          */
         private const val SOURCE_PROBE_TIMEOUT_MS = 30_000L
+
+        /**
+         * 探测阶段「聚合 N 个源」的最小刷新间隔（v1.9.6.3）。
+         *
+         * 每个源探测完成都写 state 会让首页整页重组几十次，主线程被打满后
+         * 表现为「点开视频页卡住不动」，实测能到 5 秒触发 ANR。400ms 一次
+         * 既保留「数字往上走」的观感，又把重组次数压到个位数。
+         */
+        private const val ALIVE_PUSH_INTERVAL_MS = 400L
 
         /**
          * 漫画源的单源探测超时（D27）。

@@ -35,10 +35,15 @@ interface ProgressDao {
     /**
      * 按内容类型清空进度（v1.8.1.2）。
      *
-     * 视频首页「继续观看」的一键清空用它：只删 `itemType = 'VIDEO'` 的记录，
+     * 视频首页「继续观看」的一键清空用它：只删视频记录，
      * 小说 / 漫画的阅读进度原样保留。
+     *
+     * 大小写必须归一：保存路径（[ProgressRepositoryImpl.saveProgress]）统一写小写
+     * `video`，而调用方传的是 `SourceType.name`（大写 `VIDEO`）。SQL 的 `=` 对 TEXT
+     * 是 BINARY 比较，此前直接等值比较会删掉 0 行 —— 表现为「点了清空，列表纹丝不动」
+     * （v1.9.6.3 修复）。这里用 UPPER 兼容历史数据里的大写记录。
      */
-    @Query("DELETE FROM progress WHERE itemType = :type")
+    @Query("DELETE FROM progress WHERE UPPER(IFNULL(itemType, '')) = UPPER(:type)")
     suspend fun clearByType(type: String)
 
     /**

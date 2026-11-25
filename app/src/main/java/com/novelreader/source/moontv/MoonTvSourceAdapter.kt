@@ -38,6 +38,16 @@ class MoonTvSourceAdapter(
             if (site.detail.startsWith("http")) put("Referer", site.detail)
         }
 
+    /**
+     * 封面相对路径的补全基址（v1.9.6.3）。
+     *
+     * 优先用站点主页（配置里的 `detail`，形如 `https://host`），它比采集接口
+     * （`https://host/api.php/provide/vod`）更接近图片实际所在的位置；
+     * 没有配主页时退回接口地址，由解析器自己退到「协议 + 主机」根。
+     */
+    private val coverBase: String
+        get() = site.detail.takeIf { it.startsWith("http") } ?: site.api
+
     private fun request(params: List<Pair<String, String>>): String =
         HttpClient.get(
             MacCmsParser.buildUrl(site.api, params),
@@ -93,7 +103,7 @@ class MoonTvSourceAdapter(
             request(listOf("ac" to "detail", "wd" to keyword, "pg" to page.toString()))
         }.getOrNull() ?: return emptyList()
         rememberHosts(json)
-        return MacCmsParser.parseList(json, info.id, info.name)
+        return MacCmsParser.parseList(json, info.id, info.name, coverBase)
     }
 
     /**
@@ -129,7 +139,7 @@ class MoonTvSourceAdapter(
 
     override suspend fun detail(item: MediaItem): MediaItem {
         val json = runCatching { detailJson(item.id) }.getOrNull() ?: return item
-        val full = MacCmsParser.findItem(json, item.id, info.id, info.name) ?: return item
+        val full = MacCmsParser.findItem(json, item.id, info.id, info.name, coverBase) ?: return item
         // 用详情补全封面 / 简介 / 备注，但保留原 id 与来源信息
         return full.copy(
             id = item.id,
@@ -274,6 +284,6 @@ class MoonTvSourceAdapter(
         }
         val json = runCatching { request(params) }.getOrNull() ?: return emptyList()
         rememberHosts(json)
-        return MacCmsParser.parseList(json, info.id, info.name)
+        return MacCmsParser.parseList(json, info.id, info.name, coverBase)
     }
 }
